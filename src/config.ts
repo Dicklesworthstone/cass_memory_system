@@ -3,102 +3,13 @@
 
 import { homedir } from "os";
 import { join, dirname } from "path";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-
-/**
- * LLM provider options
- */
-export type LLMProvider = "openai" | "anthropic" | "google";
-
-/**
- * Sanitization configuration schema (P12 - Security Critical)
- */
-export interface SanitizationConfig {
-  /** Global kill switch for sanitization */
-  enabled: boolean;
-  /** Additional regex patterns (user-defined, strings compiled to RegExp with 'gi' flags) */
-  extraPatterns: string[];
-}
-
-/**
- * Scoring configuration
- */
-export interface ScoringConfigSection {
-  /** Half-life for decay in days (default: 90) */
-  decayHalfLifeDays: number;
-  /** Weight multiplier for harmful feedback (default: 4) */
-  harmfulMultiplier: number;
-  /** Minimum feedback count for active status */
-  minFeedbackForActive: number;
-  /** Minimum helpful count for proven status */
-  minHelpfulForProven: number;
-  /** Maximum harmful ratio for proven status */
-  maxHarmfulRatioForProven: number;
-}
-
-/**
- * Full configuration schema
- */
-export interface Config {
-  /** Schema version for migrations */
-  schema_version: number;
-
-  // LLM Provider settings
-  /** LLM provider to use */
-  provider: LLMProvider;
-  /** Model name/ID */
-  model: string;
-
-  // Paths
-  /** Path to playbook YAML file */
-  playbookPath: string;
-  /** Directory for diary entries */
-  diaryDir: string;
-  /** Path to cass binary */
-  cassPath: string;
-
-  // Reflection settings
-  /** Maximum reflection iterations (1-3) */
-  maxReflectorIterations: number;
-  /** Deduplication similarity threshold (0.0-1.0) */
-  dedupSimilarityThreshold: number;
-  /** Auto-prune if harmful count exceeds this */
-  pruneHarmfulThreshold: number;
-
-  // Context settings
-  /** Maximum bullets to include in context */
-  maxBulletsInContext: number;
-  /** Maximum history items in context */
-  maxHistoryInContext: number;
-
-  // Scoring settings
-  scoring: ScoringConfigSection;
-
-  // Session settings
-  /** Days to look back for sessions */
-  sessionLookbackDays: number;
-  /** Days to look back for validation */
-  validationLookbackDays: number;
-
-  // Feature flags
-  /** Enable scientific validation */
-  validationEnabled: boolean;
-  /** Auto-reflect after sessions */
-  autoReflect: boolean;
-  /** Enrich with cross-agent sessions */
-  enrichWithCrossAgent: boolean;
-  /** Enable semantic search (requires embeddings) */
-  semanticSearchEnabled: boolean;
-
-  // Security - Sanitization (P12)
-  sanitization: SanitizationConfig;
-
-  // Logging
-  /** Verbose output */
-  verbose: boolean;
-  /** JSON output format */
-  jsonOutput: boolean;
-}
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "fs";
+import {
+  Config,
+  SanitizationConfig,
+  ScoringConfigSection,
+  LLMProvider
+} from "./types.js";
 
 /**
  * Default sanitization configuration
