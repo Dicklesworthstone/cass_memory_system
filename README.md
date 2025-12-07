@@ -8,11 +8,14 @@
 **Universal memory system for AI coding agents.**
 Transforms scattered agent sessions into persistent, cross-agent procedural memory—so every agent learns from every other agent's experience.
 
+> **Naming Note**: `cm` is the CLI command (short for **c**ass-**m**emory).
+> This is distinct from [`cass`](https://github.com/Dicklesworthstone/coding_agent_session_search) (the session search tool that `cm` builds upon).
+
 <div align="center">
 
 ```bash
 # Works immediately, zero setup required
-cass context "fix the authentication timeout bug"
+cm context "fix the authentication timeout bug"
 ```
 
 </div>
@@ -74,7 +77,7 @@ AI coding agents are brilliant in the moment but **forget everything** between s
 No setup required. Just run it:
 
 ```bash
-cass context "implement user authentication"
+cm context "implement user authentication"
 ```
 
 **Output** (even on day one):
@@ -143,14 +146,14 @@ Optional LLM features respect your budget:
 
 ```bash
 # Set daily/monthly limits
-cass config set llm.budget.daily 0.10
-cass config set llm.budget.monthly 2.00
+cm config set llm.budget.daily 0.10
+cm config set llm.budget.monthly 2.00
 
 # Works without any LLM (keyword matching)
-cass context "my task"  # Free, always works
+cm context "my task"  # Free, always works
 
 # Opt-in to LLM enhancement
-cass reflect --llm      # Uses LLM, tracks cost
+cm reflect --llm      # Uses LLM, tracks cost
 ```
 
 ### 🔒 Privacy-First
@@ -168,7 +171,7 @@ cass reflect --llm      # Uses LLM, tracks cost
 
 ```bash
 # Using bun (recommended)
-bun install -g cass-memory
+bun install -g cm
 
 # Or from source
 git clone https://github.com/user/cass-memory
@@ -181,17 +184,17 @@ bun run build
 
 ```bash
 # Get context for a task (main command)
-cass context "fix the login timeout"
+cm context "fix the login timeout"
 
 # Record feedback after a rule helps/hurts
-cass mark rule-123 helpful
-cass mark rule-456 harmful --reason "caused test failures"
+cm mark rule-123 helpful
+cm mark rule-456 harmful --reason "caused test failures"
 
 # View your playbook
-cass playbook
+cm playbook
 
 # Check system health
-cass status
+cm status
 ```
 
 ---
@@ -202,23 +205,23 @@ cass status
 
 | Command | Purpose | Example |
 |---------|---------|---------|
-| `context <task>` | Get relevant rules + history for a task | `cass context "debug auth"` |
-| `mark <rule> <feedback>` | Record helpful/harmful feedback | `cass mark rule-123 helpful` |
-| `playbook` | List, add, or remove playbook rules | `cass playbook add "Always validate JWT"` |
-| `status` | Check system health and statistics | `cass status` |
-| `reflect` | Extract rules from recent sessions | `cass reflect --dry-run` |
+| `context <task>` | Get relevant rules + history for a task | `cm context "debug auth"` |
+| `mark <rule> <feedback>` | Record helpful/harmful feedback | `cm mark rule-123 helpful` |
+| `playbook` | List, add, or remove playbook rules | `cm playbook add "Always validate JWT"` |
+| `status` | Check system health and statistics | `cm status` |
+| `reflect` | Extract rules from recent sessions | `cm reflect --dry-run` |
 
 ### Context Command
 
 ```bash
 # Basic usage
-cass context "fix authentication timeout bug"
+cm context "fix authentication timeout bug"
 
 # JSON output (for agent consumption)
-cass context "debug memory leak" --json
+cm context "debug memory leak" --json
 
 # Limit results
-cass context "refactor API" --max-rules 10 --max-history 5
+cm context "refactor API" --max-rules 10 --max-history 5
 ```
 
 **Output includes:**
@@ -231,45 +234,45 @@ cass context "refactor API" --max-rules 10 --max-history 5
 
 ```bash
 # Mark as helpful (boosts confidence)
-cass mark rule-123 helpful
+cm mark rule-123 helpful
 
 # Mark as harmful (reduces confidence, may trigger inversion)
-cass mark rule-456 harmful --reason "caused test failures"
+cm mark rule-456 harmful --reason "caused test failures"
 
 # Include session for traceability
-cass mark rule-789 helpful --session /path/to/session.jsonl
+cm mark rule-789 helpful --session /path/to/session.jsonl
 ```
 
 ### Playbook Command
 
 ```bash
 # List all active rules
-cass playbook
+cm playbook
 
 # List with details (confidence scores, sources)
-cass playbook --detailed
+cm playbook --detailed
 
 # Add a manual rule
-cass playbook add "Always run tests before committing" --category testing
+cm playbook add "Always run tests before committing" --category testing
 
 # Remove a rule
-cass playbook remove rule-123
+cm playbook remove rule-123
 
 # Show statistics
-cass playbook stats
+cm playbook stats
 ```
 
 ### Status Command
 
 ```bash
 # Quick health check
-cass status
+cm status
 
 # Detailed diagnostics
-cass status --full
+cm status --full
 
 # JSON output
-cass status --json
+cm status --json
 ```
 
 **Output:**
@@ -303,17 +306,17 @@ cass-memory runs as an MCP (Model Context Protocol) server for seamless agent in
 
 ```typescript
 // Agents can call these tools directly:
-await mcp.callTool("cass_context", { task: "fix auth bug" });
-await mcp.callTool("cass_feedback", { ruleId: "rule-123", helpful: true });
-await mcp.callTool("cass_outcome", { sessionId: "...", success: true });
+await mcp.callTool("cm_context", { task: "fix auth bug" });
+await mcp.callTool("cm_feedback", { ruleId: "rule-123", helpful: true });
+await mcp.callTool("cm_outcome", { sessionId: "...", success: true });
 ```
 
 **MCP Configuration** (`~/.config/claude/mcp.json`):
 ```json
 {
   "mcpServers": {
-    "cass-memory": {
-      "command": "cass-memory",
+    "cm": {
+      "command": "cm",
       "args": ["serve"]
     }
   }
@@ -329,29 +332,29 @@ Add this to your project's `AGENTS.md`:
 
 Before starting complex tasks, retrieve relevant context:
 ```bash
-cass context "<task description>" --json
+cm context "<task description>" --json
 ```
 
 As you work, track rule usage:
-- When a playbook rule helps: `cass mark <rule-id> helpful`
-- When a playbook rule causes problems: `cass mark <rule-id> harmful --reason "why"`
+- When a playbook rule helps: `cm mark <rule-id> helpful`
+- When a playbook rule causes problems: `cm mark <rule-id> harmful --reason "why"`
 
 ### Memory Protocol
 
-1. **PRE-FLIGHT**: Run `cass context` before non-trivial tasks
+1. **PRE-FLIGHT**: Run `cm context` before non-trivial tasks
 2. **REFERENCE**: Cite rule IDs when following them
    - Example: "Following [rule-123], I'll check token expiry first..."
 3. **FEEDBACK**: Mark rules as helpful/harmful during work
-4. **REFLECT**: Run `cass reflect` periodically to extract new learnings
+4. **REFLECT**: Run `cm reflect` periodically to extract new learnings
 
 ### Quick Reference
 
 | Command | Purpose |
 |---------|---------|
-| `cass context "task"` | Get relevant rules and history |
-| `cass mark rule-123 helpful` | Record positive feedback |
-| `cass mark rule-123 harmful` | Record negative feedback |
-| `cass playbook` | View current rules |
+| `cm context "task"` | Get relevant rules and history |
+| `cm mark rule-123 helpful` | Record positive feedback |
+| `cm mark rule-123 harmful` | Record negative feedback |
+| `cm playbook` | View current rules |
 ```
 
 ---

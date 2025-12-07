@@ -358,7 +358,7 @@ interface NewBulletData {
 ```yaml
 schema_version: 2
 name: "project-playbook"
-description: "Auto-generated from cass-memory reflections"
+description: "Auto-generated from cm reflections"
 
 metadata:
   created_at: "2025-12-01T00:00:00Z"
@@ -399,7 +399,7 @@ bullets:
 ### Command Overview
 
 ```
-cass-memory <command> [options]
+cm <command> [options]
 
 Commands:
   init              Initialize configuration and playbook
@@ -429,13 +429,13 @@ Global Options:
 
 ```bash
 # Basic usage
-cass-memory context "Fix authentication timeout bug in auth.ts"
+cm context "Fix authentication timeout bug in auth.ts"
 
 # With options
-cass-memory context "Debug memory leak" --workspace /path/to/project --max-bullets 20 --json
+cm context "Debug memory leak" --workspace /path/to/project --max-bullets 20 --json
 
 # From stdin (for piping from agents)
-echo "Fix CORS headers" | cass-memory context
+echo "Fix CORS headers" | cm context
 ```
 
 **Process**:
@@ -503,10 +503,10 @@ echo "Fix CORS headers" | cass-memory context
 
 ```bash
 # Basic usage
-cass-memory diary /path/to/session.jsonl
+cm diary /path/to/session.jsonl
 
 # With cross-agent enrichment
-cass-memory diary /path/to/session.jsonl --enrich --json
+cm diary /path/to/session.jsonl --enrich --json
 ```
 
 **Process**:
@@ -521,13 +521,13 @@ cass-memory diary /path/to/session.jsonl --enrich --json
 
 ```bash
 # Default: last 7 days
-cass-memory reflect
+cm reflect
 
 # Custom options
-cass-memory reflect --days 14 --max-sessions 20 --agent claude,cursor
+cm reflect --days 14 --max-sessions 20 --agent claude,cursor
 
 # Dry run (show deltas without applying)
-cass-memory reflect --dry-run
+cm reflect --dry-run
 ```
 
 **Process**:
@@ -543,7 +543,7 @@ cass-memory reflect --dry-run
 **Purpose**: Validate a proposed rule against historical evidence
 
 ```bash
-cass-memory validate "Always use httpx instead of requests for HTTP calls" --json
+cm validate "Always use httpx instead of requests for HTTP calls" --json
 ```
 
 **Process**:
@@ -572,13 +572,13 @@ cass-memory validate "Always use httpx instead of requests for HTTP calls" --jso
 
 ```bash
 # Mark as helpful (default)
-cass-memory mark b-abc123
+cm mark b-abc123
 
 # Mark as harmful with reason
-cass-memory mark b-abc123 --harmful --reason "Caused regression in tests"
+cm mark b-abc123 --harmful --reason "Caused regression in tests"
 
 # Include session for traceability
-cass-memory mark b-abc123 --helpful --session /path/to/session.jsonl
+cm mark b-abc123 --helpful --session /path/to/session.jsonl
 ```
 
 ### Command: `audit`
@@ -586,7 +586,7 @@ cass-memory mark b-abc123 --helpful --session /path/to/session.jsonl
 **Purpose**: Scan recent sessions for patterns that violate playbook rules
 
 ```bash
-cass-memory audit --days 7 --workspace /path/to/project
+cm audit --days 7 --workspace /path/to/project
 ```
 
 **Output**:
@@ -609,26 +609,26 @@ cass-memory audit --days 7 --workspace /path/to/project
 
 ```bash
 # List all bullets
-cass-memory playbook list
-cass-memory playbook list --all  # Include deprecated
+cm playbook list
+cm playbook list --all  # Include deprecated
 
 # Get bullet details
-cass-memory playbook get b-abc123
+cm playbook get b-abc123
 
 # Add manually
-cass-memory playbook add --category testing --tags jest,react \
+cm playbook add --category testing --tags jest,react \
   "For React hooks, test returned values and effects separately"
 
 # Remove (soft delete by default)
-cass-memory playbook remove b-abc123
-cass-memory playbook remove b-abc123 --hard  # Permanent delete
+cm playbook remove b-abc123
+cm playbook remove b-abc123 --hard  # Permanent delete
 
 # Export/Import
-cass-memory playbook export --yaml > playbook.yaml
-cass-memory playbook import playbook.yaml
+cm playbook export --yaml > playbook.yaml
+cm playbook import playbook.yaml
 
 # Statistics
-cass-memory playbook stats
+cm playbook stats
 ```
 
 ### Command: `project`
@@ -637,13 +637,13 @@ cass-memory playbook stats
 
 ```bash
 # Generate AGENTS.md section
-cass-memory project --format agents.md --output ./AGENTS.md
+cm project --format agents.md --output ./AGENTS.md
 
 # Top N per category
-cass-memory project --format claude.md --top 10
+cm project --format claude.md --top 10
 
 # Include helpful counts
-cass-memory project --show-counts
+cm project --show-counts
 ```
 
 ### Command: `forget` (NEW: Nuclear Option for Toxic Rules)
@@ -651,7 +651,7 @@ cass-memory project --show-counts
 **Purpose**: Permanently block a rule and any semantically similar future rules
 
 ```bash
-cass-memory forget b-abc123 --reason "Caused production outage"
+cm forget b-abc123 --reason "Caused production outage"
 ```
 
 **Process**:
@@ -718,8 +718,8 @@ async function forgetBullet(
 **Purpose**: Display comprehensive playbook health metrics and identify maintenance needs
 
 ```bash
-cass-memory stats
-cass-memory stats --json
+cm stats
+cm stats --json
 ```
 
 **Output Example**:
@@ -867,9 +867,9 @@ async function computeStats(playbook: Playbook): Promise<PlaybookStats> {
 **Purpose**: Single command to verify entire cass-memory setup is healthy. Essential for adoption and debugging.
 
 ```bash
-cass-memory doctor
-cass-memory doctor --json
-cass-memory doctor --fix  # Auto-fix recoverable issues
+cm doctor
+cm doctor --json
+cm doctor --fix  # Auto-fix recoverable issues
 ```
 
 **Output Example**:
@@ -1014,19 +1014,19 @@ async function runDoctor(options: { fix?: boolean; json?: boolean }): Promise<He
 
 ```bash
 # Show most effective bullets ever
-cass-memory top 10
+cm top 10
 # Output: ranked by effective score (with decay)
 
 # Show bullets not marked helpful in >120 days
-cass-memory stale --days 120
+cm stale --days 120
 # Great for cleanup sessions
 
 # Show the original evidence that created a bullet
-cass-memory why b-abc123
+cm why b-abc123
 # Output: session snippets, diary entries, reasoning chain
 
 # Semantic search for bullets
-cass-memory similar "useEffect dependency array"
+cm similar "useEffect dependency array"
 # Output: top 5 bullets by embedding similarity
 ```
 
@@ -1888,7 +1888,7 @@ Generate a concise briefing that:
 
 ### Cascading Configuration (NEW: "Memory as Code")
 
-When `cass-memory context` runs, it merges playbooks in order:
+When `cm context` runs, it merges playbooks in order:
 
 ```typescript
 async function loadMergedPlaybook(config: Config): Promise<Playbook> {
@@ -2082,21 +2082,21 @@ diary-def456	2025-12-07T11:00:00Z	~/.cursor/state.vscdb:session-xyz
 
 Before starting complex tasks, retrieve relevant context:
 \`\`\`bash
-cass-memory context "<task description>" --json
+cm context "<task description>" --json
 \`\`\`
 
 As you work, track bullet usage:
-- When a playbook rule helps: \`cass-memory mark <bullet-id> --helpful\`
-- When a playbook rule causes problems: \`cass-memory mark <bullet-id> --harmful\`
+- When a playbook rule helps: \`cm mark <bullet-id> --helpful\`
+- When a playbook rule causes problems: \`cm mark <bullet-id> --harmful\`
 
 After significant sessions:
 \`\`\`bash
-cass-memory diary <session-path>
+cm diary <session-path>
 \`\`\`
 
 ### Memory Protocol
 
-1. **PRE-FLIGHT**: Run \`cass-memory context\` before non-trivial tasks
+1. **PRE-FLIGHT**: Run \`cm context\` before non-trivial tasks
 2. **REFERENCE**: Check playbook bullets and cite IDs when following them
    - Example: "Following [b-1a2b3c4d], I'll check the instantiated type..."
 3. **FEEDBACK**: Mark bullets as helpful/harmful during work
@@ -2106,13 +2106,13 @@ cass-memory diary <session-path>
 
 \`\`\`bash
 # Get context before starting
-cass-memory context "your task description" --json
+cm context "your task description" --json
 
 # Mark a bullet as helpful
-cass-memory mark b-abc123 --helpful
+cm mark b-abc123 --helpful
 
 # Mark a bullet as harmful
-cass-memory mark b-abc123 --harmful --reason "why"
+cm mark b-abc123 --harmful --reason "why"
 
 # Search past sessions via cass
 cass search "error pattern" --robot --limit 5
@@ -2235,7 +2235,7 @@ function normalizeYamlKeys(obj: any): any {
 - [ ] YAML playbook read/write
 - [ ] Structured JSON context output (P2)
 
-**Deliverable**: `cass-memory init`, `cass-memory context --json`
+**Deliverable**: `cm init`, `cm context --json`
 
 ### Phase 2: Core Pipeline + Anti-Patterns
 
@@ -2317,7 +2317,7 @@ function normalizeYamlKeys(obj: any): any {
 
 ## Files to Create
 
-1. **`src/cass-memory.ts`** - Main CLI entry point (~2000 LOC)
+1. **`src/cm.ts`** - Main CLI entry point (~2000 LOC)
 2. **`src/types.ts`** - TypeScript interfaces and Zod schemas
 3. **`src/cass.ts`** - cass integration wrapper
 4. **`src/llm.ts`** - LLM provider abstraction
@@ -2345,15 +2345,15 @@ function normalizeYamlKeys(obj: any): any {
   "version": "0.1.0",
   "type": "module",
   "bin": {
-    "cass-memory": "./dist/cass-memory.js"
+    "cm": "./dist/cm.js"
   },
   "scripts": {
-    "dev": "bun run src/cass-memory.ts",
-    "build": "bun build src/cass-memory.ts --compile --outfile dist/cass-memory",
+    "dev": "bun run src/cm.ts",
+    "build": "bun build src/cm.ts --compile --outfile dist/cm",
     "build:all": "npm run build:linux && npm run build:macos && npm run build:windows",
-    "build:linux": "bun build src/cass-memory.ts --compile --target=bun-linux-x64 --outfile dist/cass-memory-linux-x64",
-    "build:macos": "bun build src/cass-memory.ts --compile --target=bun-darwin-arm64 --outfile dist/cass-memory-darwin-arm64",
-    "build:windows": "bun build src/cass-memory.ts --compile --target=bun-windows-x64 --outfile dist/cass-memory-windows-x64.exe",
+    "build:linux": "bun build src/cm.ts --compile --target=bun-linux-x64 --outfile dist/cm-linux-x64",
+    "build:macos": "bun build src/cm.ts --compile --target=bun-darwin-arm64 --outfile dist/cm-darwin-arm64",
+    "build:windows": "bun build src/cm.ts --compile --target=bun-windows-x64 --outfile dist/cm-windows-x64.exe",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
