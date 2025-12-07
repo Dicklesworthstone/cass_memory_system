@@ -1,10 +1,10 @@
 import { execFile, spawn, execSync } from "node:child_process";
 import { promisify } from "node:util";
-import { 
-  CassHit, 
-  CassHitSchema, 
-  Config 
-} from "./types.js"; // Assuming types.ts uses .js extension in imports for ESM
+import {
+  CassSearchHit,
+  CassSearchHitSchema,
+  Config
+} from "./types.js";
 import { log, error, warn } from "./utils.js";
 
 const execFileAsync = promisify(execFile);
@@ -23,11 +23,21 @@ export const CASS_EXIT_CODES = {
 
 // --- Health & Availability ---
 
+/**
+ * Check if cass CLI is installed and functional.
+ * Uses `cass health` with 200ms timeout.
+ * Safe to call frequently - no exceptions thrown.
+ */
 export function cassAvailable(cassPath = "cass"): boolean {
   try {
-    execSync(`${cassPath} --version`, { stdio: "pipe" });
+    execSync(`${cassPath} health`, {
+      stdio: "pipe",
+      timeout: 200
+    });
     return true;
-  } catch {
+  } catch (err: any) {
+    // Log at debug level only - safe to fail silently
+    log(`cass health check failed: ${err.message || 'unknown error'}`, true);
     return false;
   }
 }
@@ -80,7 +90,7 @@ export async function cassSearch(
   query: string,
   options: CassSearchOptions = {},
   cassPath = "cass"
-): Promise<CassHit[]> {
+): Promise<CassSearchHit[]> {
   const args = ["search", query, "--robot"]; // --robot for JSON output
   
   if (options.limit) args.push("--limit", options.limit.toString());
@@ -102,7 +112,7 @@ export async function cassSearch(
     
     const rawHits = JSON.parse(stdout);
     // Validate and parse with Zod
-    return rawHits.map((h: any) => CassHitSchema.parse(h));
+    return rawHits.map((h: any) => CassSearchHitSchema.parse(h));
   } catch (err: any) {
     // If cass returns non-zero exit code, it might still output JSON error or empty
     if (err.code === CASS_EXIT_CODES.NOT_FOUND) return [];
@@ -116,7 +126,7 @@ export async function safeCassSearch(
   query: string,
   options: CassSearchOptions = {},
   cassPath = "cass"
-): Promise<CassHit[]> {
+): Promise<CassSearchHit[]> {
   if (!cassAvailable(cassPath)) {
     log("cass not available, skipping search", true);
     return [];
