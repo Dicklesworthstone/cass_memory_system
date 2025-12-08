@@ -193,42 +193,57 @@ export async function outcomeCommand(
     .map((r) => r.trim())
     .filter(Boolean);
 
-  const recorded: Array<{ id: string; target: string; score: number; type: string }> = [];
-  const missing: string[] = [];
-
+  // Group rules by target path to minimize locking/IO
+  const updatesByPath: Record<string, string[]> = {};
+  
   for (const ruleId of ruleIds) {
     const targetPath = await resolveTargetPath(ruleId, globalPath, repoPath);
     if (!targetPath) {
       missing.push(ruleId);
       continue;
     }
+    if (!updatesByPath[targetPath]) {
+      updatesByPath[targetPath] = [];
+    }
+    updatesByPath[targetPath].push(ruleId);
+  }
 
+  // Process each playbook file once
+  for (const [targetPath, batchRuleIds] of Object.entries(updatesByPath)) {
     await withLock(targetPath, async () => {
       const playbook = await loadPlaybook(targetPath);
-      const bullet = findBullet(playbook, ruleId);
-      if (!bullet) {
-        missing.push(ruleId);
-        return;
+      let modified = false;
+
+      for (const ruleId of batchRuleIds) {
+        const bullet = findBullet(playbook, ruleId);
+        if (!bullet) {
+          // Should not happen given resolveTargetPath check, but safe guard
+          missing.push(ruleId);
+          continue;
+        }
+
+        const event: FeedbackEvent = {
+          type: scored.type,
+          timestamp: now(),
+          sessionPath: flags.session,
+          reason: scored.type === "harmful" ? "other" : undefined,
+          context: scored.context || undefined,
+          decayedValue: scored.decayedValue,
+        };
+
+        bullet.feedbackEvents = bullet.feedbackEvents || [];
+        bullet.feedbackEvents.push(event);
+        bullet.updatedAt = now();
+        bullet.maturity = calculateMaturityState(bullet, config);
+        modified = true;
+
+        const effectiveScore = getEffectiveScore(bullet, config);
+        recorded.push({ id: ruleId, target: targetPath, score: effectiveScore, type: scored.type });
       }
 
-      const event: FeedbackEvent = {
-        type: scored.type,
-        timestamp: now(),
-        sessionPath: flags.session,
-        reason: scored.type === "harmful" ? "other" : undefined,
-        context: scored.context || undefined,
-        decayedValue: scored.decayedValue,
-      };
-
-      bullet.feedbackEvents = bullet.feedbackEvents || [];
-      bullet.feedbackEvents.push(event);
-      bullet.updatedAt = now();
-      bullet.maturity = calculateMaturityState(bullet, config);
-
-      await savePlaybook(playbook, targetPath);
-
-      const effectiveScore = getEffectiveScore(bullet, config);
-      recorded.push({ id: ruleId, target: targetPath, score: effectiveScore, type: scored.type });
+      if (modified) {
+        await savePlaybook(playbook, targetPath);
+      }
     });
   }
 
