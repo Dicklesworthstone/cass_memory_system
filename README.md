@@ -519,6 +519,70 @@ bun run build:all
 
 ---
 
+## Troubleshooting
+
+### Common Errors
+
+| Error | Cause | Solution |
+|-------|-------|----------|
+| `cass not found` | cass CLI not installed | Install from [cass repo](https://github.com/Dicklesworthstone/coding_agent_session_search) |
+| `API key missing` | No LLM API key set | Set `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` environment variable |
+| `Playbook corrupt` | Invalid YAML in playbook | Run `cm doctor --fix` to attempt recovery |
+| `Rate limited` | Too many LLM requests | Wait for retry (exponential backoff is automatic) |
+| `Budget exceeded` | Daily/monthly limit hit | Check `cm usage`, adjust limits in config |
+| `Config invalid` | Malformed config file | Validate JSON/YAML syntax, check schema |
+| `Session not found` | Path doesn't exist | Verify path with `cass sessions` |
+
+### Diagnostic Commands
+
+```bash
+# Check system health
+cm doctor --json
+
+# Verify configuration
+cm doctor --fix
+
+# Check LLM budget status
+cm usage
+
+# List playbook health
+cm stats --json
+```
+
+### Recovery Steps
+
+**Corrupted playbook:**
+```bash
+# 1. Check for backup
+ls ~/.cass-memory/playbook.yaml.backup.*
+
+# 2. Run doctor to diagnose
+cm doctor
+
+# 3. If needed, re-initialize
+cm init --force
+```
+
+**Missing API key:**
+```bash
+# For Anthropic (recommended)
+export ANTHROPIC_API_KEY="sk-ant-..."
+
+# For OpenAI
+export OPENAI_API_KEY="sk-..."
+
+# Add to shell profile for persistence
+echo 'export ANTHROPIC_API_KEY="..."' >> ~/.zshrc
+```
+
+**LLM-free mode:**
+```bash
+# Run without LLM calls (limited functionality)
+CASS_MEMORY_LLM=none cm context "task" --json
+```
+
+---
+
 ## License
 
 MIT. See [LICENSE](LICENSE) for details.
