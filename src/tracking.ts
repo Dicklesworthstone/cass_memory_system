@@ -1,7 +1,25 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
+import crypto from "node:crypto";
 import { ProcessedEntry } from "./types.js";
-import { ensureDir, fileExists } from "./utils.js";
+import { ensureDir, fileExists, expandPath } from "./utils.js";
+
+// -----------------------------------------------------------------------------
+// Processed log paths
+// -----------------------------------------------------------------------------
+
+const REFLECTIONS_DIR = path.join(os.homedir(), ".cass-memory", "reflections");
+
+export function getProcessedLogPath(workspacePath?: string): string {
+  if (!workspacePath) {
+    return path.join(REFLECTIONS_DIR, "global.processed.log");
+  }
+
+  const resolved = path.resolve(expandPath(workspacePath));
+  const hash = crypto.createHash("sha256").update(resolved).digest("hex").slice(0, 8);
+  return path.join(REFLECTIONS_DIR, `ws-${hash}.processed.log`);
+}
 
 export class ProcessedLog {
   private entries: Map<string, ProcessedEntry> = new Map();

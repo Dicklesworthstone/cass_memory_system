@@ -1,8 +1,36 @@
 import { describe, expect, it } from "bun:test";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { writeFile, readFile, mkdir, stat } from "node:fs/promises";
-import { ProcessedLog } from "../src/tracking.js";
+import { ProcessedLog, getProcessedLogPath } from "../src/tracking.js";
 import { withTempDir } from "./helpers/index.js";
+import crypto from "node:crypto";
+import os from "node:os";
+
+// =============================================================================
+// getProcessedLogPath
+// =============================================================================
+describe("getProcessedLogPath", () => {
+  it("returns global log path when workspace is undefined", () => {
+    const expected = join(os.homedir(), ".cass-memory", "reflections", "global.processed.log");
+    expect(getProcessedLogPath()).toBe(expected);
+  });
+
+  it("hashes workspace path for namespaced log", () => {
+    const workspace = "/tmp/my-workspace";
+    const hash = crypto.createHash("sha256").update(workspace).digest("hex").slice(0, 8);
+    const expected = join(os.homedir(), ".cass-memory", "reflections", `ws-${hash}.processed.log`);
+    expect(getProcessedLogPath(workspace)).toBe(expected);
+  });
+
+  it("expands tilde before hashing", () => {
+    const workspace = "~/projects/demo";
+    const expanded = workspace.replace(/^~(?=$|\/)/, os.homedir());
+    const normalized = resolve(expanded);
+    const hash = crypto.createHash("sha256").update(normalized).digest("hex").slice(0, 8);
+    const expected = join(os.homedir(), ".cass-memory", "reflections", `ws-${hash}.processed.log`);
+    expect(getProcessedLogPath(workspace)).toBe(expected);
+  });
+});
 
 // =============================================================================
 // ProcessedLog - Constructor
