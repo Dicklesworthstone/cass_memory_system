@@ -284,3 +284,169 @@ export function filterBulletsByScope(
     }
   });
 }
+
+// --- Similarity Search ---
+
+/**
+ * Result type for findSimilarBullet
+ */
+export interface SimilarBulletResult {
+  found: boolean;
+  bullet?: PlaybookBullet;
+  similarity?: number;
+}
+
+/**
+ * Find the most similar existing bullet above a threshold.
+ *
+ * This function searches ALL active bullets and returns the one with the highest
+ * similarity score, if it exceeds the threshold. Unlike isDuplicateBullet which
+ * returns at first match, this finds the BEST match.
+ *
+ * @param bullets - Array of bullets to search through
+ * @param content - Content to compare against
+ * @param threshold - Minimum similarity score (0-1), typically 0.7-0.85
+ * @returns Result with the most similar bullet and its similarity score
+ *
+ * @example
+ * const result = findSimilarBullet(playbook.bullets, "Use vitest for unit tests", 0.7);
+ * if (result.found) {
+ *   console.log(`Similar bullet (${result.similarity?.toFixed(2)}): ${result.bullet?.content}`);
+ *   // Ask user: merge, replace, or add anyway?
+ * }
+ */
+export function findSimilarBullet(
+  bullets: PlaybookBullet[],
+  content: string,
+  threshold: number
+): SimilarBulletResult {
+  // Filter out deprecated bullets - we don't want to match against outdated content
+  const activeBullets = bullets.filter(b =>
+    !b.deprecated &&
+    b.state !== "retired" &&
+    b.maturity !== "deprecated"
+  );
+
+  if (activeBullets.length === 0) {
+    return { found: false };
+  }
+
+  let highestSimilarity = 0;
+  let mostSimilarBullet: PlaybookBullet | undefined;
+
+  // Search ALL active bullets to find the one with highest similarity
+  for (const bullet of activeBullets) {
+    const similarity = jaccardSimilarity(content, bullet.content);
+
+    if (similarity > highestSimilarity) {
+      highestSimilarity = similarity;
+      mostSimilarBullet = bullet;
+    }
+  }
+
+  // Check if highest similarity meets threshold
+  if (highestSimilarity >= threshold && mostSimilarBullet) {
+    return {
+      found: true,
+      bullet: mostSimilarBullet,
+      similarity: highestSimilarity
+    };
+  }
+
+  return { found: false };
+}
+
+/**
+ * Check if a bullet with similar content already exists.
+ * This is a convenience wrapper around findSimilarBullet for simple boolean checks.
+ *
+ * @param bullets - Array of bullets to search through
+ * @param content - Content to compare against
+ * @param threshold - Minimum similarity score (default: 0.85)
+ * @returns true if a similar bullet exists
+ */
+export function isDuplicateBullet(
+  bullets: PlaybookBullet[],
+  content: string,
+  threshold = 0.85
+): boolean {
+  const result = findSimilarBullet(bullets, content, threshold);
+  return result.found;
+}
+
+// --- Feedback Recording ---
+
+/**
+ * Record timestamped feedback event for a bullet.
+ * CRITICAL for confidence decay calculation and promotion logic.
+ *
+ * This is the MODERN replacement for updateBulletCounter().
+ * Uses feedbackEvents as the single source of truth.
+ *
+ * @param playbook - The playbook containing the bullet
+ * @param bulletId - ID of the bullet to record feedback for
+ * @param type - Type of feedback: "helpful" or "harmful"
+ * @param event - Event data including timestamp and optional context
+ * @returns true if feedback was recorded, false if bullet not found
+ */
+export function recordFeedbackEvent(
+  playbook: Playbook,
+  bulletId: string,
+  type: "helpful" | "harmful",
+  event: {
+    timestamp?: string;
+    sessionPath?: string;
+    reason?: "caused_bug" | "wasted_time" | "contradicted_requirements" | "wrong_context" | "outdated" | "other";
+    context?: string;
+  } = {}
+): boolean {
+  const bullet = findBullet(playbook, bulletId);
+  if (!bullet) return false;
+
+  // Build the feedback event
+  const feedbackEvent = {
+    type,
+    timestamp: event.timestamp || now(),
+    sessionPath: event.sessionPath,
+    reason: type === "harmful" ? event.reason : undefined,
+    context: event.context
+  };
+
+  // Push to feedbackEvents array (single source of truth)
+  bullet.feedbackEvents.push(feedbackEvent);
+
+  // Update aggregate counters for quick access
+  if (type === "helpful") {
+    bullet.helpfulCount++;
+    // Update lastValidatedAt for helpful feedback
+    bullet.lastValidatedAt = feedbackEvent.timestamp;
+    // Also maintain legacy helpfulEvents array for compatibility
+    bullet.helpfulEvents.push(feedbackEvent);
+  } else {
+    bullet.harmfulCount++;
+    // Also maintain legacy harmfulEvents array for compatibility
+    bullet.harmfulEvents.push(feedbackEvent);
+  }
+
+  bullet.updatedAt = now();
+
+  return true;
+}
+
+/**
+ * DEPRECATED: Legacy function to increment helpful/harmful counters.
+ * Use recordFeedbackEvent() instead for timestamp tracking.
+ *
+ * @deprecated This function lacks timestamp tracking needed for confidence decay.
+ */
+export function updateBulletCounter(
+  playbook: Playbook,
+  bulletId: string,
+  type: "helpful" | "harmful"
+): boolean {
+  // Delegate to modern implementation with current timestamp
+  return recordFeedbackEvent(playbook, bulletId, type, {
+    timestamp: now(),
+    context: "Legacy counter increment (no session context)"
+  });
+}
