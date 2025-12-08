@@ -98,15 +98,30 @@ export async function savePlaybook(playbook: Playbook, filePath: string): Promis
 export async function loadToxicLog(logPath: string): Promise<ToxicEntry[]> {
   const expanded = expandPath(logPath);
   if (!(await fileExists(expanded))) return [];
-  
+
   try {
     const content = await fs.readFile(expanded, "utf-8");
-    return content
-      .split("\n")
-      .filter(line => line.trim())
-      .map(line => JSON.parse(line))
-      .filter(entry => entry.id && entry.content); 
-  } catch {
+    const entries: ToxicEntry[] = [];
+
+    for (const line of content.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+
+      try {
+        const entry = JSON.parse(trimmed);
+        // Validate required fields
+        if (entry.id && entry.content) {
+          entries.push(entry);
+        }
+      } catch {
+        // Skip malformed lines - don't let one bad line corrupt the whole log
+        warn(`Skipping malformed line in toxic log: ${trimmed.slice(0, 50)}...`);
+      }
+    }
+
+    return entries;
+  } catch (err: any) {
+    warn(`Failed to read toxic log ${expanded}: ${err.message}`);
     return [];
   }
 }
