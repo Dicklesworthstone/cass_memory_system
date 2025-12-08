@@ -1,3 +1,7 @@
+// src/llm.ts
+// LLM Provider Abstraction - Using Vercel AI SDK
+// Supports OpenAI, Anthropic, and Google providers with a unified interface
+
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
@@ -277,7 +281,7 @@ export function fillPrompt(
 ): string {
   let result = template;
   for (const [key, value] of Object.entries(values)) {
-    result = result.replace(new RegExp(`\{${key}\}`, "g"), value);
+    result = result.replace(new RegExp(`\\{${key}\\}`, "g"), value);
   }
   return result;
 }
@@ -298,8 +302,8 @@ export const LLM_RETRY_CONFIG = {
   maxRetries: 3,
   baseDelayMs: 1000,
   maxDelayMs: 30000,
-  totalTimeoutMs: 60000, // Added
-  perOperationTimeoutMs: 30000, // Added
+  totalTimeoutMs: 60000, 
+  perOperationTimeoutMs: 30000,
   retryableErrors: [
     "rate_limit_exceeded",
     "server_error",
@@ -337,13 +341,11 @@ export async function llmWithRetry<T>(
   
   while (true) {
     try {
-      // Enforce total timeout check before attempt
       const elapsed = Date.now() - startTime;
       if (elapsed > LLM_RETRY_CONFIG.totalTimeoutMs) {
         throw new Error(`${operationName} exceeded total timeout ceiling of ${LLM_RETRY_CONFIG.totalTimeoutMs}ms`);
       }
 
-      // Enforce per-operation timeout
       return await withTimeout(operation(), LLM_RETRY_CONFIG.perOperationTimeoutMs, operationName);
     } catch (err: any) {
       attempt++;
@@ -370,7 +372,6 @@ export async function llmWithRetry<T>(
   }
 }
 
-// Explicitly type monitoredGenerateObject to return GenerateObjectResult<T>
 async function monitoredGenerateObject<T>(
   options: any,
   config: Config,
@@ -383,7 +384,6 @@ async function monitoredGenerateObject<T>(
 
   const result = await generateObject({
     ...options,
-    // Ensure schema is passed through if present in options, typically it is
   }) as GenerateObjectResult<T>;
 
   if (result.usage) {
@@ -431,7 +431,6 @@ export async function generateObjectSafe<T>(
         temperature
       }, config, "generateObjectSafe");
 
-      // result.object is typed as T now
       return result.object;
     } catch (err: any) {
       lastError = err;
@@ -550,7 +549,6 @@ const ValidatorOutputSchema = z.object({
   suggestedRefinement: z.string().optional().nullable()
 });
 
-// Helper interface for ValidatorOutput
 type ValidatorOutput = z.infer<typeof ValidatorOutputSchema>;
 
 export async function runValidator(
@@ -607,7 +605,7 @@ export async function generateContext(
   config: Config
 ): Promise<string> {
   const llmConfig: LLMConfig = {
-    provider: (config.llm?.provider ?? config.provider) as LLMProvider,
+    provider: config.llm?.provider ?? config.provider,
     model: config.llm?.model ?? config.model,
     apiKey: config.apiKey
   };
@@ -637,7 +635,7 @@ export async function generateSearchQueries(
   config: Config
 ): Promise<string[]> {
   const llmConfig: LLMConfig = {
-    provider: (config.llm?.provider ?? config.provider) as LLMProvider,
+    provider: config.llm?.provider ?? config.provider,
     model: config.llm?.model ?? config.model,
     apiKey: config.apiKey
   };
