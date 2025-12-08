@@ -1,10 +1,11 @@
-import { 
-  Config, 
-  Playbook, 
-  PlaybookDelta, 
+import {
+  Config,
+  Playbook,
+  PlaybookDelta,
   CurationResult,
   PlaybookBullet,
-  InversionReport
+  InversionReport,
+  DecisionLogEntry
 } from "./types.js";
 import { 
   findBullet, 
@@ -123,6 +124,26 @@ export function detectConflicts(
   return conflicts;
 }
 
+// --- Helper: Decision Logging ---
+
+function logDecision(
+  decisionLog: DecisionLogEntry[],
+  phase: DecisionLogEntry["phase"],
+  action: DecisionLogEntry["action"],
+  reason: string,
+  options?: { bulletId?: string; content?: string; details?: Record<string, unknown> }
+): void {
+  decisionLog.push({
+    timestamp: now(),
+    phase,
+    action,
+    reason,
+    bulletId: options?.bulletId,
+    content: options?.content,
+    details: options?.details
+  });
+}
+
 // --- Helper: Anti-Pattern Inversion ---
 
 function invertToAntiPattern(bullet: PlaybookBullet, config: Config): PlaybookBullet {
@@ -169,6 +190,8 @@ export function curatePlaybook(
   const referencePlaybook = contextPlaybook || targetPlaybook;
   const existingHashes = buildHashCache(referencePlaybook);
   
+  const decisionLog: DecisionLogEntry[] = [];
+
   const result: CurationResult = {
     playbook: targetPlaybook, // Mutating target
     applied: 0,
@@ -176,7 +199,8 @@ export function curatePlaybook(
     conflicts: [],
     promotions: [],
     inversions: [],
-    pruned: 0
+    pruned: 0,
+    decisionLog
   };
 
   for (const delta of deltas) {
@@ -185,11 +209,15 @@ export function curatePlaybook(
     switch (delta.type) {
       case "add": {
         if (!delta.bullet?.content || !delta.bullet?.category) {
+          logDecision(decisionLog, "add", "rejected", "Missing required content or category", {
+            content: delta.bullet?.content?.slice(0, 100)
+          });
           break;
         }
-        
+
         const content = delta.bullet.content;
         const hash = hashContent(content);
+
         // Conflict detection (warnings only)
         const conflicts = detectConflicts(content, referencePlaybook.bullets);
         for (const c of conflicts) {
@@ -199,121 +227,182 @@ export function curatePlaybook(
             conflictingContent: c.content,
             reason: c.reason
           });
+          logDecision(decisionLog, "conflict", "skipped", c.reason, {
+            content: content.slice(0, 100),
+            bulletId: c.id,
+            details: { conflictingContent: c.content.slice(0, 100) }
+          });
         }
 
         // 1. Exact duplicate check (against reference/merged)
         if (existingHashes.has(hash)) {
-          // Don't increment skipped here - handled at end of loop when applied=false
+          logDecision(decisionLog, "dedup", "skipped", "Exact duplicate already exists", {
+            content: content.slice(0, 100),
+            details: { hash }
+          });
           break;
         }
-        
+
         // 2. Semantic duplicate check (against reference/merged)
         const similar = findSimilarBullet(content, referencePlaybook, config.dedupSimilarityThreshold);
         if (similar) {
-          // Optimization: Check if 'similar' is in targetPlaybook.
           const targetSimilar = findBullet(targetPlaybook, similar.id);
           if (targetSimilar) {
-             targetSimilar.feedbackEvents.push({
-                type: "helpful",
-                timestamp: now(),
-                sessionPath: delta.sourceSession,
-                context: "Reinforced by similar insight"
-             });
-             targetSimilar.helpfulCount++;
-             targetSimilar.updatedAt = now();
-             applied = true;  // Fix: set applied flag instead of incrementing directly
+            targetSimilar.feedbackEvents.push({
+              type: "helpful",
+              timestamp: now(),
+              sessionPath: delta.sourceSession,
+              context: "Reinforced by similar insight"
+            });
+            targetSimilar.helpfulCount++;
+            targetSimilar.updatedAt = now();
+            applied = true;
+            logDecision(decisionLog, "dedup", "modified", "Reinforced existing similar bullet", {
+              bulletId: targetSimilar.id,
+              content: content.slice(0, 100),
+              details: { similarTo: similar.content.slice(0, 100), similarity: config.dedupSimilarityThreshold }
+            });
           } else {
-             // Exists in Repo but not Global. Skip adding to Global to avoid duplication.
-             // Note: applied remains false, will be counted as skipped at end of loop
+            logDecision(decisionLog, "dedup", "skipped", "Similar bullet exists in repo playbook", {
+              content: content.slice(0, 100),
+              details: { similarTo: similar.content.slice(0, 100) }
+            });
           }
           break;
         }
-        
+
         // 3. Add new (to TARGET)
-        addBullet(targetPlaybook, {
+        const newBullet = addBullet(targetPlaybook, {
           content,
           category: delta.bullet.category,
           tags: delta.bullet.tags
         }, delta.sourceSession, config.scoring.decayHalfLifeDays);
-        
+
         existingHashes.add(hash);
         applied = true;
+        logDecision(decisionLog, "add", "accepted", "New bullet added to playbook", {
+          bulletId: newBullet.id,
+          content: content.slice(0, 100),
+          details: { category: delta.bullet.category, tags: delta.bullet.tags }
+        });
         break;
       }
 
       case "helpful": {
         const bullet = findBullet(targetPlaybook, delta.bulletId);
-        if (bullet) {
-          // Idempotency check
-          const alreadyRecorded = bullet.feedbackEvents.some(e => 
-            e.type === "helpful" && 
-            e.sessionPath && 
-            delta.sourceSession && 
-            e.sessionPath === delta.sourceSession
-          );
-
-          if (alreadyRecorded) {
-            // Don't increment skipped here - handled at end of loop when applied=false
-            break;
-          }
-
-          bullet.feedbackEvents.push({
-            type: "helpful",
-            timestamp: now(),
-            sessionPath: delta.sourceSession,
-            context: delta.context
+        if (!bullet) {
+          logDecision(decisionLog, "feedback", "rejected", "Bullet not found for helpful feedback", {
+            bulletId: delta.bulletId
           });
-          bullet.helpfulCount++;
-          bullet.lastValidatedAt = now();
-          bullet.updatedAt = now();
-          applied = true;
+          break;
         }
+
+        // Idempotency check
+        const alreadyRecorded = bullet.feedbackEvents.some(e =>
+          e.type === "helpful" &&
+          e.sessionPath &&
+          delta.sourceSession &&
+          e.sessionPath === delta.sourceSession
+        );
+
+        if (alreadyRecorded) {
+          logDecision(decisionLog, "feedback", "skipped", "Helpful feedback already recorded for this session", {
+            bulletId: delta.bulletId
+          });
+          break;
+        }
+
+        bullet.feedbackEvents.push({
+          type: "helpful",
+          timestamp: now(),
+          sessionPath: delta.sourceSession,
+          context: delta.context
+        });
+        bullet.helpfulCount++;
+        bullet.lastValidatedAt = now();
+        bullet.updatedAt = now();
+        applied = true;
+        logDecision(decisionLog, "feedback", "accepted", "Helpful feedback recorded", {
+          bulletId: delta.bulletId,
+          content: bullet.content.slice(0, 100),
+          details: { helpfulCount: bullet.helpfulCount, context: delta.context }
+        });
         break;
       }
 
       case "harmful": {
         const bullet = findBullet(targetPlaybook, delta.bulletId);
-        if (bullet) {
-          // Idempotency check
-          const alreadyRecorded = bullet.feedbackEvents.some(e => 
-            e.type === "harmful" && 
-            e.sessionPath && 
-            delta.sourceSession && 
-            e.sessionPath === delta.sourceSession
-          );
-
-          if (alreadyRecorded) {
-            // Don't increment skipped here - handled at end of loop when applied=false
-            break;
-          }
-
-          bullet.feedbackEvents.push({
-            type: "harmful",
-            timestamp: now(),
-            sessionPath: delta.sourceSession,
-            reason: delta.reason, 
-            context: delta.context
+        if (!bullet) {
+          logDecision(decisionLog, "feedback", "rejected", "Bullet not found for harmful feedback", {
+            bulletId: delta.bulletId
           });
-          bullet.harmfulCount++;
-          bullet.updatedAt = now();
-          applied = true;
+          break;
         }
+
+        // Idempotency check
+        const alreadyRecorded = bullet.feedbackEvents.some(e =>
+          e.type === "harmful" &&
+          e.sessionPath &&
+          delta.sourceSession &&
+          e.sessionPath === delta.sourceSession
+        );
+
+        if (alreadyRecorded) {
+          logDecision(decisionLog, "feedback", "skipped", "Harmful feedback already recorded for this session", {
+            bulletId: delta.bulletId
+          });
+          break;
+        }
+
+        bullet.feedbackEvents.push({
+          type: "harmful",
+          timestamp: now(),
+          sessionPath: delta.sourceSession,
+          reason: delta.reason,
+          context: delta.context
+        });
+        bullet.harmfulCount++;
+        bullet.updatedAt = now();
+        applied = true;
+        logDecision(decisionLog, "feedback", "accepted", "Harmful feedback recorded", {
+          bulletId: delta.bulletId,
+          content: bullet.content.slice(0, 100),
+          details: { harmfulCount: bullet.harmfulCount, reason: delta.reason }
+        });
         break;
       }
 
       case "replace": {
         const bullet = findBullet(targetPlaybook, delta.bulletId);
-        if (bullet) {
-          bullet.content = delta.newContent;
-          bullet.updatedAt = now();
-          applied = true;
+        if (!bullet) {
+          logDecision(decisionLog, "add", "rejected", "Bullet not found for replacement", {
+            bulletId: delta.bulletId
+          });
+          break;
         }
+        const oldContent = bullet.content;
+        bullet.content = delta.newContent;
+        bullet.updatedAt = now();
+        applied = true;
+        logDecision(decisionLog, "add", "modified", "Bullet content replaced", {
+          bulletId: delta.bulletId,
+          content: delta.newContent.slice(0, 100),
+          details: { previousContent: oldContent.slice(0, 100) }
+        });
         break;
       }
 
       case "deprecate": {
         if (deprecateBullet(targetPlaybook, delta.bulletId, delta.reason, delta.replacedBy)) {
           applied = true;
+          logDecision(decisionLog, "demotion", "accepted", "Bullet deprecated", {
+            bulletId: delta.bulletId,
+            details: { reason: delta.reason, replacedBy: delta.replacedBy }
+          });
+        } else {
+          logDecision(decisionLog, "demotion", "rejected", "Failed to deprecate bullet", {
+            bulletId: delta.bulletId
+          });
         }
         break;
       }
@@ -321,20 +410,30 @@ export function curatePlaybook(
       case "merge": {
         // Only merge if all bullets exist in target
         const bulletsToMerge = delta.bulletIds.map(id => findBullet(targetPlaybook, id)).filter(b => b !== undefined) as PlaybookBullet[];
-        
-        if (bulletsToMerge.length === delta.bulletIds.length && bulletsToMerge.length >= 2) {
-          const merged = addBullet(targetPlaybook, {
-            content: delta.mergedContent,
-            category: bulletsToMerge[0].category, 
-            tags: [...new Set(bulletsToMerge.flatMap(b => b.tags))]
-          }, "merged", config.scoring?.decayHalfLifeDays ?? config.defaultDecayHalfLife ?? 90); 
-          
-          bulletsToMerge.forEach(b => {
-            deprecateBullet(targetPlaybook, b.id, `Merged into ${merged.id}`, merged.id);
+
+        if (bulletsToMerge.length !== delta.bulletIds.length || bulletsToMerge.length < 2) {
+          logDecision(decisionLog, "add", "rejected", "Cannot merge: missing bullets or insufficient count", {
+            details: { requested: delta.bulletIds.length, found: bulletsToMerge.length }
           });
-          
-          applied = true;
+          break;
         }
+
+        const merged = addBullet(targetPlaybook, {
+          content: delta.mergedContent,
+          category: bulletsToMerge[0].category,
+          tags: [...new Set(bulletsToMerge.flatMap(b => b.tags))]
+        }, "merged", config.scoring?.decayHalfLifeDays ?? config.defaultDecayHalfLife ?? 90);
+
+        bulletsToMerge.forEach(b => {
+          deprecateBullet(targetPlaybook, b.id, `Merged into ${merged.id}`, merged.id);
+        });
+
+        applied = true;
+        logDecision(decisionLog, "add", "accepted", "Bullets merged into new combined bullet", {
+          bulletId: merged.id,
+          content: delta.mergedContent.slice(0, 100),
+          details: { mergedFrom: delta.bulletIds }
+        });
         break;
       }
     }
@@ -346,7 +445,6 @@ export function curatePlaybook(
   // --- Post-Processing on TARGET ---
 
   // 1. Anti-Pattern Inversion (must run BEFORE auto-deprecation)
-  // Harmful rules should be converted to anti-patterns, not just deprecated
   const inversions: InversionReport[] = [];
   const invertedBulletIds = new Set<string>();
 
@@ -357,11 +455,14 @@ export function curatePlaybook(
 
     if (decayedHarmful >= 3 && decayedHarmful > (decayedHelpful * 2)) {
       if (bullet.isNegative) {
-        // Negative rule found harmful -> likely incorrect. Just deprecate, don't invert.
         deprecateBullet(targetPlaybook, bullet.id, "Negative rule marked harmful (likely incorrect restriction)");
-        result.pruned++; // Count as pruning since we just killed it
+        result.pruned++;
+        logDecision(decisionLog, "inversion", "rejected", "Negative rule deprecated (not inverted) due to harmful feedback", {
+          bulletId: bullet.id,
+          content: bullet.content.slice(0, 100),
+          details: { decayedHarmful, decayedHelpful }
+        });
       } else {
-        // Positive rule found harmful -> Invert to anti-pattern
         const antiPattern = invertToAntiPattern(bullet, config);
         targetPlaybook.bullets.push(antiPattern);
 
@@ -376,6 +477,12 @@ export function curatePlaybook(
           bulletId: bullet.id,
           reason: `Marked as blocked/anti-pattern`
         });
+
+        logDecision(decisionLog, "inversion", "accepted", "Positive rule inverted to anti-pattern due to harmful feedback", {
+          bulletId: bullet.id,
+          content: bullet.content.slice(0, 100),
+          details: { antiPatternId: antiPattern.id, decayedHarmful, decayedHelpful }
+        });
       }
     }
   }
@@ -383,7 +490,6 @@ export function curatePlaybook(
 
   // 2. Promotions & Demotions (after inversion so we don't double-deprecate)
   for (const bullet of targetPlaybook.bullets) {
-    // Skip deprecated bullets and bullets that were just inverted
     if (bullet.deprecated || invertedBulletIds.has(bullet.id)) continue;
 
     const oldMaturity = bullet.maturity;
@@ -397,14 +503,29 @@ export function curatePlaybook(
         to: newMaturity,
         reason: `Auto-promoted from ${oldMaturity} to ${newMaturity}`
       });
+      logDecision(decisionLog, "promotion", "accepted", `Maturity promoted from ${oldMaturity} to ${newMaturity}`, {
+        bulletId: bullet.id,
+        content: bullet.content.slice(0, 100),
+        details: { from: oldMaturity, to: newMaturity }
+      });
     }
 
     const demotionCheck = checkForDemotion(bullet, config);
     if (demotionCheck === "auto-deprecate") {
       deprecateBullet(targetPlaybook, bullet.id, "Auto-deprecated due to negative score");
       result.pruned++;
+      logDecision(decisionLog, "demotion", "accepted", "Bullet auto-deprecated due to negative effective score", {
+        bulletId: bullet.id,
+        content: bullet.content.slice(0, 100)
+      });
     } else if (demotionCheck !== bullet.maturity) {
+      const prevMaturity = bullet.maturity;
       bullet.maturity = demotionCheck;
+      logDecision(decisionLog, "demotion", "accepted", `Maturity demoted from ${prevMaturity} to ${demotionCheck}`, {
+        bulletId: bullet.id,
+        content: bullet.content.slice(0, 100),
+        details: { from: prevMaturity, to: demotionCheck }
+      });
     }
   }
 

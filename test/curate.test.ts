@@ -868,4 +868,162 @@ describe("curatePlaybook", () => {
       expect(result.skipped).toBe(2); // 1 duplicate + 1 non-existent
     });
   });
+
+  // =========================================================================
+  // DECISION LOGGING
+  // =========================================================================
+  describe("decision logging", () => {
+    it("includes decisionLog in result", () => {
+      const result = curatePlaybook(emptyPlaybook, [], config);
+
+      expect(result.decisionLog).toBeDefined();
+      expect(Array.isArray(result.decisionLog)).toBe(true);
+    });
+
+    it("logs accepted add decisions", () => {
+      const delta: PlaybookDelta = {
+        type: "add",
+        bullet: {
+          content: "Test rule for logging",
+          category: "test",
+          scope: "global",
+          kind: "workflow_rule"
+        },
+        sourceSession: "/session/1.jsonl",
+        reason: "Test"
+      };
+
+      const result = curatePlaybook(emptyPlaybook, [delta], config);
+
+      expect(result.decisionLog).toBeDefined();
+      const addDecision = result.decisionLog?.find(d =>
+        d.phase === "add" && d.action === "accepted"
+      );
+      expect(addDecision).toBeDefined();
+      expect(addDecision?.content).toContain("Test rule");
+    });
+
+    it("logs rejected duplicate decisions", () => {
+      const existingBullet = createTestBullet({
+        content: "Existing rule",
+        category: "test"
+      });
+      const playbook = createTestPlaybook([existingBullet]);
+
+      const delta: PlaybookDelta = {
+        type: "add",
+        bullet: {
+          content: "Existing rule", // Duplicate
+          category: "test",
+          scope: "global",
+          kind: "workflow_rule"
+        },
+        sourceSession: "/session/1.jsonl",
+        reason: "Dup"
+      };
+
+      const result = curatePlaybook(playbook, [delta], config);
+
+      expect(result.decisionLog).toBeDefined();
+      const dupDecision = result.decisionLog?.find(d =>
+        d.phase === "dedup" && d.action === "skipped"
+      );
+      expect(dupDecision).toBeDefined();
+      expect(dupDecision?.reason).toContain("duplicate");
+    });
+
+    it("logs feedback recording decisions", () => {
+      const bullet = createTestBullet({
+        id: "bullet-1",
+        content: "Test rule"
+      });
+      const playbook = createTestPlaybook([bullet]);
+
+      const delta: PlaybookDelta = {
+        type: "helpful",
+        bulletId: "bullet-1",
+        sourceSession: "/session/1.jsonl"
+      };
+
+      const result = curatePlaybook(playbook, [delta], config);
+
+      expect(result.decisionLog).toBeDefined();
+      const feedbackDecision = result.decisionLog?.find(d =>
+        d.phase === "feedback" && d.action === "accepted"
+      );
+      expect(feedbackDecision).toBeDefined();
+      expect(feedbackDecision?.bulletId).toBe("bullet-1");
+    });
+
+    it("logs promotion decisions", () => {
+      const now = new Date().toISOString();
+      const bullet = createTestBullet({
+        id: "candidate-1",
+        content: "Promotable rule",
+        maturity: "candidate",
+        helpfulCount: 3,
+        feedbackEvents: [
+          createFeedbackEvent("helpful", { timestamp: now }),
+          createFeedbackEvent("helpful", { timestamp: now }),
+          createFeedbackEvent("helpful", { timestamp: now })
+        ]
+      });
+      const playbook = createTestPlaybook([bullet]);
+
+      const result = curatePlaybook(playbook, [], config);
+
+      expect(result.decisionLog).toBeDefined();
+      const promotionDecision = result.decisionLog?.find(d =>
+        d.phase === "promotion" && d.action === "accepted"
+      );
+      expect(promotionDecision).toBeDefined();
+      expect(promotionDecision?.bulletId).toBe("candidate-1");
+    });
+
+    it("logs inversion decisions", () => {
+      const now = new Date().toISOString();
+      const harmfulBullet = createTestBullet({
+        id: "harmful-1",
+        content: "Bad rule",
+        harmfulCount: 5,
+        feedbackEvents: Array(5).fill(null).map(() =>
+          createFeedbackEvent("harmful", { timestamp: now })
+        )
+      });
+      const playbook = createTestPlaybook([harmfulBullet]);
+
+      const result = curatePlaybook(playbook, [], config);
+
+      expect(result.decisionLog).toBeDefined();
+      const inversionDecision = result.decisionLog?.find(d =>
+        d.phase === "inversion" && d.action === "accepted"
+      );
+      expect(inversionDecision).toBeDefined();
+      expect(inversionDecision?.bulletId).toBe("harmful-1");
+    });
+
+    it("includes timestamp in all log entries", () => {
+      const delta: PlaybookDelta = {
+        type: "add",
+        bullet: {
+          content: "Timestamped rule",
+          category: "test",
+          scope: "global",
+          kind: "workflow_rule"
+        },
+        sourceSession: "/session/1.jsonl",
+        reason: "Test"
+      };
+
+      const result = curatePlaybook(emptyPlaybook, [delta], config);
+
+      expect(result.decisionLog).toBeDefined();
+      for (const entry of result.decisionLog || []) {
+        expect(entry.timestamp).toBeDefined();
+        expect(typeof entry.timestamp).toBe("string");
+        // Should be a valid ISO date
+        expect(new Date(entry.timestamp).getTime()).not.toBeNaN();
+      }
+    });
+  });
 });

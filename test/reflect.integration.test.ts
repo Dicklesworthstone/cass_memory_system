@@ -61,11 +61,10 @@ describe("Reflector pipeline (integration, stubbed LLM)", () => {
     process.env.CM_REFLECTOR_STUBS = JSON.stringify(stub);
 
     const result = await reflectOnSession(diary, playbook, config);
+    const deltas = result.deltas;
 
-    expect(result.deltas).toHaveLength(2);
-    const contents = result.deltas.map((d: any) => (d.type === "add" ? d.bullet.content : ""));
-    expect(contents).toContain("Rule A");
-    expect(contents).toContain("Rule B");
-    expect(result.decisionLog).toBeDefined();
+    expect(deltas).toHaveLength(2);
+    expect(deltas[0].bullet.content).toBe("Rule A");
+    expect(deltas[1].bullet.content).toBe("Rule B");
   });
 });

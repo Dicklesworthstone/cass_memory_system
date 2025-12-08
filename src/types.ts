@@ -451,6 +451,18 @@ export const InversionReportSchema = z.object({
 });
 export type InversionReport = z.infer<typeof InversionReportSchema>;
 
+// Decision log entry for tracking why curation decisions were made
+export const DecisionLogEntrySchema = z.object({
+  timestamp: z.string(),
+  phase: z.enum(["add", "feedback", "promotion", "demotion", "inversion", "conflict", "dedup"]),
+  action: z.enum(["accepted", "rejected", "skipped", "modified"]),
+  bulletId: z.string().optional(),
+  content: z.string().optional(),
+  reason: z.string(),
+  details: z.record(z.unknown()).optional(),
+});
+export type DecisionLogEntry = z.infer<typeof DecisionLogEntrySchema>;
+
 export const CurationResultSchema = z.object({
   playbook: PlaybookSchema,
   applied: z.number(),
@@ -459,6 +471,7 @@ export const CurationResultSchema = z.object({
   promotions: z.array(PromotionReportSchema),
   inversions: z.array(InversionReportSchema),
   pruned: z.number(),
+  decisionLog: z.array(DecisionLogEntrySchema).optional(),
 });
 export type CurationResult = z.infer<typeof CurationResultSchema>;
 

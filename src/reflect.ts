@@ -6,10 +6,11 @@ import {
   PlaybookBullet,
   PlaybookDelta,
   PlaybookDeltaSchema,
-  CassHit
+  CassHit,
+  DecisionLogEntry
 } from "./types.js";
 import { runReflector } from "./llm.js";
-import { log } from "./utils.js";
+import { log, now } from "./utils.js";
 
 // --- Helper: Summarize Playbook for Prompt ---
 
@@ -165,11 +166,16 @@ export function shouldExitEarly(
   return false;
 }
 
+export interface ReflectionResult {
+  deltas: PlaybookDelta[];
+  decisionLog: DecisionLogEntry[];
+}
+
 export async function reflectOnSession(
   diary: DiaryEntry,
   playbook: Playbook,
   config: Config
-): Promise<PlaybookDelta[]> {
+): Promise<ReflectionResult> {
   log(`Reflecting on diary ${diary.id}...`);
 
   // Stubbed flow for tests: CM_REFLECTOR_STUBS contains an array of { deltas }
@@ -177,7 +183,6 @@ export async function reflectOnSession(
   const stubEnv = process.env.CM_REFLECTOR_STUBS;
   if (stubEnv) {
     try {
-      log("Using CM_REFLECTOR_STUBS");
       const stubIterations: { deltas: PlaybookDelta[] }[] = JSON.parse(stubEnv);
       const collected: PlaybookDelta[] = [];
 
@@ -192,9 +197,10 @@ export async function reflectOnSession(
         collected.push(...injected);
       }
 
-      const deduped = deduplicateDeltas(collected, []);
-      log(`Stubbed reflection returning ${deduped.length} deltas`);
-      return deduped;
+      return {
+        deltas: deduplicateDeltas(collected, []),
+        decisionLog: []
+      };
     } catch (err) {
       log(`Failed to parse CM_REFLECTOR_STUBS: ${err instanceof Error ? err.message : String(err)}`);
       // fall through to real flow
@@ -202,6 +208,7 @@ export async function reflectOnSession(
   }
 
   const allDeltas: PlaybookDelta[] = [];
+  const decisionLog: DecisionLogEntry[] = [];
   const existingBullets = formatBulletsForPrompt(playbook.bullets);
   const cassHistory = await getCassHistoryForDiary(diary, config);
 
@@ -232,17 +239,46 @@ export async function reflectOnSession(
       });
 
       const uniqueDeltas = deduplicateDeltas(validDeltas, allDeltas);
+      const duplicatesRemoved = validDeltas.length - uniqueDeltas.length;
+
+      decisionLog.push({
+        timestamp: now(),
+        phase: "add",
+        action: uniqueDeltas.length > 0 ? "accepted" : "skipped",
+        reason: `Iteration ${i + 1}: ${uniqueDeltas.length} unique deltas (${duplicatesRemoved} duplicates removed)`,
+        details: {
+          iteration: i + 1,
+          generatedCount: validDeltas.length,
+          uniqueCount: uniqueDeltas.length,
+          duplicatesRemoved
+        }
+      });
+
       allDeltas.push(...uniqueDeltas);
 
       if (shouldExitEarly(i, uniqueDeltas.length, allDeltas.length, config)) {
+        decisionLog.push({
+          timestamp: now(),
+          phase: "add",
+          action: "skipped",
+          reason: `Early exit at iteration ${i + 1}: ${uniqueDeltas.length === 0 ? 'no new deltas' : `reached ${allDeltas.length} total deltas`}`,
+          details: { iteration: i + 1, totalDeltas: allDeltas.length }
+        });
         log("Ending reflection early.");
         break;
       }
     } catch (err) {
+      decisionLog.push({
+        timestamp: now(),
+        phase: "add",
+        action: "rejected",
+        reason: `Iteration ${i + 1} failed: ${err instanceof Error ? err.message : String(err)}`,
+        details: { iteration: i + 1, error: String(err) }
+      });
       log(`Reflection iteration ${i} failed: ${err}`);
       break;
     }
   }
 
-  return allDeltas;
+  return { deltas: allDeltas, decisionLog };
 }

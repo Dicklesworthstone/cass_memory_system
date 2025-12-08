@@ -3,11 +3,12 @@ import {
   PlaybookDelta,
   EvidenceGateResult,
   ValidationResult,
-  ValidationEvidence
+  ValidationEvidence,
+  DecisionLogEntry
 } from "./types.js";
 import { runValidator, ValidatorResult } from "./llm.js";
 import { safeCassSearch } from "./cass.js";
-import { extractKeywords, log } from "./utils.js";
+import { extractKeywords, log, now } from "./utils.js";
 
 // --- Verdict Normalization ---
 
@@ -134,24 +135,68 @@ Relevance: ${h.score}
 export async function validateDelta(
   delta: PlaybookDelta,
   config: Config
-): Promise<{ valid: boolean; result?: ValidationResult; gate?: EvidenceGateResult }> {
+): Promise<{ valid: boolean; result?: ValidationResult; gate?: EvidenceGateResult; decisionLog?: DecisionLogEntry[] }> {
+  const decisionLog: DecisionLogEntry[] = [];
 
-  if (delta.type !== "add") return { valid: true };
+  if (delta.type !== "add") {
+    decisionLog.push({
+      timestamp: now(),
+      phase: "add",
+      action: "skipped",
+      reason: `Non-add delta type: ${delta.type}`,
+      content: delta.type === "add" ? delta.bullet.content?.slice(0, 100) : undefined
+    });
+    return { valid: true, decisionLog };
+  }
 
-  if (!config.validationEnabled) return { valid: true };
+  if (!config.validationEnabled) {
+    decisionLog.push({
+      timestamp: now(),
+      phase: "add",
+      action: "skipped",
+      reason: "Validation disabled in config",
+      content: delta.bullet.content?.slice(0, 100)
+    });
+    return { valid: true, decisionLog };
+  }
 
   const content = delta.bullet.content || "";
-  if (content.length < 20) return { valid: true };
+  if (content.length < 20) {
+    decisionLog.push({
+      timestamp: now(),
+      phase: "add",
+      action: "skipped",
+      reason: `Content too short (${content.length} chars < 20)`,
+      content: content.slice(0, 100)
+    });
+    return { valid: true, decisionLog };
+  }
 
   // 1. Run Gate
   const gate = await evidenceCountGate(content, config);
 
   if (!gate.passed) {
     log(`Rule rejected by evidence gate: ${gate.reason}`);
-    return { valid: false, gate };
+    decisionLog.push({
+      timestamp: now(),
+      phase: "add",
+      action: "rejected",
+      reason: gate.reason,
+      content: content.slice(0, 100),
+      details: { sessionCount: gate.sessionCount, successCount: gate.successCount, failureCount: gate.failureCount }
+    });
+    return { valid: false, gate, decisionLog };
   }
 
   if (gate.suggestedState === "active") {
+    decisionLog.push({
+      timestamp: now(),
+      phase: "add",
+      action: "accepted",
+      reason: `Auto-accepted by evidence gate: ${gate.reason}`,
+      content: content.slice(0, 100),
+      details: { sessionCount: gate.sessionCount, successCount: gate.successCount, failureCount: gate.failureCount }
+    });
     return {
       valid: true,
       gate,
@@ -164,7 +209,8 @@ export async function validateDelta(
         approved: true,
         supportingEvidence: [],
         contradictingEvidence: []
-      }
+      },
+      decisionLog
     };
   }
 
@@ -196,6 +242,21 @@ export async function validateDelta(
     confidence: 1.0
   }));
 
+  // Log LLM validation decision
+  decisionLog.push({
+    timestamp: now(),
+    phase: "add",
+    action: result.valid ? "accepted" : "rejected",
+    reason: `LLM validation: ${finalVerdict} - ${result.reason}`,
+    content: content.slice(0, 100),
+    details: {
+      verdict: finalVerdict,
+      confidence: result.confidence,
+      supportingCount: supporting.length,
+      contradictingCount: contradicting.length
+    }
+  });
+
   return {
     valid: result.valid,
     result: {
@@ -207,6 +268,7 @@ export async function validateDelta(
       supportingEvidence: supporting,
       contradictingEvidence: contradicting
     },
-    gate
+    gate,
+    decisionLog
   };
 }

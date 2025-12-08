@@ -351,11 +351,11 @@ async function handleToolCall(name: string, args: any): Promise<any> {
         for (const sessionPath of unprocessed) {
           try {
             const diary = await generateDiary(sessionPath, config);
-            const deltas = await reflectOnSession(diary, initialPlaybook, config);
+            const reflectResult = await reflectOnSession(diary, initialPlaybook, config);
 
             // Validate each delta
             const validatedDeltas: PlaybookDelta[] = [];
-            for (const delta of deltas) {
+            for (const delta of reflectResult.deltas) {
               const validation = await validateDelta(delta, config);
               if (validation.valid) {
                 validatedDeltas.push(delta);

@@ -91,10 +91,10 @@ export async function reflectCommand(
               return;
             }
 
-            const deltas = await reflectOnSession(diary, initialPlaybook, config);
-            
+            const reflectResult = await reflectOnSession(diary, initialPlaybook, config);
+
             const validatedDeltas: PlaybookDelta[] = [];
-            for (const delta of deltas) {
+            for (const delta of reflectResult.deltas) {
               const validation = await validateDelta(delta, config);
               if (validation.valid) {
                 validatedDeltas.push(delta);
@@ -113,6 +113,9 @@ export async function reflectCommand(
               diaryId: diary.id,
               deltasGenerated: validatedDeltas.length
             });
+            
+            // Save progress incrementally to prevent re-processing on crash
+            await processedLog.save();
 
           } catch (err: any) {
             error(`Failed to process ${sessionPath}: ${err.message}`);

@@ -45,10 +45,11 @@ describe("Pipeline integration: diary -> reflect -> curate (stubbed LLM)", () =>
       }
     ]);
 
-    const result = await reflectOnSession(diary, playbook, config);
-    const curation = curatePlaybook(playbook, result.deltas, config);
+    const reflectionResult = await reflectOnSession(diary, playbook, config);
+    const deltas = reflectionResult.deltas;
+    const curation = curatePlaybook(playbook, deltas, config);
 
-    expect(result.deltas).toHaveLength(2);
+    expect(deltas).toHaveLength(2);
     expect(curation.applied).toBeGreaterThanOrEqual(1);
     expect(curation.playbook.bullets.length).toBeGreaterThanOrEqual(1);
     const contents = curation.playbook.bullets.map(b => b.content);
@@ -87,10 +88,11 @@ describe("Pipeline integration: diary -> reflect -> curate (stubbed LLM)", () =>
       { deltas: [] }
     ]);
 
-    const result = await reflectOnSession(diary, playbook, config);
-    const curation = curatePlaybook(playbook, result.deltas, config);
+    const reflectionResult = await reflectOnSession(diary, playbook, config);
+    const deltas = reflectionResult.deltas;
+    const curation = curatePlaybook(playbook, deltas, config);
 
-    expect(result.deltas.length).toBe(1);
+    expect(deltas.length).toBe(1);
     expect(curation.applied).toBeGreaterThanOrEqual(1);
 
     const anti = curation.playbook.bullets.find(b => b.kind === "anti_pattern" || b.isNegative);
