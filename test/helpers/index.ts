@@ -18,3 +18,9 @@ export * from "./git.js";
 
 // Custom assertions
 export * from "./assertions.js";
+
+// Cass CLI shim for offline testing
+export * from "./cass-shim.js";
+
+// LLM shim for offline testing
+export * from "./llm-shim.js";

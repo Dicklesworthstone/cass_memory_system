@@ -23,7 +23,14 @@
     "typecheck": "tsc --noEmit",
     "typecheck:watch": "tsc --noEmit --watch",
     "test": "bun test",
-    "test:watch": "bun test --watch"
+    "test:unit": "bun test test/*.test.ts --exclude '*integration*' --exclude '*e2e*'",
+    "test:integration": "bun test test/*integration*.test.ts test/integration/",
+    "test:e2e": "bun test test/*e2e*.test.ts",
+    "test:property": "bun test test/*property*.test.ts",
+    "test:coverage": "bun test --coverage",
+    "test:watch": "bun test --watch",
+    "test:fast": "bun test test/*.fast.test.ts",
+    "test:ci": "bun test --timeout 60000"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^1.0.0",
