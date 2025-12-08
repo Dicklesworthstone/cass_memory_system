@@ -177,3 +177,51 @@ export function isStale(
   );
   return Date.now() - lastTs > staleDays * 86_400_000;
 }
+
+// ---------------------------------------------------------------------------
+// Score distribution helper (used by stats command)
+// ---------------------------------------------------------------------------
+
+export function analyzeScoreDistribution(
+  bullets: PlaybookBullet[],
+  config: Config
+): { excellent: number; good: number; neutral: number; atRisk: number } {
+  let excellent = 0;
+  let good = 0;
+  let neutral = 0;
+  let atRisk = 0;
+
+  for (const b of bullets) {
+    const score = getEffectiveScore(b, config);
+    if (score > 10) excellent++;
+    else if (score >= 5) good++;
+    else if (score >= 0) neutral++;
+    else atRisk++;
+  }
+
+  return { excellent, good, neutral, atRisk };
+}
+
+// ---------------------------------------------------------------------------
+// Score Distribution Analysis
+// ---------------------------------------------------------------------------
+
+export function analyzeScoreDistribution(
+  bullets: PlaybookBullet[],
+  config: Config
+): { excellent: number; good: number; neutral: number; atRisk: number } {
+  let excellent = 0;
+  let good = 0;
+  let neutral = 0;
+  let atRisk = 0;
+
+  for (const bullet of bullets) {
+    const score = getEffectiveScore(bullet, config);
+    if (score >= 5) excellent++;
+    else if (score >= 2) good++;
+    else if (score >= 0) neutral++;
+    else atRisk++;
+  }
+
+  return { excellent, good, neutral, atRisk };
+}
