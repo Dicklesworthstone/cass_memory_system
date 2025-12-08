@@ -300,7 +300,8 @@ describe("Curator Pipeline Integration", () => {
 
       // b1 should be promoted
       const b1Result = result.playbook.bullets.find(b => b.id === "b1");
-      expect(["established", "proven"]).toContain(b1Result?.maturity);
+      expect(b1Result).toBeDefined();
+      expect(["established", "proven"]).toContain(b1Result!.maturity);
 
       // b2 should be handled (inverted or deprecated)
       const b2Result = result.playbook.bullets.find(b => b.id === "b2");

@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { execFile, spawn, execSync } from "node:child_process";
+import { execFile, spawn, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import {
   CassHit,
@@ -72,8 +72,8 @@ function joinMessages(entries: any[]): string | null {
 
 export function cassAvailable(cassPath = "cass"): boolean {
   try {
-    execSync(`${cassPath} --version`, { stdio: "pipe" });
-    return true;
+    const result = spawnSync(cassPath, ["--version"], { stdio: "pipe" });
+    return result.status === 0;
   } catch {
     return false;
   }
@@ -81,13 +81,10 @@ export function cassAvailable(cassPath = "cass"): boolean {
 
 export function cassNeedsIndex(cassPath = "cass"): boolean {
   try {
-    execSync(`${cassPath} health`, { stdio: "pipe" });
-    return false;
+    const result = spawnSync(cassPath, ["health"], { stdio: "pipe" });
+    return result.status !== 0;
   } catch (err: any) {
-    if (err.status === CASS_EXIT_CODES.INDEX_MISSING || err.status === 1) {
-      return true;
-    }
-    return false;
+    return true;
   }
 }
 
