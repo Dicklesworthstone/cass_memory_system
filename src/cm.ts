@@ -21,6 +21,7 @@ program
 program.command("init")
   .description("Initialize configuration and playbook")
   .option("-f, --force", "Overwrite existing config")
+  .option("--repo", "Initialize repo-level .cass/ directory structure")
   .option("--json", "Output JSON")
   .action(async (opts: any) => await initCommand(opts));
 
