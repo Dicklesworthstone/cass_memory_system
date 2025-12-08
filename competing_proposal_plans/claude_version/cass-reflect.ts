@@ -158,7 +158,12 @@ function loadConfig(): Config {
   ensureConfigDir();
   if (existsSync(CONFIG_FILE)) {
     const raw = readFileSync(CONFIG_FILE, "utf-8");
-    return { ...DEFAULT_CONFIG, ...JSON.parse(raw) };
+    try {
+      return { ...DEFAULT_CONFIG, ...JSON.parse(raw) };
+    } catch (err: any) {
+      console.warn(`Invalid config JSON at ${CONFIG_FILE}: ${err?.message || err}`);
+      return DEFAULT_CONFIG;
+    }
   }
   return DEFAULT_CONFIG;
 }
@@ -279,8 +284,8 @@ function parsePlaybookYaml(yaml: string): Playbook {
       content: extractYamlMultiline(block, "content") || "",
       createdAt: extractYamlField(block, "created_at") || new Date().toISOString(),
       updatedAt: extractYamlField(block, "updated_at") || new Date().toISOString(),
-      helpfulCount: parseInt(extractYamlField(block, "helpful_count") || "0"),
-      harmfulCount: parseInt(extractYamlField(block, "harmful_count") || "0"),
+      helpfulCount: parseInt(extractYamlField(block, "helpful_count") || "0", 10),
+      harmfulCount: parseInt(extractYamlField(block, "harmful_count") || "0", 10),
       tags: extractYamlArray(block, "tags"),
       sourceSessions: extractYamlArray(block, "source_sessions"),
       deprecated: extractYamlField(block, "deprecated") === "true",
@@ -292,13 +297,13 @@ function parsePlaybookYaml(yaml: string): Playbook {
   // Extract metadata
   playbook.name = extractYamlField(yaml, "name") || "default";
   playbook.description = extractYamlField(yaml, "description") || "";
-  playbook.schemaVersion = parseInt(extractYamlField(yaml, "schema_version") || "1");
+  playbook.schemaVersion = parseInt(extractYamlField(yaml, "schema_version") || "1", 10);
 
   const metadataMatch = yaml.match(/metadata:([\s\S]*?)(?=\nbullets:|$)/);
   if (metadataMatch) {
     const meta = metadataMatch[1];
     playbook.metadata.lastReflection = extractYamlField(meta, "last_reflection") || playbook.metadata.lastReflection;
-    playbook.metadata.totalReflections = parseInt(extractYamlField(meta, "total_reflections") || "0");
+    playbook.metadata.totalReflections = parseInt(extractYamlField(meta, "total_reflections") || "0", 10);
     playbook.metadata.createdAt = extractYamlField(meta, "created_at") || playbook.metadata.createdAt;
   }
 
@@ -938,9 +943,9 @@ async function cmdContext(args: string[]): Promise<void> {
     if (args[i] === "--workspace" || args[i] === "-w") {
       workspace = args[++i];
     } else if (args[i] === "--max-bullets") {
-      maxBullets = parseInt(args[++i]);
+      maxBullets = parseInt(args[++i] ?? "", 10);
     } else if (args[i] === "--max-history") {
-      maxHistory = parseInt(args[++i]);
+      maxHistory = parseInt(args[++i] ?? "", 10);
     } else if (args[i] === "--json") {
       outputFormat = "json";
     } else if (!args[i].startsWith("-")) {
@@ -1053,7 +1058,7 @@ async function cmdReflect(args: string[]): Promise<void> {
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--days" || args[i] === "-d") {
-      days = parseInt(args[++i]);
+      days = parseInt(args[++i] ?? "", 10);
     } else if (args[i] === "--agent" || args[i] === "-a") {
       agent = args[++i];
     } else if (args[i] === "--workspace" || args[i] === "-w") {
@@ -1061,7 +1066,7 @@ async function cmdReflect(args: string[]): Promise<void> {
     } else if (args[i] === "--dry-run") {
       dryRun = true;
     } else if (args[i] === "--max-sessions") {
-      maxSessions = parseInt(args[++i]);
+      maxSessions = parseInt(args[++i] ?? "", 10);
     }
   }
 
@@ -1177,7 +1182,14 @@ async function cmdCurate(args: string[]): Promise<void> {
     deltasJson = Buffer.concat(chunks).toString("utf-8");
   }
 
-  const { deltas } = JSON.parse(deltasJson) as { deltas: BulletDelta[] };
+  let deltas: BulletDelta[] = [];
+  try {
+    const parsed = JSON.parse(deltasJson) as { deltas?: BulletDelta[] };
+    deltas = parsed.deltas ?? [];
+  } catch (err: any) {
+    console.error(`Invalid deltas JSON: ${err?.message || err}`);
+    process.exit(1);
+  }
   const playbook = loadPlaybook(playbookPath);
 
   const { playbook: updated, applied, skipped } = curatePlaybook(playbook, deltas, config);
@@ -1263,7 +1275,7 @@ async function cmdAudit(args: string[]): Promise<void> {
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--days" || args[i] === "-d") {
-      days = parseInt(args[++i]);
+      days = parseInt(args[++i] ?? "", 10);
     } else if (args[i] === "--workspace" || args[i] === "-w") {
       workspace = args[++i];
     }
@@ -1485,9 +1497,17 @@ async function cmdPlaybook(args: string[]): Promise<void> {
       }
 
       const content = readFileSync(inputPath, "utf-8");
-      const imported = content.trim().startsWith("{")
-        ? JSON.parse(content)
-        : parsePlaybookYaml(content);
+      let imported: Playbook;
+      if (content.trim().startsWith("{")) {
+        try {
+          imported = JSON.parse(content);
+        } catch (err: any) {
+          console.error(`Invalid playbook JSON: ${err?.message || err}`);
+          process.exit(1);
+        }
+      } else {
+        imported = parsePlaybookYaml(content);
+      }
 
       savePlaybook(config.playbookPath, imported);
       console.log(JSON.stringify({
@@ -1558,15 +1578,15 @@ async function cmdConfig(args: string[]): Promise<void> {
       } else if (key === "playbookPath") {
         config.playbookPath = value;
       } else if (key === "maxReflectorIterations") {
-        config.maxReflectorIterations = parseInt(value);
+        config.maxReflectorIterations = parseInt(value, 10);
       } else if (key === "dedupSimilarityThreshold") {
         config.dedupSimilarityThreshold = parseFloat(value);
       } else if (key === "pruneHarmfulThreshold") {
-        config.pruneHarmfulThreshold = parseInt(value);
+        config.pruneHarmfulThreshold = parseInt(value, 10);
       } else if (key === "maxBulletsInContext") {
-        config.maxBulletsInContext = parseInt(value);
+        config.maxBulletsInContext = parseInt(value, 10);
       } else if (key === "sessionLookbackDays") {
-        config.sessionLookbackDays = parseInt(value);
+        config.sessionLookbackDays = parseInt(value, 10);
       } else {
         console.error(`Unknown config key: ${key}`);
         process.exit(1);
