@@ -283,7 +283,8 @@ export function curatePlaybook(
         originalContent: bullet.content,
         antiPatternId: antiPattern.id,
         antiPatternContent: antiPattern.content,
-        bulletId: bullet.id
+        bulletId: bullet.id,
+        reason: `Marked as toxic/anti-pattern`
       });
     }
   }

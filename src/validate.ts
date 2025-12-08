@@ -1,8 +1,9 @@
-import type {
-  Config,
-  PlaybookDelta,
-  EvidenceGateResult,
-  ValidationResult
+import { 
+  Config, 
+  PlaybookDelta, 
+  EvidenceGateResult, 
+  ValidationResult,
+  ValidationEvidence
 } from "./types.js";
 import { runValidator } from "./llm.js";
 import { safeCassSearch } from "./cass.js";
@@ -15,24 +16,19 @@ export async function evidenceCountGate(
   config: Config
 ): Promise<EvidenceGateResult> {
   const keywords = extractKeywords(content);
-  // 2. Search cass
   const hits = await safeCassSearch(keywords.join(" "), {
     limit: 20,
     days: config.validationLookbackDays
   }, config.cassPath);
 
-  // 3. Classify outcomes
   let successCount = 0;
   let failureCount = 0;
   const sessions = new Set<string>();
 
   for (const hit of hits) {
-    if (hit.source_path) {
-      sessions.add(hit.source_path);
-    }
-    // Heuristic classification based on snippet text
-    // In a real system, we'd look up the actual session diary outcome,
-    // but snippet heuristics are a fast proxy.
+    if (!hit.source_path) continue; 
+    sessions.add(hit.source_path);
+    
     const lower = hit.snippet.toLowerCase();
     if (lower.includes("fixed") || lower.includes("success") || lower.includes("solved")) {
       successCount++;
@@ -43,10 +39,9 @@ export async function evidenceCountGate(
 
   const sessionCount = sessions.size;
 
-  // 4. Gate Logic
   if (sessionCount === 0) {
     return {
-      passed: true, // Allow as draft (no evidence to contradict)
+      passed: true,
       reason: "No historical evidence found. Proposing as draft.",
       suggestedState: "draft",
       sessionCount, successCount, failureCount
@@ -57,7 +52,7 @@ export async function evidenceCountGate(
     return {
       passed: true,
       reason: `Strong success signal (${successCount} successes). Auto-accepting.`, 
-      suggestedState: "active", // Enough evidence to activate immediately
+      suggestedState: "active",
       sessionCount, successCount, failureCount
     };
   }
@@ -66,12 +61,11 @@ export async function evidenceCountGate(
     return {
       passed: false,
       reason: `Strong failure signal (${failureCount} failures). Auto-rejecting.`, 
-      suggestedState: "draft", // Irrelevant since passed=false
+      suggestedState: "draft",
       sessionCount, successCount, failureCount
     };
   }
 
-  // Ambiguous -> Needs LLM
   return {
     passed: true,
     reason: "Evidence found but ambiguous. Proceeding to LLM validation.",
@@ -96,13 +90,13 @@ export async function validateDelta(
   delta: PlaybookDelta,
   config: Config
 ): Promise<{ valid: boolean; result?: ValidationResult; gate?: EvidenceGateResult }> {
-  // Only validate "add" deltas
+  
   if (delta.type !== "add") return { valid: true };
   
   if (!config.validationEnabled) return { valid: true };
 
   const content = delta.bullet.content || "";
-  if (content.length < 20) return { valid: true }; // Too short to validate
+  if (content.length < 20) return { valid: true }; 
 
   // 1. Run Gate
   const gate = await evidenceCountGate(content, config);
@@ -112,11 +106,8 @@ export async function validateDelta(
     return { valid: false, gate };
   }
 
-  // If gate suggests "active", we might skip LLM if we trust the heuristic enough.
-  // But for V1, let's run LLM if we have sessions but it wasn't a slam dunk "5-0" auto-accept.
-  // Wait, the gate returns "active" only on 5-0.
   if (gate.suggestedState === "active") {
-    return { 
+    return {
       valid: true, 
       gate,
       result: {
@@ -124,24 +115,47 @@ export async function validateDelta(
         verdict: "ACCEPT",
         confidence: 1.0,
         reason: gate.reason,
-        evidence: []
+        evidence: [],
+        approved: true,
+        supportingEvidence: [],
+        contradictingEvidence: []
       }
     };
   }
 
   // 2. Run LLM
-  // Re-search for evidence to put in prompt? Or use hits from gate?
-  // Gate search was cheap/fast. Let's do a targeted search again or reuse if we refactored.
-  // For simplicity, re-search.
   const keywords = extractKeywords(content);
   const evidenceHits = await safeCassSearch(keywords.join(" "), { limit: 10 }, config.cassPath);
   const formattedEvidence = formatEvidence(evidenceHits);
 
-  const result = await runValidator(content, formattedEvidence, config);
+  const llmResult = await runValidator(content, formattedEvidence, config);
+
+  // Convert evidence to ValidationEvidence format with confidence field
+  const evidence: ValidationEvidence[] = llmResult.evidence.map(e => ({
+    sessionPath: e.sessionPath,
+    snippet: e.snippet,
+    supports: e.supports,
+    confidence: 1.0
+  }));
+
+  const supportingEvidence = evidence.filter(e => e.supports);
+  const contradictingEvidence = evidence.filter(e => !e.supports);
+
+  const validationResult: ValidationResult = {
+    valid: llmResult.valid,
+    verdict: llmResult.verdict,
+    confidence: llmResult.confidence,
+    reason: llmResult.reason,
+    evidence,
+    refinedRule: llmResult.suggestedRefinement,
+    approved: llmResult.valid,
+    supportingEvidence,
+    contradictingEvidence
+  };
 
   return {
-    valid: result.valid,
-    result,
+    valid: validationResult.valid,
+    result: validationResult,
     gate
   };
 }
