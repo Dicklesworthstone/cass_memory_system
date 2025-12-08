@@ -328,6 +328,34 @@ cm doctor
 - **macOS quarantine warning**: `xattr -dr com.apple.quarantine cass-memory*` after download.
 
 
+## 🌐 MCP Server (Agent Integration)
+
+- Start: `cm serve --host 127.0.0.1 --port 3001` (defaults to 127.0.0.1:3001; `MCP_HTTP_HOST` / `MCP_HTTP_PORT` envs also work).
+- Protocol: JSON-RPC 2.0 over HTTP POST.
+- Tools:
+  - `cm_context` — task → rules/history (same scoring as CLI `context`).
+  - `cm_feedback` — record helpful/harmful feedback for a bullet.
+  - `cm_outcome` — log session outcome (success/failure/partial) plus rules used.
+- List tools:
+```json
+{ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }
+```
+- Call example:
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "ctx1",
+  "method": "tools/call",
+  "params": {
+    "name": "cm_context",
+    "arguments": { "task": "fix authentication timeout", "top": 8, "history": 5 }
+  }
+}
+```
+- Responses include `result` or `error` (with code/message). Non-POST requests return HTTP 405.
+- Storage: `cm_outcome` appends to `~/.cass-memory/outcomes/outcomes.jsonl`; context/feedback use the same merged config/playbook as the CLI.
+- Transport: HTTP-only by design (stdio/SSE intentionally disabled to simplify sandboxing).
+
 ---
 
 ## 📋 Command Reference
