@@ -49,7 +49,7 @@ function captureConsole() {
 
 describe("E2E: CLI init command", () => {
   describe("Global Init (~/.cass-memory)", () => {
-    it("creates global structure in fresh environment", async () => {
+    it.serial("creates global structure in fresh environment", async () => {
       const logger = createTestLogger("debug");
       logger.info("Starting fresh init test");
 
@@ -104,7 +104,7 @@ describe("E2E: CLI init command", () => {
       });
     });
 
-    it("init is idempotent - warns but doesn't overwrite without --force", async () => {
+    it.serial("init is idempotent - warns but doesn't overwrite without --force", async () => {
       await withTempCassHome(async (env) => {
         // Remove pre-created structure and do fresh init
         await rm(env.cassMemoryDir, { recursive: true, force: true });
@@ -146,7 +146,7 @@ describe("E2E: CLI init command", () => {
       });
     });
 
-    it("init with --force bypasses already initialized check", async () => {
+    it.serial("init with --force bypasses already initialized check", async () => {
       await withTempCassHome(async (env) => {
         await rm(env.cassMemoryDir, { recursive: true, force: true });
 
@@ -179,7 +179,7 @@ describe("E2E: CLI init command", () => {
       });
     });
 
-    it("init with --json outputs JSON result", async () => {
+    it.serial("init with --json outputs JSON result", async () => {
       await withTempCassHome(async (env) => {
         await rm(env.cassMemoryDir, { recursive: true, force: true });
 
@@ -201,7 +201,7 @@ describe("E2E: CLI init command", () => {
       });
     });
 
-    it("init --json reports already initialized", async () => {
+    it.serial("init --json reports already initialized", async () => {
       await withTempCassHome(async (env) => {
         await rm(env.cassMemoryDir, { recursive: true, force: true });
 
@@ -231,7 +231,7 @@ describe("E2E: CLI init command", () => {
   });
 
   describe("Repo Init (.cass/)", () => {
-    it("creates repo-level .cass/ structure in git repo", async () => {
+    it.serial("creates repo-level .cass/ structure in git repo", async () => {
       await withTempGitRepo(async (repoDir) => {
         const logger = createTestLogger("debug");
         logger.info("Testing repo init", { repoDir });
@@ -279,7 +279,7 @@ describe("E2E: CLI init command", () => {
       });
     }, 15000);
 
-    it("repo init is idempotent - warns without --force", async () => {
+    it.serial("repo init is idempotent - warns without --force", async () => {
       await withTempGitRepo(async (repoDir) => {
         const originalCwd = process.cwd();
         process.chdir(repoDir);
@@ -326,7 +326,7 @@ describe("E2E: CLI init command", () => {
       });
     }, 30000);
 
-    it("repo init with --force bypasses already initialized check", async () => {
+    it.serial("repo init with --force bypasses already initialized check", async () => {
       await withTempGitRepo(async (repoDir) => {
         const originalCwd = process.cwd();
         process.chdir(repoDir);
@@ -363,7 +363,7 @@ describe("E2E: CLI init command", () => {
       });
     }, 15000);
 
-    it("repo init with --json outputs JSON result", async () => {
+    it.serial("repo init with --json outputs JSON result", async () => {
       await withTempGitRepo(async (repoDir) => {
         const originalCwd = process.cwd();
         process.chdir(repoDir);
@@ -388,7 +388,7 @@ describe("E2E: CLI init command", () => {
       });
     }, 30000);
 
-    it("repo init fails gracefully when not in git repo", async () => {
+    it.serial("repo init fails gracefully when not in git repo", async () => {
       const logger = createTestLogger("debug");
 
       // Create a temp dir that is NOT a git repo
@@ -431,7 +431,7 @@ describe("E2E: CLI init command", () => {
       }
     });
 
-    it("repo init --json reports error when not in git repo", async () => {
+    it.serial("repo init --json reports error when not in git repo", async () => {
       const { mkdtemp, rm } = await import("node:fs/promises");
       const { tmpdir } = await import("node:os");
       const tempDir = await mkdtemp(path.join(tmpdir(), "cass-no-git-json-"));
@@ -469,7 +469,7 @@ describe("E2E: CLI init command", () => {
       }
     });
 
-    it("repo init in nested subdirectory creates .cass in that location", async () => {
+    it.serial("repo init in nested subdirectory creates .cass in that location", async () => {
       await withTempGitRepo(async (repoDir) => {
         // Create a nested subdirectory
         const nestedDir = path.join(repoDir, "src", "services", "api");
@@ -504,7 +504,7 @@ describe("E2E: CLI init command", () => {
   });
 
   describe("Error Cases", () => {
-    it("handles read-only directory gracefully", async () => {
+    it.serial("handles read-only directory gracefully", async () => {
       // Skip on Windows where chmod doesn't work the same way
       if (process.platform === "win32") {
         return;

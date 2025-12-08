@@ -26,14 +26,14 @@ describe("cass.ts core functions (stubbed)", () => {
     delete process.env.CASS_PATH;
   });
 
-  it("cassAvailable detects stub", async () => {
+  it.serial("cassAvailable detects stub", async () => {
     await withTempDir("cass-available", async (dir) => {
       const cassPath = await makeCassStub(dir);
       expect(cassAvailable(cassPath)).toBe(true);
     });
   });
 
-  it("handleCassUnavailable falls back when cass missing", async () => {
+  it.serial("handleCassUnavailable falls back when cass missing", async () => {
     const savedPath = process.env.PATH;
     process.env.PATH = "/nonexistent";
     process.env.CASS_PATH = "/no/cass";
@@ -43,14 +43,14 @@ describe("cass.ts core functions (stubbed)", () => {
     expect(result.canContinue).toBe(true);
   });
 
-  it("cassNeedsIndex returns true on INDEX_MISSING health code", async () => {
+  it.serial("cassNeedsIndex returns true on INDEX_MISSING health code", async () => {
     await withTempDir("cass-health", async (dir) => {
       const cassPath = await makeCassStub(dir, { healthExit: CASS_EXIT_CODES.INDEX_MISSING });
       expect(cassNeedsIndex(cassPath)).toBe(true);
     });
   });
 
-  it("safeCassSearch parses hits from stub", async () => {
+  it.serial("safeCassSearch parses hits from stub", async () => {
     await withTempDir("cass-search", async (dir) => {
       const hitsData = [{
         source_path: "test.ts",
@@ -70,7 +70,7 @@ describe("cass.ts core functions (stubbed)", () => {
     });
   });
 
-  it("cassExport returns content from stub", async () => {
+  it.serial("cassExport returns content from stub", async () => {
     await withTempDir("cass-export", async (dir) => {
       const cassPath = await makeCassStub(dir, { export: "exported content" });
       const config = createTestConfig();
@@ -81,7 +81,7 @@ describe("cass.ts core functions (stubbed)", () => {
     });
   });
 
-  it("cassExpand returns context from stub", async () => {
+  it.serial("cassExpand returns context from stub", async () => {
     await withTempDir("cass-expand", async (dir) => {
       const cassPath = await makeCassStub(dir, { expand: "expanded context" });
       const config = createTestConfig();
@@ -91,7 +91,7 @@ describe("cass.ts core functions (stubbed)", () => {
     });
   });
 
-  it("cassTimeline returns groups parsed from stub", async () => {
+  it.serial("cassTimeline returns groups parsed from stub", async () => {
     await withTempDir("cass-timeline", async (dir) => {
       const output = JSON.stringify({
         groups: [
@@ -112,7 +112,7 @@ describe("cass.ts core functions (stubbed)", () => {
     });
   });
 
-  it("findUnprocessedSessions respects processed set", async () => {
+  it.serial("findUnprocessedSessions respects processed set", async () => {
     await withTempDir("cass-unprocessed", async (dir) => {
       const output = JSON.stringify({
         groups: [

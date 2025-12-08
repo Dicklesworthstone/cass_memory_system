@@ -185,7 +185,7 @@ describe("loadMergedPlaybook", () => {
     if (originalHome !== undefined) process.env.HOME = originalHome;
   });
 
-  it("merges global and repo playbooks, with repo overriding duplicate ids", async () => {
+  it.serial("merges global and repo playbooks, with repo overriding duplicate ids", async () => {
     await withTempDir(async (dir) => {
       const home = path.join(dir, "home");
       const repo = path.join(dir, "repo");
@@ -224,7 +224,7 @@ describe("loadMergedPlaybook", () => {
     });
   });
 
-  it("filters bullets present in blocked logs (global or repo)", async () => {
+  it.serial("filters bullets present in blocked logs (global or repo)", async () => {
     await withTempDir(async (dir) => {
       const home = path.join(dir, "home");
       const repo = path.join(dir, "repo");

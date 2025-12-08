@@ -51,6 +51,7 @@ describe("reflectCommand integration (real modules, stubbed via env)", () => {
           ]
         }
       ]);
+      process.env.CASS_MEMORY_LLM = "none";
 
       // Run the command against the single session
       await reflectCommand({ session: sessionPath, json: true });
