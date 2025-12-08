@@ -15,6 +15,7 @@ import { serveCommand } from "./commands/serve.js";
 import { outcomeCommand, applyOutcomeLogCommand } from "./commands/outcome.js";
 import { usageCommand } from "./commands/usage.js";
 import { startersCommand } from "./commands/starters.js";
+import { quickstartCommand } from "./commands/quickstart.js";
 
 const program = new Command();
 const toInt = (value: string) => parseInt(value, 10);
@@ -172,6 +173,12 @@ program.command("starters")
   .description("List available starter playbooks")
   .option("--json", "Output JSON")
   .action(async (opts: any) => await startersCommand(opts));
+
+// --- Quickstart (agent self-documentation) ---
+program.command("quickstart")
+  .description("Explain the system to an agent (self-documentation)")
+  .option("--json", "Output JSON")
+  .action(async (opts: any) => await quickstartCommand(opts));
 
 // --- Serve (HTTP-only MCP surface) ---
 program.command("serve")

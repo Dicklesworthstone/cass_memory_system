@@ -2613,3 +2613,105 @@ export async function withAbortableSequence<T, R>(
   }
   return results;
 }
+
+// --- Inline Feedback Parsing ---
+
+/**
+ * Parsed inline feedback from session content.
+ * Format: // [cass: helpful|harmful <bulletId>] - reason
+ */
+export interface InlineFeedback {
+  type: "helpful" | "harmful";
+  bulletId: string;
+  reason?: string;
+  lineNumber?: number;
+}
+
+/**
+ * Regular expression to match inline feedback comments.
+ * Matches patterns like:
+ * - // [cass: helpful b-8f3a2c] - this rule saved me
+ * - // [cass: harmful b-x7k9p1] - wrong for our use case
+ * - # [cass: helpful b-abc123] (Python/shell style)
+ * - Block comments: slash-star [cass: harmful b-xyz] star-slash
+ */
+const INLINE_FEEDBACK_REGEX = /(?:\/\/|#|\/\*)\s*\[cass:\s*(helpful|harmful)\s+(b-[a-zA-Z0-9]+)\](?:\s*[-:]?\s*(.+?))?(?:\s*\*\/)?$/gm;
+
+/**
+ * Parse inline feedback comments from session content.
+ *
+ * Agents can leave feedback in their code comments using the format:
+ * // [cass: helpful b-xyz123] - reason why it helped
+ * // [cass: harmful b-xyz123] - reason why it was wrong
+ *
+ * This function extracts all such feedback from a session's content,
+ * which can then be applied during the reflection phase.
+ *
+ * @param content - The session content to parse (code, logs, etc.)
+ * @returns Array of parsed feedback items
+ *
+ * @example
+ * const content = `
+ *   // [cass: helpful b-8f3a2c] - this rule saved debugging time
+ *   function auth() {
+ *     // [cass: harmful b-x7k9p1] - caching advice was wrong
+ *   }
+ * `;
+ * const feedback = parseInlineFeedback(content);
+ * // Returns:
+ * // [
+ * //   { type: "helpful", bulletId: "b-8f3a2c", reason: "this rule saved debugging time" },
+ * //   { type: "harmful", bulletId: "b-x7k9p1", reason: "caching advice was wrong" }
+ * // ]
+ */
+export function parseInlineFeedback(content: string): InlineFeedback[] {
+  if (!content || typeof content !== "string") {
+    return [];
+  }
+
+  const feedback: InlineFeedback[] = [];
+  const lines = content.split("\n");
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // Reset regex for each line
+    INLINE_FEEDBACK_REGEX.lastIndex = 0;
+    const match = INLINE_FEEDBACK_REGEX.exec(line);
+
+    if (match) {
+      const [, type, bulletId, reason] = match;
+
+      // Validate bullet ID format
+      if (bulletId && /^b-[a-zA-Z0-9]+$/.test(bulletId)) {
+        feedback.push({
+          type: type as "helpful" | "harmful",
+          bulletId,
+          reason: reason?.trim() || undefined,
+          lineNumber: i + 1
+        });
+      }
+    }
+  }
+
+  return feedback;
+}
+
+/**
+ * Convert parsed inline feedback to playbook deltas.
+ *
+ * @param feedback - Array of parsed feedback items
+ * @param sessionPath - Path to the source session for provenance
+ * @returns Array of playbook deltas ready for curation
+ */
+export function inlineFeedbackToDeltas(
+  feedback: InlineFeedback[],
+  sessionPath: string
+): Array<{ type: "helpful" | "harmful"; bulletId: string; sourceSession: string; reason?: string }> {
+  return feedback.map(f => ({
+    type: f.type,
+    bulletId: f.bulletId,
+    sourceSession: sessionPath,
+    reason: f.reason
+  }));
+}
