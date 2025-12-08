@@ -560,3 +560,121 @@ Make queries specific enough to be useful but broad enough to match variations.`
     return object.queries;
   }, "generateSearchQueries");
 }
+
+// --- Multi-Provider Fallback ---
+
+/**
+ * Preferred fallback order when primary provider fails.
+ * Rationale:
+ * - Anthropic: Strong reasoning, reliable structured output
+ * - OpenAI: Fast, widely available
+ * - Google: Additional fallback option
+ */
+const FALLBACK_ORDER: LLMProvider[] = ["anthropic", "openai", "google"];
+
+/**
+ * Default model for each provider when used as fallback.
+ * Using stable, widely-available models to maximize fallback success.
+ */
+const FALLBACK_MODELS: Record<LLMProvider, string> = {
+  anthropic: "claude-3-5-sonnet-20241022",
+  openai: "gpt-4o-mini",
+  google: "gemini-1.5-flash",
+};
+
+/**
+ * Multi-provider fallback for LLM operations.
+ *
+ * Protects against provider-specific outages by trying multiple providers
+ * in sequence until one succeeds. Use when uptime matters more than
+ * specific provider characteristics.
+ *
+ * Design: Uses fail-fast behavior (no per-provider retries) to minimize latency
+ * when a provider is down. For retry + fallback, compose with llmWithRetry:
+ * ```typescript
+ * await llmWithRetry(() => llmWithFallback(schema, prompt, config), "op");
+ * ```
+ *
+ * @param schema - Zod schema for structured output validation
+ * @param prompt - The prompt to send to the LLM
+ * @param config - Configuration with primary provider settings
+ * @returns Validated object matching the schema
+ * @throws Error if all providers fail (includes all error messages)
+ *
+ * @example
+ * const result = await llmWithFallback(
+ *   z.object({ summary: z.string() }),
+ *   "Summarize this text...",
+ *   config
+ * );
+ */
+export async function llmWithFallback<T>(
+  schema: z.ZodSchema<T>,
+  prompt: string,
+  config: Config
+): Promise<T> {
+  // Get primary provider from config
+  const primaryProvider = (config.llm?.provider ?? config.provider) as LLMProvider;
+  const primaryModel = config.llm?.model ?? config.model;
+
+  // Build provider order: primary first, then available fallbacks
+  const availableProviders = getAvailableProviders();
+  const providerOrder: Array<{ provider: LLMProvider; model: string }> = [];
+
+  // Add primary provider if available
+  if (availableProviders.includes(primaryProvider)) {
+    providerOrder.push({ provider: primaryProvider, model: primaryModel });
+  }
+
+  // Add fallback providers (skip primary to avoid duplicates)
+  for (const fallback of FALLBACK_ORDER) {
+    if (fallback !== primaryProvider && availableProviders.includes(fallback)) {
+      providerOrder.push({ provider: fallback, model: FALLBACK_MODELS[fallback] });
+    }
+  }
+
+  if (providerOrder.length === 0) {
+    throw new Error(
+      "No LLM providers available. Set one of: OPENAI_API_KEY, ANTHROPIC_API_KEY, or GOOGLE_GENERATIVE_AI_API_KEY"
+    );
+  }
+
+  // Collect errors for combined error message
+  const errors: Array<{ provider: string; error: string }> = [];
+
+  for (let i = 0; i < providerOrder.length; i++) {
+    const { provider, model } = providerOrder[i];
+    const isLastProvider = i === providerOrder.length - 1;
+
+    try {
+      const llmModel = getModel({ provider, model });
+
+      const { object } = await generateObject({
+        model: llmModel,
+        schema,
+        prompt,
+        temperature: 0.3,
+      });
+
+      // Success - return the result
+      return object;
+    } catch (err: any) {
+      const errorMsg = err.message || String(err);
+      errors.push({ provider, error: errorMsg });
+
+      // Log failure with appropriate message
+      if (isLastProvider) {
+        console.warn(`[LLM] ${provider} failed: ${errorMsg}. No more providers to try.`);
+      } else {
+        console.warn(`[LLM] ${provider} failed: ${errorMsg}. Trying next provider...`);
+      }
+    }
+  }
+
+  // All providers failed - throw combined error
+  const errorSummary = errors
+    .map(e => `${e.provider}: ${e.error}`)
+    .join("\n  ");
+
+  throw new Error(`All LLM providers failed:\n  ${errorSummary}`);
+}

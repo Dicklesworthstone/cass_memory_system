@@ -75,7 +75,50 @@ export async function doctorCommand(options: { json?: boolean; fix?: boolean }):
     message: `Provider: ${config.provider}, API Key: ${hasApiKey ? "Set" : "Missing"}`,
   });
 
-  // 4) Sanitization breadth (detect over-broad regexes)
+  // 4) Repo-level .cass/ structure (if in a git repo)
+  const cassDir = await resolveRepoDir();
+  if (cassDir) {
+    const repoPlaybookExists = await fileExists(path.join(cassDir, "playbook.yaml"));
+    const repoToxicExists = await fileExists(path.join(cassDir, "toxic.log"));
+
+    const hasStructure = repoPlaybookExists || repoToxicExists;
+    const isComplete = repoPlaybookExists && repoToxicExists;
+
+    let status: CheckStatus = "pass";
+    let message = "";
+
+    if (!hasStructure) {
+      status = "warn";
+      message = "Not initialized. Run `cm init --repo` to enable project-level memory.";
+    } else if (!isComplete) {
+      status = "warn";
+      const missing: string[] = [];
+      if (!repoPlaybookExists) missing.push("playbook.yaml");
+      if (!repoToxicExists) missing.push("toxic.log");
+      message = `Partial setup. Missing: ${missing.join(", ")}. Run \`cm init --repo --force\` to complete.`;
+    } else {
+      message = "Complete (.cass/playbook.yaml and .cass/toxic.log present)";
+    }
+
+    checks.push({
+      category: "Repo .cass/ Structure",
+      status,
+      message,
+      details: {
+        cassDir,
+        playbookExists: repoPlaybookExists,
+        toxicLogExists: repoToxicExists,
+      },
+    });
+  } else {
+    checks.push({
+      category: "Repo .cass/ Structure",
+      status: "warn",
+      message: "Not in a git repository. Repo-level memory not available.",
+    });
+  }
+
+  // 5) Sanitization breadth (detect over-broad regexes)
   if (!config.sanitization?.enabled) {
     checks.push({
       category: "Sanitization Pattern Health",

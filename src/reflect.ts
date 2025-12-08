@@ -18,9 +18,9 @@ import { getModel, PROMPTS, fillPrompt, truncateForPrompt } from "./llm.js";
 import { safeCassSearch } from "./cass.js";
 import { truncate } from "./utils.js";
 
-// ============================================================================
+// ============================================================================ 
 // SCHEMAS FOR LLM OUTPUT
-// ============================================================================
+// ============================================================================ 
 
 /**
  * Schema for LLM reflector output - array of deltas
@@ -29,9 +29,9 @@ const ReflectorOutputSchema = z.object({
   deltas: z.array(PlaybookDeltaSchema),
 });
 
-// ============================================================================
+// ============================================================================ 
 // HELPER FUNCTIONS
-// ============================================================================
+// ============================================================================ 
 
 /**
  * Format playbook bullets for prompt context.
@@ -202,9 +202,9 @@ export function formatCassHistory(hits: CassHit[]): string {
   return lines.join("\n");
 }
 
-// ============================================================================
+// ============================================================================ 
 // DEDUPLICATION
-// ============================================================================
+// ============================================================================ 
 
 /**
  * Compute a hash for a delta for deduplication.
@@ -242,36 +242,36 @@ function deduplicateDeltas(
   });
 }
 
-// ============================================================================
+// ============================================================================ 
 // EARLY EXIT LOGIC
-// ============================================================================
+// ============================================================================ 
 
 /** Maximum deltas to collect before stopping iteration */
 const MAX_DELTAS = 20;
 
 /**
  * Determine if reflector should exit early (skip remaining iterations).
- *
+ * 
  * Exit conditions:
  * 1. No new deltas this iteration → LLM has exhausted insights
  * 2. Already have MAX_DELTAS (20) → Diminishing returns
  * 3. Reached maxReflectorIterations → Hard limit
- *
+ * 
  * This saves LLM calls when early iterations capture everything.
- *
+ * 
  * @param iteration - Current iteration (0-indexed)
  * @param deltasThisIteration - Number of new deltas from this iteration
  * @param totalDeltas - Total deltas accumulated so far
  * @param config - Configuration with maxReflectorIterations
  * @returns true if should stop iterating, false to continue
- *
+ * 
  * @example
  * // Iteration 0: 15 deltas → continue (false)
  * shouldExitEarly(0, 15, 15, config) // → false
- *
+ * 
  * // Iteration 1: 0 deltas → exit (true)
  * shouldExitEarly(1, 0, 15, config) // → true
- *
+ * 
  * // Iteration 0: 12 deltas, then iteration 1: 8 deltas → exit (hit max 20)
  * shouldExitEarly(1, 8, 20, config) // → true
  */
@@ -301,17 +301,17 @@ export function shouldExitEarly(
   return false;
 }
 
-// ============================================================================
+// ============================================================================ 
 // MAIN REFLECTION FUNCTION
-// ============================================================================
+// ============================================================================ 
 
 /**
  * Multi-iteration reflection on a session diary.
  * Implements ACE pattern: Generator → Reflector → Curator → Validator
- *
+ * 
  * WHY MULTI-ITERATION: First pass catches obvious insights.
  * Subsequent passes catch nuances that might be missed.
- *
+ * 
  * @param diary - Structured diary entry from the session
  * @param playbook - Current playbook for context
  * @param config - Configuration including maxReflectorIterations
@@ -366,7 +366,13 @@ Don't repeat what's already captured.`;
     });
 
     try {
-      const model = getModel(config);
+      // Cast to explicit type for getModel
+      const modelConfig = {
+        provider: config.provider,
+        model: config.model,
+        apiKey: config.apiKey
+      };
+      const model = getModel(modelConfig);
 
       const { object } = await generateObject({
         model,
@@ -410,9 +416,9 @@ Don't repeat what's already captured.`;
   return allDeltas;
 }
 
-// ============================================================================
+// ============================================================================ 
 // EXPORTS
-// ============================================================================
+// ============================================================================ 
 
 export {
   formatBulletsForPrompt,
