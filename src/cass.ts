@@ -91,8 +91,17 @@ function joinMessages(entries: any[]): string | null {
 export function cassAvailable(cassPath = "cass"): boolean {
   try {
     const result = spawnSync(cassPath, ["--version"], { stdio: "pipe" });
-    return result.status === 0;
-  } catch {
+    if (result.error) {
+        console.error("cassAvailable spawn error:", result.error);
+        return false;
+    }
+    if (result.status !== 0) {
+        console.error("cassAvailable non-zero status:", result.status, result.stderr.toString());
+        return false;
+    }
+    return true;
+  } catch (e) {
+    console.error("cassAvailable exception:", e);
     return false;
   }
 }

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { reflectOnSession } from "../src/reflect.js";
 import { curatePlaybook } from "../src/curate.js";
-import { createTestConfig, createTestPlaybook } from "./helpers/factories.js";
+import { createTestConfig, createTestPlaybook, createTestBullet, createTestFeedbackEvent } from "./helpers/factories.js";
 import { DiaryEntrySchema } from "../src/types.js";
 import { __resetReflectorStubsForTest } from "../src/llm.js";
 
@@ -54,5 +54,50 @@ describe("Pipeline integration: diary -> reflect -> curate (stubbed LLM)", () =>
     expect(curation.playbook.bullets.length).toBeGreaterThanOrEqual(1);
     const contents = curation.playbook.bullets.map(b => b.content);
     expect(contents).toContain("Rule A");
+  });
+
+  test("harmful deltas trigger inversion to anti-pattern", async () => {
+    const diaryRaw = JSON.parse(fs.readFileSync(diaryFixturePath, "utf-8"));
+    const diary = DiaryEntrySchema.parse(diaryRaw);
+
+    const existingBullet = createTestBullet({
+      id: "b-invert",
+      content: "Always deploy without checks",
+      category: "testing",
+      harmfulCount: 2,
+      feedbackEvents: [
+        createTestFeedbackEvent("harmful", 0),
+        createTestFeedbackEvent("harmful", 0)
+      ]
+    });
+
+    const playbook = createTestPlaybook([existingBullet]);
+    const baseConfig = createTestConfig();
+    const config = createTestConfig({
+      maxReflectorIterations: 2,
+      scoring: { ...baseConfig.scoring, decayHalfLifeDays: 1000 }
+    });
+
+    process.env.CM_REFLECTOR_STUBS = JSON.stringify([
+      {
+        deltas: [
+          { type: "harmful", bulletId: "b-invert", reason: "dangerous", sourceSession: diary.sessionPath }
+        ]
+      },
+      { deltas: [] }
+    ]);
+
+    const deltas = await reflectOnSession(diary, playbook, config);
+    const curation = curatePlaybook(playbook, deltas, config);
+
+    expect(deltas.length).toBe(1);
+    expect(curation.applied).toBeGreaterThanOrEqual(1);
+
+    const anti = curation.playbook.bullets.find(b => b.kind === "anti_pattern" || b.isNegative);
+    expect(anti).toBeTruthy();
+    expect(anti?.content).toContain("AVOID");
+
+    const original = curation.playbook.bullets.find(b => b.id === "b-invert");
+    expect(original?.deprecated).toBe(true);
   });
 });

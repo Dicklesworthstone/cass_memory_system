@@ -9,6 +9,7 @@ import { generateObject, type LanguageModel, type GenerateObjectResult } from "a
 import { z } from "zod";
 import type { Config, DiaryEntry } from "./types.js";
 import { checkBudget, recordCost } from "./cost.js";
+import { truncateForContext } from "./utils.js";
 
 /**
  * Supported LLM provider names
@@ -743,7 +744,7 @@ export async function extractDiary<T>(
 
   const model = getModel(llmConfig);
   
-  const truncatedContent = truncateForPrompt(sessionContent, 50000);
+  const truncatedContent = truncateForContext(sessionContent, { maxChars: 50000 });
 
   const prompt = fillPrompt(PROMPTS.diary, {
     sessionPath: metadata.sessionPath,
@@ -797,8 +798,8 @@ Key Learnings: ${diary.keyLearnings.join('\n- ')}
     ? `This is iteration ${iteration + 1}. Focus on insights you may have missed in previous passes.`
     : "";
 
-  const safeExistingBullets = truncateForPrompt(existingBullets, 20000);
-  const safeCassHistory = truncateForPrompt(cassHistory, 20000);
+  const safeExistingBullets = truncateForContext(existingBullets, { maxChars: 20000 });
+  const safeCassHistory = truncateForContext(cassHistory, { maxChars: 20000 });
 
   const prompt = fillPrompt(PROMPTS.reflector, {
     existingBullets: safeExistingBullets,
@@ -854,7 +855,7 @@ export async function runValidator(
 
   const model = getModel(llmConfig);
 
-  const safeEvidence = truncateForPrompt(formattedEvidence, 30000);
+  const safeEvidence = truncateForContext(formattedEvidence, { maxChars: 30000 });
 
   const prompt = fillPrompt(PROMPTS.validator, {
     proposedRule,
@@ -903,10 +904,10 @@ export async function generateContext(
   const model = getModel(llmConfig);
 
   const prompt = fillPrompt(PROMPTS.context, {
-    task: truncateForPrompt(task, 5000),
-    bullets: truncateForPrompt(bullets, 20000),
-    history: truncateForPrompt(history, 20000),
-    deprecatedPatterns: truncateForPrompt(deprecatedPatterns, 5000)
+    task: truncateForContext(task, { maxChars: 5000 }),
+    bullets: truncateForContext(bullets, { maxChars: 20000 }),
+    history: truncateForContext(history, { maxChars: 20000 }),
+    deprecatedPatterns: truncateForContext(deprecatedPatterns, { maxChars: 5000 })
   });
 
   return llmWithRetry(async () => {

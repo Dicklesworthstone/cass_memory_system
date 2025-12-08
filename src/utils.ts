@@ -2606,8 +2606,3 @@ export async function withAbortableSequence<T, R>(
   }
   return results;
 }
-
-// Alias for backward compatibility - some modules import as contentHash
-export function contentHash(content: string): string {
-  return hashContent(content);
-}
