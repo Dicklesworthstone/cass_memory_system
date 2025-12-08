@@ -2,14 +2,13 @@ import { loadConfig } from "../config.js";
 import {
   loadMergedPlaybook,
   loadPlaybook,
-  loadPlaybookFromPath,
   savePlaybook,
   findBullet,
 } from "../playbook.js";
 import { getEffectiveScore, calculateMaturityState } from "../scoring.js";
 import { now, error as logError, expandPath } from "../utils.js";
 import chalk from "chalk";
-import { HarmfulReason } from "../types.js";
+import { HarmfulReason, FeedbackEvent } from "../types.js";
 
 export async function markCommand(
   bulletId: string,
@@ -39,12 +38,12 @@ export async function markCommand(
   const globalPath = expandPath(config.playbookPath);
   const repoPath = expandPath(".cass/playbook.yaml");
 
-  let targetPlaybook = await loadPlaybook(config);
+  let targetPlaybook = await loadPlaybook(globalPath);
   let targetBullet = findBullet(targetPlaybook, bulletId);
-  let saveTarget: string | Config = config;
+  let saveTarget = globalPath;
 
   if (!targetBullet) {
-    targetPlaybook = await loadPlaybookFromPath(repoPath);
+    targetPlaybook = await loadPlaybook(repoPath);
     targetBullet = findBullet(targetPlaybook, bulletId);
     saveTarget = repoPath;
   }
@@ -55,7 +54,7 @@ export async function markCommand(
   }
 
   // Apply Update
-  const type = flags.helpful ? "helpful" : "harmful";
+  const type: "helpful" | "harmful" = flags.helpful ? "helpful" : "harmful";
   const reason: HarmfulReason | undefined =
     type === "harmful"
       ? (["caused_bug","wasted_time","contradicted_requirements","wrong_context","outdated","other"] as const)
@@ -64,7 +63,7 @@ export async function markCommand(
           : "other"
       : undefined;
 
-  const event = { type, timestamp: now(), sessionPath: flags.session, reason };
+  const event: FeedbackEvent = { type, timestamp: now(), sessionPath: flags.session, reason };
 
   if (type === "helpful") {
     targetBullet.helpfulEvents.push(event);
@@ -84,7 +83,7 @@ export async function markCommand(
   targetBullet.maturity = calculateMaturityState(targetBullet, config);
 
   // Save
-  await savePlaybook(targetPlaybook, savePath);
+  await savePlaybook(targetPlaybook, saveTarget);
 
   // Log Usage? (skip for V1 minimalist)
 
