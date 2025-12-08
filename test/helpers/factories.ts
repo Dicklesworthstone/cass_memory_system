@@ -1,6 +1,7 @@
-import { Playbook, PlaybookBullet, Config, DiaryEntry } from "../../src/types.js";
+import { Playbook, PlaybookBullet, Config, DiaryEntry, FeedbackEvent } from "../../src/types.js";
 
 let bulletCounter = 0;
+let eventCounter = 0;
 
 export function createTestBullet(overrides: Partial<PlaybookBullet> = {}): PlaybookBullet {
   const now = new Date().toISOString();
@@ -101,4 +102,74 @@ export function assertBulletMatches(actual: PlaybookBullet, expected: Partial<Pl
       throw new Error(`Bullet mismatch on ${key}: expected ${value} got ${actualValue}`);
     }
   }
+}
+
+/**
+ * Create a test feedback event.
+ */
+export function createTestFeedbackEvent(
+  type: "helpful" | "harmful",
+  overrides: Partial<Omit<FeedbackEvent, "type">> = {}
+): FeedbackEvent {
+  const now = new Date().toISOString();
+  return {
+    type,
+    timestamp: overrides.timestamp ?? now,
+    sessionPath: overrides.sessionPath ?? `/tmp/session-${eventCounter++}.jsonl`,
+    context: overrides.context,
+    reason: overrides.reason,
+  };
+}
+
+/**
+ * Create multiple feedback events with staggered timestamps.
+ */
+export function createFeedbackHistory(
+  helpful: number,
+  harmful: number,
+  options: { baseDate?: Date; intervalDays?: number } = {}
+): FeedbackEvent[] {
+  const events: FeedbackEvent[] = [];
+  const baseDate = options.baseDate ?? new Date();
+  const intervalDays = options.intervalDays ?? 7;
+
+  let currentDate = new Date(baseDate);
+
+  for (let i = 0; i < helpful; i++) {
+    events.push(createTestFeedbackEvent("helpful", {
+      timestamp: currentDate.toISOString(),
+    }));
+    currentDate = new Date(currentDate.getTime() - intervalDays * 24 * 60 * 60 * 1000);
+  }
+
+  currentDate = new Date(baseDate.getTime() - 1000); // Slightly before base
+
+  for (let i = 0; i < harmful; i++) {
+    events.push(createTestFeedbackEvent("harmful", {
+      timestamp: currentDate.toISOString(),
+    }));
+    currentDate = new Date(currentDate.getTime() - intervalDays * 24 * 60 * 60 * 1000);
+  }
+
+  // Sort by timestamp descending (most recent first)
+  return events.sort((a, b) =>
+    new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+  );
+}
+
+/**
+ * Create a bullet with specific feedback history.
+ */
+export function createBulletWithFeedback(
+  helpful: number,
+  harmful: number,
+  bulletOverrides: Partial<PlaybookBullet> = {}
+): PlaybookBullet {
+  const events = createFeedbackHistory(helpful, harmful);
+  return createTestBullet({
+    feedbackEvents: events,
+    helpfulCount: helpful,
+    harmfulCount: harmful,
+    ...bulletOverrides,
+  });
 }
