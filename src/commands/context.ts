@@ -326,7 +326,9 @@ export async function contextCommand(
         console.log("");
       });
     } else {
-      console.log(chalk.gray("(No relevant playbook rules found)\n"));
+      // Zero-config friendly message: guide users to start learning
+      console.log(chalk.gray("(No relevant playbook rules found)"));
+      console.log(chalk.gray(`  💡 Run 'cm reflect' to start learning from your agent sessions.\n`));
     }
 
     if (antiPatterns.length > 0) {
