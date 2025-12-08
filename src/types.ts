@@ -91,26 +91,6 @@ export type FeedbackEvent = z.infer<typeof FeedbackEventSchema>;
 /**
  * Base schema for PlaybookBullet without refinements.
  * Use this for .partial() and .extend() operations.
- *
- * ## Event-Level Feedback Tracking (Key Innovation)
- *
- * This schema implements event-level feedback tracking with timestamps,
- * enabling confidence decay calculation. Instead of simple counters, each
- * feedback event stores temporal information for time-weighted scoring.
- *
- * ### Decay Algorithm
- * ```typescript
- * // Each event's value decays exponentially over time:
- * decayedValue = Math.pow(0.5, ageDays / halfLifeDays)
- *
- * // Effective score combines all events with harmful weighting:
- * effectiveScore = sum(helpfulDecayed) - 4 * sum(harmfulDecayed)
- * ```
- *
- * ### Example Scenarios
- * - Recent activity (high confidence): Events from past week → score ≈ 3.0
- * - Old activity (low confidence): Events from 6 months ago → score ≈ 0.15
- * - Mixed feedback: 2 helpful + 1 harmful recent → score ≈ -2.0 (at risk)
  */
 export const PlaybookBulletBaseSchema = z.object({
   id: z.string(),
@@ -118,9 +98,9 @@ export const PlaybookBulletBaseSchema = z.object({
   scopeKey: z.string().optional(),
   workspace: z.string().optional(),
   /** High-level grouping for organization (e.g., 'testing', 'git', 'auth') */
-  category: z.string(),
+  category: z.string().min(1),
   /** The actual rule text shown to agents (10-500 characters) */
-  content: z.string(),
+  content: z.string().min(10).max(500),
   /** Gemini-style search pattern for retrieving detailed examples from cass */
   searchPointer: z.string().optional(),
   /** Binary: prescriptive (rule) or proscriptive (anti-pattern) */
@@ -208,6 +188,15 @@ export const PlaybookBulletSchema = PlaybookBulletBaseSchema.superRefine((bullet
       message: "scopeKey should be omitted for global/workspace scopes",
     });
   }
+  // isNegative should align with type
+  const shouldBeNegative = bullet.type === "anti-pattern";
+  if (bullet.isNegative !== shouldBeNegative) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["isNegative"],
+      message: "isNegative must match type (anti-pattern => true, rule => false)",
+    });
+  }
 });
 export type PlaybookBullet = z.infer<typeof PlaybookBulletBaseSchema>;
 
@@ -215,9 +204,9 @@ export type PlaybookBullet = z.infer<typeof PlaybookBulletBaseSchema>;
 // NEW BULLET DATA
 // ============================================================================
 
-export const NewBulletDataSchema = PlaybookBulletSchema.partial().extend({
-  content: z.string(),
-  category: z.string()
+export const NewBulletDataSchema = PlaybookBulletBaseSchema.partial().extend({
+  content: z.string().min(10).max(500),
+  category: z.string().min(1)
 });
 export type NewBulletData = z.infer<typeof NewBulletDataSchema>;
 
@@ -450,7 +439,7 @@ export type CassSearchOptions = z.infer<typeof CassSearchOptionsSchema>;
 // CONTEXT OUTPUT
 // ============================================================================
 
-export const ScoredBulletSchema = PlaybookBulletSchema.extend({
+export const ScoredBulletSchema = PlaybookBulletBaseSchema.extend({
   relevanceScore: z.number(),
   effectiveScore: z.number(),
   lastHelpful: z.string().optional(),
@@ -613,6 +602,7 @@ export type ReflectionStats = z.infer<typeof ReflectionStatsSchema>;
 
 export const Schemas = {
   FeedbackEvent: FeedbackEventSchema,
+  PlaybookBulletBase: PlaybookBulletBaseSchema,
   PlaybookBullet: PlaybookBulletSchema,
   NewBulletData: NewBulletDataSchema,
   PlaybookDelta: PlaybookDeltaSchema,
