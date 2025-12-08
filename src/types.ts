@@ -547,6 +547,43 @@ export const CassTimelineResultSchema = z.object({
 export type CassTimelineResult = z.infer<typeof CassTimelineResultSchema>;
 
 // ============================================================================
+// COMMAND RESULT & AUDIT TYPES
+// ============================================================================
+
+export const CommandResultSchema = z.object({
+  success: z.boolean(),
+  message: z.string(),
+  data: z.unknown().optional(),
+  error: z.string().optional(),
+});
+export type CommandResult = z.infer<typeof CommandResultSchema>;
+
+export const AuditViolationSchema = z.object({
+  bulletId: z.string(),
+  bulletContent: z.string(),
+  sessionPath: z.string(),
+  evidence: z.string(),
+  severity: z.enum(["low", "medium", "high"]),
+});
+export type AuditViolation = z.infer<typeof AuditViolationSchema>;
+
+export const AuditResultSchema = z.object({
+  sessionsScanned: z.number(),
+  violations: z.array(AuditViolationSchema).default([]),
+  suggestions: z.array(z.string()).default([]),
+});
+export type AuditResult = z.infer<typeof AuditResultSchema>;
+
+export const ErrorTypeEnum = z.enum([
+  "ConfigError",
+  "PlaybookError",
+  "CassError",
+  "ValidationError",
+  "LLMError",
+]);
+export type ErrorType = z.infer<typeof ErrorTypeEnum>;
+
+// ============================================================================
 // CONTEXT OUTPUT
 // ============================================================================
 
