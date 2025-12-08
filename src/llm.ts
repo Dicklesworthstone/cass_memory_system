@@ -209,7 +209,7 @@ Consider:
 
 Respond with:
 {
-  "verdict": "ACCEPT" | "REJECT" | "REFINE",
+  "verdict": "ACCEPT" | "REJECT" | "REFINE" | "ACCEPT_WITH_CAUTION",
   "confidence": number,  // 0.0-1.0
   "reason": string,
   "suggestedRefinement": string | null,  // Suggested improvement if partially valid
@@ -277,7 +277,7 @@ export function fillPrompt(
 ): string {
   let result = template;
   for (const [key, value] of Object.entries(values)) {
-    result = result.replace(new RegExp(`\\{${key}\\}`, "g"), value);
+    result = result.replace(new RegExp(`\{${key}\}`, "g"), value);
   }
   return result;
 }
@@ -298,8 +298,6 @@ export const LLM_RETRY_CONFIG = {
   maxRetries: 3,
   baseDelayMs: 1000,
   maxDelayMs: 30000,
-  perOperationTimeoutMs: 120_000, // 2 minutes per operation
-  totalTimeoutMs: 300_000, // 5 minutes total ceiling
   retryableErrors: [
     "rate_limit_exceeded",
     "server_error",
@@ -313,49 +311,14 @@ export const LLM_RETRY_CONFIG = {
   ]
 };
 
-/**
- * Wrap a promise with a timeout.
- * @throws Error with "timeout" in message if deadline exceeded
- */
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      reject(new Error(`${label} timeout after ${timeoutMs}ms`));
-    }, timeoutMs);
-
-    promise
-      .then(result => {
-        clearTimeout(timer);
-        resolve(result);
-      })
-      .catch(err => {
-        clearTimeout(timer);
-        reject(err);
-      });
-  });
-}
-
 export async function llmWithRetry<T>(
   operation: () => Promise<T>,
   operationName: string
 ): Promise<T> {
-  const startTime = Date.now();
   let attempt = 0;
-
   while (true) {
-    // Check total time ceiling
-    const elapsed = Date.now() - startTime;
-    if (elapsed > LLM_RETRY_CONFIG.totalTimeoutMs) {
-      throw new Error(`${operationName} exceeded total timeout ceiling of ${LLM_RETRY_CONFIG.totalTimeoutMs}ms`);
-    }
-
     try {
-      // Wrap each operation with per-call timeout
-      return await withTimeout(
-        operation(),
-        LLM_RETRY_CONFIG.perOperationTimeoutMs,
-        operationName
-      );
+      return await operation();
     } catch (err: any) {
       attempt++;
       const isRetryable = LLM_RETRY_CONFIG.retryableErrors.some(e => {
@@ -365,16 +328,16 @@ export async function llmWithRetry<T>(
         const statusMatch = err.statusCode?.toString().includes(e);
         return messageMatch || codeMatch || statusMatch;
       });
-
+      
       if (!isRetryable || attempt > LLM_RETRY_CONFIG.maxRetries) {
         throw err;
       }
-
+      
       const delay = Math.min(
-        LLM_RETRY_CONFIG.baseDelayMs * Math.pow(2, attempt),
+        LLM_RETRY_CONFIG.baseDelayMs * Math.pow(2, attempt), 
         LLM_RETRY_CONFIG.maxDelayMs
       );
-
+      
       console.warn(`[LLM] ${operationName} failed (attempt ${attempt}): ${err.message}. Retrying in ${delay}ms...`);
       await new Promise(resolve => setTimeout(resolve, delay));
     }
@@ -551,7 +514,7 @@ export interface ValidatorResult {
 }
 
 const ValidatorOutputSchema = z.object({
-  verdict: z.enum(['ACCEPT', 'REJECT', 'REFINE']),
+  verdict: z.enum(['ACCEPT', 'REJECT', 'REFINE', 'ACCEPT_WITH_CAUTION']),
   confidence: z.number().min(0).max(1),
   reason: z.string(),
   evidence: z.object({
@@ -633,7 +596,7 @@ export async function generateContext(
   });
 
   return llmWithRetry(async () => {
-    const result = await monitoredGenerateObject<{ briefing: string }> ({
+    const result = await monitoredGenerateObject<{ briefing: string }>({
       model,
       schema: z.object({ briefing: z.string() }),
       prompt,
@@ -666,7 +629,7 @@ Generate 3-5 diverse search queries to find relevant information:
 Make queries specific enough to be useful but broad enough to match variations.`;
 
   return llmWithRetry(async () => {
-    const result = await monitoredGenerateObject<{ queries: string[] }> ({
+    const result = await monitoredGenerateObject<{ queries: string[] }>({
       model,
       schema: z.object({ queries: z.array(z.string()).max(5) }),
       prompt,

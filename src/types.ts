@@ -281,7 +281,6 @@ export const ConfigSchema = z.object({
   maxHistoryInContext: z.number().default(10),
   sessionLookbackDays: z.number().default(7),
   validationLookbackDays: z.number().default(90),
-  // Added missing fields
   relatedSessionsDays: z.number().default(30),
   minRelevanceScore: z.number().default(0.1),
   maxRelatedSessions: z.number().default(5),
@@ -290,7 +289,7 @@ export const ConfigSchema = z.object({
   semanticSearchEnabled: z.boolean().default(false),
   verbose: z.boolean().default(false),
   jsonOutput: z.boolean().default(false),
-  apiKey: z.string().optional(), // Added apiKey to top level as optional
+  apiKey: z.string().optional(),
   sanitization: SanitizationConfigSchema.default({}),
   budget: BudgetConfigSchema.default({})
 });
@@ -333,6 +332,22 @@ export const CassSearchOptionsSchema = z.object({
   workspace: z.string().optional()
 });
 export type CassSearchOptions = z.infer<typeof CassSearchOptionsSchema>;
+
+// Missing exports needed by cass.ts
+export interface CassTimelineGroup {
+  date: string;
+  sessions: Array<{
+    path: string;
+    agent: string;
+    messageCount: number;
+    startTime: string;
+    endTime: string;
+  }>;
+}
+
+export interface CassTimelineResult {
+  groups: CassTimelineGroup[];
+}
 
 // ============================================================================
 // CONTEXT OUTPUT
@@ -382,6 +397,7 @@ export type ValidationEvidence = z.infer<typeof ValidationEvidenceSchema>;
 export const ValidationResultSchema = z.object({
   delta: PlaybookDeltaSchema.optional(),
   valid: z.boolean(),
+  // Fixed: Added ACCEPT_WITH_CAUTION to align with usage
   verdict: z.enum(["ACCEPT", "REJECT", "REFINE", "ACCEPT_WITH_CAUTION"]),
   confidence: z.number().min(0).max(1),
   reason: z.string(),

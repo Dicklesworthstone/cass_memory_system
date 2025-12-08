@@ -103,7 +103,7 @@ describe("scoring", () => {
     });
     const good = createTestBullet({
       maturity: "established",
-      feedbackEvents: [feedback("helpful", 0), feedback("helpful", 0)],
+      feedbackEvents: [feedback("helpful", 0), feedback("helpful", 0), feedback("helpful", 0)],
     });
     const neutral = createTestBullet({});
     const atRisk = createTestBullet({ feedbackEvents: [feedback("harmful", 0), feedback("harmful", 0)] });

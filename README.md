@@ -318,6 +318,16 @@ cm doctor
 - **Lint/format**: Prefer small, surgical edits over bulk codemods; follow existing style and avoid adding new lockfiles or toolchains.
 - **DX principle**: All commands should deliver value within seconds on a clean machine; degraded modes must still return helpful output instead of failing hard.
 
+### Troubleshooting (quick fixes)
+- **"cass not found"**: Install and index cass CLI (`pipx install cass` or per cass docs) then rerun `cass health`; context/history will degrade until cass is available.
+- **Binary not executable / permission denied**: `chmod +x dist/cass-memory*` (or downloaded binary) and ensure it’s on your `PATH`.
+- **LLM API key missing**: Export `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` (or set in `~/.cass-memory/config.json`); commands run in local-only mode without keys but LLM features will be skipped.
+- **Rate limited or transient LLM errors**: Retry; built-in exponential backoff is applied. If persistent, lower frequency or switch provider/model in config.
+- **Invalid config/playbook**: Run `cass-memory doctor --json` to surface schema issues; fix reported fields or remove the broken file to regenerate defaults (`cass-memory init --force`).
+- **"session file not found" / empty history**: Ensure cass is indexed (`cass index`) and that your sessions reside where cass expects; provide `--workspace <path>` if you keep multiple workspaces.
+- **macOS quarantine warning**: `xattr -dr com.apple.quarantine cass-memory*` after download.
+
+
 ---
 
 ## 📋 Command Reference
@@ -913,6 +923,12 @@ bun test --reporter ./test/helpers/reporter.ts
 ```
 
 Test fixtures live under `test/fixtures/` (sample playbooks/config/diary), and reusable helpers under `test/helpers/` (`withTempDir`, factories, logger, timing reporter) to keep new tests lean and deterministic.
+
+---
+
+### Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release history and pending (Unreleased) changes.
 
 ---
 
