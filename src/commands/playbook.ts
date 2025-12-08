@@ -1,8 +1,7 @@
 import { loadConfig } from "../config.js";
 import { loadMergedPlaybook, addBullet, deprecateBullet, savePlaybook, findBullet, getActiveBullets } from "../playbook.js";
-import { expandPath, error as logError } from "../utils.js";
+import { error as logError } from "../utils.js";
 import { withLock } from "../lock.js";
-import { NewBulletDataSchema, BulletTypeEnum, BulletScopeEnum, BulletKindEnum } from "../types.js";
 import chalk from "chalk";
 
 export async function playbookCommand(
@@ -43,12 +42,17 @@ export async function playbookCommand(
         const { loadPlaybook } = await import("../playbook.js");
         const playbook = await loadPlaybook(config.playbookPath);
         
-      const bullet = addBullet(playbook, {
-        content,
-        category: options.category || "general",
-        scope: "global",
-        kind: "workflow_rule"
-      }, "manual-cli", config.scoring.decayHalfLifeDays);
+      const bullet = addBullet(
+        playbook,
+        {
+          content,
+          category: flags.category || "general",
+          scope: "global",
+          kind: "workflow_rule",
+        },
+        "manual-cli",
+        config.scoring.decayHalfLifeDays
+      );
 
         await savePlaybook(playbook, config.playbookPath);
 

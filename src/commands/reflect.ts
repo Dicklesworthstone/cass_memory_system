@@ -104,7 +104,8 @@ export async function reflectCommand(
       // Reload fresh playbook again just in case, though we hold the lock so it should be safe unless external edits happen
       const freshPlaybook = await loadPlaybook(globalPath);
       
-      const curation = curatePlaybook(freshPlaybook, allDeltas, config);
+      // Pass freshPlaybook as target (mutable), initialPlaybook as context (readonly, merged)
+      const curation = curatePlaybook(freshPlaybook, allDeltas, config, initialPlaybook);
       await savePlaybook(curation.playbook, globalPath);
       
       await processedLog.save();

@@ -67,7 +67,7 @@ export async function doctorCommand(options: { json?: boolean; fix?: boolean }):
   });
 
   // 3) LLM config
-  const hasApiKey = isLLMAvailable(config.provider);
+  const hasApiKey = isLLMAvailable(config.provider) || !!config.apiKey;
   checks.push({
     category: "LLM Configuration",
     status: hasApiKey ? "pass" : "fail",
