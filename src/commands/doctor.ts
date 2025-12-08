@@ -1,16 +1,57 @@
-import { loadConfig } from "../config.js";
+import { loadConfig, DEFAULT_CONFIG, saveConfig } from "../config.js";
 import { cassAvailable, cassStats, cassSearch, safeCassSearch } from "../cass.js";
-import { fileExists, resolveRepoDir, resolveGlobalDir, expandPath } from "../utils.js";
+import { fileExists, resolveRepoDir, resolveGlobalDir, expandPath, checkAbort } from "../utils.js";
 import { isLLMAvailable, getAvailableProviders, validateApiKey } from "../llm.js";
 import { SECRET_PATTERNS, compileExtraPatterns } from "../sanitize.js";
-import { loadPlaybook } from "../playbook.js";
-import { Config } from "../types.js";
+import { loadPlaybook, savePlaybook } from "../playbook.js";
+import { Config, Playbook } from "../types.js";
 import chalk from "chalk";
 import path from "node:path";
+import fs from "node:fs/promises";
+import readline from "node:readline";
 
 type CheckStatus = "pass" | "warn" | "fail";
 type OverallStatus = "healthy" | "degraded" | "unhealthy";
 type PatternMatch = { pattern: string; sample: string; replacement: string; suggestion?: string };
+
+/**
+ * Represents an issue that can be automatically fixed.
+ */
+export interface FixableIssue {
+  /** Unique identifier for the issue */
+  id: string;
+  /** Human-readable description of the issue */
+  description: string;
+  /** Category of the issue (e.g., "storage", "config") */
+  category: string;
+  /** Severity: warn = degraded but functional, fail = blocking */
+  severity: "warn" | "fail";
+  /** Function to apply the fix */
+  fix: () => Promise<void>;
+  /** Safety level for auto-apply decisions */
+  safety: "safe" | "cautious" | "manual";
+}
+
+/**
+ * Result of applying fixes.
+ */
+export interface FixResult {
+  id: string;
+  success: boolean;
+  message: string;
+}
+
+/**
+ * Options for applyFixes function.
+ */
+export interface ApplyFixesOptions {
+  /** If true, prompt user for confirmation */
+  interactive?: boolean;
+  /** If true, only show what would be fixed without applying */
+  dryRun?: boolean;
+  /** If true, apply even cautious fixes without prompting */
+  force?: boolean;
+}
 
 export interface HealthCheck {
   category: string;
@@ -281,6 +322,332 @@ export async function runSelfTest(config: Config): Promise<HealthCheck[]> {
   return checks;
 }
 
+// --- Fix Detection and Application ---
+
+/**
+ * Prompt user for yes/no confirmation.
+ */
+async function promptConfirm(question: string): Promise<boolean> {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  return new Promise((resolve) => {
+    rl.question(`${question} (y/n): `, (answer) => {
+      rl.close();
+      resolve(answer.toLowerCase() === "y" || answer.toLowerCase() === "yes");
+    });
+  });
+}
+
+/**
+ * Create fix for missing global directory.
+ */
+function createMissingGlobalDirFix(globalDir: string): FixableIssue {
+  return {
+    id: "missing-global-dir",
+    description: `Create missing global directory: ${globalDir}`,
+    category: "storage",
+    severity: "fail",
+    safety: "safe",
+    fix: async () => {
+      await fs.mkdir(globalDir, { recursive: true, mode: 0o700 });
+    },
+  };
+}
+
+/**
+ * Create fix for missing global playbook.
+ */
+function createMissingPlaybookFix(playbookPath: string): FixableIssue {
+  return {
+    id: "missing-playbook",
+    description: `Create empty playbook: ${playbookPath}`,
+    category: "storage",
+    severity: "warn",
+    safety: "safe",
+    fix: async () => {
+      const emptyPlaybook: Playbook = {
+        bullets: [],
+        schema_version: 1,
+      };
+      await savePlaybook(playbookPath, emptyPlaybook);
+    },
+  };
+}
+
+/**
+ * Create fix for missing diary directory.
+ */
+function createMissingDiaryDirFix(diaryDir: string): FixableIssue {
+  return {
+    id: "missing-diary-dir",
+    description: `Create diary directory: ${diaryDir}`,
+    category: "storage",
+    severity: "warn",
+    safety: "safe",
+    fix: async () => {
+      await fs.mkdir(diaryDir, { recursive: true, mode: 0o700 });
+    },
+  };
+}
+
+/**
+ * Create fix for missing repo .cass directory.
+ */
+function createMissingRepoCassDirFix(cassDir: string): FixableIssue {
+  return {
+    id: "missing-repo-cass-dir",
+    description: `Create repo .cass directory: ${cassDir}`,
+    category: "storage",
+    severity: "warn",
+    safety: "safe",
+    fix: async () => {
+      await fs.mkdir(cassDir, { recursive: true });
+      // Create .gitignore to ignore diary but track playbook
+      const gitignore = `# Ignore diary (session-specific data)
+diary/
+# Ignore temporary files
+*.tmp
+`;
+      await fs.writeFile(path.join(cassDir, ".gitignore"), gitignore);
+    },
+  };
+}
+
+/**
+ * Create fix for invalid config - reset to defaults.
+ */
+function createResetConfigFix(configPath: string): FixableIssue {
+  return {
+    id: "reset-config",
+    description: `Reset config to defaults (backup will be created): ${configPath}`,
+    category: "config",
+    severity: "fail",
+    safety: "cautious",
+    fix: async () => {
+      // Create backup
+      const exists = await fileExists(configPath);
+      if (exists) {
+        const backupPath = `${configPath}.backup.${Date.now()}`;
+        await fs.copyFile(expandPath(configPath), backupPath);
+        console.log(chalk.yellow(`  Backed up old config to: ${backupPath}`));
+      }
+      // Save default config
+      await saveConfig(configPath, DEFAULT_CONFIG);
+    },
+  };
+}
+
+/**
+ * Create fix for missing repo toxic.log file.
+ */
+function createMissingToxicLogFix(toxicPath: string): FixableIssue {
+  return {
+    id: "missing-toxic-log",
+    description: `Create empty toxic.log: ${toxicPath}`,
+    category: "storage",
+    severity: "warn",
+    safety: "safe",
+    fix: async () => {
+      await fs.writeFile(toxicPath, "");
+    },
+  };
+}
+
+/**
+ * Detect fixable issues from health checks.
+ */
+export async function detectFixableIssues(): Promise<FixableIssue[]> {
+  const issues: FixableIssue[] = [];
+  const config = await loadConfig();
+
+  // Check global directory
+  const globalDir = resolveGlobalDir();
+  const globalDirExists = await fileExists(globalDir);
+  if (!globalDirExists) {
+    issues.push(createMissingGlobalDirFix(globalDir));
+  }
+
+  // Check global playbook
+  const globalPlaybookPath = path.join(globalDir, "playbook.yaml");
+  const globalPlaybookExists = await fileExists(globalPlaybookPath);
+  if (globalDirExists && !globalPlaybookExists) {
+    issues.push(createMissingPlaybookFix(globalPlaybookPath));
+  }
+
+  // Check global diary directory
+  const globalDiaryDir = path.join(globalDir, "diary");
+  const globalDiaryExists = await fileExists(globalDiaryDir);
+  if (globalDirExists && !globalDiaryExists) {
+    issues.push(createMissingDiaryDirFix(globalDiaryDir));
+  }
+
+  // Check repo-level .cass structure
+  const cassDir = await resolveRepoDir();
+  if (cassDir) {
+    const repoCassDirExists = await fileExists(cassDir);
+    if (!repoCassDirExists) {
+      issues.push(createMissingRepoCassDirFix(cassDir));
+    } else {
+      // Check for repo playbook
+      const repoPlaybookPath = path.join(cassDir, "playbook.yaml");
+      const repoPlaybookExists = await fileExists(repoPlaybookPath);
+      if (!repoPlaybookExists) {
+        issues.push(createMissingPlaybookFix(repoPlaybookPath));
+      }
+
+      // Check for toxic.log
+      const toxicPath = path.join(cassDir, "toxic.log");
+      const toxicExists = await fileExists(toxicPath);
+      if (!toxicExists) {
+        issues.push(createMissingToxicLogFix(toxicPath));
+      }
+    }
+  }
+
+  return issues;
+}
+
+/**
+ * Apply fixes to detected issues.
+ *
+ * @param issues - Array of fixable issues to apply
+ * @param options - Options controlling fix behavior
+ * @returns Array of fix results
+ *
+ * @example
+ * const issues = await detectFixableIssues();
+ * const results = await applyFixes(issues, { interactive: true });
+ */
+export async function applyFixes(
+  issues: FixableIssue[],
+  options: ApplyFixesOptions = {}
+): Promise<FixResult[]> {
+  const { interactive = false, dryRun = false, force = false } = options;
+  const results: FixResult[] = [];
+
+  if (issues.length === 0) {
+    console.log(chalk.green("No fixable issues found."));
+    return results;
+  }
+
+  // Group by safety level
+  const safeIssues = issues.filter((i) => i.safety === "safe");
+  const cautiousIssues = issues.filter((i) => i.safety === "cautious");
+  const manualIssues = issues.filter((i) => i.safety === "manual");
+
+  console.log(chalk.bold(`\nFound ${issues.length} fixable issue(s):\n`));
+
+  // List all issues
+  issues.forEach((issue, i) => {
+    const safetyIcon =
+      issue.safety === "safe" ? "✅" : issue.safety === "cautious" ? "⚠️ " : "📝";
+    const severityColor = issue.severity === "fail" ? chalk.red : chalk.yellow;
+    console.log(
+      `${i + 1}. ${safetyIcon} ${severityColor(`[${issue.severity}]`)} ${issue.description}`
+    );
+  });
+
+  if (manualIssues.length > 0) {
+    console.log(chalk.cyan("\n📝 Manual fixes required (not auto-fixable):"));
+    for (const issue of manualIssues) {
+      console.log(chalk.cyan(`   - ${issue.description}`));
+    }
+  }
+
+  if (dryRun) {
+    console.log(chalk.yellow("\n[Dry run] No changes will be made."));
+    return issues.map((i) => ({
+      id: i.id,
+      success: false,
+      message: "Dry run - not applied",
+    }));
+  }
+
+  // Determine which issues to fix
+  const toFix: FixableIssue[] = [];
+
+  // Safe issues: apply unless interactive mode asks not to
+  if (safeIssues.length > 0) {
+    if (interactive) {
+      console.log(chalk.green(`\n✅ ${safeIssues.length} safe fix(es) available`));
+      const confirm = await promptConfirm("Apply safe fixes?");
+      if (confirm) {
+        toFix.push(...safeIssues);
+      }
+    } else {
+      toFix.push(...safeIssues);
+    }
+  }
+
+  // Cautious issues: require confirmation unless --force
+  if (cautiousIssues.length > 0) {
+    console.log(
+      chalk.yellow(`\n⚠️  ${cautiousIssues.length} cautious fix(es) available (may modify data)`)
+    );
+    if (force) {
+      toFix.push(...cautiousIssues);
+    } else if (interactive) {
+      const confirm = await promptConfirm("Apply cautious fixes?");
+      if (confirm) {
+        toFix.push(...cautiousIssues);
+      }
+    } else {
+      console.log(chalk.yellow("   Use --fix --force to apply cautious fixes non-interactively"));
+    }
+  }
+
+  if (toFix.length === 0) {
+    console.log(chalk.yellow("\nNo fixes will be applied."));
+    return results;
+  }
+
+  console.log(chalk.bold(`\nApplying ${toFix.length} fix(es)...\n`));
+
+  // Apply fixes
+  for (const issue of toFix) {
+    // Check for abort between fixes
+    try {
+      checkAbort();
+    } catch {
+      console.log(chalk.yellow("\nOperation cancelled."));
+      break;
+    }
+
+    try {
+      console.log(`Fixing: ${issue.description}...`);
+      await issue.fix();
+      results.push({
+        id: issue.id,
+        success: true,
+        message: "Fixed successfully",
+      });
+      console.log(chalk.green("  ✓ Fixed"));
+    } catch (err: any) {
+      results.push({
+        id: issue.id,
+        success: false,
+        message: err.message,
+      });
+      console.log(chalk.red(`  ✗ Failed: ${err.message}`));
+    }
+  }
+
+  // Summary
+  const succeeded = results.filter((r) => r.success).length;
+  const failed = results.filter((r) => !r.success).length;
+
+  console.log(chalk.bold("\n--- Fix Summary ---"));
+  console.log(chalk.green(`✓ ${succeeded} fix(es) applied successfully`));
+  if (failed > 0) {
+    console.log(chalk.red(`✗ ${failed} fix(es) failed`));
+  }
+
+  return results;
+}
+
 export async function doctorCommand(options: { json?: boolean; fix?: boolean }): Promise<void> {
   const config = await loadConfig();
   const checks: Array<{ category: string; status: CheckStatus; message: string; details?: unknown }> = [];
@@ -439,4 +806,21 @@ export async function doctorCommand(options: { json?: boolean; fix?: boolean }):
   if (overallStatus === "healthy") console.log(chalk.green("System is healthy ready to rock! 🚀"));
   else if (overallStatus === "degraded") console.log(chalk.yellow("System is running in degraded mode."));
   else console.log(chalk.red("System has critical issues."));
+
+  // Handle --fix option
+  if (options.fix && overallStatus !== "healthy") {
+    console.log(chalk.bold("\n🔧 Auto-Fix Mode\n"));
+    const issues = await detectFixableIssues();
+    if (issues.length > 0) {
+      await applyFixes(issues, { interactive: true });
+      console.log(chalk.cyan("\nRe-running health check to verify fixes...\n"));
+      // Run doctor again to show updated status (non-recursive)
+      await doctorCommand({ json: false, fix: false });
+    } else {
+      console.log(chalk.yellow("No auto-fixable issues detected."));
+      console.log(chalk.cyan("Some issues may require manual intervention."));
+    }
+  } else if (options.fix && overallStatus === "healthy") {
+    console.log(chalk.green("\nSystem is healthy, no fixes needed."));
+  }
 }

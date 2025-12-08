@@ -107,8 +107,9 @@ program.command("validate")
 
 // --- Doctor ---
 program.command("doctor")
-  .description("Check system health")
+  .description("Check system health and optionally fix issues")
   .option("--json", "Output JSON")
+  .option("--fix", "Automatically fix recoverable issues")
   .action(async (opts: any) => await doctorCommand(opts));
 
 // --- Reflect ---
