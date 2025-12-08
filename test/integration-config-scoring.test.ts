@@ -344,14 +344,14 @@ describe("Integration: Config + Scoring", () => {
     it("detects stale bullets based on feedback recency", () => {
       // Note: isStale uses direct staleDays parameter, not config
       const staleBullet = createTestBullet({
-        createdAt: daysAgo(100),
+        createdAt: daysAgoString(100),
         feedbackEvents: [
           createTestFeedbackEvent("helpful", 100) // Last feedback 100 days ago
         ]
       });
 
       const freshBullet = createTestBullet({
-        createdAt: daysAgo(100),
+        createdAt: daysAgoString(100),
         feedbackEvents: [
           createTestFeedbackEvent("helpful", 10) // Recent feedback
         ]
