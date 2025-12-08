@@ -74,20 +74,21 @@ function joinMessages(entries: any[]): string | null {
 
 // --- Health & Availability ---
 
-export function cassAvailable(cassPath = "cass"): boolean {
+export function cassAvailable(cassPath = "cass", opts: { quiet?: boolean } = {}): boolean {
+  const resolved = expandPath(cassPath);
   try {
-    const result = spawnSync(cassPath, ["--version"], { stdio: "pipe" });
+    const result = spawnSync(resolved, ["--version"], { stdio: "pipe" });
     if (result.error) {
-        console.error("cassAvailable spawn error:", result.error);
+        if (!opts.quiet) console.error("cassAvailable spawn error:", result.error);
         return false;
     }
     if (result.status !== 0) {
-        console.error("cassAvailable non-zero status:", result.status, result.stderr.toString());
+        if (!opts.quiet) console.error("cassAvailable non-zero status:", result.status, result.stderr.toString());
         return false;
     }
     return true;
   } catch (e) {
-    console.error("cassAvailable exception:", e);
+    if (!opts.quiet) console.error("cassAvailable exception:", e);
     return false;
   }
 }
@@ -109,7 +110,7 @@ export async function handleCassUnavailable(
   const candidates = Array.from(new Set([configuredPath, ...common])).map(expandPath);
 
   for (const candidate of candidates) {
-    if (cassAvailable(candidate)) {
+    if (cassAvailable(candidate, { quiet: process.env.CASS_SILENT_WARNINGS === "1" })) {
       const message = candidate === configuredPath
         ? `cass available at ${candidate}`
         : `cass found at ${candidate}. Set CASS_PATH=${candidate} or update config.cassPath.`;
@@ -139,8 +140,9 @@ export async function handleCassUnavailable(
 }
 
 export function cassNeedsIndex(cassPath = "cass"): boolean {
+  const resolved = expandPath(cassPath);
   try {
-    const result = spawnSync(cassPath, ["health"], { stdio: "pipe" });
+    const result = spawnSync(resolved, ["health"], { stdio: "pipe" });
     return result.status !== 0;
   } catch (err: any) {
     return true;
@@ -153,12 +155,13 @@ export async function cassIndex(
   cassPath = "cass",
   options: { full?: boolean; incremental?: boolean } = {}
 ): Promise<void> {
+  const resolved = expandPath(cassPath);
   const args = ["index"];
   if (options.full) args.push("--full");
   if (options.incremental) args.push("--incremental");
 
   return new Promise((resolve, reject) => {
-    const proc = spawn(cassPath, args, { stdio: "inherit" });
+    const proc = spawn(resolved, args, { stdio: "inherit" });
     proc.on("close", (code) => {
       if (code === 0) resolve();
       else reject(new Error(`cass index failed with code ${code}`));
@@ -188,6 +191,7 @@ export async function cassSearch(
   options: CassSearchOptions = {},
   cassPath = "cass"
 ): Promise<CassHit[]> {
+  const resolved = expandPath(cassPath);
   const args = ["search", query, "--robot"];
 
   if (options.limit) args.push("--limit", options.limit.toString());
@@ -201,39 +205,52 @@ export async function cassSearch(
   if (options.workspace) args.push("--workspace", options.workspace);
   if (options.fields) args.push("--fields", options.fields.join(","));
 
+  const parseCassOutput = (stdout: string): any => {
+    // 1) Happy path JSON.parse
+    try {
+      return JSON.parse(stdout);
+    } catch (parseErr) {
+      // 2) Slice from first JSON-looking character (handles leading warnings)
+      const firstArray = stdout.indexOf("[");
+      const firstObject = stdout.indexOf("{");
+      const start = [firstArray, firstObject].filter(i => i >= 0).sort((a, b) => a - b)[0];
+      if (start !== undefined) {
+        const slice = stdout.substring(start);
+        try {
+          return JSON.parse(slice);
+        } catch {
+          // continue to NDJSON fallback
+        }
+      }
+
+      // 3) NDJSON / line-delimited objects (ignore non-JSON lines)
+      const parsedLines: any[] = [];
+      for (const line of stdout.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed || (trimmed[0] !== "{" && trimmed[0] !== "[")) continue;
+        try {
+          const val = JSON.parse(trimmed);
+          if (Array.isArray(val)) parsedLines.push(...val);
+          else parsedLines.push(val);
+        } catch {
+          // ignore malformed lines, keep trying others
+        }
+      }
+      if (parsedLines.length > 0) {
+        return parsedLines;
+      }
+
+      throw parseErr;
+    }
+  };
+
   try {
-    const { stdout } = await execFileAsync(cassPath, args, {
+    const { stdout } = await execFileAsync(resolved, args, {
       maxBuffer: 50 * 1024 * 1024,
       timeout: (options.timeout || 30) * 1000
     });
 
-    let rawHits: any;
-    try {
-      rawHits = JSON.parse(stdout);
-    } catch (parseErr) {
-      // Fallback: Try to find JSON array in stdout (e.g. ignore leading warnings)
-      const jsonStart = stdout.indexOf('[');
-      if (jsonStart > -1) {
-        try {
-          rawHits = JSON.parse(stdout.substring(jsonStart));
-        } catch {
-          // Inner parse failed, throw original error
-          throw parseErr;
-        }
-      } else {
-        // Check for single object response just in case
-        const objStart = stdout.indexOf('{');
-        if (objStart > -1) {
-          try {
-             rawHits = [JSON.parse(stdout.substring(objStart))]; // Treat as array
-          } catch {
-             throw parseErr;
-          }
-        } else {
-          throw parseErr;
-        }
-      }
-    }
+    const rawHits = parseCassOutput(stdout);
 
     // Validate and parse with Zod
     return Array.isArray(rawHits) 
@@ -258,8 +275,9 @@ export async function safeCassSearch(
   config?: Config
 ): Promise<CassHit[]> {
   const force = options.force || process.env.CM_FORCE_CASS_SEARCH === "1";
+  const resolvedCassPath = expandPath(cassPath);
 
-  if (!force && !cassAvailable(cassPath)) {
+  if (!force && !cassAvailable(resolvedCassPath, { quiet: true })) {
     log("cass not available, skipping search", true);
     return [];
   }
@@ -278,7 +296,7 @@ export async function safeCassSearch(
   };
 
   try {
-    const hits = await cassSearch(query, options, cassPath);
+    const hits = await cassSearch(query, options, resolvedCassPath);
     
     return hits.map(hit => ({
       ...hit,
@@ -290,8 +308,8 @@ export async function safeCassSearch(
     if (exitCode === CASS_EXIT_CODES.INDEX_MISSING) {
       log("Index missing, rebuilding...", true);
       try {
-        await cassIndex(cassPath);
-        const hits = await cassSearch(query, options, cassPath);
+        await cassIndex(resolvedCassPath);
+        const hits = await cassSearch(query, options, resolvedCassPath);
         
         return hits.map(hit => ({
           ...hit,
@@ -307,7 +325,7 @@ export async function safeCassSearch(
       log("Search timed out, retrying with reduced limit...", true);
       const reducedOptions = { ...options, limit: Math.max(1, Math.floor((options.limit || 10) / 2)) };
       try {
-        const hits = await cassSearch(query, reducedOptions, cassPath);
+        const hits = await cassSearch(query, reducedOptions, resolvedCassPath);
         
         return hits.map(hit => ({
           ...hit,
@@ -323,7 +341,7 @@ export async function safeCassSearch(
     // Fallback: if force flag set, attempt a best-effort sync call and parse whatever stdout we get
     if (options.force) {
       try {
-        const alt = spawnSync(cassPath, ["search", query, "--robot"], { encoding: "utf-8" });
+        const alt = spawnSync(resolvedCassPath, ["search", query, "--robot"], { encoding: "utf-8" });
         const text = alt.stdout || "";
         if (text.trim()) {
           const parsed = JSON.parse(text);
