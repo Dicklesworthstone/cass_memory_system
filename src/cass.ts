@@ -29,9 +29,18 @@ export const CASS_EXIT_CODES = {
 
 // --- Helpers ---
 
-function sanitizeWithConfig(text: string, config: Config): string {
+function normalizeSanitizeConfig(config: Config) {
   const sanitizeConfig = getSanitizeConfig(config);
-  return sanitize(text, sanitizeConfig);
+  return {
+    ...sanitizeConfig,
+    extraPatterns: (sanitizeConfig.extraPatterns || []).map((p: any) =>
+      typeof p === "string" ? new RegExp(p, "g") : p
+    )
+  };
+}
+
+function sanitizeWithConfig(text: string, config: Config): string {
+  return sanitize(text, normalizeSanitizeConfig(config));
 }
 
 function coerceContent(raw: any): string | null {
@@ -166,7 +175,7 @@ export async function safeCassSearch(
   }
 
   const activeConfig = config || await loadConfig();
-  const sanitizeConfig = getSanitizeConfig(activeConfig);
+  const sanitizeConfig = normalizeSanitizeConfig(activeConfig);
 
   try {
     const hits = await cassSearch(query, options, cassPath);
@@ -312,7 +321,7 @@ export async function cassExpand(
 
     // Sanitize expanded output
     const activeConfig = config || await loadConfig();
-    const sanitizeConfig = getSanitizeConfig(activeConfig);
+    const sanitizeConfig = normalizeSanitizeConfig(activeConfig);
     return sanitize(stdout, sanitizeConfig);
   } catch (err: any) {
     return null;
