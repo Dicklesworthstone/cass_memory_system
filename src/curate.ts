@@ -15,7 +15,8 @@ import {
   hashContent, 
   jaccardSimilarity, 
   generateBulletId, 
-  now
+  now,
+  log 
 } from "./utils.js";
 import { 
   checkForPromotion, 

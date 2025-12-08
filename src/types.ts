@@ -423,6 +423,14 @@ export const ScoringConfigSectionSchema = z.object({
 });
 export type ScoringConfigSection = z.infer<typeof ScoringConfigSectionSchema>;
 
+export const BudgetConfigSchema = z.object({
+  dailyLimit: z.number().min(0).default(0.10),
+  monthlyLimit: z.number().min(0).default(2.00),
+  warningThreshold: z.number().min(0).max(100).default(80),
+  currency: z.string().default("USD"),
+});
+export type BudgetConfig = z.infer<typeof BudgetConfigSchema>;
+
 const PathString = z.string().transform((p) => expandPath(p));
 
 export const ConfigSchema = z
@@ -442,6 +450,7 @@ export const ConfigSchema = z
     diaryDir: PathString.default("~/.cass-memory/diary"),
     diaryPath: PathString.optional(),
     scoring: ScoringConfigSectionSchema.default({}),
+    budget: BudgetConfigSchema.default({}),
     maxReflectorIterations: z.number().min(1).max(10).default(3),
     autoReflect: z.boolean().default(false),
     dedupSimilarityThreshold: z.number().min(0).max(1).default(0.85),

@@ -1,6 +1,6 @@
 import { loadConfig } from "../config.js";
 import { cassAvailable, cassStats } from "../cass.js";
-import { fileExists, resolveRepoDir } from "../utils.js";
+import { fileExists, resolveRepoDir, resolveGlobalDir } from "../utils.js";
 import { isLLMAvailable } from "../llm.js";
 import { SECRET_PATTERNS, compileExtraPatterns } from "../security.js";
 import chalk from "chalk";
@@ -58,13 +58,23 @@ export async function doctorCommand(options: { json?: boolean; fix?: boolean }):
     details: cassOk ? await cassStats(config.cassPath) : undefined,
   });
 
-  // 2) Storage
-  const playbookExists = await fileExists(config.playbookPath);
-  const diaryDirExists = await fileExists(config.diaryDir);
+  // 2) Global Storage
+  const globalDir = resolveGlobalDir();
+  const globalPlaybookExists = await fileExists(path.join(globalDir, "playbook.yaml"));
+  const globalConfigExists = await fileExists(path.join(globalDir, "config.json"));
+  const globalDiaryExists = await fileExists(path.join(globalDir, "diary"));
+  
+  const missingGlobal: string[] = [];
+  if (!globalPlaybookExists) missingGlobal.push("playbook.yaml");
+  if (!globalConfigExists) missingGlobal.push("config.json");
+  if (!globalDiaryExists) missingGlobal.push("diary/");
+
   checks.push({
-    category: "Storage",
-    status: playbookExists && diaryDirExists ? "pass" : "warn",
-    message: `Playbook: ${playbookExists ? "Found" : "Missing"}, Diary: ${diaryDirExists ? "Found" : "Missing"}`,
+    category: "Global Storage (~/.cass-memory)",
+    status: missingGlobal.length === 0 ? "pass" : "warn",
+    message: missingGlobal.length === 0 
+      ? "All global files found" 
+      : `Missing: ${missingGlobal.join(", ")}`,
   });
 
   // 3) LLM config
