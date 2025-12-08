@@ -54,4 +54,8 @@ export class ProcessedLog {
   add(entry: ProcessedEntry): void {
     this.entries.set(entry.sessionPath, entry);
   }
+
+  getProcessedPaths(): Set<string> {
+    return new Set(this.entries.keys());
+  }
 }
