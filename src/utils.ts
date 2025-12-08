@@ -867,6 +867,161 @@ export function warn(msg: string): void {
   console.error(chalk.yellow("[cass-memory] WARNING:"), msg);
 }
 
+// --- String Normalization ---
+
+/**
+ * Convert snake_case keys to camelCase.
+ * Handles nested objects and arrays recursively.
+ *
+ * Useful for normalizing YAML config files which typically use snake_case
+ * to JavaScript conventions which use camelCase.
+ *
+ * @param obj - Object with snake_case keys (or primitive value)
+ * @returns Object with camelCase keys (preserves primitives)
+ *
+ * @example
+ * normalizeYamlKeys({ api_key: "x", max_tokens: 100 })
+ * // Returns: { apiKey: "x", maxTokens: 100 }
+ *
+ * normalizeYamlKeys({ nested_obj: { inner_key: "value" } })
+ * // Returns: { nestedObj: { innerKey: "value" } }
+ */
+export function normalizeYamlKeys<T>(obj: T): T {
+  if (obj === null || obj === undefined) {
+    return obj;
+  }
+
+  if (Array.isArray(obj)) {
+    return obj.map(item => normalizeYamlKeys(item)) as T;
+  }
+
+  if (typeof obj === "object") {
+    const result: Record<string, unknown> = {};
+
+    for (const [key, value] of Object.entries(obj)) {
+      const camelKey = snakeToCamel(key);
+      result[camelKey] = normalizeYamlKeys(value);
+    }
+
+    return result as T;
+  }
+
+  // Primitives pass through unchanged
+  return obj;
+}
+
+/**
+ * Convert a single snake_case string to camelCase.
+ *
+ * @param str - snake_case string
+ * @returns camelCase string
+ *
+ * @example
+ * snakeToCamel("api_key") // "apiKey"
+ * snakeToCamel("max_tokens_limit") // "maxTokensLimit"
+ * snakeToCamel("already_camelCase") // "alreadyCamelcase" (handles mixed)
+ */
+export function snakeToCamel(str: string): string {
+  if (!str) return str;
+
+  return str.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+}
+
+/**
+ * Convert camelCase keys to snake_case.
+ * Inverse of normalizeYamlKeys - useful for writing configs back to YAML.
+ *
+ * @param obj - Object with camelCase keys
+ * @returns Object with snake_case keys
+ *
+ * @example
+ * camelToSnakeKeys({ apiKey: "x", maxTokens: 100 })
+ * // Returns: { api_key: "x", max_tokens: 100 }
+ */
+export function camelToSnakeKeys<T>(obj: T): T {
+  if (obj === null || obj === undefined) {
+    return obj;
+  }
+
+  if (Array.isArray(obj)) {
+    return obj.map(item => camelToSnakeKeys(item)) as T;
+  }
+
+  if (typeof obj === "object") {
+    const result: Record<string, unknown> = {};
+
+    for (const [key, value] of Object.entries(obj)) {
+      const snakeKey = camelToSnake(key);
+      result[snakeKey] = camelToSnakeKeys(value);
+    }
+
+    return result as T;
+  }
+
+  return obj;
+}
+
+/**
+ * Convert a single camelCase string to snake_case.
+ */
+export function camelToSnake(str: string): string {
+  if (!str) return str;
+
+  return str.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
+}
+
+/**
+ * Normalize line endings to Unix-style (LF).
+ * Handles Windows (CRLF), old Mac (CR), and mixed line endings.
+ *
+ * Important for:
+ * - Cross-platform config file consistency
+ * - Git diff cleanliness
+ * - Hash consistency across platforms
+ *
+ * @param text - Input text with potentially mixed line endings
+ * @returns Text with all line endings normalized to LF (\n)
+ *
+ * @example
+ * normalizeLineEndings("line1\r\nline2\rline3\n")
+ * // Returns: "line1\nline2\nline3\n"
+ */
+export function normalizeLineEndings(text: string): string {
+  if (!text) return text;
+
+  // Replace CRLF first (Windows), then CR (old Mac)
+  return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+
+/**
+ * Normalize line endings to platform-specific style.
+ * Use when writing files that should match local conventions.
+ *
+ * @param text - Input text
+ * @param style - Target style: "lf" (Unix), "crlf" (Windows), or "auto" (detect from platform)
+ * @returns Text with normalized line endings
+ */
+export function normalizeLineEndingsTo(
+  text: string,
+  style: "lf" | "crlf" | "auto" = "auto"
+): string {
+  if (!text) return text;
+
+  // First normalize to LF
+  const normalized = normalizeLineEndings(text);
+
+  // Then convert to target style
+  const targetStyle = style === "auto"
+    ? (process.platform === "win32" ? "crlf" : "lf")
+    : style;
+
+  if (targetStyle === "crlf") {
+    return normalized.replace(/\n/g, "\r\n");
+  }
+
+  return normalized;
+}
+
 // --- Context Formatting ---
 
 /**
