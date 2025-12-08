@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { ProcessedEntry, ProcessedEntrySchema } from "./types.js";
+import { ProcessedEntry } from "./types.js";
 import { ensureDir, fileExists } from "./utils.js";
 
 export class ProcessedLog {

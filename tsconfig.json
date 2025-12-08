@@ -8,16 +8,13 @@
     "allowImportingTsExtensions": true,
     "moduleSuffixes": [".ts", ".tsx", ".d.ts", ".js", ".jsx"],
     "noEmit": true,
+    "composite": true,
     "strict": true,
     "downlevelIteration": true,
     "skipLibCheck": true,
     "jsx": "react-jsx",
     "allowSyntheticDefaultImports": true,
     "forceConsistentCasingInFileNames": true,
-    "allowJs": true,
-    "types": ["bun-types", "node"],
-    "typeRoots": ["./node_modules/@types", "./node_modules/bun-types"]
-  },
-  "include": ["src/**/*", "test/**/*"],
-  "exclude": ["dist", "competing_proposal_plans", "bun.d.ts"]
+    "allowJs": true
+  }
 }

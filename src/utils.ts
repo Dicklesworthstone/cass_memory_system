@@ -5,7 +5,7 @@ import crypto from "node:crypto";
 import chalk from "chalk";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
-import type { ContextResult, ScoredBullet, CassSearchHit, PlaybookBullet } from "./types.js";
+import type { ContextResult } from "./types.js";
 
 const execAsync = promisify(exec);
 
