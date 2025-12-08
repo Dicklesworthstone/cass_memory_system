@@ -42,7 +42,7 @@ export async function playbookCommand(
     
     // Load global playbook for writing
     const { loadPlaybook } = await import("../playbook.js");
-    const playbook = await loadPlaybook(config.playbookPath);
+    const playbook = await loadPlaybook(config);
     
     const bullet = addBullet(playbook, {
       content,
@@ -68,13 +68,13 @@ export async function playbookCommand(
 
     // Find where it lives
     const { loadPlaybook } = await import("../playbook.js");
-    let playbook = await loadPlaybook(config.playbookPath);
+    let playbook = await loadPlaybook(config);
     let savePath = config.playbookPath;
     let bullet = findBullet(playbook, id);
 
     if (!bullet) {
       const repoPath = ".cass/playbook.yaml";
-      playbook = await loadPlaybook(repoPath);
+      playbook = await loadPlaybook({ ...config, playbookPath: repoPath });
       bullet = findBullet(playbook, id);
       savePath = repoPath;
     }
