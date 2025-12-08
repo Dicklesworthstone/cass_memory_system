@@ -4,7 +4,8 @@ import yaml from "yaml";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { Config, ConfigSchema, SanitizationConfig, BudgetConfig } from "./types.js";
-import { expandPath, fileExists, warn, atomicWrite } from "./utils.js";
+import { fileExists, warn, atomicWrite } from "./utils.js";
+import { expandPath } from "./path-utils.js";
 
 const execAsync = promisify(exec);
 

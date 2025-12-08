@@ -820,14 +820,7 @@ export function shouldRetry(category: ErrorCategory): boolean {
 
 // --- Path Utilities ---
 
-export function expandPath(p: string): string {
-  if (!p) return "";
-  if (p.startsWith("~")) {
-    const home = process.env.HOME || os.homedir();
-    return path.join(home, p.slice(1));
-  }
-  return p;
-}
+export { expandPath } from "./path-utils.js";
 
 /**
  * Normalize a path for the current platform.
@@ -1193,7 +1186,10 @@ export function hashContent(content: string): string {
 }
 
 // Alias for backward compatibility - some modules import as contentHash
-export const contentHash = hashContent;
+// Backwards compatibility alias (some modules import contentHash)
+export function contentHash(content: string): string {
+  return hashContent(content);
+}
 
 export function tokenize(text: string): string[] {
   if (!text) return [];
