@@ -2260,6 +2260,14 @@ export async function performShutdown(
   const logPrefix = "[cass-memory]";
 
   try {
+    // 0. Signal abort to all running operations
+    // Note: requestAbort is defined later in this file, use direct access
+    try {
+      globalAbortController?.abort(`Shutdown: ${signal}`);
+    } catch {
+      // Abort controller might not be initialized yet
+    }
+
     // 1. Release all acquired locks
     const { releaseAllLocks, getActiveLocks } = await import("./lock.js");
     const lockCount = getActiveLocks().length;
@@ -2351,4 +2359,219 @@ export function setupGracefulShutdown(): void {
     console.error("[cass-memory] Unhandled rejection:", reason);
     void performShutdown("unhandledRejection", 1);
   });
+}
+
+// --- AbortController Integration ---
+
+/**
+ * Error thrown when an operation is aborted.
+ * Extends Error with additional abort-specific information.
+ */
+export class AbortError extends Error {
+  /** Name is always "AbortError" for instanceof checks */
+  readonly name = "AbortError";
+  /** The reason the operation was aborted */
+  readonly reason: string;
+
+  constructor(reason: string = "Operation aborted") {
+    super(reason);
+    this.reason = reason;
+    // Maintain proper stack trace in V8 environments
+    if (Error.captureStackTrace) {
+      Error.captureStackTrace(this, AbortError);
+    }
+  }
+}
+
+/**
+ * Global abort controller for application-wide cancellation.
+ * Reset this when starting a new operation that should be cancellable.
+ */
+let globalAbortController = new AbortController();
+
+/**
+ * Get the global AbortSignal for checking cancellation.
+ *
+ * @returns The current global AbortSignal
+ *
+ * @example
+ * // Pass to fetch or other APIs that accept AbortSignal
+ * const response = await fetch(url, { signal: getAbortSignal() });
+ */
+export function getAbortSignal(): AbortSignal {
+  return globalAbortController.signal;
+}
+
+/**
+ * Check if the current operation should be aborted.
+ * Call this periodically in long-running operations.
+ *
+ * @throws {AbortError} If abort has been requested
+ *
+ * @example
+ * for (const session of sessions) {
+ *   checkAbort(); // Throws if Ctrl+C was pressed
+ *   await processSession(session);
+ * }
+ */
+export function checkAbort(): void {
+  if (globalAbortController.signal.aborted) {
+    throw new AbortError("Operation cancelled by user");
+  }
+}
+
+/**
+ * Check if abort has been requested without throwing.
+ * Use this when you want to handle abort gracefully.
+ *
+ * @returns true if abort has been requested
+ *
+ * @example
+ * if (isAborted()) {
+ *   return partialResult;
+ * }
+ */
+export function isAborted(): boolean {
+  return globalAbortController.signal.aborted;
+}
+
+/**
+ * Request abort of current operations.
+ * This signals all operations watching the global abort signal.
+ *
+ * @param reason - Optional reason for the abort
+ *
+ * @example
+ * // In a SIGINT handler
+ * requestAbort("User pressed Ctrl+C");
+ */
+export function requestAbort(reason?: string): void {
+  globalAbortController.abort(reason);
+}
+
+/**
+ * Reset the global abort controller.
+ * Call this at the start of a new top-level operation.
+ *
+ * @example
+ * // At the start of a CLI command
+ * resetAbort();
+ * try {
+ *   await longRunningOperation();
+ * } catch (err) {
+ *   if (err instanceof AbortError) {
+ *     console.log("Operation was cancelled");
+ *   }
+ * }
+ */
+export function resetAbort(): void {
+  globalAbortController = new AbortController();
+}
+
+/**
+ * Create a timeout abort signal.
+ * Useful for operations that should have a maximum duration.
+ *
+ * @param timeoutMs - Timeout in milliseconds
+ * @returns AbortSignal that will abort after the timeout
+ *
+ * @example
+ * const signal = createTimeoutSignal(5000); // 5 seconds
+ * try {
+ *   await fetch(url, { signal });
+ * } catch (err) {
+ *   if (err.name === "AbortError") {
+ *     console.log("Request timed out");
+ *   }
+ * }
+ */
+export function createTimeoutSignal(timeoutMs: number): AbortSignal {
+  return AbortSignal.timeout(timeoutMs);
+}
+
+/**
+ * Create a combined abort signal from multiple sources.
+ * Aborts if any of the source signals abort.
+ *
+ * @param signals - Array of AbortSignals to combine
+ * @returns Combined AbortSignal
+ *
+ * @example
+ * const signal = combineAbortSignals([
+ *   getAbortSignal(),           // User cancellation
+ *   createTimeoutSignal(30000)  // 30 second timeout
+ * ]);
+ * await fetch(url, { signal });
+ */
+export function combineAbortSignals(signals: AbortSignal[]): AbortSignal {
+  return AbortSignal.any(signals);
+}
+
+/**
+ * Run an async operation with abort support.
+ * Checks for abort before and after the operation.
+ *
+ * @param operation - The async operation to run
+ * @param checkIntervalMs - Optional: check abort every N ms during long operations
+ * @returns The operation result
+ * @throws {AbortError} If aborted before or during operation
+ *
+ * @example
+ * const result = await withAbortCheck(async () => {
+ *   return await expensiveLLMCall();
+ * });
+ */
+export async function withAbortCheck<T>(
+  operation: () => Promise<T>,
+  checkIntervalMs?: number
+): Promise<T> {
+  checkAbort();
+
+  if (checkIntervalMs) {
+    // Create a periodic abort checker
+    const intervalId = setInterval(() => {
+      if (globalAbortController.signal.aborted) {
+        clearInterval(intervalId);
+      }
+    }, checkIntervalMs);
+
+    try {
+      const result = await operation();
+      checkAbort();
+      return result;
+    } finally {
+      clearInterval(intervalId);
+    }
+  }
+
+  const result = await operation();
+  checkAbort();
+  return result;
+}
+
+/**
+ * Execute operations in sequence, checking for abort between each.
+ * Useful for batch processing where you want clean abort points.
+ *
+ * @param items - Array of items to process
+ * @param processor - Async function to process each item
+ * @returns Array of results
+ * @throws {AbortError} If aborted between operations
+ *
+ * @example
+ * const results = await withAbortableSequence(
+ *   sessions,
+ *   async (session) => await processSession(session)
+ * );
+ */
+export async function withAbortableSequence<T, R>(
+  items: T[],
+  processor: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = [];
+  for (let i = 0; i < items.length; i++) {
+    checkAbort();
+    results.push(await processor(items[i], i));
+  }
+  return results;
 }
