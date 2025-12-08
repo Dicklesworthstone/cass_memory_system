@@ -18,23 +18,90 @@ import { log } from "./utils.js";
 export function formatBulletsForPrompt(bullets: PlaybookBullet[]): string {
   if (bullets.length === 0) return "(Playbook is empty)";
 
-  // Group by category
+  // Group bullets by category for readability
   const byCategory: Record<string, PlaybookBullet[]> = {};
-  for (const b of bullets) {
-    if (!byCategory[b.category]) byCategory[b.category] = [];
-    byCategory[b.category].push(b);
+  for (const bullet of bullets) {
+    const cat = bullet.category || "uncategorized";
+    if (!byCategory[cat]) byCategory[cat] = [];
+    byCategory[cat].push(bullet);
   }
 
+  const iconForMaturity = (maturity?: PlaybookBullet["maturity"]) => {
+    if (maturity === "proven") return "★";
+    if (maturity === "established") return "●";
+    return "○"; // candidate or default
+  };
+
   let output = "";
-  for (const [cat, group] of Object.entries(byCategory)) {
-    output += `### ${cat}\n`;
-    for (const b of group) {
-      // Format: [id] Content (stats)
-      output += `- [${b.id}] ${b.content} (${b.helpfulCount} helpful, ${b.harmfulCount} harmful)\n`;
+  for (const [category, list] of Object.entries(byCategory)) {
+    output += `### ${category}\n`;
+    for (const b of list) {
+      const icon = iconForMaturity(b.maturity);
+      const helpful = b.helpfulCount ?? 0;
+      const harmful = b.harmfulCount ?? 0;
+      output += `- [${b.id}] ${icon} ${b.content} (${helpful} helpful, ${harmful} harmful)\n`;
     }
     output += "\n";
   }
-  return output;
+
+  return output.trim();
+}
+
+export function formatDiaryForPrompt(diary: DiaryEntry): string {
+  // ... (implementation)
+  const lines = [];
+  lines.push(`## Session Overview`);
+  lines.push(`- Path: ${diary.sessionPath}`);
+  lines.push(`- Agent: ${diary.agent}`);
+  lines.push(`- Workspace: ${diary.workspace || "unknown"}`);
+  lines.push(`- Status: ${diary.status}`);
+  lines.push(`- Timestamp: ${diary.timestamp}`);
+
+  if (diary.accomplishments && diary.accomplishments.length > 0) {
+    lines.push(`\n## Accomplishments`);
+    diary.accomplishments.forEach(a => lines.push(`- ${a}`));
+  }
+
+  if (diary.decisions && diary.decisions.length > 0) {
+    lines.push(`\n## Decisions Made`);
+    diary.decisions.forEach(d => lines.push(`- ${d}`));
+  }
+
+  if (diary.challenges && diary.challenges.length > 0) {
+    lines.push(`\n## Challenges Encountered`);
+    diary.challenges.forEach(c => lines.push(`- ${c}`));
+  }
+
+  if (diary.keyLearnings && diary.keyLearnings.length > 0) {
+    lines.push(`\n## Key Learnings`);
+    diary.keyLearnings.forEach(k => lines.push(`- ${k}`));
+  }
+
+  if (diary.preferences && diary.preferences.length > 0) {
+    lines.push(`\n## User Preferences`);
+    diary.preferences.forEach(p => lines.push(`- ${p}`));
+  }
+
+  return lines.join("\n");
+}
+
+export function formatCassHistory(hits: CassHit[]): string {
+  if (!hits || hits.length === 0) {
+    return "RELATED HISTORY FROM OTHER AGENTS:\n\n(None found)";
+  }
+
+  const maxHits = 5;
+  const truncate = (text: string, max = 200) =>
+    text.length > max ? `${text.slice(0, max)}…` : text;
+
+  const formatted = hits.slice(0, maxHits).map((h) => {
+    const snippet = truncate(h.snippet || "");
+    const agent = h.agent || "unknown";
+    const path = (h as any).sessionPath || h.source_path || "unknown";
+    return `Session: ${path}\nAgent: ${agent}\nSnippet: "${snippet}"\n---`;
+  });
+
+  return "RELATED HISTORY FROM OTHER AGENTS:\n\n" + formatted.join("\n");
 }
 
 // --- Helper: Context Gathering ---
