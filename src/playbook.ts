@@ -49,7 +49,8 @@ export function createEmptyPlaybook(name = "playbook"): Playbook {
   };
 }
 
-export async function loadPlaybook(filePath: string): Promise<Playbook> {
+export async function loadPlaybook(target: Config | string): Promise<Playbook> {
+  const filePath = typeof target === "string" ? target : target.playbookPath;
   const expanded = expandPath(filePath);
   
   if (!(await fileExists(expanded))) {
@@ -79,7 +80,8 @@ export async function loadPlaybook(filePath: string): Promise<Playbook> {
   }
 }
 
-export async function savePlaybook(playbook: Playbook, filePath: string): Promise<void> {
+export async function savePlaybook(playbook: Playbook, target: Config | string): Promise<void> {
+  const filePath = typeof target === "string" ? target : target.playbookPath;
   const expanded = expandPath(filePath);
   await ensureDir(path.dirname(expanded));
   
@@ -228,6 +230,9 @@ export function addBullet(
     helpfulCount: 0,
     harmfulCount: 0,
     feedbackEvents: [],
+    helpfulEvents: [],
+    harmfulEvents: [],
+    confidenceDecayHalfLifeDays: 90,
     deprecated: false,
     pinned: false
   };

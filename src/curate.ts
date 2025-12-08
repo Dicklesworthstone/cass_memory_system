@@ -53,7 +53,7 @@ function findSimilarBullet(
 
 // --- Helper: Anti-Pattern Inversion ---
 
-function invertToAntiPattern(bullet: PlaybookBullet): PlaybookBullet {
+function invertToAntiPattern(bullet: PlaybookBullet, config: Config): PlaybookBullet {
   const reason = `Marked harmful ${bullet.harmfulCount} times`;
   const cleaned = bullet.content
     .replace(/^(always |prefer |use |try |consider )/i, "")
@@ -69,20 +69,21 @@ function invertToAntiPattern(bullet: PlaybookBullet): PlaybookBullet {
     isNegative: true,
     scope: bullet.scope,
     workspace: bullet.workspace,
-    state: "active", // Start active to warn immediately? Or candidate? Let's say active for protection.
-    maturity: "candidate", // Needs feedback to prove it's a valid warning
+    state: "active", 
+    maturity: "candidate", 
     createdAt: now(),
     updatedAt: now(),
     sourceSessions: bullet.sourceSessions,
     sourceAgents: bullet.sourceAgents,
     tags: [...bullet.tags, "inverted", "anti-pattern"],
+    feedbackEvents: [],
     helpfulEvents: [],
     harmfulEvents: [],
     helpfulCount: 0,
     harmfulCount: 0,
-    confidenceDecayHalfLifeDays: bullet.confidenceDecayHalfLifeDays,
     deprecated: false,
-    pinned: false
+    pinned: false,
+    confidenceDecayHalfLifeDays: config.defaultDecayHalfLife ?? 90
   };
 }
 
@@ -127,8 +128,7 @@ export function curatePlaybook(
         const similar = findSimilarBullet(content, playbook, config.dedupSimilarityThreshold);
         if (similar) {
           // Boost existing instead of adding
-          similar.helpfulEvents = similar.helpfulEvents ?? [];
-          similar.helpfulEvents.push({
+          similar.feedbackEvents.push({
             type: "helpful",
             timestamp: now(),
             sessionPath: delta.sourceSession,
@@ -141,19 +141,11 @@ export function curatePlaybook(
         }
         
         // 3. Add new
-        const newBullet = addBullet(
-          playbook,
-          {
-            content,
-            category: delta.bullet.category,
-            tags: delta.bullet.tags || [],
-            type: "rule",
-            kind: "stack_pattern",
-            scope: "global"
-          },
-          delta.sourceSession,
-          config
-        );
+        const newBullet = addBullet(playbook, {
+          content,
+          category: delta.bullet.category,
+          tags: delta.bullet.tags
+        }, delta.sourceSession);
         
         existingHashes.add(hash);
         applied = true;
@@ -163,11 +155,12 @@ export function curatePlaybook(
       case "helpful": {
         const bullet = findBullet(playbook, delta.bulletId);
         if (bullet) {
-          bullet.helpfulEvents = bullet.helpfulEvents ?? [];
-          bullet.helpfulEvents.push({
+          bullet.feedbackEvents = bullet.feedbackEvents || [];
+          bullet.feedbackEvents.push({
             type: "helpful",
             timestamp: now(),
-            sessionPath: delta.sourceSession
+            sessionPath: delta.sourceSession,
+            context: delta.context
           });
           bullet.helpfulCount++;
           bullet.lastValidatedAt = now();
@@ -180,13 +173,17 @@ export function curatePlaybook(
       case "harmful": {
         const bullet = findBullet(playbook, delta.bulletId);
         if (bullet) {
-          bullet.harmfulEvents = bullet.harmfulEvents ?? [];
-          bullet.harmfulEvents.push({
+          // reason needs to match HarmfulReason enum or undefined
+          // We'll map string to undefined if it doesn't match, or 'other'
+          // For simplicity in Curator, assume delta.reason is valid or let Zod handle it upstream
+          // But here we might need casting if types don't align perfectly
+          bullet.feedbackEvents = bullet.feedbackEvents || [];
+          bullet.feedbackEvents.push({
             type: "harmful",
             timestamp: now(),
             sessionPath: delta.sourceSession,
-            reason: delta.reason,
-            context: (delta as any).context
+            reason: delta.reason, 
+            context: delta.context
           });
           bullet.harmfulCount++;
           bullet.updatedAt = now();
@@ -219,11 +216,8 @@ export function curatePlaybook(
           // Create merged
           const merged = addBullet(playbook, {
             content: delta.mergedContent,
-            category: delta.bulletIds[0] ? findBullet(playbook, delta.bulletIds[0])?.category || "uncategorized" : "uncategorized",
-            tags: [...new Set(bulletsToMerge.flatMap(b => b.tags))],
-            type: "rule",
-            kind: "stack_pattern",
-            scope: "global"
+            category: bulletsToMerge[0].category, // Inherit category
+            tags: [...new Set(bulletsToMerge.flatMap(b => b.tags))]
           }, "merged"); // Source?
           
           // Deprecate originals
@@ -256,7 +250,7 @@ export function curatePlaybook(
         bulletId: bullet.id, 
         from: oldMaturity, 
         to: newMaturity,
-        reason: `Promoted from ${oldMaturity} to ${newMaturity}` 
+        reason: `Auto-promoted from ${oldMaturity} to ${newMaturity}`
       });
     }
     
@@ -279,22 +273,21 @@ export function curatePlaybook(
     
     // Threshold: 3+ harmful events AND ratio > 2:1 harmful:helpful
     if (decayedHarmful >= 3 && decayedHarmful > (decayedHelpful * 2)) {
-      const antiPattern = invertToAntiPattern(bullet);
+      const antiPattern = invertToAntiPattern(bullet, config);
       playbook.bullets.push(antiPattern);
       
       deprecateBullet(playbook, bullet.id, `Inverted to anti-pattern: ${antiPattern.id}`, antiPattern.id);
       
       inversions.push({
-        bulletId: bullet.id,
+        originalId: bullet.id,
         originalContent: bullet.content,
-        newContent: antiPattern.content,
-        reason: `Inverted to anti-pattern: ${antiPattern.id}`
+        antiPatternId: antiPattern.id,
+        antiPatternContent: antiPattern.content,
+        bulletId: bullet.id
       });
     }
   }
   result.inversions = inversions;
 
-  // 3. Auto-Pruning (if enabled/configured logic exists, handled via demotion check above mostly)
-  
   return result;
 }
