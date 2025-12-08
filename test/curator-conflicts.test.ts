@@ -19,7 +19,10 @@ const bullet = (content: string): PlaybookBullet => ({
   feedbackEvents: [],
   deprecated: false,
   pinned: false,
-  tags: []
+  tags: [],
+  confidenceDecayHalfLifeDays: 90,
+  sourceSessions: [],
+  sourceAgents: []
 });
 
 describe("detectConflicts", () => {

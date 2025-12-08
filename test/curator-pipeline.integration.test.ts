@@ -7,14 +7,17 @@
  */
 import { describe, it, expect, beforeEach } from "bun:test";
 import { curatePlaybook } from "../src/curate";
-import { validateDelta, normalizeValidatorVerdict, evidenceCountGate } from "../src/validate";
-import { Playbook, PlaybookDelta, Config, PlaybookBullet } from "../src/types";
+import { validateDelta, normalizeValidatorVerdict } from "../src/validate";
+import { PlaybookDelta, Config } from "../src/types";
 import {
   createTestConfig,
   createTestBullet,
   createTestPlaybook,
-  createTestFeedbackEvent
+  createTestFeedbackEvent,
+  createFeedbackEvent
 } from "./helpers/factories";
+
+const isoNow = () => new Date().toISOString();
 
 describe("Curator Pipeline Integration", () => {
   let config: Config;
@@ -119,8 +122,6 @@ describe("Curator Pipeline Integration", () => {
   // ===========================================================================
   describe("anti-pattern inversion flow", () => {
     it("inverted anti-patterns are new bullets that can be validated", async () => {
-      const now = new Date().toISOString();
-
       // Create a bullet that will trigger inversion (>=3 harmful, harmful > 2*helpful)
       const harmfulBullet = createTestBullet({
         id: "bad-rule",
@@ -129,7 +130,7 @@ describe("Curator Pipeline Integration", () => {
         harmfulCount: 5,
         helpfulCount: 0,
         feedbackEvents: Array(5).fill(null).map(() =>
-          createFeedbackEvent("harmful", { timestamp: now })
+          createFeedbackEvent("harmful", { timestamp: isoNow() })
         )
       });
       const playbook = createTestPlaybook([harmfulBullet]);
@@ -165,15 +166,13 @@ describe("Curator Pipeline Integration", () => {
     });
 
     it("original bullet is deprecated after inversion", async () => {
-      const now = new Date().toISOString();
-
       const harmfulBullet = createTestBullet({
         id: "to-invert",
         content: "Use var for all declarations",
         category: "javascript",
         harmfulCount: 4,
         feedbackEvents: Array(4).fill(null).map(() =>
-          createFeedbackEvent("harmful", { timestamp: now })
+          createFeedbackEvent("harmful", { timestamp: isoNow() })
         )
       });
       const playbook = createTestPlaybook([harmfulBullet]);
@@ -188,15 +187,13 @@ describe("Curator Pipeline Integration", () => {
     });
 
     it("pinned bullets survive harmful feedback without inversion", async () => {
-      const now = new Date().toISOString();
-
       const pinnedBullet = createTestBullet({
         id: "pinned-rule",
         content: "Important rule that should never be inverted",
         pinned: true,
         harmfulCount: 10,
         feedbackEvents: Array(10).fill(null).map(() =>
-          createFeedbackEvent("harmful", { timestamp: now })
+          createFeedbackEvent("harmful", { timestamp: isoNow() })
         )
       });
       const playbook = createTestPlaybook([pinnedBullet]);
@@ -213,8 +210,6 @@ describe("Curator Pipeline Integration", () => {
   // ===========================================================================
   describe("maturity transitions", () => {
     it("bullet promoted to established maintains state through curation", async () => {
-      const now = new Date().toISOString();
-
       // Bullet with enough helpful feedback to promote
       const candidateBullet = createTestBullet({
         id: "promotable",
@@ -222,7 +217,7 @@ describe("Curator Pipeline Integration", () => {
         maturity: "candidate",
         helpfulCount: 4,
         feedbackEvents: Array(4).fill(null).map(() =>
-          createFeedbackEvent("helpful", { timestamp: now })
+          createFeedbackEvent("helpful", { timestamp: isoNow() })
         )
       });
       const playbook = createTestPlaybook([candidateBullet]);
@@ -242,8 +237,6 @@ describe("Curator Pipeline Integration", () => {
     });
 
     it("bullet with negative score triggers demotion or deprecation", async () => {
-      const now = new Date().toISOString();
-
       // Bullet with very negative score
       const negativeBullet = createTestBullet({
         id: "negative",
@@ -252,9 +245,9 @@ describe("Curator Pipeline Integration", () => {
         harmfulCount: 8,
         helpfulCount: 1,
         feedbackEvents: [
-          createFeedbackEvent("helpful", { timestamp: now }),
+          createFeedbackEvent("helpful", { timestamp: isoNow() }),
           ...Array(8).fill(null).map(() =>
-            createFeedbackEvent("harmful", { timestamp: now })
+            createFeedbackEvent("harmful", { timestamp: isoNow() })
           )
         ]
       });
@@ -273,15 +266,13 @@ describe("Curator Pipeline Integration", () => {
     });
 
     it("multiple bullets transition independently", async () => {
-      const now = new Date().toISOString();
-
       const bullet1 = createTestBullet({
         id: "b1",
         content: "First rule with good feedback",
         maturity: "candidate",
         helpfulCount: 5,
         feedbackEvents: Array(5).fill(null).map(() =>
-          createFeedbackEvent("helpful", { timestamp: now })
+          createFeedbackEvent("helpful", { timestamp: isoNow() })
         )
       });
 
@@ -291,7 +282,7 @@ describe("Curator Pipeline Integration", () => {
         maturity: "candidate",
         harmfulCount: 5,
         feedbackEvents: Array(5).fill(null).map(() =>
-          createFeedbackEvent("harmful", { timestamp: now })
+          createFeedbackEvent("harmful", { timestamp: isoNow() })
         )
       });
 
@@ -368,8 +359,6 @@ describe("Curator Pipeline Integration", () => {
   // ===========================================================================
   describe("pruning decisions", () => {
     it("bullets below prune threshold are auto-deprecated", async () => {
-      const now = new Date().toISOString();
-
       // Create bullet with extreme negative score
       const veryBadBullet = createTestBullet({
         id: "prune-me",
@@ -378,7 +367,7 @@ describe("Curator Pipeline Integration", () => {
         harmfulCount: 20,
         helpfulCount: 0,
         feedbackEvents: Array(20).fill(null).map(() =>
-          createFeedbackEvent("harmful", { timestamp: now })
+          createFeedbackEvent("harmful", { timestamp: isoNow() })
         )
       });
       const playbook = createTestPlaybook([veryBadBullet]);
@@ -396,15 +385,13 @@ describe("Curator Pipeline Integration", () => {
     });
 
     it("pruned count is accurate in result", async () => {
-      const now = new Date().toISOString();
-
       // Multiple bullets, some should be pruned
       const goodBullet = createTestBullet({
         id: "good",
         content: "Good rule",
         helpfulCount: 5,
         feedbackEvents: Array(5).fill(null).map(() =>
-          createFeedbackEvent("helpful", { timestamp: now })
+          createFeedbackEvent("helpful", { timestamp: isoNow() })
         )
       });
 
@@ -413,7 +400,7 @@ describe("Curator Pipeline Integration", () => {
         content: "Bad rule that will be handled",
         harmfulCount: 15,
         feedbackEvents: Array(15).fill(null).map(() =>
-          createFeedbackEvent("harmful", { timestamp: now })
+          createFeedbackEvent("harmful", { timestamp: isoNow() })
         )
       });
 

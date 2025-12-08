@@ -271,7 +271,7 @@ b3BlbnNzaC1rZXktdjEAAAAA
 
     it("accepts auditLevel debug without throwing", () => {
       const text = "AKIA1234567890123456";
-      const config = { enabled: true, auditLog: true, auditLevel: "debug" };
+      const config = { enabled: true, auditLog: true, auditLevel: "debug" as const };
       expect(() => sanitize(text, config)).not.toThrow();
     });
   });

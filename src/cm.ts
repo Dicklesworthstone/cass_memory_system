@@ -13,6 +13,7 @@ import { auditCommand } from "./commands/audit.js";
 import { projectCommand } from "./commands/project.js";
 import { serveCommand } from "./commands/serve.js";
 import { outcomeCommand, applyOutcomeLogCommand } from "./commands/outcome.js";
+import { usageCommand } from "./commands/usage.js";
 
 const program = new Command();
 const toInt = (value: string) => parseInt(value, 10);
@@ -83,6 +84,12 @@ program.command("stats")
   .description("Show playbook health metrics")
   .option("--json", "Output JSON")
   .action(async (opts: any) => await statsCommand(opts));
+
+// --- Usage ---
+program.command("usage")
+  .description("Show LLM cost and usage statistics")
+  .option("--json", "Output JSON")
+  .action(async (opts: any) => await usageCommand(opts));
 
 // --- Validate ---
 program.command("validate")

@@ -114,7 +114,7 @@ describe("Confidence Decay", () => {
         feedbackEvents: [createTestFeedbackEvent("harmful", 0)]
       });
       const score = getEffectiveScore(bullet, configWithMultiplier);
-      expect(score).toBe(-2);
+      expect(score).toBeCloseTo(-2, 5);
     });
   });
 

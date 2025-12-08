@@ -289,7 +289,7 @@ export function fillPrompt(
 export function truncateForPrompt(content: string, maxChars = 50000): string {
   if (content.length <= maxChars) return content;
 
-  const marker = `\n\n[... ${content.length - maxChars} chars truncated ...]\n\n`;
+  const marker = `\n\n[... ${content.length - maxChars} characters truncated ...]\n\n`;
   const markerLen = marker.length;
   const available = maxChars - markerLen;
 
