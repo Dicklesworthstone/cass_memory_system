@@ -5,46 +5,37 @@ import { expandPath } from "./utils.js";
 const STALE_LOCK_THRESHOLD_MS = 30_000; // 30 seconds
 
 /**
- * Check if a lock file is stale (older than threshold).
- * A stale lock typically means a process crashed while holding it.
+ * Check if a lock dir is stale (older than threshold).
  */
-async function isLockStale(lockFile: string): Promise<boolean> {
+async function isLockStale(lockPath: string): Promise<boolean> {
   try {
-    const stat = await fs.stat(lockFile);
+    const stat = await fs.stat(lockPath);
     const ageMs = Date.now() - stat.mtimeMs;
     return ageMs > STALE_LOCK_THRESHOLD_MS;
   } catch {
-    // Lock doesn't exist or can't be read - not stale
     return false;
   }
 }
 
 /**
- * Try to clean up a stale lock file.
- * Returns true if lock was removed, false otherwise.
+ * Try to clean up a stale lock dir.
  */
-async function tryRemoveStaleLock(lockFile: string): Promise<boolean> {
+async function tryRemoveStaleLock(lockPath: string): Promise<boolean> {
   try {
-    // Double-check staleness before removing
-    if (await isLockStale(lockFile)) {
-      await fs.unlink(lockFile);
-      console.warn(`[lock] Removed stale lock file: ${lockFile}`);
+    if (await isLockStale(lockPath)) {
+      await fs.rm(lockPath, { recursive: true, force: true });
+      console.warn(`[lock] Removed stale lock: ${lockPath}`);
       return true;
     }
   } catch {
-    // Failed to remove - another process may have taken it
+    // Failed to remove
   }
   return false;
 }
 
 /**
- * Simple file lock mechanism for CLI operations.
- * Uses a .lock file next to the target file.
- *
- * Features:
- * - Automatic stale lock detection (>30s old)
- * - Configurable retry count and delay
- * - Stores PID for debugging
+ * Robust file lock mechanism using atomic mkdir.
+ * Uses a .lock directory next to the target file.
  */
 export async function withLock<T>(
   targetPath: string,
@@ -53,46 +44,43 @@ export async function withLock<T>(
 ): Promise<T> {
   const maxRetries = options.retries ?? 20;
   const retryDelay = options.delay ?? 100;
-  const lockFile = `${expandPath(targetPath)}.lock`;
+  // Use .lock.d to clearly indicate directory
+  const lockPath = `${expandPath(targetPath)}.lock.d`;
   const pid = process.pid.toString();
 
-  // Try to acquire lock
   for (let i = 0; i < maxRetries; i++) {
     try {
-      // "wx" fails if file exists
-      await fs.writeFile(lockFile, pid, { flag: "wx" });
+      // mkdir is atomic
+      await fs.mkdir(lockPath);
+      
+      // Write metadata inside (best effort, doesn't affect lock validity)
+      try {
+        await fs.writeFile(`${lockPath}/pid`, pid);
+      } catch {}
 
-      // Lock acquired
       try {
         return await operation();
       } finally {
-        // Release lock
         try {
-          await fs.unlink(lockFile);
-        } catch {
-          // Ignore error if lock file already gone (shouldn't happen but safe to ignore)
-        }
+          await fs.rm(lockPath, { recursive: true, force: true });
+        } catch {}
       }
     } catch (err: any) {
       if (err.code === "EEXIST") {
-        // Lock exists - check if it's stale
-        if (await tryRemoveStaleLock(lockFile)) {
-          // Stale lock removed, retry immediately
+        if (await tryRemoveStaleLock(lockPath)) {
           continue;
         }
-        // Lock is active, wait and retry
         await new Promise(resolve => setTimeout(resolve, retryDelay));
         continue;
       }
       if (err.code === "ENOENT") {
-        // Parent directory doesn't exist - create it
-        const dir = lockFile.substring(0, lockFile.lastIndexOf("/"));
+        const dir = lockPath.substring(0, lockPath.lastIndexOf("/"));
         await fs.mkdir(dir, { recursive: true });
         continue;
       }
-      throw err; // Unexpected error (e.g., EACCES, EROFS)
+      throw err;
     }
   }
 
-  throw new Error(`Could not acquire lock for ${targetPath} after ${maxRetries} retries. A .lock file may be held by another process.`);
+  throw new Error(`Could not acquire lock for ${targetPath} after ${maxRetries} retries.`);
 }
