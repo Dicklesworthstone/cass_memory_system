@@ -1,58 +1,67 @@
-import {
-  saveConfig,
-  getDefaultConfig,
-  getUserConfigPath,
-  ensureConfigDirs
-} from "../config.js";
-import type { Config } from "../types.js";
-import {
-  loadPlaybook,
-  savePlaybook,
-  createEmptyPlaybook
-} from "../playbook.js";
+import { getDefaultConfig, saveConfig } from "../config.js";
+import { createEmptyPlaybook, savePlaybook } from "../playbook.js";
+import { expandPath, fileExists, ensureDir, warn, log } from "../utils.js";
 import { cassAvailable } from "../cass.js";
-import { fileExists, expandPath, log, warn, error } from "../utils.js";
 import chalk from "chalk";
 
-export async function initCommand(options: { force?: boolean } = {}): Promise<void> {
-  const configPath = getUserConfigPath();
-  const configExists = await fileExists(configPath);
-
-  if (configExists && !options.force) {
-    error(`Already initialized at ${configPath}. Use --force to overwrite.`);
-    return; // Don't exit, just return
-  }
-
-  log("Initializing cass-memory...", true);
-
-  // 1. Create default config
+export async function initCommand(options: { force?: boolean; json?: boolean }) {
   const config = getDefaultConfig();
-  
-  // 2. Create directories
-  await ensureConfigDirs(config);
-
-  // 3. Save config
-  await saveConfig(config);
-  console.log(chalk.green(`✓ Created configuration: ${configPath}`));
-
-  // 4. Create empty playbook if missing
+  const configPath = expandPath("~/.cass-memory/config.json");
   const playbookPath = expandPath(config.playbookPath);
-  if (!await fileExists(playbookPath)) {
-    const playbook = createEmptyPlaybook();
-    await savePlaybook(playbook, config);
-    console.log(chalk.green(`✓ Created playbook: ${playbookPath}`));
-  } else {
-    console.log(chalk.blue(`ℹ Playbook already exists: ${playbookPath}`));
+  const diaryDir = expandPath(config.diaryDir);
+  
+  const alreadyInitialized = await fileExists(configPath);
+  
+  if (alreadyInitialized && !options.force) {
+    if (options.json) {
+      console.log(JSON.stringify({
+        success: false,
+        error: "Already initialized. Use --force to reinitialize."
+      }));
+    } else {
+      log(chalk.yellow("Already initialized. Use --force to reinitialize."), true);
+    }
+    return;
   }
 
-  // 5. Check cass availability
-  if (cassAvailable(config.cassPath)) {
-    console.log(chalk.green("✓ cass CLI found and healthy"));
-  } else {
-    warn("cass CLI not found or not working. Some features will be disabled.");
-    console.log(chalk.yellow("  Install from: https://github.com/Dicklesworthstone/coding_agent_session_search"));
+  // 1. Create directories
+  await ensureDir(diaryDir);
+  await ensureDir("~/.cass-memory/reflections");
+  await ensureDir("~/.cass-memory/embeddings");
+  await ensureDir("~/.cass-memory/cost");
+
+  // 2. Create default config
+  await saveConfig(config);
+
+  // 3. Create empty playbook
+  const playbook = createEmptyPlaybook();
+  await savePlaybook(playbook, playbookPath);
+
+  // 4. Check cass
+  const cassOk = cassAvailable(config.cassPath);
+  if (!cassOk && !options.json) {
+    warn("cass is not available. Some features will not work.");
+    console.log("Install cass from https://github.com/Dicklesworthstone/coding_agent_session_search");
   }
 
-  console.log(chalk.bold("\nInitialization complete! 🚀"));
-  console.log("Try: cm context \"fix a bug\"");
+  // Output
+  if (options.json) {
+    console.log(JSON.stringify({
+      success: true,
+      configPath,
+      playbookPath,
+      cassAvailable: cassOk
+    }, null, 2));
+  } else {
+    console.log(chalk.green("✓ Created ~/.cass-memory/config.json"));
+    console.log(chalk.green("✓ Created ~/.cass-memory/playbook.yaml"));
+    console.log(chalk.green(`✓ Created directories: ${diaryDir}, reflections/, embeddings/`));
+    console.log(`✓ cass available: ${cassOk ? chalk.green("yes") : chalk.red("no")}`);
+    console.log("");
+    console.log(chalk.bold("cass-memory initialized successfully!"));
+    console.log("");
+    console.log("Next steps:");
+    console.log(chalk.cyan("  cass-memory context \"your task\" --json  # Get context for a task"));
+    console.log(chalk.cyan("  cass-memory doctor                       # Check system health"));
+  }
 }

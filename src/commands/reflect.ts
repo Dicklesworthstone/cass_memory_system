@@ -1,5 +1,5 @@
 import { loadConfig } from "../config.js";
-import { loadMergedPlaybook, savePlaybook } from "../playbook.js";
+import { loadMergedPlaybook, loadPlaybook, savePlaybook } from "../playbook.js";
 import { ProcessedLog } from "../tracking.js";
 import { findUnprocessedSessions, cassExport } from "../cass.js";
 import { generateDiary } from "../diary.js";
@@ -7,6 +7,7 @@ import { reflectOnSession } from "../reflect.js";
 import { validateDelta } from "../validate.js";
 import { curatePlaybook } from "../curate.js";
 import { expandPath, log, warn, error, now } from "../utils.js";
+import { withLock } from "../lock.ts";
 import { PlaybookDelta } from "../types.js";
 import path from "node:path";
 import chalk from "chalk";
@@ -21,7 +22,8 @@ export async function reflectCommand(
   } = {}
 ): Promise<void> {
   const config = await loadConfig();
-  const playbook = await loadMergedPlaybook(config);
+  // Load initial playbook for reading context
+  const initialPlaybook = await loadMergedPlaybook(config);
   
   const logPath = expandPath(path.join(config.diaryDir, "../reflections/processed.log"));
   const processedLog = new ProcessedLog(logPath);
@@ -29,7 +31,7 @@ export async function reflectCommand(
 
   log("Searching for new sessions...", true);
   
-  const sessions = await findUnprocessedSessions(new Set(), { 
+  const sessions = await findUnprocessedSessions(processedLog.getProcessedPaths(), { 
     days: options.days || config.sessionLookbackDays,
     maxSessions: options.maxSessions || 5,
     agent: options.agent
@@ -58,7 +60,8 @@ export async function reflectCommand(
         continue;
       }
 
-      const deltas = await reflectOnSession(diary, playbook, config);
+      // Reflect using the initial playbook context (safe for reading)
+      const deltas = await reflectOnSession(diary, initialPlaybook, config);
       
       const validatedDeltas: PlaybookDelta[] = [];
       for (const delta of deltas) {
@@ -90,20 +93,29 @@ export async function reflectCommand(
   }
 
   if (allDeltas.length > 0) {
-    const curation = curatePlaybook(playbook, allDeltas, config);
-    await savePlaybook(curation.playbook, config.playbookPath);
-    await processedLog.save();
-
-    console.log(chalk.green(`\nReflection complete!`));
-    console.log(`Applied ${curation.applied} changes.`);
-    console.log(`Skipped ${curation.skipped} (duplicates/conflicts).`);
+    // Lock and reload before saving
+    const globalPath = expandPath(config.playbookPath);
     
-    if (curation.inversions.length > 0) {
-      console.log(chalk.yellow(`\nInverted ${curation.inversions.length} harmful rules:`));
-      curation.inversions.forEach(inv => {
-        console.log(`  ${inv.originalContent.slice(0,40)}... -> ANTI-PATTERN`);
-      });
-    }
+    await withLock(globalPath, async () => {
+      // Reload fresh playbook inside lock to avoid overwriting other changes
+      const freshPlaybook = await loadPlaybook(globalPath);
+      
+      const curation = curatePlaybook(freshPlaybook, allDeltas, config);
+      await savePlaybook(curation.playbook, globalPath);
+      
+      await processedLog.save();
+
+      console.log(chalk.green(`\nReflection complete!`));
+      console.log(`Applied ${curation.applied} changes.`);
+      console.log(`Skipped ${curation.skipped} (duplicates/conflicts).`);
+      
+      if (curation.inversions.length > 0) {
+        console.log(chalk.yellow(`\nInverted ${curation.inversions.length} harmful rules:`));
+        curation.inversions.forEach(inv => {
+          console.log(`  ${inv.originalContent.slice(0,40)}... -> ANTI-PATTERN`);
+        });
+      }
+    });
   } else {
     await processedLog.save();
     console.log("No new insights found.");

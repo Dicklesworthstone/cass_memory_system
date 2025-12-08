@@ -1,6 +1,7 @@
 import { loadConfig } from "../config.js";
 import { loadMergedPlaybook, addBullet, deprecateBullet, savePlaybook, findBullet, getActiveBullets } from "../playbook.js";
 import { expandPath, error as logError } from "../utils.js";
+import { NewBulletDataSchema, BulletTypeEnum, BulletScopeEnum, BulletKindEnum } from "../types.js"; // Correct imports
 import chalk from "chalk";
 
 export async function playbookCommand(
@@ -10,23 +11,19 @@ export async function playbookCommand(
 ) {
   const config = await loadConfig();
   
-  // For add/remove, we need to target specific file.
-  // Default to global for add.
-  // For remove, find where it lives.
-
   if (action === "list") {
     const playbook = await loadMergedPlaybook(config);
     let bullets = getActiveBullets(playbook);
     
     if (flags.category) {
-      bullets = bullets.filter(b => b.category === flags.category);
+      bullets = bullets.filter((b: any) => b.category === flags.category);
     }
 
     if (flags.json) {
       console.log(JSON.stringify(bullets, null, 2));
     } else {
       console.log(chalk.bold(`PLAYBOOK RULES (${bullets.length}):`));
-      bullets.forEach(b => {
+      bullets.forEach((b: any) => {
         console.log(`[${b.id}] ${chalk.cyan(b.category)}: ${b.content}`);
       });
     }
@@ -42,12 +39,19 @@ export async function playbookCommand(
     
     // Load global playbook for writing
     const { loadPlaybook } = await import("../playbook.js");
-    const playbook = await loadPlaybook(config);
+    const playbook = await loadPlaybook(config.playbookPath);
     
     const bullet = addBullet(playbook, {
       content,
-      category: flags.category || "general"
-    }, "manual-cli");
+      category: flags.category || "general",
+      type: "rule",
+      scope: "global",
+      kind: "workflow_rule",
+      tags: [],
+      workspace: undefined,
+      searchPointer: undefined,
+      isNegative: false
+    }, "manual-cli", config.defaultDecayHalfLife);
 
     await savePlaybook(playbook, config.playbookPath);
 
@@ -68,13 +72,13 @@ export async function playbookCommand(
 
     // Find where it lives
     const { loadPlaybook } = await import("../playbook.js");
-    let playbook = await loadPlaybook(config);
+    let playbook = await loadPlaybook(config.playbookPath);
     let savePath = config.playbookPath;
     let bullet = findBullet(playbook, id);
 
     if (!bullet) {
       const repoPath = ".cass/playbook.yaml";
-      playbook = await loadPlaybook({ ...config, playbookPath: repoPath });
+      playbook = await loadPlaybook(repoPath);
       bullet = findBullet(playbook, id);
       savePath = repoPath;
     }
