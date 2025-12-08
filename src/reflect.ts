@@ -6,11 +6,9 @@ import {
   PlaybookBullet,
   PlaybookDelta,
   PlaybookDeltaSchema,
-  CassHit,
-  AddDeltaSchema
+  CassHit
 } from "./types.js";
 import { runReflector } from "./llm.js";
-import { safeCassSearch } from "./cass.js";
 import { log } from "./utils.js";
 
 // --- Helper: Summarize Playbook for Prompt ---
@@ -18,37 +16,38 @@ import { log } from "./utils.js";
 export function formatBulletsForPrompt(bullets: PlaybookBullet[]): string {
   if (bullets.length === 0) return "(Playbook is empty)";
 
-  // Group bullets by category for readability
+  // Group by category
   const byCategory: Record<string, PlaybookBullet[]> = {};
-  for (const bullet of bullets) {
-    const cat = bullet.category || "uncategorized";
+  for (const b of bullets) {
+    const cat = b.category || "uncategorized";
     if (!byCategory[cat]) byCategory[cat] = [];
-    byCategory[cat].push(bullet);
+    byCategory[cat].push(b);
   }
 
-  const iconForMaturity = (maturity?: PlaybookBullet["maturity"]) => {
+  const iconFor = (maturity?: PlaybookBullet["maturity"]) => {
     if (maturity === "proven") return "★";
     if (maturity === "established") return "●";
-    return "○"; // candidate or default
+    return "○";
   };
 
   let output = "";
-  for (const [category, list] of Object.entries(byCategory)) {
-    output += `### ${category}\n`;
-    for (const b of list) {
-      const icon = iconForMaturity(b.maturity);
+  for (const [cat, group] of Object.entries(byCategory)) {
+    output += `### ${cat}\n`;
+    for (const b of group) {
+      // Format: [id] Content (stats)
       const helpful = b.helpfulCount ?? 0;
       const harmful = b.harmfulCount ?? 0;
+      const icon = iconFor(b.maturity);
       output += `- [${b.id}] ${icon} ${b.content} (${helpful} helpful, ${harmful} harmful)\n`;
     }
     output += "\n";
   }
-
-  return output.trim();
+  return output;
 }
 
+// --- Helper: Summarize Diary for Prompt ---
+
 export function formatDiaryForPrompt(diary: DiaryEntry): string {
-  // ... (implementation)
   const lines = [];
   lines.push(`## Session Overview`);
   lines.push(`- Path: ${diary.sessionPath}`);
@@ -85,25 +84,6 @@ export function formatDiaryForPrompt(diary: DiaryEntry): string {
   return lines.join("\n");
 }
 
-export function formatCassHistory(hits: CassHit[]): string {
-  if (!hits || hits.length === 0) {
-    return "RELATED HISTORY FROM OTHER AGENTS:\n\n(None found)";
-  }
-
-  const maxHits = 5;
-  const truncate = (text: string, max = 200) =>
-    text.length > max ? `${text.slice(0, max)}…` : text;
-
-  const formatted = hits.slice(0, maxHits).map((h) => {
-    const snippet = truncate(h.snippet || "");
-    const agent = h.agent || "unknown";
-    const path = (h as any).sessionPath || h.source_path || "unknown";
-    return `Session: ${path}\nAgent: ${agent}\nSnippet: "${snippet}"\n---`;
-  });
-
-  return "RELATED HISTORY FROM OTHER AGENTS:\n\n" + formatted.join("\n");
-}
-
 // --- Helper: Context Gathering ---
 
 async function getCassHistoryForDiary(
@@ -119,6 +99,17 @@ async function getCassHistoryForDiary(
 Session: ${s.sessionPath}
 Agent: ${s.agent}
 Snippet: ${s.snippet}
+---`).join("\n");
+}
+
+export function formatCassHistory(hits: CassHit[]): string {
+  if (!hits || hits.length === 0) {
+    return "RELATED HISTORY FROM OTHER AGENTS:\n\n(None found)";
+  }
+  return "RELATED HISTORY FROM OTHER AGENTS:\n\n" + hits.map(h => `
+Session: ${h.source_path || (h as any).sessionPath}
+Agent: ${h.agent || "unknown"}
+Snippet: "${h.snippet}"
 ---`).join("\n");
 }
 
@@ -158,6 +149,20 @@ const ReflectorOutputSchema = z.object({
   deltas: z.array(PlaybookDeltaSchema)
 });
 
+// Early exit logic
+export function shouldExitEarly(
+  iteration: number,
+  deltasThisIteration: number,
+  totalDeltas: number,
+  config: Config
+): boolean {
+  if (deltasThisIteration === 0) return true;
+  if (totalDeltas >= 20) return true;
+  const maxIterations = config.maxReflectorIterations ?? 3;
+  if (iteration >= maxIterations - 1) return true;
+  return false;
+}
+
 export async function reflectOnSession(
   diary: DiaryEntry,
   playbook: Playbook,
@@ -169,40 +174,41 @@ export async function reflectOnSession(
   const existingBullets = formatBulletsForPrompt(playbook.bullets);
   const cassHistory = await getCassHistoryForDiary(diary, config);
 
-  for (let i = 0; i < config.maxReflectorIterations; i++) {
-    log(`Reflection iteration ${i + 1}/${config.maxReflectorIterations}`);
+  const maxIterations = config.maxReflectorIterations ?? 3;
 
-    const output = await runReflector(
-      ReflectorOutputSchema,
-      diary,
-      existingBullets,
-      cassHistory,
-      i,
-      config
-    );
+  for (let i = 0; i < maxIterations; i++) {
+    log(`Reflection iteration ${i + 1}/${maxIterations}`);
 
-    const validDeltas = output.deltas.map(d => {
-      if (d.type === "add") {
-        // Force sourceSession injection
-        return { ...d, sourceSession: diary.sessionPath };
+    try {
+      const output = await runReflector(
+        ReflectorOutputSchema,
+        diary,
+        existingBullets,
+        cassHistory,
+        i,
+        config
+      );
+
+      const validDeltas = output.deltas.map(d => {
+        if (d.type === "add") {
+          // Force sourceSession injection
+          return { ...d, sourceSession: diary.sessionPath };
+        }
+        if ((d.type === "helpful" || d.type === "harmful") && !d.sourceSession) {
+          return { ...d, sourceSession: diary.sessionPath };
+        }
+        return d;
+      });
+
+      const uniqueDeltas = deduplicateDeltas(validDeltas, allDeltas);
+      allDeltas.push(...uniqueDeltas);
+
+      if (shouldExitEarly(i, uniqueDeltas.length, allDeltas.length, config)) {
+        log("Ending reflection early.");
+        break;
       }
-      if ((d.type === "helpful" || d.type === "harmful") && !d.sourceSession) {
-        return { ...d, sourceSession: diary.sessionPath };
-      }
-      return d;
-    });
-
-    const uniqueDeltas = deduplicateDeltas(validDeltas, allDeltas);
-    allDeltas.push(...uniqueDeltas);
-
-    // Early exit if no new insights
-    if (uniqueDeltas.length === 0) {
-      log("No new insights found, ending reflection.");
-      break;
-    }
-    
-    if (allDeltas.length >= 20) {
-      log("Hit max delta limit (20), ending reflection.");
+    } catch (err) {
+      log(`Reflection iteration ${i} failed: ${err}`);
       break;
     }
   }
