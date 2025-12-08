@@ -1,4 +1,4 @@
-import { log, warn } from "./utils.js";
+import { log, warn, jaccardSimilarity } from "./utils.js";
 
 export const SECRET_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
   // AWS
@@ -147,4 +147,38 @@ export function verifySanitization(text: string): {
   }
 
   return { containsPotentialSecrets: detected, warnings };
+}
+
+/**
+ * Check if content is semantically toxic (matches a known toxic pattern).
+ * Uses Jaccard similarity >0.85 or exact content hash match.
+ *
+ * @param content - The content to check
+ * @param toxicEntries - Array of toxic content strings to match against
+ * @returns true if content matches any toxic entry
+ */
+export function isSemanticallyToxic(
+  content: string,
+  toxicEntries: string[]
+): boolean {
+  if (!content || toxicEntries.length === 0) return false;
+
+  const normalizedContent = content.trim().toLowerCase();
+  const contentHashValue = contentHash(normalizedContent);
+
+  for (const toxic of toxicEntries) {
+    const normalizedToxic = toxic.trim().toLowerCase();
+
+    // Exact hash match
+    if (contentHash(normalizedToxic) === contentHashValue) {
+      return true;
+    }
+
+    // Jaccard similarity check (threshold 0.85)
+    if (jaccardSimilarity(normalizedContent, normalizedToxic) > 0.85) {
+      return true;
+    }
+  }
+
+  return false;
 }
