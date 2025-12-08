@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { expandPath } from "./utils.js";
 
 // ============================================================================
 // ENUMS & CONSTANTS
@@ -22,37 +21,9 @@ export type SessionStatus = z.infer<typeof SessionStatusEnum>;
 export const BulletScopeEnum = z.enum(["global", "workspace", "language", "framework", "task"]);
 export type BulletScope = z.infer<typeof BulletScopeEnum>;
 
-/**
- * Binary classification: prescriptive (rule) vs proscriptive (anti-pattern)
- * - rule: DO this - positive guidance shown in main playbook
- * - anti-pattern: DON'T do this - warnings shown in PITFALLS section
- */
 export const BulletTypeEnum = z.enum(["rule", "anti-pattern"]);
 export type BulletType = z.infer<typeof BulletTypeEnum>;
 
-/**
- * Semantic categorization of bullets by their nature and portability:
- *
- * @property project_convention - Repository-specific rules (LOW portability)
- *   Example: "Use AuthService from @/lib/auth for authentication"
- *   Applies: Only in matching workspace
- *   Characteristics: References specific files/modules/patterns in THIS project
- *
- * @property stack_pattern - Language/framework best practices (HIGH portability)
- *   Example: "For TypeScript, prefer interfaces over types for objects"
- *   Applies: Any project using that stack
- *   Characteristics: Generic best practices for the tech stack
- *
- * @property workflow_rule - Process and methodology rules (MEDIUM portability)
- *   Example: "Run pnpm test before committing"
- *   Applies: Based on team/org practices
- *   Characteristics: About HOW to work, not WHAT to code
- *
- * @property anti_pattern - Pitfalls and mistakes to avoid (VARIABLE portability)
- *   Example: "Don't mock Router hooks directly - use mockRouter utility"
- *   Display: Shown in separate PITFALLS section, not main playbook
- *   Characteristics: Negative guidance, often learned from past mistakes
- */
 export const BulletKindEnum = z.enum([
   "project_convention",
   "stack_pattern",
@@ -88,54 +59,24 @@ export type FeedbackEvent = z.infer<typeof FeedbackEventSchema>;
 // PLAYBOOK BULLET
 // ============================================================================
 
-/**
- * Base schema for PlaybookBullet without refinements.
- * Use this for .partial() and .extend() operations.
- */
-const BULLET_ID_PATTERN = /^b-[a-z0-9]+-[a-z0-9]+$/;
-
-export const PlaybookBulletBaseSchema = z.object({
-  id: z.string().regex(BULLET_ID_PATTERN, "id must match b-{timestamp36}-{random}"),
+export const PlaybookBulletSchema = z.object({
+  id: z.string(),
   scope: BulletScopeEnum.default("global"),
   scopeKey: z.string().optional(),
   workspace: z.string().optional(),
-  /** High-level grouping for organization (e.g., 'testing', 'git', 'auth') */
-  category: z.string().min(1),
-  /** The actual rule text shown to agents (10-500 characters) */
-  content: z.string().min(10).max(500),
-  /** Gemini-style search pattern for retrieving detailed examples from cass */
+  category: z.string(),
+  content: z.string(),
   searchPointer: z.string().optional(),
-  /** Binary: prescriptive (rule) or proscriptive (anti-pattern) */
   type: BulletTypeEnum.default("rule"),
-  /** Computed shorthand for type === 'anti-pattern' */
   isNegative: z.boolean().default(false),
   kind: BulletKindEnum.default("stack_pattern"),
   state: BulletStateEnum.default("draft"),
   maturity: BulletMaturityEnum.default("candidate"),
   promotedAt: z.string().optional(),
-  /** Legacy counter - derived from feedbackEvents.filter(e => e.type === 'helpful').length */
   helpfulCount: z.number().default(0),
-  /** Legacy counter - derived from feedbackEvents.filter(e => e.type === 'harmful').length */
   harmfulCount: z.number().default(0),
-  /**
-   * Single source of truth for feedback tracking (KEY INNOVATION).
-   * Each event contains: type ('helpful'|'harmful'), timestamp, sessionPath?, reason?, context?
-   * Used for confidence decay: score = sum(0.5^(ageDays/halfLife))
-   */
   feedbackEvents: z.array(FeedbackEventSchema).default([]),
-  /** @deprecated Use feedbackEvents - kept for schema compatibility */
-  helpfulEvents: z.array(FeedbackEventSchema).default([]),
-  /** @deprecated Use feedbackEvents - kept for schema compatibility */
-  harmfulEvents: z.array(FeedbackEventSchema).default([]),
-  /** When rule was last validated against cass history */
   lastValidatedAt: z.string().optional(),
-  /**
-   * Half-life in days for confidence decay.
-   * - 30 days: Fast-moving tech (e.g., beta APIs)
-   * - 90 days: Default for most rules
-   * - 180 days: Stable patterns
-   * - 365 days: Timeless principles
-   */
   confidenceDecayHalfLifeDays: z.number().default(90),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -150,97 +91,17 @@ export const PlaybookBulletBaseSchema = z.object({
   tags: z.array(z.string()).default([]),
   embedding: z.array(z.number()).optional(),
   effectiveScore: z.number().optional(),
-  deprecatedAt: z.string().optional(),
-  /**
-   * Detailed provenance trail from diary/sessions.
-   * Tracks which diaries contributed and key evidence quotes.
-   */
-  derivedFrom: z.object({
-    /** IDs of diary entries that contributed to this rule */
-    diaryIds: z.array(z.string()).default([]),
-    /** Key evidence quotes from sessions supporting this rule */
-    keyEvidence: z.array(z.string()).default([])
-  }).optional(),
-  /**
-   * Automated verification specification for programmatic rule validation.
-   *
-   * Types:
-   * - regex: Check if code pattern exists/absent in codebase
-   * - file_exists: Check if specific file/module exists
-   * - cass_query: Check if cass search returns results
-   *
-   * Mode:
-   * - exists: Verification passes if pattern IS found
-   * - absent: Verification passes if pattern is NOT found
-   *
-   * @example
-   * { type: 'regex', pattern: 'TokenValidator', mode: 'exists' }
-   * { type: 'file_exists', pattern: 'lib/auth.ts', mode: 'exists' }
-   * { type: 'cass_query', pattern: 'vitest configuration', mode: 'exists' }
-   */
-  verification: z.object({
-    type: z.enum(["regex", "file_exists", "cass_query"]),
-    pattern: z.string(),
-    mode: z.enum(["exists", "absent"])
-  }).optional()
+  deprecatedAt: z.string().optional()
 });
-
-/**
- * PlaybookBullet schema with validation refinements.
- * Use PlaybookBulletBaseSchema for .partial() and .extend() operations.
- */
-export const PlaybookBulletSchema = PlaybookBulletBaseSchema.superRefine((bullet, ctx) => {
-  // Scope validation: workspace scope requires workspace to be set
-  if (bullet.scope === "workspace" && !bullet.workspace) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["workspace"],
-      message: "workspace scope requires workspace to be set",
-    });
-  }
-  // Scope validation: language/framework/task scopes require scopeKey
-  if (
-    (bullet.scope === "language" ||
-      bullet.scope === "framework" ||
-      bullet.scope === "task") &&
-    !bullet.scopeKey
-  ) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["scopeKey"],
-      message: `${bullet.scope} scope requires scopeKey`,
-    });
-  }
-  // Scope validation: global/workspace scopes should not have scopeKey
-  if (
-    (bullet.scope === "global" || bullet.scope === "workspace") &&
-    bullet.scopeKey
-  ) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["scopeKey"],
-      message: "scopeKey should be omitted for global/workspace scopes",
-    });
-  }
-  // isNegative should align with type
-  const shouldBeNegative = bullet.type === "anti-pattern";
-  if (bullet.isNegative !== shouldBeNegative) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["isNegative"],
-      message: "isNegative must match type (anti-pattern => true, rule => false)",
-    });
-  }
-});
-export type PlaybookBullet = z.infer<typeof PlaybookBulletBaseSchema>;
+export type PlaybookBullet = z.infer<typeof PlaybookBulletSchema>;
 
 // ============================================================================
 // NEW BULLET DATA
 // ============================================================================
 
-export const NewBulletDataSchema = PlaybookBulletBaseSchema.partial().extend({
-  content: z.string().min(10).max(500),
-  category: z.string().min(1)
+export const NewBulletDataSchema = PlaybookBulletSchema.partial().extend({
+  content: z.string(),
+  category: z.string()
 });
 export type NewBulletData = z.infer<typeof NewBulletDataSchema>;
 
@@ -335,38 +196,6 @@ export const PlaybookSchema = z.object({
 });
 export type Playbook = z.infer<typeof PlaybookSchema>;
 
-// ----------------------------------------------------------------------------
-// Scope Utilities
-// ----------------------------------------------------------------------------
-
-export interface ScopeContext {
-  workspace?: string;
-  language?: string;
-  framework?: string;
-  task?: string;
-}
-
-export function isBulletInScope(bullet: PlaybookBullet, ctx: ScopeContext): boolean {
-  switch (bullet.scope) {
-    case "global":
-      return true;
-    case "workspace":
-      return !!bullet.workspace && !!ctx.workspace && bullet.workspace === ctx.workspace;
-    case "language":
-      return !!bullet.scopeKey && !!ctx.language && bullet.scopeKey.toLowerCase() === ctx.language.toLowerCase();
-    case "framework":
-      return !!bullet.scopeKey && !!ctx.framework && bullet.scopeKey.toLowerCase() === ctx.framework.toLowerCase();
-    case "task":
-      return !!bullet.scopeKey && !!ctx.task && bullet.scopeKey.toLowerCase() === ctx.task.toLowerCase();
-    default:
-      return true;
-  }
-}
-
-export function filterBulletsByScope(bullets: PlaybookBullet[], ctx: ScopeContext): PlaybookBullet[] {
-  return bullets.filter((b) => isBulletInScope(b, ctx));
-}
-
 // ============================================================================
 // RELATED SESSION
 // ============================================================================
@@ -409,68 +238,62 @@ export type DiaryEntry = z.infer<typeof DiaryEntrySchema>;
 export const SanitizationConfigSchema = z.object({
   enabled: z.boolean().default(true),
   extraPatterns: z.array(z.string()).default([]),
-  auditLog: z.boolean().default(false),
-  auditLevel: z.enum(["info", "debug"]).default("info"),
+  auditLog: z.boolean().default(false)
 });
 export type SanitizationConfig = z.infer<typeof SanitizationConfigSchema>;
 
 export const ScoringConfigSectionSchema = z.object({
-  decayHalfLifeDays: z.number().min(1).max(365).default(90),
-  harmfulMultiplier: z.number().min(1).max(10).default(4),
-  minFeedbackForActive: z.number().min(0).max(100).default(3),
-  minHelpfulForProven: z.number().min(0).max(1000).default(10),
-  maxHarmfulRatioForProven: z.number().min(0).max(1).default(0.1)
+  decayHalfLifeDays: z.number().default(90),
+  harmfulMultiplier: z.number().default(4),
+  minFeedbackForActive: z.number().default(3),
+  minHelpfulForProven: z.number().default(10),
+  maxHarmfulRatioForProven: z.number().default(0.1)
 });
 export type ScoringConfigSection = z.infer<typeof ScoringConfigSectionSchema>;
 
 export const BudgetConfigSchema = z.object({
-  dailyLimit: z.number().min(0).default(0.10),
-  monthlyLimit: z.number().min(0).default(2.00),
-  warningThreshold: z.number().min(0).max(100).default(80),
-  currency: z.string().default("USD"),
+  dailyLimit: z.number().default(0.10),
+  monthlyLimit: z.number().default(2.00),
+  warningThreshold: z.number().default(80),
+  currency: z.string().default("USD")
 });
 export type BudgetConfig = z.infer<typeof BudgetConfigSchema>;
 
-const PathString = z.string().transform((p) => expandPath(p));
-
-export const ConfigSchema = z
-  .object({
-    schema_version: z.number().default(1).describe("Config file version"),
-    llm: z
-      .object({
-        provider: LLMProviderEnum.default("anthropic"),
-        model: z.string().default("claude-sonnet-4-20250514"),
-      })
-      .optional(),
-    provider: LLMProviderEnum.default("anthropic"),
-    model: z.string().default("claude-sonnet-4-20250514"),
-    apiKey: z.string().optional(),
-    cassPath: PathString.default("cass").describe("Path to cass executable"),
-    playbookPath: PathString.default("~/.cass-memory/playbook.yaml"),
-    diaryDir: PathString.default("~/.cass-memory/diary"),
-    diaryPath: PathString.optional(),
-    scoring: ScoringConfigSectionSchema.default({}),
-    budget: BudgetConfigSchema.default({}),
-    maxReflectorIterations: z.number().min(1).max(10).default(3),
-    autoReflect: z.boolean().default(false),
-    dedupSimilarityThreshold: z.number().min(0).max(1).default(0.85),
-    pruneHarmfulThreshold: z.number().min(1).max(10).default(3),
-    defaultDecayHalfLife: z.number().min(1).max(365).default(90),
-    maxBulletsInContext: z.number().min(5).max(200).default(50),
-    maxHistoryInContext: z.number().min(3).max(50).default(10),
-    sessionLookbackDays: z.number().min(1).max(365).default(7),
-    validationLookbackDays: z.number().min(30).max(365).default(90),
-    validationEnabled: z.boolean().default(true),
-    enrichWithCrossAgent: z.boolean().default(true),
-    semanticSearchEnabled: z.boolean().default(false),
-    verbose: z.boolean().default(false),
-    jsonOutput: z.boolean().default(false),
-    sanitization: SanitizationConfigSchema.default({}),
-  })
-  .refine(
-    (cfg) => cfg.maxBulletsInContext >= cfg.maxHistoryInContext,
-    "maxBulletsInContext must be >= maxHistoryInContext"
-  );
+export const ConfigSchema = z.object({
+  schema_version: z.number().default(1),
+  llm: z.object({
+    provider: z.string().default("anthropic"),
+    model: z.string().default("claude-sonnet-4-20250514")
+  }).optional(),
+  provider: LLMProviderEnum.default("anthropic"),
+  model: z.string().default("claude-sonnet-4-20250514"),
+  cassPath: z.string().default("cass"),
+  playbookPath: z.string().default("~/.cass-memory/playbook.yaml"),
+  diaryDir: z.string().default("~/.cass-memory/diary"),
+  diaryPath: z.string().optional(),
+  scoring: ScoringConfigSectionSchema.default({}),
+  maxReflectorIterations: z.number().default(3),
+  autoReflect: z.boolean().default(false),
+  dedupSimilarityThreshold: z.number().default(0.85),
+  pruneHarmfulThreshold: z.number().default(3),
+  defaultDecayHalfLife: z.number().default(90),
+  maxBulletsInContext: z.number().default(50),
+  maxHistoryInContext: z.number().default(10),
+  sessionLookbackDays: z.number().default(7),
+  validationLookbackDays: z.number().default(90),
+  // Added missing fields
+  relatedSessionsDays: z.number().default(30),
+  minRelevanceScore: z.number().default(0.1),
+  maxRelatedSessions: z.number().default(5),
+  validationEnabled: z.boolean().default(true),
+  enrichWithCrossAgent: z.boolean().default(true),
+  semanticSearchEnabled: z.boolean().default(false),
+  verbose: z.boolean().default(false),
+  jsonOutput: z.boolean().default(false),
+  apiKey: z.string().optional(), // Added apiKey to top level as optional
+  sanitization: SanitizationConfigSchema.default({}),
+  budget: BudgetConfigSchema.default({})
+});
 export type Config = z.infer<typeof ConfigSchema>;
 
 // ============================================================================
@@ -497,97 +320,25 @@ export const CassHitSchema = CassSearchHitSchema;
 export type CassHit = CassSearchHit;
 
 export const CassSearchResultSchema = z.object({
-  query: z.string().optional(),
+  query: z.string(),
   hits: z.array(CassSearchHitSchema),
-  totalCount: z.number().optional(),
-  _meta: z
-    .object({
-      elapsed_ms: z.number().optional(),
-      total_hits: z.number().optional(),
-      wildcard_fallback: z.boolean().optional(),
-      query_plan: z.string().optional(),
-    })
-    .optional(),
+  totalCount: z.number()
 });
 export type CassSearchResult = z.infer<typeof CassSearchResultSchema>;
 
 export const CassSearchOptionsSchema = z.object({
-  limit: z.number().min(1).max(1000).default(20),
-  days: z.number().min(1).max(365).optional(),
+  limit: z.number().default(20),
+  days: z.number().optional(),
   agent: z.string().optional(),
-  agents: z.array(z.string()).optional(),
-  workspace: z.string().optional(),
-  fields: z.array(z.string()).optional(),
-  maxTokens: z.number().min(10).max(2000).optional(),
-  highlight: z.boolean().optional(),
-  explain: z.boolean().optional(),
-  timeout: z.number().min(1000).max(60000).optional(),
+  workspace: z.string().optional()
 });
 export type CassSearchOptions = z.infer<typeof CassSearchOptionsSchema>;
-
-// Timeline types
-export const CassTimelineSessionSchema = z.object({
-  path: z.string(),
-  agent: z.string().optional(),
-  messageCount: z.number().optional(),
-  startTime: z.string().optional(),
-  endTime: z.string().optional(),
-});
-export type CassTimelineSession = z.infer<typeof CassTimelineSessionSchema>;
-
-export const CassTimelineGroupSchema = z.object({
-  date: z.string(),
-  sessions: z.array(CassTimelineSessionSchema),
-});
-export type CassTimelineGroup = z.infer<typeof CassTimelineGroupSchema>;
-
-export const CassTimelineResultSchema = z.object({
-  groups: z.array(CassTimelineGroupSchema),
-});
-export type CassTimelineResult = z.infer<typeof CassTimelineResultSchema>;
-
-// ============================================================================
-// COMMAND RESULT & AUDIT TYPES
-// ============================================================================
-
-export const CommandResultSchema = z.object({
-  success: z.boolean(),
-  message: z.string(),
-  data: z.unknown().optional(),
-  error: z.string().optional(),
-});
-export type CommandResult = z.infer<typeof CommandResultSchema>;
-
-export const AuditViolationSchema = z.object({
-  bulletId: z.string(),
-  bulletContent: z.string(),
-  sessionPath: z.string(),
-  evidence: z.string(),
-  severity: z.enum(["low", "medium", "high"]),
-});
-export type AuditViolation = z.infer<typeof AuditViolationSchema>;
-
-export const AuditResultSchema = z.object({
-  sessionsScanned: z.number(),
-  violations: z.array(AuditViolationSchema).default([]),
-  suggestions: z.array(z.string()).default([]),
-});
-export type AuditResult = z.infer<typeof AuditResultSchema>;
-
-export const ErrorTypeEnum = z.enum([
-  "ConfigError",
-  "PlaybookError",
-  "CassError",
-  "ValidationError",
-  "LLMError",
-]);
-export type ErrorType = z.infer<typeof ErrorTypeEnum>;
 
 // ============================================================================
 // CONTEXT OUTPUT
 // ============================================================================
 
-export const ScoredBulletSchema = PlaybookBulletBaseSchema.extend({
+export const ScoredBulletSchema = PlaybookBulletSchema.extend({
   relevanceScore: z.number(),
   effectiveScore: z.number(),
   lastHelpful: z.string().optional(),
@@ -634,7 +385,7 @@ export const ValidationResultSchema = z.object({
   verdict: z.enum(["ACCEPT", "REJECT", "REFINE", "ACCEPT_WITH_CAUTION"]),
   confidence: z.number().min(0).max(1),
   reason: z.string(),
-  evidence: z.array(ValidationEvidenceSchema).default([]),
+  evidence: z.array(z.string()), 
   refinedRule: z.string().optional(),
   approved: z.boolean().optional(),
   supportingEvidence: z.array(ValidationEvidenceSchema).default([]),
@@ -752,84 +503,81 @@ export type ReflectionStats = z.infer<typeof ReflectionStatsSchema>;
 // COMMAND RESULT & ERROR TYPES
 // ============================================================================
 
-/**
- * Violation severity levels for audit command.
- * - low: Stylistic deviation
- * - medium: Best practice not followed
- * - high: Security/correctness issue
- */
-export const AuditSeverityEnum = z.enum(["low", "medium", "high"]);
-export type AuditSeverity = z.infer<typeof AuditSeverityEnum>;
-
-/**
- * Individual violation found by audit command.
- * Represents a rule that was violated or contradicted in a session.
- */
-export const AuditViolationSchema = z.object({
-  /** ID of bullet that was violated or contradicted */
-  bulletId: z.string(),
-  /** Text of the rule that was violated */
-  bulletContent: z.string(),
-  /** Path to session where violation occurred */
-  sessionPath: z.string(),
-  /** Excerpt showing the violation */
-  evidence: z.string(),
-  /** How serious the violation is */
-  severity: AuditSeverityEnum
-});
-export type AuditViolation = z.infer<typeof AuditViolationSchema>;
-
-/**
- * Standard return type for all CLI commands.
- * Provides consistent success/failure responses with optional data payloads.
- */
 export const CommandResultSchema = z.object({
-  /** True if command completed successfully */
   success: z.boolean(),
-  /** Human-readable summary of result */
-  message: z.string(),
-  /** Optional command-specific payload (varies by command) */
+  message: z.string().optional(),
   data: z.unknown().optional(),
-  /** Optional error details for failures (stack trace in verbose mode) */
   error: z.string().optional()
 });
 export type CommandResult = z.infer<typeof CommandResultSchema>;
 
-/**
- * Doctor/health check result for individual check items.
- */
-export const HealthCheckItemSchema = z.object({
-  /** Name of the check */
-  name: z.string(),
-  /** Whether the check passed */
-  passed: z.boolean(),
-  /** Human-readable status message */
-  message: z.string(),
-  /** Optional details or recommendations */
-  details: z.string().optional()
-});
-export type HealthCheckItem = z.infer<typeof HealthCheckItemSchema>;
+export const CMErrorCodeEnum = z.enum([
+  "CASS_NOT_FOUND",
+  "CASS_INDEX_STALE",
+  "CASS_SEARCH_FAILED",
+  "PLAYBOOK_CORRUPT",
+  "PLAYBOOK_NOT_FOUND",
+  "CONFIG_INVALID",
+  "LLM_API_ERROR",
+  "LLM_RATE_LIMIT",
+  "LLM_BUDGET_EXCEEDED",
+  "SANITIZATION_FAILED",
+  "FILE_NOT_FOUND",
+  "PERMISSION_DENIED",
+  "INVALID_INPUT",
+  "UNKNOWN_ERROR"
+]);
+export type CMErrorCode = z.infer<typeof CMErrorCodeEnum>;
 
-/**
- * Full health check result from doctor command.
- */
-export const HealthCheckResultSchema = z.object({
-  /** Overall health status */
-  healthy: z.boolean(),
-  /** Individual check results */
-  checks: z.array(HealthCheckItemSchema),
-  /** Summary of passed/failed checks */
-  summary: z.object({
-    passed: z.number(),
-    failed: z.number(),
-    total: z.number()
-  })
+export const CMErrorSchema = z.object({
+  code: CMErrorCodeEnum,
+  message: z.string(),
+  details: z.record(z.unknown()).optional(),
+  recoverable: z.boolean().default(true)
 });
-export type HealthCheckResult = z.infer<typeof HealthCheckResultSchema>;
+export type CMError = z.infer<typeof CMErrorSchema>;
+
+export const AuditViolationSchema = z.object({
+  bulletId: z.string(),
+  bulletContent: z.string(),
+  sessionPath: z.string(),
+  evidence: z.string(),
+  severity: z.enum(["low", "medium", "high"]),
+  timestamp: z.string().optional()
+});
+export type AuditViolation = z.infer<typeof AuditViolationSchema>;
+
+export const AuditResultSchema = z.object({
+  violations: z.array(AuditViolationSchema),
+  stats: z.object({
+    sessionsScanned: z.number(),
+    rulesChecked: z.number(),
+    violationsFound: z.number(),
+    bySeverity: z.object({
+      high: z.number(),
+      medium: z.number(),
+      low: z.number()
+    })
+  }),
+  scannedAt: z.string()
+});
+export type AuditResult = z.infer<typeof AuditResultSchema>;
+
+export const EXIT_CODES = {
+  SUCCESS: 0,
+  GENERAL_ERROR: 1,
+  INVALID_ARGS: 2,
+  CONFIG_ERROR: 3,
+  CASS_ERROR: 4,
+  LLM_ERROR: 5,
+  FILE_ERROR: 6,
+  PERMISSION_ERROR: 7,
+  BUDGET_EXCEEDED: 8
+} as const;
+export type ExitCode = typeof EXIT_CODES[keyof typeof EXIT_CODES];
 
 export const Schemas = {
   FeedbackEvent: FeedbackEventSchema,
-  PlaybookBulletBase: PlaybookBulletBaseSchema,
   PlaybookBullet: PlaybookBulletSchema,
   NewBulletData: NewBulletDataSchema,
   PlaybookDelta: PlaybookDeltaSchema,
@@ -842,7 +590,5 @@ export const Schemas = {
   PlaybookStats: PlaybookStatsSchema,
   ReflectionStats: ReflectionStatsSchema,
   CommandResult: CommandResultSchema,
-  AuditViolation: AuditViolationSchema,
-  HealthCheckItem: HealthCheckItemSchema,
-  HealthCheckResult: HealthCheckResultSchema
+  AuditResult: AuditResultSchema
 } as const;
