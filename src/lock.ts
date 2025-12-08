@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import path from "node:path";
 import { expandPath } from "./utils.js";
 
 /** Maximum age in milliseconds for a lock file before it's considered stale */
@@ -104,6 +105,9 @@ export async function withLock<T>(
           // Best effort
         }
       }, 10000); // 10 seconds < 30s threshold
+      if (typeof (heartbeat as any).unref === "function") {
+        (heartbeat as any).unref();
+      }
 
       try {
         return await operation();
@@ -124,7 +128,8 @@ export async function withLock<T>(
         continue;
       }
       if (err.code === "ENOENT") {
-        const dir = lockPath.substring(0, lockPath.lastIndexOf("/"));
+        // Parent path missing; create with platform-safe dirname
+        const dir = path.dirname(lockPath);
         await fs.mkdir(dir, { recursive: true });
         continue;
       }
