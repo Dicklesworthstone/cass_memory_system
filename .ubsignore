@@ -1,0 +1,8 @@
+# UBS ignore list
+# These entries are legitimate and should not be flagged as secrets or bugs.
+
+# Intentional secret-scrubbing regex patterns (false positive for hardcoded secrets)
+src/sanitize.ts:51
+
+# Proposal/design docs (not runtime code) with loose parsing examples
+competing_proposal_plans/**
