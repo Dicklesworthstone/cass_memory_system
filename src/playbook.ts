@@ -87,33 +87,50 @@ export async function savePlaybook(playbook: Playbook, filePath: string): Promis
 
 // --- Cascading & Merging ---
 
-async function loadToxicLog(logPath: string): Promise<ToxicEntry[]> {
+export async function loadToxicLog(logPath: string): Promise<ToxicEntry[]> {
   const expanded = expandPath(logPath);
-  if (!(await fileExists(expanded))) return [];
-  
-  try {
-    const content = await fs.readFile(expanded, "utf-8");
-    return content
-      .split("\n")
-      .filter(line => line.trim())
-      .map(line => JSON.parse(line))
-      .filter(entry => entry.id && entry.content); 
-  } catch {
+  if (!(await fs
+    .access(expanded)
+    .then(() => true)
+    .catch(() => false))) {
     return [];
   }
+  
+  const content = await fs.readFile(expanded, "utf-8");
+  return content
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((line) => {
+        try {
+            return JSON.parse(line);
+        } catch {
+            return { content: line, addedAt: now(), reason: "legacy" };
+        }
+    });
 }
 
-async function isSemanticallyToxic(content: string, toxicLog: ToxicEntry[]): Promise<boolean> {
+export async function isSemanticallyToxic(content: string, toxicLog: ToxicEntry[]): Promise<boolean> {
   const hash = hashContent(content);
   
   for (const entry of toxicLog) {
+    // Exact match
     if (hashContent(entry.content) === hash) return true;
+    
+    // Semantic match (Jaccard for V1)
     if (jaccardSimilarity(content, entry.content) > 0.85) {
       log(`Blocked toxic content: "${content.slice(0, 50)}"... matches blocked "${entry.content.slice(0, 50)}"...`, true);
       return true;
     }
   }
   return false;
+}
+
+export async function checkToxicity(content: string): Promise<boolean> {
+  const globalToxic = await loadToxicLog("~/.cass-memory/toxic_bullets.log");
+  const repoToxic = await loadToxicLog(path.resolve(process.cwd(), ".cass", "toxic.log"));
+  const allToxic = [...globalToxic, ...repoToxic];
+  return isSemanticallyToxic(content, allToxic);
 }
 
 function mergePlaybooks(global: Playbook, repo: Playbook | null): Playbook {

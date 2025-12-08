@@ -283,7 +283,7 @@ export async function findUnprocessedSessions(
   const agentsFilter = options.agents ?? (options.agent ? [options.agent] : undefined);
   if (agentsFilter && agentsFilter.length > 0) {
     const set = new Set(agentsFilter);
-    unprocessed = unprocessed.filter((s) => set.has(s.agent));
+    unprocessed = unprocessed.filter((s) => s.agent && set.has(s.agent));
   }
   
   const limit = options.maxSessions ?? 20;

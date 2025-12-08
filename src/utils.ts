@@ -37,6 +37,100 @@ export async function fileExists(filePath: string): Promise<boolean> {
   }
 }
 
+// --- Repository .cass/ Structure ---
+
+/**
+ * Resolve the .cass/ directory path for the current git repository.
+ * Returns null if not in a git repository.
+ *
+ * @returns Absolute path to .cass/ directory, or null if not in a git repo
+ *
+ * @example
+ * const cassDir = await resolveRepoDir();
+ * if (cassDir) {
+ *   console.log(`Repo .cass/ at: ${cassDir}`);
+ * }
+ */
+export async function resolveRepoDir(): Promise<string | null> {
+  try {
+    const { stdout } = await execAsync("git rev-parse --show-toplevel");
+    const repoRoot = stdout.trim();
+    return path.join(repoRoot, ".cass");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Ensure the .cass/ repo-level directory structure exists.
+ * Creates the directory and initializes required files if missing.
+ *
+ * Creates:
+ * - .cass/playbook.yaml (empty playbook for project-specific rules)
+ * - .cass/toxic.log (empty blocklist file)
+ *
+ * Does NOT create config.yaml by default (only created when project
+ * needs to override global settings).
+ *
+ * @param cassDir - Absolute path to .cass/ directory (from resolveRepoDir)
+ * @returns Object describing what was created
+ *
+ * @example
+ * const cassDir = await resolveRepoDir();
+ * if (cassDir) {
+ *   const result = await ensureRepoStructure(cassDir);
+ *   console.log(`Created: ${result.created.join(', ')}`);
+ * }
+ */
+export async function ensureRepoStructure(cassDir: string): Promise<{
+  created: string[];
+  existed: string[];
+}> {
+  const created: string[] = [];
+  const existed: string[] = [];
+
+  // Ensure .cass/ directory exists
+  await ensureDir(cassDir);
+
+  // 1. playbook.yaml - Project-specific rules
+  const playbookPath = path.join(cassDir, "playbook.yaml");
+  if (await fileExists(playbookPath)) {
+    existed.push("playbook.yaml");
+  } else {
+    const emptyPlaybook = `# Project-specific playbook rules
+# These are merged with your global ~/.cass-memory/playbook.yaml
+# Project rules take precedence over global rules
+schema_version: 2
+name: repo-playbook
+description: Project-specific rules for this repository
+metadata:
+  createdAt: ${new Date().toISOString()}
+  totalReflections: 0
+  totalSessionsProcessed: 0
+deprecatedPatterns: []
+bullets: []
+`;
+    await atomicWrite(playbookPath, emptyPlaybook);
+    created.push("playbook.yaml");
+  }
+
+  // 2. toxic.log - Project-specific blocked patterns (JSONL format)
+  const toxicPath = path.join(cassDir, "toxic.log");
+  if (await fileExists(toxicPath)) {
+    existed.push("toxic.log");
+  } else {
+    // Create empty file (JSONL format - one JSON object per line)
+    await atomicWrite(toxicPath, "");
+    created.push("toxic.log");
+  }
+
+  // Note: config.yaml is NOT created by default
+  // It's only needed when project overrides global settings
+  // .gitignore already excludes .cass/config.yaml for security
+
+  return { created, existed };
+}
+
 export async function checkDiskSpace(dirPath: string): Promise<{ ok: boolean; free: string }> {
   try {
     const expanded = expandPath(dirPath);
