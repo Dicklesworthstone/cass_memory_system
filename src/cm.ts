@@ -8,6 +8,9 @@ import { statsCommand } from "./commands/stats.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { reflectCommand } from "./commands/reflect.js";
 import { validateCommand } from "./commands/validate.js";
+import { forgetCommand } from "./commands/forget.js";
+import { auditCommand } from "./commands/audit.js";
+import { projectCommand } from "./commands/project.js";
 
 const program = new Command();
 const toInt = (value: string) => parseInt(value, 10);
@@ -102,5 +105,31 @@ program.command("reflect")
   .option("--json", "Output JSON")
   .option("--session <path>", "Process specific session file")
   .action(async (opts: any) => await reflectCommand(opts));
+
+// --- Forget ---
+program.command("forget")
+  .description("Deprecate a rule and optionally add to toxic blocklist")
+  .argument("<bulletId>", "ID of the rule to forget")
+  .option("--reason <text>", "Reason for forgetting (required)")
+  .option("--invert", "Create inverted anti-pattern from the rule")
+  .option("--json", "Output JSON")
+  .action(async (id: string, opts: any) => await forgetCommand(id, opts));
+
+// --- Audit ---
+program.command("audit")
+  .description("Audit recent sessions against playbook rules")
+  .option("--days <n>", "Lookback days for sessions", toInt)
+  .option("--workspace <path>", "Filter by workspace")
+  .option("--json", "Output JSON")
+  .action(async (opts: any) => await auditCommand(opts));
+
+// --- Project ---
+program.command("project")
+  .description("Export playbook for project documentation")
+  .option("--format <fmt>", "Output format: agents.md, claude.md, raw", "agents.md")
+  .option("--output <path>", "Write to file instead of stdout")
+  .option("--top <n>", "Limit rules per category", toInt)
+  .option("--show-counts", "Include helpful counts", true)
+  .action(async (opts: any) => await projectCommand(opts));
 
 program.parse();
