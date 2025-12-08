@@ -9,7 +9,7 @@ import {
   CassTimelineResult,
   Config
 } from "./types.js";
-import { log, error } from "./utils.js";
+import { log, error, warn, expandPath } from "./utils.js";
 import { sanitize } from "./security.js";
 import { loadConfig, getSanitizeConfig } from "./config.js";
 
@@ -26,6 +26,15 @@ export const CASS_EXIT_CODES = {
   UNKNOWN: 9,
   TIMEOUT: 10,
 } as const;
+
+export type CassFallbackMode = "none" | "playbook-only";
+
+export interface CassAvailabilityResult {
+  canContinue: boolean;
+  fallbackMode: CassFallbackMode;
+  message: string;
+  resolvedCassPath?: string;
+}
 
 // --- Helpers ---
 
@@ -86,6 +95,52 @@ export function cassAvailable(cassPath = "cass"): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Gracefully handle cass being unavailable.
+ * Tries configured and common paths; returns fallback guidance.
+ */
+export async function handleCassUnavailable(
+  options: { cassPath?: string; searchCommonPaths?: boolean } = {}
+): Promise<CassAvailabilityResult> {
+  const configuredPath = options.cassPath || process.env.CASS_PATH || "cass";
+  const common = options.searchCommonPaths === false ? [] : [
+    "/usr/local/bin/cass",
+    "~/.cargo/bin/cass",
+    "~/.local/bin/cass",
+  ];
+
+  const candidates = Array.from(new Set([configuredPath, ...common])).map(expandPath);
+
+  for (const candidate of candidates) {
+    if (cassAvailable(candidate)) {
+      const message = candidate === configuredPath
+        ? `cass available at ${candidate}`
+        : `cass found at ${candidate}. Set CASS_PATH=${candidate} or update config.cassPath.`;
+      if (candidate !== configuredPath) warn(message);
+      return {
+        canContinue: true,
+        fallbackMode: "none",
+        message,
+        resolvedCassPath: candidate,
+      };
+    }
+  }
+
+  const installMessage = [
+    "cass binary not found. Falling back to playbook-only mode (history disabled).",
+    "Install via `cargo install cass` or download a release binary:",
+    "https://github.com/Dicklesworthstone/coding_agent_session_search",
+    "Then set CASS_PATH or config.cassPath."
+  ].join(" ");
+  warn(installMessage);
+
+  return {
+    canContinue: true,
+    fallbackMode: "playbook-only",
+    message: installMessage,
+  };
 }
 
 export function cassNeedsIndex(cassPath = "cass"): boolean {
