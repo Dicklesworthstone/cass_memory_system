@@ -33,11 +33,67 @@ export async function writeFileInDir(dir: string, relative: string, contents: st
  * @param outputOrName - (Legacy) stdout or name
  * @param nameArg - (Legacy) name
  */
-export async function makeCassStub(dir: string, outputs: any = 0, outputOrName: any = "", nameArg = "cass"): Promise<string> {
+type LegacyCassStubOptions = {
+  exitCode?: number;
+  healthExit?: number;
+  indexExit?: number;
+  search?: string;
+  export?: string;
+  expand?: string;
+  timeline?: string;
+};
+
+export async function makeCassStub(
+  dir: string,
+  outputs: any = 0,
+  outputOrName: any = "",
+  nameArg = "cass"
+): Promise<string> {
   let name = nameArg;
   let scriptContent = "";
 
-  if (typeof outputs === "object" && outputs !== null) {
+  const looksLikeLegacy =
+    outputs &&
+    typeof outputs === "object" &&
+    ["exitCode", "healthExit", "indexExit", "search", "export", "expand", "timeline"].some(
+      key => key in outputs
+    );
+
+  if (looksLikeLegacy) {
+    const opts = outputs as LegacyCassStubOptions;
+    const exitCode = opts.exitCode ?? 0;
+    const healthExit = opts.healthExit ?? exitCode;
+    const indexExit = opts.indexExit ?? exitCode;
+    const searchOut = opts.search ?? '[{"source_path":"/sessions/s1.jsonl","line_number":1,"agent":"stub","snippet":"hello","score":0.9}]';
+    const exportOut = opts.export ?? "# Session transcript";
+    const expandOut = opts.expand ?? "context lines";
+    const timelineOut = opts.timeline ?? '{"groups":[{"date":"2025-01-01","sessions":[{"path":"/sessions/s1.jsonl","agent":"stub"}]}]}';
+
+    const quote = (text: string) => text.replace(/'/g, "'\\''");
+
+    scriptContent = `#!/bin/sh
+cmd="$1"; shift
+case "$cmd" in
+  --version) exit 0 ;;
+  health) exit ${healthExit} ;;
+  index) exit ${indexExit} ;;
+  search)
+    echo '${quote(searchOut)}'
+    exit ${exitCode} ;;
+  export)
+    echo '${quote(exportOut)}'
+    exit ${exitCode} ;;
+  expand)
+    echo '${quote(expandOut)}'
+    exit ${exitCode} ;;
+  timeline)
+    echo '${quote(timelineOut)}'
+    exit ${exitCode} ;;
+  *)
+    exit ${exitCode} ;;
+esac
+`;
+  } else if (typeof outputs === "object" && outputs !== null) {
     // Complex mode: outputs is a map of subcommand -> stdout
     // Example: { search: '[...]', timeline: '{...}' }
     // We generate a shell script case statement
