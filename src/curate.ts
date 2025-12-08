@@ -55,11 +55,9 @@ function findSimilarBullet(
 function invertToAntiPattern(bullet: PlaybookBullet, config: Config): PlaybookBullet {
   const reason = `Marked harmful ${bullet.harmfulCount} times`;
   const cleaned = bullet.content
-    .replace(/^(always |prefer |use |try |consider )/i, "")
+    .replace(/^(always |prefer |use |try |consider |ensure )/i, "")
     .trim();
   const invertedContent = `AVOID: ${cleaned}. ${reason}`;
-
-  const halfLife = config.scoring?.decayHalfLifeDays ?? config.defaultDecayHalfLife ?? 90;
 
   return {
     id: generateBulletId(),
@@ -78,8 +76,8 @@ function invertToAntiPattern(bullet: PlaybookBullet, config: Config): PlaybookBu
     sourceAgents: bullet.sourceAgents,
     tags: [...bullet.tags, "inverted", "anti-pattern"],
     feedbackEvents: [],
-    helpfulEvents: [], // Fixed: Added missing field
-    harmfulEvents: [], // Fixed: Added missing field
+    helpfulEvents: [],
+    harmfulEvents: [],
     helpfulCount: 0,
     harmfulCount: 0,
     deprecated: false,
@@ -91,14 +89,17 @@ function invertToAntiPattern(bullet: PlaybookBullet, config: Config): PlaybookBu
 // --- Main Curator ---
 
 export function curatePlaybook(
-  playbook: Playbook,
+  targetPlaybook: Playbook,
   deltas: PlaybookDelta[],
-  config: Config
+  config: Config,
+  contextPlaybook?: Playbook
 ): CurationResult {
-  const existingHashes = buildHashCache(playbook);
+  // Use context playbook (merged) for dedup checks if available, otherwise target
+  const referencePlaybook = contextPlaybook || targetPlaybook;
+  const existingHashes = buildHashCache(referencePlaybook);
   
   const result: CurationResult = {
-    playbook, // Reference
+    playbook: targetPlaybook, // Mutating target
     applied: 0,
     skipped: 0,
     conflicts: [],
@@ -119,30 +120,36 @@ export function curatePlaybook(
         const content = delta.bullet.content;
         const hash = hashContent(content);
         
-        // 1. Exact duplicate check
+        // 1. Exact duplicate check (against reference/merged)
         if (existingHashes.has(hash)) {
           result.skipped++;
           break;
         }
         
-        // 2. Semantic duplicate check
-        const similar = findSimilarBullet(content, playbook, config.dedupSimilarityThreshold);
+        // 2. Semantic duplicate check (against reference/merged)
+        const similar = findSimilarBullet(content, referencePlaybook, config.dedupSimilarityThreshold);
         if (similar) {
-          // Boost existing instead of adding
-          similar.feedbackEvents.push({
-            type: "helpful",
-            timestamp: now(),
-            sessionPath: delta.sourceSession,
-            context: "Reinforced by similar insight"
-          });
-          similar.helpfulCount++;
-          similar.updatedAt = now();
-          result.applied++; 
+          // Optimization: Check if 'similar' is in targetPlaybook.
+          const targetSimilar = findBullet(targetPlaybook, similar.id);
+          if (targetSimilar) {
+             targetSimilar.feedbackEvents.push({
+                type: "helpful",
+                timestamp: now(),
+                sessionPath: delta.sourceSession,
+                context: "Reinforced by similar insight"
+             });
+             targetSimilar.helpfulCount++;
+             targetSimilar.updatedAt = now();
+             result.applied++;
+          } else {
+             // Exists in Repo but not Global. Skip adding to Global to avoid duplication.
+             result.skipped++;
+          }
           break;
         }
         
-        // 3. Add new
-        addBullet(playbook, {
+        // 3. Add new (to TARGET)
+        addBullet(targetPlaybook, {
           content,
           category: delta.bullet.category,
           tags: delta.bullet.tags
@@ -154,8 +161,21 @@ export function curatePlaybook(
       }
 
       case "helpful": {
-        const bullet = findBullet(playbook, delta.bulletId);
+        const bullet = findBullet(targetPlaybook, delta.bulletId);
         if (bullet) {
+          // Idempotency check
+          const alreadyRecorded = bullet.feedbackEvents.some(e => 
+            e.type === "helpful" && 
+            e.sessionPath && 
+            delta.sourceSession && 
+            e.sessionPath === delta.sourceSession
+          );
+
+          if (alreadyRecorded) {
+            result.skipped++;
+            break;
+          }
+
           bullet.feedbackEvents.push({
             type: "helpful",
             timestamp: now(),
@@ -171,8 +191,21 @@ export function curatePlaybook(
       }
 
       case "harmful": {
-        const bullet = findBullet(playbook, delta.bulletId);
+        const bullet = findBullet(targetPlaybook, delta.bulletId);
         if (bullet) {
+          // Idempotency check
+          const alreadyRecorded = bullet.feedbackEvents.some(e => 
+            e.type === "harmful" && 
+            e.sessionPath && 
+            delta.sourceSession && 
+            e.sessionPath === delta.sourceSession
+          );
+
+          if (alreadyRecorded) {
+            result.skipped++;
+            break;
+          }
+
           bullet.feedbackEvents.push({
             type: "harmful",
             timestamp: now(),
@@ -188,7 +221,7 @@ export function curatePlaybook(
       }
 
       case "replace": {
-        const bullet = findBullet(playbook, delta.bulletId);
+        const bullet = findBullet(targetPlaybook, delta.bulletId);
         if (bullet) {
           bullet.content = delta.newContent;
           bullet.updatedAt = now();
@@ -198,23 +231,25 @@ export function curatePlaybook(
       }
 
       case "deprecate": {
-        if (deprecateBullet(playbook, delta.bulletId, delta.reason, delta.replacedBy)) {
+        if (deprecateBullet(targetPlaybook, delta.bulletId, delta.reason, delta.replacedBy)) {
           applied = true;
         }
         break;
       }
       
       case "merge": {
-        const bulletsToMerge = delta.bulletIds.map(id => findBullet(playbook, id)).filter(b => b !== undefined) as PlaybookBullet[];
-        if (bulletsToMerge.length >= 2) {
-          const merged = addBullet(playbook, {
+        // Only merge if all bullets exist in target
+        const bulletsToMerge = delta.bulletIds.map(id => findBullet(targetPlaybook, id)).filter(b => b !== undefined) as PlaybookBullet[];
+        
+        if (bulletsToMerge.length === delta.bulletIds.length && bulletsToMerge.length >= 2) {
+          const merged = addBullet(targetPlaybook, {
             content: delta.mergedContent,
             category: bulletsToMerge[0].category, 
             tags: [...new Set(bulletsToMerge.flatMap(b => b.tags))]
           }, "merged", config.scoring?.decayHalfLifeDays ?? config.defaultDecayHalfLife ?? 90); 
           
           bulletsToMerge.forEach(b => {
-            deprecateBullet(playbook, b.id, `Merged into ${merged.id}`, merged.id);
+            deprecateBullet(targetPlaybook, b.id, `Merged into ${merged.id}`, merged.id);
           });
           
           applied = true;
@@ -227,57 +262,63 @@ export function curatePlaybook(
     else result.skipped++;
   }
 
-  // --- Post-Processing ---
+  // --- Post-Processing on TARGET ---
 
-  // 1. Promotions & Demotions
-  for (const bullet of playbook.bullets) {
-    if (bullet.deprecated) continue;
-
-    const oldMaturity = bullet.maturity;
-    const newMaturity = checkForPromotion(bullet, config);
-    
-    if (newMaturity !== oldMaturity) {
-      bullet.maturity = newMaturity;
-      result.promotions.push({ 
-        bulletId: bullet.id, 
-        from: oldMaturity, 
-        to: newMaturity,
-        reason: `Auto-promoted from ${oldMaturity} to ${newMaturity}`
-      });
-    }
-    
-    const demotionCheck = checkForDemotion(bullet, config);
-    if (demotionCheck === "auto-deprecate") {
-      deprecateBullet(playbook, bullet.id, "Auto-deprecated due to negative score");
-      result.pruned++;
-    } else if (demotionCheck !== bullet.maturity) {
-      bullet.maturity = demotionCheck;
-    }
-  }
-
-  // 2. Anti-Pattern Inversion
+  // 1. Anti-Pattern Inversion (must run BEFORE auto-deprecation)
+  // Harmful rules should be converted to anti-patterns, not just deprecated
   const inversions: InversionReport[] = [];
-  for (const bullet of playbook.bullets) {
+  const invertedBulletIds = new Set<string>();
+
+  for (const bullet of targetPlaybook.bullets) {
     if (bullet.deprecated || bullet.pinned || bullet.kind === "anti_pattern") continue;
-    
+
     const { decayedHarmful, decayedHelpful } = getDecayedCounts(bullet, config);
-    
+
     if (decayedHarmful >= 3 && decayedHarmful > (decayedHelpful * 2)) {
       const antiPattern = invertToAntiPattern(bullet, config);
-      playbook.bullets.push(antiPattern);
-      
-      deprecateBullet(playbook, bullet.id, `Inverted to anti-pattern: ${antiPattern.id}`, antiPattern.id);
-      
+      targetPlaybook.bullets.push(antiPattern);
+
+      deprecateBullet(targetPlaybook, bullet.id, `Inverted to anti-pattern: ${antiPattern.id}`, antiPattern.id);
+      invertedBulletIds.add(bullet.id);
+
       inversions.push({
         originalId: bullet.id,
         originalContent: bullet.content,
         antiPatternId: antiPattern.id,
         antiPatternContent: antiPattern.content,
-        bulletId: bullet.id 
+        bulletId: bullet.id,
+        reason: `Marked as toxic/anti-pattern`
       });
     }
   }
   result.inversions = inversions;
+
+  // 2. Promotions & Demotions (after inversion so we don't double-deprecate)
+  for (const bullet of targetPlaybook.bullets) {
+    // Skip deprecated bullets and bullets that were just inverted
+    if (bullet.deprecated || invertedBulletIds.has(bullet.id)) continue;
+
+    const oldMaturity = bullet.maturity;
+    const newMaturity = checkForPromotion(bullet, config);
+
+    if (newMaturity !== oldMaturity) {
+      bullet.maturity = newMaturity;
+      result.promotions.push({
+        bulletId: bullet.id,
+        from: oldMaturity,
+        to: newMaturity,
+        reason: `Auto-promoted from ${oldMaturity} to ${newMaturity}`
+      });
+    }
+
+    const demotionCheck = checkForDemotion(bullet, config);
+    if (demotionCheck === "auto-deprecate") {
+      deprecateBullet(targetPlaybook, bullet.id, "Auto-deprecated due to negative score");
+      result.pruned++;
+    } else if (demotionCheck !== bullet.maturity) {
+      bullet.maturity = demotionCheck;
+    }
+  }
 
   return result;
 }
