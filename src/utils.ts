@@ -832,27 +832,49 @@ export function expandPath(p: string): string {
 /**
  * Normalize a path for the current platform.
  * - Expands ~ to home directory
- * - Converts separators to platform-native
- * - Resolves . and .. components
+ * - Handles Windows drive letters and UNC paths even on Unix
+ * - Resolves . and .. components where applicable
  * - Removes redundant separators
- * - Returns absolute path
+ * - Returns path using current platform separators
  */
 export function normalizePlatformPath(p: string): string {
   if (!p) return "";
 
-  // First expand tilde
-  let result = expandPath(p);
+  let input = expandPath(p);
 
-  // Convert backslashes to forward slashes for consistent processing
-  result = result.replace(/\\/g, "/");
+  const isUNC = input.startsWith("\\\\") || input.startsWith("//");
+  const hasDriveLetter = /^[a-zA-Z]:/.test(input);
 
-  // Use path.resolve to get absolute path and normalize . and ..
-  result = path.resolve(result);
+  // Normalize separators to forward slashes for internal processing
+  input = input.replace(/\\/g, "/");
 
-  // path.normalize handles redundant separators and converts to platform-native
-  result = path.normalize(result);
+  if (isUNC) {
+    // Preserve the UNC prefix (//server/share[/...])
+    const stripped = input.replace(/^\/\//, "");
+    const normalizedRest = stripped
+      .split("/")
+      .filter(Boolean)
+      .join("/");
+    const rebuilt = `//${normalizedRest}`;
+    return process.platform === "win32"
+      ? rebuilt.replace(/\//g, "\\")
+      : rebuilt;
+  }
 
-  return result;
+  if (hasDriveLetter) {
+    // Use win32 helpers to normalize drive-letter paths even on Unix
+    const winNormalized = path.win32.normalize(input);
+    const finalWin = path.win32.isAbsolute(winNormalized)
+      ? winNormalized
+      : path.win32.resolve(winNormalized);
+    return process.platform === "win32"
+      ? finalWin
+      : finalWin.replace(/\\/g, "/");
+  }
+
+  // POSIX-style path: resolve against cwd and normalize
+  const resolved = path.resolve(input);
+  return path.normalize(resolved);
 }
 
 /**

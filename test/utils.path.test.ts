@@ -91,6 +91,30 @@ describe("Path Utilities", () => {
       const result = normalizePlatformPath("/absolute/path");
       expect(path.isAbsolute(result)).toBe(true);
     });
+
+    test("handles Windows drive-letter paths", () => {
+      const result = normalizePlatformPath("C:\\\\Users\\\\alice\\\\docs");
+      expect(result).toContain("C:");
+      // Should normalize separators for the host platform
+      if (process.platform === "win32") {
+        expect(result).toBe("C:\\Users\\alice\\docs");
+      } else {
+        expect(result).toBe("C:/Users/alice/docs");
+        // Should not be resolved relative to the POSIX cwd
+        expect(result.startsWith(process.cwd())).toBe(false);
+      }
+    });
+
+    test("handles UNC paths", () => {
+      const result = normalizePlatformPath("\\\\server\\share\\folder");
+      if (process.platform === "win32") {
+        expect(result.startsWith("\\\\server\\share")).toBe(true);
+        expect(result).not.toMatch(/\\\\{3,}/);
+      } else {
+        expect(result.startsWith("//server/share")).toBe(true);
+        expect(result).not.toMatch(/\/\/{3,}/);
+      }
+    });
   });
 
   describe("toForwardSlashes", () => {
