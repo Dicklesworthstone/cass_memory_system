@@ -413,7 +413,7 @@ describe("truncateForPrompt", () => {
   it("includes character count in truncation indicator", () => {
     const content = "x".repeat(500);
     const result = truncateForPrompt(content, 100);
-    expect(result).toMatch(/\d+ characters truncated/);
+    expect(result).toMatch(/\d+ chars truncated/);
   });
 
   it("uses default maxChars of 50000", () => {
