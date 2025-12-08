@@ -163,9 +163,9 @@ export function inferOutcome(content: string): "success" | "failure" | "mixed" {
   const lowerContent = content.toLowerCase();
 
   const errorPatterns = [
-    /error:/i, /failed/i, /exception/i, /traceback/i,
-    /cannot\s+find/i, /not\s+found/i, /undefined/i, /null\s+reference/i,
-    /syntax\s*error/i, /type\s*error/i, /runtime\s*error/i
+    /\berror[s]?\b/i, /\bfailed\b/i, /\bexception\b/i, /\btraceback\b/i,
+    /cannot\s+find/i, /not\s+found/i, /\bundefined\b/i, /null\s+reference/i,
+    /syntax\s*error/i, /type\s*error/i, /runtime\s*error/i, /\bcrash/i
   ];
 
   const successPatterns = [
