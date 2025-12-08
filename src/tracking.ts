@@ -9,16 +9,20 @@ import { ensureDir, fileExists, expandPath } from "./utils.js";
 // Processed log paths
 // -----------------------------------------------------------------------------
 
-const REFLECTIONS_DIR = path.join(os.homedir(), ".cass-memory", "reflections");
+export function getProcessedLogPath(workspacePath?: string, diaryDir = "~/.cass-memory/diary"): string {
+  // Keep reflections alongside diary by default to respect custom config overrides
+  const reflectionsDir = path.join(
+    path.resolve(expandPath(diaryDir), ".."),
+    "reflections"
+  );
 
-export function getProcessedLogPath(workspacePath?: string): string {
   if (!workspacePath) {
-    return path.join(REFLECTIONS_DIR, "global.processed.log");
+    return path.join(reflectionsDir, "global.processed.log");
   }
 
   const resolved = path.resolve(expandPath(workspacePath));
   const hash = crypto.createHash("sha256").update(resolved).digest("hex").slice(0, 8);
-  return path.join(REFLECTIONS_DIR, `ws-${hash}.processed.log`);
+  return path.join(reflectionsDir, `ws-${hash}.processed.log`);
 }
 
 export class ProcessedLog {
