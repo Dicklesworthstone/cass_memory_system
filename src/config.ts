@@ -3,7 +3,7 @@ import path from "node:path";
 import yaml from "yaml";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
-import { Config, ConfigSchema, SanitizationConfig } from "./types.js";
+import { Config, ConfigSchema, SanitizationConfig, BudgetConfig } from "./types.js";
 import { expandPath, fileExists, warn, atomicWrite } from "./utils.js";
 
 const execAsync = promisify(exec);
@@ -26,6 +26,9 @@ export const DEFAULT_CONFIG: Config = {
   maxHistoryInContext: 10,
   sessionLookbackDays: 7,
   validationLookbackDays: 90,
+  relatedSessionsDays: 30, // Added to match types
+  minRelevanceScore: 0.1, // Added to match types
+  maxRelatedSessions: 5, // Added to match types
   validationEnabled: true,
   enrichWithCrossAgent: true,
   semanticSearchEnabled: false,
@@ -37,6 +40,12 @@ export const DEFAULT_CONFIG: Config = {
     minFeedbackForActive: 3,
     minHelpfulForProven: 10,
     maxHarmfulRatioForProven: 0.1
+  },
+  budget: {
+    dailyLimit: 0.10,
+    monthlyLimit: 2.00,
+    warningThreshold: 80,
+    currency: "USD"
   },
   sanitization: {
     enabled: true,

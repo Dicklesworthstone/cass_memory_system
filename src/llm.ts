@@ -1,13 +1,10 @@
-// src/llm.ts
-// LLM Provider Abstraction - Using Vercel AI SDK
-// Supports OpenAI, Anthropic, and Google providers with a unified interface
-
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { generateObject, type LanguageModel } from "ai";
 import { z } from "zod";
-import type { Config, DiaryEntry } from "./types";
+import type { Config, DiaryEntry } from "./types.js";
+import { checkBudget, recordCost } from "./cost.js";
 
 /**
  * Supported LLM provider names
@@ -326,9 +323,7 @@ export async function llmWithRetry<T>(
       attempt++;
       const isRetryable = LLM_RETRY_CONFIG.retryableErrors.some(e => {
         const lowerE = e.toLowerCase();
-        // Message matching: case-insensitive (both sides lowercased)
         const messageMatch = err.message?.toLowerCase().includes(lowerE);
-        // Code/statusCode matching: case-sensitive (e.g., "ETIMEDOUT" must match exactly)
         const codeMatch = err.code?.toString().includes(e);
         const statusMatch = err.statusCode?.toString().includes(e);
         return messageMatch || codeMatch || statusMatch;
@@ -343,11 +338,80 @@ export async function llmWithRetry<T>(
         LLM_RETRY_CONFIG.maxDelayMs
       );
       
-      // Using console directly as log utility imports might cycle (simplified)
       console.warn(`[LLM] ${operationName} failed (attempt ${attempt}): ${err.message}. Retrying in ${delay}ms...`);
       await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
+}
+
+async function monitoredGenerateObject(
+  options: any,
+  config: Config,
+  context: string
+): Promise<any> {
+  const budgetCheck = await checkBudget(config);
+  if (!budgetCheck.allowed) {
+    throw new Error(`LLM budget exceeded: ${budgetCheck.reason}`);
+  }
+
+  const result = await generateObject(options);
+
+  if (result.usage) {
+    const modelName = config.llm?.model ?? config.model;
+    const provider = (config.llm?.provider ?? config.provider);
+
+    await recordCost(config, {
+      provider,
+      model: modelName,
+      tokensIn: result.usage.promptTokens,
+      tokensOut: result.usage.completionTokens,
+      context
+    });
+  }
+  
+  return result;
+}
+
+export async function generateObjectSafe<T>(
+  schema: z.ZodSchema<T>,
+  prompt: string,
+  config: Config,
+  maxAttempts: number = 2
+): Promise<T> {
+  const llmConfig: LLMConfig = {
+    provider: (config.llm?.provider ?? config.provider) as LLMProvider,
+    model: config.llm?.model ?? config.model,
+    apiKey: config.apiKey
+  };
+  const model = getModel(llmConfig);
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const enhancedPrompt = attempt > 1
+        ? `[PREVIOUS ATTEMPT FAILED - OUTPUT MUST BE VALID JSON]\n\n${prompt}\n\nCRITICAL: Your response MUST be valid JSON matching the provided schema exactly. Ensure all required fields are present.`
+        : prompt;
+
+      const temperature = attempt > 1 ? 0.35 : 0.3;
+
+      const { object } = await monitoredGenerateObject({
+        model,
+        schema,
+        prompt: enhancedPrompt,
+        temperature
+      }, config, "generateObjectSafe");
+
+      const validated = schema.parse(object);
+      return validated;
+    } catch (err: any) {
+      lastError = err;
+      if (attempt < maxAttempts) {
+        console.warn(`[LLM] generateObjectSafe attempt ${attempt} failed: ${err.message}. Retrying...`);
+      }
+    }
+  }
+
+  throw lastError ?? new Error("generateObjectSafe failed after all attempts");
 }
 
 // --- Operations ---
@@ -376,13 +440,13 @@ export async function extractDiary<T>(
   });
 
   return llmWithRetry(async () => {
-    const { object } = await generateObject({
+    const { object } = await monitoredGenerateObject({
       model,
       schema,
       prompt,
       temperature: 0.3,
-    });
-    return object;
+    }, config, "extractDiary");
+    return object as T;
   }, "extractDiary");
 }
 
@@ -415,7 +479,6 @@ Key Learnings: ${diary.keyLearnings.join('\n- ')}
     ? `This is iteration ${iteration + 1}. Focus on insights you may have missed in previous passes.`
     : "";
 
-  // Truncate large inputs to prevent context overflow
   const safeExistingBullets = truncateForPrompt(existingBullets, 20000);
   const safeCassHistory = truncateForPrompt(cassHistory, 20000);
 
@@ -427,13 +490,13 @@ Key Learnings: ${diary.keyLearnings.join('\n- ')}
   });
 
   return llmWithRetry(async () => {
-    const { object } = await generateObject({
+    const { object } = await monitoredGenerateObject({
       model,
       schema,
       prompt,
       temperature: 0.5,
-    });
-    return object;
+    }, config, "runReflector");
+    return object as T;
   }, "runReflector");
 }
 
@@ -478,16 +541,16 @@ export async function runValidator(
   });
 
   return llmWithRetry(async () => {
-    const { object } = await generateObject({
+    const { object } = await monitoredGenerateObject({
       model,
       schema: ValidatorOutputSchema,
       prompt,
       temperature: 0.2,
-    });
+    }, config, "runValidator");
 
     const mappedEvidence = [
-      ...object.evidence.supporting.map(s => ({ sessionPath: "unknown", snippet: s, supports: true })),
-      ...object.evidence.contradicting.map(s => ({ sessionPath: "unknown", snippet: s, supports: false }))
+      ...object.evidence.supporting.map((s: string) => ({ sessionPath: "unknown", snippet: s, supports: true })),
+      ...object.evidence.contradicting.map((s: string) => ({ sessionPath: "unknown", snippet: s, supports: false }))
     ];
 
     return {
@@ -524,12 +587,12 @@ export async function generateContext(
   });
 
   return llmWithRetry(async () => {
-    const { object } = await generateObject({
+    const { object } = await monitoredGenerateObject({
       model,
-      schema: z.object({ briefing: z.string() }), // Using structured object to force format
+      schema: z.object({ briefing: z.string() }),
       prompt,
       temperature: 0.3,
-    });
+    }, config, "generateContext");
     return object.briefing;
   }, "generateContext");
 }
@@ -557,82 +620,41 @@ Generate 3-5 diverse search queries to find relevant information:
 Make queries specific enough to be useful but broad enough to match variations.`;
 
   return llmWithRetry(async () => {
-    const { object } = await generateObject({
+    const { object } = await monitoredGenerateObject({
       model,
       schema: z.object({ queries: z.array(z.string()).max(5) }),
       prompt,
       temperature: 0.5,
-    });
+    }, config, "generateSearchQueries");
     return object.queries;
   }, "generateSearchQueries");
 }
 
 // --- Multi-Provider Fallback ---
 
-/**
- * Preferred fallback order when primary provider fails.
- * Rationale:
- * - Anthropic: Strong reasoning, reliable structured output
- * - OpenAI: Fast, widely available
- * - Google: Additional fallback option
- */
 const FALLBACK_ORDER: LLMProvider[] = ["anthropic", "openai", "google"];
 
-/**
- * Default model for each provider when used as fallback.
- * Using stable, widely-available models to maximize fallback success.
- */
 const FALLBACK_MODELS: Record<LLMProvider, string> = {
   anthropic: "claude-3-5-sonnet-20241022",
   openai: "gpt-4o-mini",
   google: "gemini-1.5-flash",
 };
 
-/**
- * Multi-provider fallback for LLM operations.
- *
- * Protects against provider-specific outages by trying multiple providers
- * in sequence until one succeeds. Use when uptime matters more than
- * specific provider characteristics.
- *
- * Design: Uses fail-fast behavior (no per-provider retries) to minimize latency
- * when a provider is down. For retry + fallback, compose with llmWithRetry:
- * ```typescript
- * await llmWithRetry(() => llmWithFallback(schema, prompt, config), "op");
- * ```
- *
- * @param schema - Zod schema for structured output validation
- * @param prompt - The prompt to send to the LLM
- * @param config - Configuration with primary provider settings
- * @returns Validated object matching the schema
- * @throws Error if all providers fail (includes all error messages)
- *
- * @example
- * const result = await llmWithFallback(
- *   z.object({ summary: z.string() }),
- *   "Summarize this text...",
- *   config
- * );
- */
 export async function llmWithFallback<T>(
   schema: z.ZodSchema<T>,
   prompt: string,
   config: Config
 ): Promise<T> {
-  // Get primary provider from config
   const primaryProvider = (config.llm?.provider ?? config.provider) as LLMProvider;
   const primaryModel = config.llm?.model ?? config.model;
 
-  // Build provider order: primary first, then available fallbacks
   const availableProviders = getAvailableProviders();
   const providerOrder: Array<{ provider: LLMProvider; model: string }> = [];
 
-  // Add primary provider if available
   if (availableProviders.includes(primaryProvider)) {
     providerOrder.push({ provider: primaryProvider, model: primaryModel });
   }
 
-  // Add fallback providers (skip primary to avoid duplicates)
   for (const fallback of FALLBACK_ORDER) {
     if (fallback !== primaryProvider && availableProviders.includes(fallback)) {
       providerOrder.push({ provider: fallback, model: FALLBACK_MODELS[fallback] });
@@ -645,7 +667,6 @@ export async function llmWithFallback<T>(
     );
   }
 
-  // Collect errors for combined error message
   const errors: Array<{ provider: string; error: string }> = [];
 
   for (let i = 0; i < providerOrder.length; i++) {
@@ -655,20 +676,18 @@ export async function llmWithFallback<T>(
     try {
       const llmModel = getModel({ provider, model });
 
-      const { object } = await generateObject({
+      const { object } = await monitoredGenerateObject({
         model: llmModel,
         schema,
         prompt,
         temperature: 0.3,
-      });
+      }, config, "llmWithFallback");
 
-      // Success - return the result
-      return object;
+      return object as T;
     } catch (err: any) {
       const errorMsg = err.message || String(err);
       errors.push({ provider, error: errorMsg });
 
-      // Log failure with appropriate message
       if (isLastProvider) {
         console.warn(`[LLM] ${provider} failed: ${errorMsg}. No more providers to try.`);
       } else {
@@ -677,7 +696,6 @@ export async function llmWithFallback<T>(
     }
   }
 
-  // All providers failed - throw combined error
   const errorSummary = errors
     .map(e => `${e.provider}: ${e.error}`)
     .join("\n  ");
