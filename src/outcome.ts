@@ -13,6 +13,7 @@ export interface OutcomeInput {
   rulesUsed?: string[];
   notes?: string;
   durationSec?: number;
+  task?: string;
 }
 
 export interface OutcomeRecord extends OutcomeInput {

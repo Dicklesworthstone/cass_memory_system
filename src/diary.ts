@@ -37,84 +37,6 @@ import {
 
 // --- Helpers ---
 
-/**
- * Format raw session content based on file extension.
- * Supports markdown (.md), JSONL (.jsonl), and JSON (.json) formats.
- */
-export function formatRawSession(content: string, extension: string): string {
-  // Normalize extension to lowercase with leading dot
-  const ext = extension.toLowerCase().startsWith(".")
-    ? extension.toLowerCase()
-    : `.${extension.toLowerCase()}`;
-
-  // Markdown passthrough
-  if (ext === ".md" || ext === ".markdown") {
-    return content;
-  }
-
-  // JSONL format - one JSON object per line
-  if (ext === ".jsonl") {
-    if (!content.trim()) return "";
-
-    const lines = content.split("\n");
-    const formatted: string[] = [];
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-
-      try {
-        const obj = JSON.parse(trimmed);
-        const role = obj.role ?? "[unknown]";
-        const msgContent = obj.content ?? "[empty]";
-        formatted.push(`**${role}**: ${msgContent}`);
-      } catch {
-        formatted.push(`[PARSE ERROR] ${trimmed}`);
-      }
-    }
-
-    return formatted.join("\n\n");
-  }
-
-  // JSON format - various structures
-  if (ext === ".json") {
-    try {
-      const parsed = JSON.parse(content);
-
-      // Find messages array from various common structures
-      let messages: Array<{ role?: string; content?: string }> | null = null;
-
-      if (Array.isArray(parsed)) {
-        messages = parsed;
-      } else if (parsed.messages && Array.isArray(parsed.messages)) {
-        messages = parsed.messages;
-      } else if (parsed.conversation && Array.isArray(parsed.conversation)) {
-        messages = parsed.conversation;
-      } else if (parsed.turns && Array.isArray(parsed.turns)) {
-        messages = parsed.turns;
-      }
-
-      if (messages) {
-        if (messages.length === 0) return "";
-
-        return messages.map(msg => {
-          const role = msg.role ?? "[unknown]";
-          const msgContent = msg.content ?? "[empty]";
-          return `**${role}**: ${msgContent}`;
-        }).join("\n\n");
-      }
-
-      // Unrecognized structure - return with warning
-      return `WARNING: Unrecognized JSON structure.\n\n${content}`;
-    } catch (err: any) {
-      return `[PARSE ERROR: ${err.message}]\n\n${content}`;
-    }
-  }
-
-  // Unsupported format
-  return `WARNING: Unsupported session format (${ext}). Raw content:\n\n${content}`;
-}
-
 function extractSessionMetadata(sessionPath: string): { agent: string; workspace?: string } {
   const normalized = path.normalize(sessionPath);
   
@@ -190,7 +112,8 @@ export async function generateDiary(
   const sanitizationConfig: SanitizationConfig = {
     enabled: config.sanitization.enabled,
     extraPatterns: config.sanitization.extraPatterns || [],
-    auditLog: config.sanitization.auditLog
+    auditLog: config.sanitization.auditLog,
+    auditLevel: config.sanitization.auditLevel || "off"
   };
   
   // For runtime usage in sanitize utility, we pass the regexes manually if utility supports it?

@@ -107,14 +107,15 @@ async function handleToolCall(name: string, args: any): Promise<any> {
       if (!args?.sessionId || typeof args.sessionId !== "string") {
         throw new Error("cm_outcome requires 'sessionId'");
       }
+      const config = await loadConfig();
       return recordOutcome({
         sessionId: args?.sessionId,
         outcome: args.outcome,
-        rulesUsed: args?.rulesUsed,
-        notes: args?.notes,
-        task: args?.task,
-        durationSec: args?.durationSec
-      });
+        rulesUsed: Array.isArray(args?.rulesUsed) ? args.rulesUsed : undefined,
+        notes: typeof args?.notes === "string" ? args.notes : undefined,
+        task: typeof args?.task === "string" ? args.task : undefined,
+        durationSec: typeof args?.durationSec === "number" ? args.durationSec : undefined
+      }, config);
     }
     default:
       throw new Error(`Unknown tool: ${name}`);

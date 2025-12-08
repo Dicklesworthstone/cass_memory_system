@@ -79,7 +79,11 @@ echo "Running smoke in $WORKDIR; logs: $LOG_FILE"
 run_step S1_init bun run "$CM_BIN" init
 run_step S2_context bun run "$CM_BIN" context "hello world" --json
 run_step S3_add_rule bun run "$CM_BIN" playbook add "Always write atomically" --category io --json
-ID=$(bun run "$CM_BIN" playbook list --json | grep '\"id\"' | head -1 | cut -d '"' -f4)
+ID=$(bun run "$CM_BIN" playbook list --json | node -e "import fs from 'fs'; const data=JSON.parse(fs.readFileSync(0,'utf8')); const id=(Array.isArray(data)&&data[0]?.id)||''; if(!id){process.exit(1);} console.log(id);")
+if [[ -z "$ID" ]]; then
+  echo "Failed to extract bullet id from playbook list" >&2
+  exit 1
+fi
 run_step S4_mark bun run "$CM_BIN" mark "$ID" --helpful --session smoke-1 --json
 run_step S5_list bun run "$CM_BIN" playbook list --json
 

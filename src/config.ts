@@ -51,7 +51,7 @@ export const DEFAULT_CONFIG: Config = {
     enabled: true,
     extraPatterns: [],
     auditLog: false,
-    // auditLevel removed per type update
+    auditLevel: "info",
   },
 };
 

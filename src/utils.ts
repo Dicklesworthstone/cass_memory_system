@@ -564,15 +564,16 @@ function truncateTail(text: string, maxChars: number, preserveCodeBlocks: boolea
  */
 function truncateMiddle(
   text: string,
-  maxChars: number,
+  availableChars: number,
   marker: string,
   preserveCodeBlocks: boolean
 ): string {
-  if (text.length <= maxChars) return text;
+  if (text.length <= availableChars) return text;
 
   // Split budget between head and tail (60/40 favoring beginning)
-  const headBudget = Math.floor((maxChars - marker.length) * 0.6);
-  const tailBudget = maxChars - marker.length - headBudget;
+  // Note: availableChars already has marker length subtracted by caller
+  const headBudget = Math.floor(availableChars * 0.6);
+  const tailBudget = availableChars - headBudget;
 
   const headPart = truncateHead(text, headBudget, preserveCodeBlocks);
   const tailPart = truncateTail(text, tailBudget, preserveCodeBlocks);
@@ -872,12 +873,13 @@ export function warn(msg: string): void {
 /**
  * Convert snake_case keys to camelCase.
  * Handles nested objects and arrays recursively.
+ * Preserves Date, RegExp, and other special objects unchanged.
  *
  * Useful for normalizing YAML config files which typically use snake_case
  * to JavaScript conventions which use camelCase.
  *
  * @param obj - Object with snake_case keys (or primitive value)
- * @returns Object with camelCase keys (preserves primitives)
+ * @returns Object with camelCase keys (preserves primitives and special objects)
  *
  * @example
  * normalizeYamlKeys({ api_key: "x", max_tokens: 100 })
@@ -896,6 +898,19 @@ export function normalizeYamlKeys<T>(obj: T): T {
   }
 
   if (typeof obj === "object") {
+    // Preserve special objects (Date, RegExp, Map, Set, etc.)
+    if (obj instanceof Date || obj instanceof RegExp ||
+        obj instanceof Map || obj instanceof Set) {
+      return obj;
+    }
+
+    // Only process plain objects
+    const proto = Object.getPrototypeOf(obj);
+    if (proto !== null && proto !== Object.prototype) {
+      // Not a plain object, return unchanged
+      return obj;
+    }
+
     const result: Record<string, unknown> = {};
 
     for (const [key, value] of Object.entries(obj)) {
@@ -912,6 +927,7 @@ export function normalizeYamlKeys<T>(obj: T): T {
 
 /**
  * Convert a single snake_case string to camelCase.
+ * Preserves leading underscores (convention for private fields).
  *
  * @param str - snake_case string
  * @returns camelCase string
@@ -919,17 +935,24 @@ export function normalizeYamlKeys<T>(obj: T): T {
  * @example
  * snakeToCamel("api_key") // "apiKey"
  * snakeToCamel("max_tokens_limit") // "maxTokensLimit"
- * snakeToCamel("already_camelCase") // "alreadyCamelcase" (handles mixed)
+ * snakeToCamel("_private_field") // "_privateField" (preserves leading _)
  */
 export function snakeToCamel(str: string): string {
   if (!str) return str;
 
-  return str.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+  // Handle leading underscores by preserving them
+  const leadingUnderscores = str.match(/^_+/)?.[0] || "";
+  const rest = str.slice(leadingUnderscores.length);
+
+  const converted = rest.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+
+  return leadingUnderscores + converted;
 }
 
 /**
  * Convert camelCase keys to snake_case.
  * Inverse of normalizeYamlKeys - useful for writing configs back to YAML.
+ * Preserves Date, RegExp, and other special objects unchanged.
  *
  * @param obj - Object with camelCase keys
  * @returns Object with snake_case keys
@@ -948,6 +971,18 @@ export function camelToSnakeKeys<T>(obj: T): T {
   }
 
   if (typeof obj === "object") {
+    // Preserve special objects (Date, RegExp, Map, Set, etc.)
+    if (obj instanceof Date || obj instanceof RegExp ||
+        obj instanceof Map || obj instanceof Set) {
+      return obj;
+    }
+
+    // Only process plain objects
+    const proto = Object.getPrototypeOf(obj);
+    if (proto !== null && proto !== Object.prototype) {
+      return obj;
+    }
+
     const result: Record<string, unknown> = {};
 
     for (const [key, value] of Object.entries(obj)) {
@@ -963,11 +998,19 @@ export function camelToSnakeKeys<T>(obj: T): T {
 
 /**
  * Convert a single camelCase string to snake_case.
+ * Handles PascalCase correctly (no leading underscore).
+ *
+ * @example
+ * camelToSnake("apiKey") // "api_key"
+ * camelToSnake("ApiKey") // "api_key" (not "_api_key")
+ * camelToSnake("getHTTPResponse") // "get_h_t_t_p_response"
  */
 export function camelToSnake(str: string): string {
   if (!str) return str;
 
-  return str.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
+  return str
+    .replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`)
+    .replace(/^_/, ""); // Remove leading underscore from PascalCase
 }
 
 /**
