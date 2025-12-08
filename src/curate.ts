@@ -76,8 +76,6 @@ function invertToAntiPattern(bullet: PlaybookBullet, config: Config): PlaybookBu
     sourceAgents: bullet.sourceAgents,
     tags: [...bullet.tags, "inverted", "anti-pattern"],
     feedbackEvents: [],
-    helpfulEvents: [],
-    harmfulEvents: [],
     helpfulCount: 0,
     harmfulCount: 0,
     deprecated: false,

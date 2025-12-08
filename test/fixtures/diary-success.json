@@ -1,0 +1,25 @@
+{
+  "id": "diary-success-1",
+  "sessionPath": "/sessions/success.jsonl",
+  "timestamp": "2025-01-02T10:00:00.000Z",
+  "agent": "claude-code",
+  "status": "success",
+  "accomplishments": [
+    "Implemented feature X",
+    "All tests passing"
+  ],
+  "decisions": [
+    "Chose atomic writes for config"
+  ],
+  "challenges": [],
+  "preferences": [],
+  "keyLearnings": [
+    "Atomic writes prevent partial config corruption"
+  ],
+  "relatedSessions": [],
+  "tags": [
+    "testing",
+    "io"
+  ],
+  "searchAnchors": []
+}

@@ -59,17 +59,6 @@ export async function markCommand(
       context: flags.reason 
     };
 
-    // Only update counts and the single source of truth array
-    if (type === "helpful") {
-      targetBullet.helpfulCount++;
-      targetBullet.helpfulEvents = targetBullet.helpfulEvents || [];
-      targetBullet.helpfulEvents.push(event);
-    } else {
-      targetBullet.harmfulCount++;
-      targetBullet.harmfulEvents = targetBullet.harmfulEvents || [];
-      targetBullet.harmfulEvents.push(event);
-    }
-
     targetBullet.feedbackEvents = targetBullet.feedbackEvents || [];
     targetBullet.feedbackEvents.push(event);
 

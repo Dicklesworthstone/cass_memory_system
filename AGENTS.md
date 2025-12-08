@@ -304,3 +304,9 @@ Tips:
 stdout is data-only, stderr is diagnostics; exit code 0 means success.
 
 Treat cass as a way to avoid re-solving problems other agents already handled.
+
+---
+
+## Contribution Policy
+
+Remove any mention of contributing/contributors from README and don't reinsert it.

@@ -37,7 +37,7 @@ export const SECRET_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = 
 
 export function sanitize(
   text: string,
-  config: SanitizationConfig
+  config: { enabled: boolean; extraPatterns?: RegExp[]; auditLog?: boolean; auditLevel?: string }
 ): string {
   if (!config.enabled) {
     return text;

@@ -1,0 +1,25 @@
+metadata:
+  version: "1.0.0"
+  createdAt: "2025-01-01T00:00:00.000Z"
+  updatedAt: "2025-01-01T00:00:00.000Z"
+  totalReflections: 1
+  lastReflection: "2025-01-02T00:00:00.000Z"
+bullets:
+  - id: "b-1"
+    scope: "global"
+    category: "testing"
+    content: "Always run bun test before committing"
+    type: "rule"
+    isNegative: false
+    kind: "workflow_rule"
+    state: "active"
+    maturity: "established"
+    helpfulCount: 2
+    harmfulCount: 0
+    feedbackEvents: []
+    confidenceDecayHalfLifeDays: 90
+    createdAt: "2025-01-01T00:00:00.000Z"
+    updatedAt: "2025-01-02T00:00:00.000Z"
+    sourceSessions: ["/sessions/test-session.jsonl"]
+    sourceAgents: ["claude"]
+    tags: ["tests", "workflow"]

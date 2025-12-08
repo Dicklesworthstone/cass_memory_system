@@ -1,0 +1,12 @@
+provider: openai
+model: gpt-4
+apiKey: test-key
+cassPath: cass
+maxBulletsInContext: 10
+maxHistoryInContext: 10
+sessionLookbackDays: 30
+pruneHarmfulThreshold: 3
+decayHalfLifeDays: 90
+maturityPromotionThreshold: 3
+maturityProvenThreshold: 10
+harmfulMultiplier: 4

@@ -1,0 +1,22 @@
+{
+  "id": "diary-failure-1",
+  "sessionPath": "/sessions/failure.jsonl",
+  "timestamp": "2025-01-03T15:00:00.000Z",
+  "agent": "cursor",
+  "status": "failure",
+  "accomplishments": [],
+  "decisions": [],
+  "challenges": [
+    "Build failed due to missing config"
+  ],
+  "preferences": [],
+  "keyLearnings": [
+    "Doctor command should surface missing config earlier"
+  ],
+  "relatedSessions": [],
+  "tags": [
+    "build",
+    "config"
+  ],
+  "searchAnchors": []
+}

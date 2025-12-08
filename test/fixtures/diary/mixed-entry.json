@@ -1,0 +1,43 @@
+{
+  "id": "diary-mixed-001",
+  "sessionPath": "/sessions/partial-refactor.jsonl",
+  "timestamp": "2025-01-13T09:00:00.000Z",
+  "agent": "codex",
+  "workspace": "/projects/cass-memory",
+  "duration": 5400,
+  "status": "mixed",
+  "accomplishments": [
+    "Refactored 3 of 5 targeted modules",
+    "Improved test coverage from 60% to 75%",
+    "Fixed 2 critical bugs in validation logic"
+  ],
+  "decisions": [
+    "Stopped refactor early due to complexity",
+    "Prioritized bug fixes over new features",
+    "Deferred remaining modules to next session"
+  ],
+  "challenges": [
+    "Remaining 2 modules have complex dependencies",
+    "One test still flaky due to timing issues",
+    "Documentation needs updating"
+  ],
+  "preferences": [
+    "Break large refactors into smaller PRs",
+    "Fix bugs before adding features"
+  ],
+  "keyLearnings": [
+    "Large refactors should be planned incrementally",
+    "Timing-based tests need proper mocking",
+    "Document decisions as you go, not after"
+  ],
+  "relatedSessions": [
+    {
+      "sessionPath": "/sessions/initial-refactor.jsonl",
+      "agent": "codex",
+      "relevanceScore": 0.92,
+      "snippet": "Started the refactoring effort"
+    }
+  ],
+  "tags": ["refactor", "partial", "bugs"],
+  "searchAnchors": ["partial refactor", "bug fixes", "test coverage"]
+}

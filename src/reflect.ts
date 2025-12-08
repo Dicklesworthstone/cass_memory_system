@@ -315,8 +315,8 @@ export async function reflectOnSession(
   playbook: Playbook,
   config: Config
 ): Promise<PlaybookDelta[]> {
-  // Use LLM if API key is available, otherwise fall back to regex extraction
-  if (!config.apiKey) {
+  const provider = (config.llm?.provider ?? config.provider);
+  if ((provider as string) === "none") {
       return extractDeltasRegex(diary);
   }
 
@@ -340,7 +340,7 @@ export async function reflectOnSession(
       );
 
       // Normalize deltas - inject sourceSession for add deltas
-      const validDeltas = (object.deltas as PlaybookDelta[]).map((d) => {
+      const validDeltas = object.deltas.map((d: PlaybookDelta) => {
         if (d.type === "add") {
           return { ...d, sourceSession: diary.sessionPath };
         }
@@ -351,7 +351,7 @@ export async function reflectOnSession(
           return { ...d, sourceSession: diary.sessionPath };
         }
         return d;
-      });
+      }) as PlaybookDelta[];
 
       // Deduplicate against what we've already found
       const uniqueDeltas = deduplicateDeltas(validDeltas, allDeltas);

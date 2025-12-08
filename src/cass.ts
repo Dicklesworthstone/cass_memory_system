@@ -260,6 +260,13 @@ function normalizeProcessed(
   if (processedOrLog instanceof Set) {
     return { processed: processedOrLog, lastProcessedAt: undefined };
   }
+  // If processedOrLog is a ProcessedLog object, use getProcessedPaths()
+  if (typeof (processedOrLog as any).getProcessedPaths === "function") {
+    return { 
+      processed: (processedOrLog as any).getProcessedPaths(), 
+      lastProcessedAt: processedOrLog.lastProcessedAt 
+    };
+  }
   return {
     processed: processedOrLog.processedSessions ?? new Set<string>(),
     lastProcessedAt: processedOrLog.lastProcessedAt

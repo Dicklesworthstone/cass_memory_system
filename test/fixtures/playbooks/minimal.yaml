@@ -1,0 +1,38 @@
+schema_version: 2
+name: minimal-playbook
+description: Minimal playbook with one bullet for basic tests
+metadata:
+  createdAt: "2025-01-01T00:00:00.000Z"
+  totalReflections: 1
+  totalSessionsProcessed: 1
+deprecatedPatterns: []
+bullets:
+  - id: b-test001-abcd
+    scope: global
+    category: testing
+    content: Always run tests before committing code changes
+    type: rule
+    isNegative: false
+    kind: workflow_rule
+    state: active
+    maturity: candidate
+    helpfulCount: 1
+    harmfulCount: 0
+    feedbackEvents:
+      - type: helpful
+        timestamp: "2025-01-01T00:00:00.000Z"
+        sessionPath: /sessions/test.jsonl
+    helpfulEvents: []
+    harmfulEvents: []
+    confidenceDecayHalfLifeDays: 90
+    createdAt: "2025-01-01T00:00:00.000Z"
+    updatedAt: "2025-01-01T00:00:00.000Z"
+    pinned: false
+    deprecated: false
+    sourceSessions:
+      - /sessions/test.jsonl
+    sourceAgents:
+      - claude-code
+    tags:
+      - testing
+      - best-practice

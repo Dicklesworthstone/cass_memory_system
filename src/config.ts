@@ -26,6 +26,9 @@ export const DEFAULT_CONFIG: Config = {
   maxHistoryInContext: 10,
   sessionLookbackDays: 7,
   validationLookbackDays: 90,
+  relatedSessionsDays: 30,
+  minRelevanceScore: 0.1,
+  maxRelatedSessions: 5,
   validationEnabled: true,
   enrichWithCrossAgent: true,
   semanticSearchEnabled: false,
@@ -48,12 +51,11 @@ export const DEFAULT_CONFIG: Config = {
     enabled: true,
     extraPatterns: [],
     auditLog: false,
-    auditLevel: "info",
+    // auditLevel removed per type update
   },
 };
 
 export function getDefaultConfig(): Config {
-  // structuredClone is available in modern runtimes (Node 18+/Bun). Fallback keeps this safe if absent.
   if (typeof structuredClone === "function") {
     return structuredClone(DEFAULT_CONFIG);
   }

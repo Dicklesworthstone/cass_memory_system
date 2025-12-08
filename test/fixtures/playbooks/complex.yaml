@@ -1,0 +1,288 @@
+schema_version: 2
+name: complex-playbook
+description: Complex playbook with various bullet types and states
+metadata:
+  createdAt: "2025-01-01T00:00:00.000Z"
+  lastReflection: "2025-01-15T00:00:00.000Z"
+  totalReflections: 10
+  totalSessionsProcessed: 25
+deprecatedPatterns:
+  - pattern: "Use var instead of let/const"
+    deprecatedAt: "2025-01-10T00:00:00.000Z"
+    reason: Modern JavaScript should use const/let
+    replacement: Use const for immutable, let for mutable
+bullets:
+  # Proven rule with high helpful count
+  - id: b-proven01-xyz1
+    scope: global
+    category: architecture
+    content: Use dependency injection for testable services
+    type: rule
+    isNegative: false
+    kind: stack_pattern
+    state: active
+    maturity: proven
+    helpfulCount: 15
+    harmfulCount: 1
+    feedbackEvents:
+      - type: helpful
+        timestamp: "2025-01-01T00:00:00.000Z"
+      - type: helpful
+        timestamp: "2025-01-02T00:00:00.000Z"
+      - type: helpful
+        timestamp: "2025-01-03T00:00:00.000Z"
+      - type: helpful
+        timestamp: "2025-01-04T00:00:00.000Z"
+      - type: helpful
+        timestamp: "2025-01-05T00:00:00.000Z"
+      - type: helpful
+        timestamp: "2025-01-06T00:00:00.000Z"
+      - type: helpful
+        timestamp: "2025-01-07T00:00:00.000Z"
+      - type: helpful
+        timestamp: "2025-01-08T00:00:00.000Z"
+      - type: helpful
+        timestamp: "2025-01-09T00:00:00.000Z"
+      - type: helpful
+        timestamp: "2025-01-10T00:00:00.000Z"
+      - type: helpful
+        timestamp: "2025-01-11T00:00:00.000Z"
+      - type: helpful
+        timestamp: "2025-01-12T00:00:00.000Z"
+      - type: helpful
+        timestamp: "2025-01-13T00:00:00.000Z"
+      - type: helpful
+        timestamp: "2025-01-14T00:00:00.000Z"
+      - type: helpful
+        timestamp: "2025-01-15T00:00:00.000Z"
+      - type: harmful
+        timestamp: "2025-01-08T12:00:00.000Z"
+        reason: wrong_context
+    helpfulEvents: []
+    harmfulEvents: []
+    confidenceDecayHalfLifeDays: 180
+    createdAt: "2025-01-01T00:00:00.000Z"
+    updatedAt: "2025-01-15T00:00:00.000Z"
+    pinned: true
+    pinnedReason: Core architecture principle
+    deprecated: false
+    sourceSessions:
+      - /sessions/arch-review.jsonl
+    sourceAgents:
+      - claude-code
+      - cursor
+    tags:
+      - architecture
+      - testability
+  # Candidate rule needing more feedback
+  - id: b-candid01-abc2
+    scope: global
+    category: git
+    content: Use conventional commits format for all commit messages
+    type: rule
+    isNegative: false
+    kind: workflow_rule
+    state: active
+    maturity: candidate
+    helpfulCount: 2
+    harmfulCount: 0
+    feedbackEvents:
+      - type: helpful
+        timestamp: "2025-01-14T00:00:00.000Z"
+      - type: helpful
+        timestamp: "2025-01-15T00:00:00.000Z"
+    helpfulEvents: []
+    harmfulEvents: []
+    confidenceDecayHalfLifeDays: 90
+    createdAt: "2025-01-14T00:00:00.000Z"
+    updatedAt: "2025-01-15T00:00:00.000Z"
+    pinned: false
+    deprecated: false
+    sourceSessions:
+      - /sessions/git-setup.jsonl
+    sourceAgents:
+      - codex
+    tags:
+      - git
+      - workflow
+  # Harmful rule (candidate for inversion)
+  - id: b-harmful1-def3
+    scope: global
+    category: testing
+    content: Skip tests for UI components since they change frequently
+    type: rule
+    isNegative: false
+    kind: workflow_rule
+    state: active
+    maturity: candidate
+    helpfulCount: 1
+    harmfulCount: 5
+    feedbackEvents:
+      - type: helpful
+        timestamp: "2025-01-01T00:00:00.000Z"
+      - type: harmful
+        timestamp: "2025-01-05T00:00:00.000Z"
+        reason: caused_bug
+        context: UI regression went unnoticed
+      - type: harmful
+        timestamp: "2025-01-07T00:00:00.000Z"
+        reason: caused_bug
+      - type: harmful
+        timestamp: "2025-01-09T00:00:00.000Z"
+        reason: wasted_time
+      - type: harmful
+        timestamp: "2025-01-11T00:00:00.000Z"
+        reason: caused_bug
+      - type: harmful
+        timestamp: "2025-01-13T00:00:00.000Z"
+        reason: wasted_time
+    helpfulEvents: []
+    harmfulEvents: []
+    confidenceDecayHalfLifeDays: 90
+    createdAt: "2025-01-01T00:00:00.000Z"
+    updatedAt: "2025-01-13T00:00:00.000Z"
+    pinned: false
+    deprecated: false
+    sourceSessions:
+      - /sessions/fast-dev.jsonl
+    sourceAgents:
+      - gpt-4
+    tags:
+      - testing
+      - ui
+  # Anti-pattern
+  - id: b-antipat1-ghi4
+    scope: global
+    category: security
+    content: DON'T store API keys directly in source code
+    type: anti-pattern
+    isNegative: true
+    kind: anti_pattern
+    state: active
+    maturity: proven
+    helpfulCount: 12
+    harmfulCount: 0
+    feedbackEvents:
+      - type: helpful
+        timestamp: "2025-01-01T00:00:00.000Z"
+      - type: helpful
+        timestamp: "2025-01-02T00:00:00.000Z"
+      - type: helpful
+        timestamp: "2025-01-03T00:00:00.000Z"
+      - type: helpful
+        timestamp: "2025-01-04T00:00:00.000Z"
+      - type: helpful
+        timestamp: "2025-01-05T00:00:00.000Z"
+      - type: helpful
+        timestamp: "2025-01-06T00:00:00.000Z"
+      - type: helpful
+        timestamp: "2025-01-07T00:00:00.000Z"
+      - type: helpful
+        timestamp: "2025-01-08T00:00:00.000Z"
+      - type: helpful
+        timestamp: "2025-01-09T00:00:00.000Z"
+      - type: helpful
+        timestamp: "2025-01-10T00:00:00.000Z"
+      - type: helpful
+        timestamp: "2025-01-11T00:00:00.000Z"
+      - type: helpful
+        timestamp: "2025-01-12T00:00:00.000Z"
+    helpfulEvents: []
+    harmfulEvents: []
+    confidenceDecayHalfLifeDays: 365
+    createdAt: "2024-12-01T00:00:00.000Z"
+    updatedAt: "2025-01-12T00:00:00.000Z"
+    pinned: true
+    pinnedReason: Critical security practice
+    deprecated: false
+    sourceSessions:
+      - /sessions/security-audit.jsonl
+    sourceAgents:
+      - claude-code
+    tags:
+      - security
+      - secrets
+  # Workspace-scoped rule
+  - id: b-worksp1-jkl5
+    scope: workspace
+    workspace: /projects/cass-memory
+    category: project
+    content: Use Bun instead of npm for package management
+    type: rule
+    isNegative: false
+    kind: project_convention
+    state: active
+    maturity: established
+    helpfulCount: 5
+    harmfulCount: 0
+    feedbackEvents:
+      - type: helpful
+        timestamp: "2025-01-10T00:00:00.000Z"
+      - type: helpful
+        timestamp: "2025-01-11T00:00:00.000Z"
+      - type: helpful
+        timestamp: "2025-01-12T00:00:00.000Z"
+      - type: helpful
+        timestamp: "2025-01-13T00:00:00.000Z"
+      - type: helpful
+        timestamp: "2025-01-14T00:00:00.000Z"
+    helpfulEvents: []
+    harmfulEvents: []
+    confidenceDecayHalfLifeDays: 90
+    createdAt: "2025-01-10T00:00:00.000Z"
+    updatedAt: "2025-01-14T00:00:00.000Z"
+    pinned: false
+    deprecated: false
+    sourceSessions:
+      - /sessions/setup.jsonl
+    sourceAgents:
+      - claude-code
+    tags:
+      - tooling
+      - bun
+  # Language-scoped rule
+  - id: b-langts1-mno6
+    scope: language
+    scopeKey: typescript
+    category: typing
+    content: Prefer interfaces over type aliases for object shapes
+    type: rule
+    isNegative: false
+    kind: stack_pattern
+    state: active
+    maturity: established
+    helpfulCount: 7
+    harmfulCount: 1
+    feedbackEvents:
+      - type: helpful
+        timestamp: "2025-01-05T00:00:00.000Z"
+      - type: helpful
+        timestamp: "2025-01-06T00:00:00.000Z"
+      - type: helpful
+        timestamp: "2025-01-07T00:00:00.000Z"
+      - type: helpful
+        timestamp: "2025-01-08T00:00:00.000Z"
+      - type: helpful
+        timestamp: "2025-01-09T00:00:00.000Z"
+      - type: helpful
+        timestamp: "2025-01-10T00:00:00.000Z"
+      - type: helpful
+        timestamp: "2025-01-11T00:00:00.000Z"
+      - type: harmful
+        timestamp: "2025-01-09T12:00:00.000Z"
+        reason: wrong_context
+        context: Type alias was needed for union type
+    helpfulEvents: []
+    harmfulEvents: []
+    confidenceDecayHalfLifeDays: 90
+    createdAt: "2025-01-05T00:00:00.000Z"
+    updatedAt: "2025-01-11T00:00:00.000Z"
+    pinned: false
+    deprecated: false
+    sourceSessions:
+      - /sessions/ts-review.jsonl
+    sourceAgents:
+      - cursor
+    tags:
+      - typescript
+      - types

@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "provider": "anthropic",
+  "model": "claude-sonnet-4-20250514",
+  "cassPath": "cass",
+  "playbookPath": "~/.cass-memory/playbook.yaml",
+  "diaryDir": "~/.cass-memory/diary",
+  "maxReflectorIterations": 3,
+  "autoReflect": false,
+  "dedupSimilarityThreshold": 0.85,
+  "pruneHarmfulThreshold": 3,
+  "defaultDecayHalfLife": 90,
+  "maxBulletsInContext": 50,
+  "maxHistoryInContext": 10,
+  "sessionLookbackDays": 7,
+  "validationLookbackDays": 90,
+  "validationEnabled": true,
+  "enrichWithCrossAgent": true,
+  "semanticSearchEnabled": false,
+  "verbose": false,
+  "jsonOutput": false,
+  "scoring": {
+    "decayHalfLifeDays": 90,
+    "harmfulMultiplier": 4,
+    "minFeedbackForActive": 3,
+    "minHelpfulForProven": 10,
+    "maxHarmfulRatioForProven": 0.1
+  },
+  "sanitization": {
+    "enabled": true,
+    "extraPatterns": [],
+    "auditLog": false,
+    "auditLevel": "info"
+  }
+}

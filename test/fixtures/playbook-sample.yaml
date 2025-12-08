@@ -1,0 +1,75 @@
+schema_version: 2
+name: playbook-sample
+description: Sample playbook with a few bullets
+metadata:
+  createdAt: 2025-01-01T00:00:00.000Z
+  totalReflections: 2
+  totalSessionsProcessed: 3
+deprecatedPatterns: []
+bullets:
+  - id: b-abc-123
+    scope: global
+    category: testing
+    content: Always run bun test before committing
+    type: rule
+    isNegative: false
+    kind: workflow_rule
+    state: active
+    maturity: established
+    helpfulCount: 3
+    harmfulCount: 0
+    feedbackEvents: []
+    helpfulEvents: []
+    harmfulEvents: []
+    confidenceDecayHalfLifeDays: 90
+    createdAt: 2025-01-01T00:00:00.000Z
+    updatedAt: 2025-01-01T00:00:00.000Z
+    pinned: false
+    deprecated: false
+    tags: ["tests"]
+    sourceSessions: []
+    sourceAgents: []
+  - id: b-def-456
+    scope: global
+    category: io
+    content: Prefer atomic writes for config files
+    type: rule
+    isNegative: false
+    kind: stack_pattern
+    state: active
+    maturity: candidate
+    helpfulCount: 1
+    harmfulCount: 0
+    feedbackEvents: []
+    helpfulEvents: []
+    harmfulEvents: []
+    confidenceDecayHalfLifeDays: 90
+    createdAt: 2025-01-01T00:00:00.000Z
+    updatedAt: 2025-01-01T00:00:00.000Z
+    pinned: false
+    deprecated: false
+    tags: ["fs"]
+    sourceSessions: []
+    sourceAgents: []
+  - id: b-ghi-789
+    scope: global
+    category: pitfalls
+    content: DONT commit secrets to the repo
+    type: anti-pattern
+    isNegative: true
+    kind: anti_pattern
+    state: active
+    maturity: candidate
+    helpfulCount: 0
+    harmfulCount: 1
+    feedbackEvents: []
+    helpfulEvents: []
+    harmfulEvents: []
+    confidenceDecayHalfLifeDays: 90
+    createdAt: 2025-01-01T00:00:00.000Z
+    updatedAt: 2025-01-01T00:00:00.000Z
+    pinned: false
+    deprecated: false
+    tags: ["security"]
+    sourceSessions: []
+    sourceAgents: []

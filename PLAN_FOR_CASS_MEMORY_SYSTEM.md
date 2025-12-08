@@ -5521,6 +5521,51 @@ bullets:
 
 ---
 
+## V1 Scope Gate (cass_memory_system-4fj7)
+
+**Goal:** freeze a small, shippable V1 that delivers “context on demand” with zero setup and no LLM requirement; everything else is V2/V3.
+
+### What “V1 complete” means
+- Zero-config works on a clean machine (global + repo defaults auto-created).
+- Context CLI returns rules + history when cass is available and degrades gracefully when cass/LLM are absent.
+- Manual feedback loop (`cm mark`) present; cost controls on by default with safe budgets.
+- MCP server exposes `cm_context`, `cm_feedback`, `cm_outcome` so agents can self-serve memory.
+- Docs show the 5-command surface, install/build steps, degraded-mode expectations, and MCP quickstart.
+
+### V1 checklist
+- [ ] MCP tools live and documented: `cm_context`, `cm_feedback`, `cm_outcome`.
+- [ ] Budget config surfaced (daily/monthly caps, default local-only).
+- [ ] Context: argv+stdin parsing, JSON/human output, degraded-mode warnings.
+- [ ] Reflect: session discovery, diary → reflect → validate → curate flow; dry-run + JSON.
+- [ ] Playbook ops: list/add/remove; deprecated patterns respected; toxic blocklists applied.
+- [ ] Graceful degradation verified (no cass, no playbook, no LLM, offline).
+- [ ] Binaries: bun --compile targets (linux-x64, darwin-arm64, windows-x64) with `--help`/`--version`.
+- [ ] Dev loop docs: bun --watch, typecheck/watch, test/watch.
+
+### Nice-to-have (push to V2+)
+- Semantic search/embeddings; cross-agent sharing.
+- Advanced maturity/decay tuning UI; richer auto-promotion/demotion.
+- Team playbooks, cloud sync, webhooks, IDE plugins, API surface.
+
+### Milestone slices
+1) **Agent surface**: ship MCP tools + outcome logging hooks so agents can request context and report results.
+2) **Resilience**: prove all degraded modes render actionable guidance, not failures.
+3) **Budget safety**: defaults keep LLM off; caps enforced when enabled.
+4) **Distribution**: cross-platform binaries built and documented.
+5) **Docs**: single path to “run context in <5 minutes,” including MCP snippet.
+
+### Tracking (beads mapping)
+- MCP surface: cass_memory_system-8nsd
+- Context CLI polish (stdin/argv, degraded messaging): cass_memory_system-dpuu, cass_memory_system-qt2q
+- Budget/cost controls: cass_memory_system-zex2
+- Degradation guarantees: cass_memory_system-c8w5
+- V1 command surface clarity: cass_memory_system-nf0v
+- Binary builds: cass_memory_system-iqat
+- Dev workflow docs: cass_memory_system-4hey
+- Scope governance (this bead): cass_memory_system-4fj7
+
+---
+
 ## Conclusion
 
 This plan combines the best elements from all four AI proposals:

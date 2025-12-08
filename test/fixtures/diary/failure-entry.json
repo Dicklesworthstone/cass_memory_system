@@ -1,0 +1,28 @@
+{
+  "id": "diary-failure-001",
+  "sessionPath": "/sessions/broken-build.jsonl",
+  "timestamp": "2025-01-14T15:45:00.000Z",
+  "agent": "gpt-4",
+  "workspace": "/projects/cass-memory",
+  "duration": 1800,
+  "status": "failure",
+  "accomplishments": [],
+  "decisions": [
+    "Attempted to add new feature without reading existing code",
+    "Ignored type errors to move faster"
+  ],
+  "challenges": [
+    "Build failed with 15 TypeScript errors",
+    "Tests timed out due to infinite loop in scoring",
+    "Introduced circular dependency between modules"
+  ],
+  "preferences": [],
+  "keyLearnings": [
+    "Always read existing code before making changes",
+    "Never ignore TypeScript errors - they catch real bugs",
+    "Check for circular dependencies when adding imports"
+  ],
+  "relatedSessions": [],
+  "tags": ["failure", "type-errors", "build"],
+  "searchAnchors": ["build failure", "type errors", "circular dependency"]
+}

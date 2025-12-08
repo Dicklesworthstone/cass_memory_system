@@ -1,0 +1,40 @@
+{
+  "id": "diary-success-001",
+  "sessionPath": "/sessions/feature-impl.jsonl",
+  "timestamp": "2025-01-15T10:30:00.000Z",
+  "agent": "claude-code",
+  "workspace": "/projects/cass-memory",
+  "duration": 3600,
+  "status": "success",
+  "accomplishments": [
+    "Implemented new scoring algorithm with confidence decay",
+    "Added comprehensive unit tests for decay calculations",
+    "Refactored bullet schema to support feedback events",
+    "Updated documentation with decay formula examples"
+  ],
+  "decisions": [
+    "Used exponential decay formula: 0.5^(ageDays/halfLife)",
+    "Set default half-life to 90 days for most rules",
+    "Applied 4x multiplier for harmful feedback"
+  ],
+  "challenges": [],
+  "preferences": [
+    "Prefer TypeScript interfaces for complex types",
+    "Use Zod for runtime validation"
+  ],
+  "keyLearnings": [
+    "Confidence decay helps rules stay relevant over time",
+    "Harmful feedback should have stronger impact than helpful",
+    "Half-life should vary by rule type and stability"
+  ],
+  "relatedSessions": [
+    {
+      "sessionPath": "/sessions/scoring-research.jsonl",
+      "agent": "cursor",
+      "relevanceScore": 0.85,
+      "snippet": "Researched decay algorithms for trust scores"
+    }
+  ],
+  "tags": ["scoring", "decay", "algorithms"],
+  "searchAnchors": ["confidence decay", "scoring algorithm", "feedback events"]
+}

@@ -1,0 +1,9 @@
+schema_version: 2
+name: empty-playbook
+description: Empty playbook for init/setup tests
+metadata:
+  createdAt: "2025-01-01T00:00:00.000Z"
+  totalReflections: 0
+  totalSessionsProcessed: 0
+deprecatedPatterns: []
+bullets: []

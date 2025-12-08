@@ -1,3 +1,7 @@
+// src/llm.ts
+// LLM Provider Abstraction - Using Vercel AI SDK
+// Supports OpenAI, Anthropic, and Google providers with a unified interface
+
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
@@ -473,7 +477,7 @@ Decisions: ${diary.decisions.join('\n- ')}
 Challenges: ${diary.challenges.join('\n- ')}
 Preferences: ${diary.preferences.join('\n- ')}
 Key Learnings: ${diary.keyLearnings.join('\n- ')}
-`.trim();
+`
 
   const iterationNote = iteration > 0
     ? `This is iteration ${iteration + 1}. Focus on insights you may have missed in previous passes.`
@@ -548,18 +552,20 @@ export async function runValidator(
       temperature: 0.2,
     }, config, "runValidator");
 
+    const result = object as z.infer<typeof ValidatorOutputSchema>;
+
     const mappedEvidence = [
-      ...object.evidence.supporting.map((s: string) => ({ sessionPath: "unknown", snippet: s, supports: true })),
-      ...object.evidence.contradicting.map((s: string) => ({ sessionPath: "unknown", snippet: s, supports: false }))
+      ...result.evidence.supporting.map((s: string) => ({ sessionPath: "unknown", snippet: s, supports: true })),
+      ...result.evidence.contradicting.map((s: string) => ({ sessionPath: "unknown", snippet: s, supports: false }))
     ];
 
     return {
-      valid: object.verdict === 'ACCEPT',
-      verdict: object.verdict,
-      confidence: object.confidence,
-      reason: object.reason,
+      valid: result.verdict === 'ACCEPT',
+      verdict: result.verdict,
+      confidence: result.confidence,
+      reason: result.reason,
       evidence: mappedEvidence,
-      suggestedRefinement: object.suggestedRefinement || undefined
+      suggestedRefinement: result.suggestedRefinement || undefined
     };
   }, "runValidator");
 }
@@ -593,7 +599,9 @@ export async function generateContext(
       prompt,
       temperature: 0.3,
     }, config, "generateContext");
-    return object.briefing;
+    
+    const result = object as { briefing: string };
+    return result.briefing;
   }, "generateContext");
 }
 
@@ -626,7 +634,9 @@ Make queries specific enough to be useful but broad enough to match variations.`
       prompt,
       temperature: 0.5,
     }, config, "generateSearchQueries");
-    return object.queries;
+    
+    const result = object as { queries: string[] };
+    return result.queries;
   }, "generateSearchQueries");
 }
 
