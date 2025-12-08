@@ -59,6 +59,8 @@ function invertToAntiPattern(bullet: PlaybookBullet, config: Config): PlaybookBu
     .trim();
   const invertedContent = `AVOID: ${cleaned}. ${reason}`;
 
+  const halfLife = config.scoring?.decayHalfLifeDays ?? config.defaultDecayHalfLife ?? 90;
+
   return {
     id: generateBulletId(),
     content: invertedContent,
@@ -82,7 +84,7 @@ function invertToAntiPattern(bullet: PlaybookBullet, config: Config): PlaybookBu
     harmfulCount: 0,
     deprecated: false,
     pinned: false,
-    confidenceDecayHalfLifeDays: config.defaultDecayHalfLife 
+    confidenceDecayHalfLifeDays: halfLife 
   };
 }
 
@@ -144,7 +146,7 @@ export function curatePlaybook(
           content,
           category: delta.bullet.category,
           tags: delta.bullet.tags
-        }, delta.sourceSession, config.defaultDecayHalfLife);
+        }, delta.sourceSession, config.scoring?.decayHalfLifeDays ?? config.defaultDecayHalfLife ?? 90);
         
         existingHashes.add(hash);
         applied = true;
@@ -209,7 +211,7 @@ export function curatePlaybook(
             content: delta.mergedContent,
             category: bulletsToMerge[0].category, 
             tags: [...new Set(bulletsToMerge.flatMap(b => b.tags))]
-          }, "merged", config.defaultDecayHalfLife); 
+          }, "merged", config.scoring?.decayHalfLifeDays ?? config.defaultDecayHalfLife ?? 90); 
           
           bulletsToMerge.forEach(b => {
             deprecateBullet(playbook, b.id, `Merged into ${merged.id}`, merged.id);

@@ -60,13 +60,16 @@ export type FeedbackEvent = z.infer<typeof FeedbackEventSchema>;
 // PLAYBOOK BULLET
 // ============================================================================
 
-export const PlaybookBulletSchema = z.object({
-  id: z.string(),
-  scope: BulletScopeEnum.default("global"),
-  scopeKey: z.string().optional(),
-  workspace: z.string().optional(),
-  category: z.string(),
-  content: z.string(),
+export const PlaybookBulletSchema = z
+  .object({
+    id: z
+      .string()
+      .regex(/^b-[0-9a-z]+-[0-9a-z]{4,}$/i, "Invalid bullet id format"),
+    scope: BulletScopeEnum.default("global"),
+    scopeKey: z.string().optional(),
+    workspace: z.string().optional(),
+    category: z.string(),
+    content: z.string(),
   searchPointer: z.string().optional(),
   type: BulletTypeEnum.default("rule"),
   isNegative: z.boolean().default(false),
@@ -94,8 +97,39 @@ export const PlaybookBulletSchema = z.object({
   tags: z.array(z.string()).default([]),
   embedding: z.array(z.number()).optional(),
   effectiveScore: z.number().optional(),
-  deprecatedAt: z.string().optional()
-});
+    deprecatedAt: z.string().optional()
+  })
+  .superRefine((bullet, ctx) => {
+    if (bullet.scope === "workspace" && !bullet.workspace) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["workspace"],
+        message: "workspace scope requires workspace to be set",
+      });
+    }
+    if (
+      (bullet.scope === "language" ||
+        bullet.scope === "framework" ||
+        bullet.scope === "task") &&
+      !bullet.scopeKey
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["scopeKey"],
+        message: `${bullet.scope} scope requires scopeKey`,
+      });
+    }
+    if (
+      (bullet.scope === "global" || bullet.scope === "workspace") &&
+      bullet.scopeKey
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["scopeKey"],
+        message: "scopeKey should be omitted for global/workspace scopes",
+      });
+    }
+  });
 export type PlaybookBullet = z.infer<typeof PlaybookBulletSchema>;
 
 // ============================================================================

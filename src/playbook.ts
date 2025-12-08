@@ -251,3 +251,36 @@ export function getBulletsByCategory(
   const active = getActiveBullets(playbook);
   return active.filter(b => b.category.toLowerCase() === category.toLowerCase());
 }
+
+/**
+ * Filter bullets by scope context for context hydration.
+ */
+export function filterBulletsByScope(
+  playbook: Playbook,
+  scope: { workspace?: string; language?: string; framework?: string; task?: string }
+): PlaybookBullet[] {
+  const active = getActiveBullets(playbook);
+
+  return active.filter((b) => {
+    switch (b.scope) {
+      case "global":
+        return true;
+      case "workspace":
+        return scope.workspace ? b.workspace === scope.workspace : false;
+      case "language":
+        return scope.language
+          ? (b.scopeKey || "").toLowerCase() === scope.language.toLowerCase()
+          : false;
+      case "framework":
+        return scope.framework
+          ? (b.scopeKey || "").toLowerCase() === scope.framework.toLowerCase()
+          : false;
+      case "task":
+        return scope.task
+          ? (b.scopeKey || "").toLowerCase() === scope.task.toLowerCase()
+          : false;
+      default:
+        return false;
+    }
+  });
+}

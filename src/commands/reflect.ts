@@ -7,7 +7,7 @@ import { reflectOnSession } from "../reflect.js";
 import { validateDelta } from "../validate.js";
 import { curatePlaybook } from "../curate.js";
 import { expandPath, log, warn, error, now } from "../utils.js";
-import { withLock } from "../lock.ts";
+import { withLock } from "../lock.js";
 import { PlaybookDelta } from "../types.js";
 import path from "node:path";
 import chalk from "chalk";
@@ -22,82 +22,86 @@ export async function reflectCommand(
   } = {}
 ): Promise<void> {
   const config = await loadConfig();
-  // Load initial playbook for reading context
-  const initialPlaybook = await loadMergedPlaybook(config);
   
+  const globalPath = expandPath(config.playbookPath);
   const logPath = expandPath(path.join(config.diaryDir, "../reflections/processed.log"));
-  const processedLog = new ProcessedLog(logPath);
-  await processedLog.load();
 
-  log("Searching for new sessions...", true);
+  // We must lock the entire reflect process to ensure we don't duplicate work 
+  // or overwrite the playbook/processed log with stale data.
+  // Locking just the save is insufficient if two processes pick up the same "unprocessed" sessions.
   
-  const sessions = await findUnprocessedSessions(processedLog.getProcessedPaths(), { 
-    days: options.days || config.sessionLookbackDays,
-    maxSessions: options.maxSessions || 5,
-    agent: options.agent
-  }, config.cassPath);
+  // Using globalPath as the lock key for the entire critical section.
+  await withLock(globalPath, async () => {
+    const processedLog = new ProcessedLog(logPath);
+    await processedLog.load();
 
-  const unprocessed = sessions.filter(s => !processedLog.has(s));
+    // Load fresh playbook for context
+    const initialPlaybook = await loadMergedPlaybook(config);
 
-  if (unprocessed.length === 0) {
-    console.log(chalk.green("No new sessions to reflect on."));
-    return;
-  }
-
-  console.log(chalk.blue(`Found ${unprocessed.length} sessions to process.`));
-
-  let allDeltas: PlaybookDelta[] = [];
-
-  for (const sessionPath of unprocessed) {
-    console.log(chalk.dim(`Processing ${sessionPath}...`));
+    log("Searching for new sessions...", true);
     
-    try {
-      const diary = await generateDiary(sessionPath, config);
-      const content = await cassExport(sessionPath, "text", config.cassPath) || "";
-      
-      if (content.length < 50) {
-        warn(`Skipping empty session: ${sessionPath}`);
-        continue;
-      }
+    const sessions = await findUnprocessedSessions(processedLog.getProcessedPaths(), { 
+      days: options.days || config.sessionLookbackDays,
+      maxSessions: options.maxSessions || 5,
+      agent: options.agent
+    }, config.cassPath);
 
-      // Reflect using the initial playbook context (safe for reading)
-      const deltas = await reflectOnSession(diary, initialPlaybook, config);
-      
-      const validatedDeltas: PlaybookDelta[] = [];
-      for (const delta of deltas) {
-        const validation = await validateDelta(delta, config);
-        if (validation.valid) {
-          validatedDeltas.push(delta);
-        } else {
-          log(`Rejected delta: ${validation.gate?.reason || validation.result?.reason}`, true);
-        }
-      }
+    const unprocessed = sessions.filter(s => !processedLog.has(s));
 
-      allDeltas.push(...validatedDeltas);
-      
-      processedLog.add({
-        sessionPath,
-        processedAt: now(),
-        diaryId: diary.id,
-        deltasGenerated: validatedDeltas.length
-      });
-
-    } catch (err: any) {
-      error(`Failed to process ${sessionPath}: ${err.message}`);
+    if (unprocessed.length === 0) {
+      console.log(chalk.green("No new sessions to reflect on."));
+      return;
     }
-  }
 
-  if (options.dryRun) {
-    console.log(JSON.stringify(allDeltas, null, 2));
-    return;
-  }
+    console.log(chalk.blue(`Found ${unprocessed.length} sessions to process.`));
 
-  if (allDeltas.length > 0) {
-    // Lock and reload before saving
-    const globalPath = expandPath(config.playbookPath);
-    
-    await withLock(globalPath, async () => {
-      // Reload fresh playbook inside lock to avoid overwriting other changes
+    let allDeltas: PlaybookDelta[] = [];
+
+    for (const sessionPath of unprocessed) {
+      console.log(chalk.dim(`Processing ${sessionPath}...`));
+      
+      try {
+        const diary = await generateDiary(sessionPath, config);
+        const content = await cassExport(sessionPath, "text", config.cassPath) || "";
+        
+        if (content.length < 50) {
+          warn(`Skipping empty session: ${sessionPath}`);
+          continue;
+        }
+
+        const deltas = await reflectOnSession(diary, initialPlaybook, config);
+        
+        const validatedDeltas: PlaybookDelta[] = [];
+        for (const delta of deltas) {
+          const validation = await validateDelta(delta, config);
+          if (validation.valid) {
+            validatedDeltas.push(delta);
+          } else {
+            log(`Rejected delta: ${validation.gate?.reason || validation.result?.reason}`, true);
+          }
+        }
+
+        allDeltas.push(...validatedDeltas);
+        
+        processedLog.add({
+          sessionPath,
+          processedAt: now(),
+          diaryId: diary.id,
+          deltasGenerated: validatedDeltas.length
+        });
+
+      } catch (err: any) {
+        error(`Failed to process ${sessionPath}: ${err.message}`);
+      }
+    }
+
+    if (options.dryRun) {
+      console.log(JSON.stringify(allDeltas, null, 2));
+      return;
+    }
+
+    if (allDeltas.length > 0) {
+      // Reload fresh playbook again just in case, though we hold the lock so it should be safe unless external edits happen
       const freshPlaybook = await loadPlaybook(globalPath);
       
       const curation = curatePlaybook(freshPlaybook, allDeltas, config);
@@ -115,9 +119,9 @@ export async function reflectCommand(
           console.log(`  ${inv.originalContent.slice(0,40)}... -> ANTI-PATTERN`);
         });
       }
-    });
-  } else {
-    await processedLog.save();
-    console.log("No new insights found.");
-  }
+    } else {
+      await processedLog.save(); // Save progress (sessions marked as processed even if no deltas)
+      console.log("No new insights found.");
+    }
+  });
 }
