@@ -150,35 +150,32 @@ export function verifySanitization(text: string): {
 }
 
 /**
- * Check if content is semantically toxic (matches a known toxic pattern).
+ * Check if content is semantically blocked (matches a known blocked pattern).
  * Uses Jaccard similarity >0.85 or exact content hash match.
  *
  * @param content - The content to check
- * @param toxicEntries - Array of toxic content strings to match against
- * @returns true if content matches any toxic entry
+ * @param blockedEntries - Array of blocked content strings to match against
+ * @returns true if content matches any blocked entry
  */
-export function isSemanticallyToxic(
+export function isSemanticallyBlocked(
   content: string,
-  toxicEntries: string[]
+  blockedEntries: string[]
 ): boolean {
-  if (!content || toxicEntries.length === 0) return false;
+  if (!content || blockedEntries.length === 0) return false;
 
   const normalizedContent = content.trim().toLowerCase();
-  const contentHashValue = contentHash(normalizedContent);
 
-  for (const toxic of toxicEntries) {
-    const normalizedToxic = toxic.trim().toLowerCase();
-
-    // Exact hash match
-    if (contentHash(normalizedToxic) === contentHashValue) {
-      return true;
-    }
+  for (const blocked of blockedEntries) {
+    const normalizedBlocked = blocked.trim().toLowerCase();
 
     // Jaccard similarity check (threshold 0.85)
-    if (jaccardSimilarity(normalizedContent, normalizedToxic) > 0.85) {
+    if (jaccardSimilarity(normalizedContent, normalizedBlocked) > 0.85) {
       return true;
     }
   }
 
   return false;
 }
+
+/** @deprecated Use isSemanticallyBlocked instead */
+export const isSemanticallyToxic = isSemanticallyBlocked;
