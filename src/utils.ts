@@ -28,6 +28,10 @@ export async function ensureDir(dir: string): Promise<void> {
   }
 }
 
+/**
+ * Async existence check that respects ~ expansion.
+ * Returns false on any access error (ENOENT, EACCES, etc.).
+ */
 export async function fileExists(filePath: string): Promise<boolean> {
   try {
     await fs.access(expandPath(filePath));
