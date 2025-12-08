@@ -26,9 +26,6 @@ export const DEFAULT_CONFIG: Config = {
   maxHistoryInContext: 10,
   sessionLookbackDays: 7,
   validationLookbackDays: 90,
-  relatedSessionsDays: 30, // Added to match types
-  minRelevanceScore: 0.1, // Added to match types
-  maxRelatedSessions: 5, // Added to match types
   validationEnabled: true,
   enrichWithCrossAgent: true,
   semanticSearchEnabled: false,

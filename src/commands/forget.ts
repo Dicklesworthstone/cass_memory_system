@@ -1,7 +1,8 @@
 import { loadConfig } from "../config.js";
-import { loadMergedPlaybook, loadPlaybook, savePlaybook, findBullet, addBullet, loadToxicLog } from "../playbook.js";
+import { loadPlaybook, savePlaybook, findBullet, addBullet, loadToxicLog } from "../playbook.js";
 import { withLock } from "../lock.js";
 import { expandPath, error as logError, now } from "../utils.js";
+import path from "node:path";
 import fs from "node:fs/promises";
 import chalk from "chalk";
 
@@ -21,7 +22,11 @@ export interface ForgetCommandOptions {
  */
 async function listToxicBullets(json: boolean): Promise<void> {
   const toxicLogPath = expandPath("~/.cass-memory/toxic_bullets.log");
-  const toxicEntries = await loadToxicLog(toxicLogPath);
+  const repoLogPath = path.resolve(process.cwd(), ".cass", "toxic.log");
+  const toxicEntries = [
+    ...(await loadToxicLog(toxicLogPath)),
+    ...(await loadToxicLog(repoLogPath)),
+  ];
 
   if (json) {
     console.log(JSON.stringify({ toxicBullets: toxicEntries }, null, 2));
@@ -42,6 +47,11 @@ async function listToxicBullets(json: boolean): Promise<void> {
     console.log(`  Reason: ${entry.reason || "not provided"}`);
     console.log();
   }
+}
+
+async function appendToxicLog(logPath: string, entry: any): Promise<void> {
+  await fs.mkdir(path.dirname(logPath), { recursive: true });
+  await fs.appendFile(logPath, JSON.stringify(entry) + "\n");
 }
 
 /**

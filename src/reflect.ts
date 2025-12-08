@@ -315,8 +315,8 @@ export async function reflectOnSession(
   playbook: Playbook,
   config: Config
 ): Promise<PlaybookDelta[]> {
-  const provider = (config.llm?.provider ?? config.provider);
-  if (provider === "none") {
+  // Use LLM if API key is available, otherwise fall back to regex extraction
+  if (!config.apiKey) {
       return extractDeltasRegex(diary);
   }
 
