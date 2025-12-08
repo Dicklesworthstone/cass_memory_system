@@ -21,4 +21,9 @@ describe('sanitize', () => {
     const raw = 'my secret is 12345';
     expect(sanitize(raw, { enabled: true, extraPatterns: [/12345/] })).toBe('my secret is [REDACTED]');
   });
+
+  it('should sanitize database URLs', () => {
+    const raw = 'postgres://user:password@localhost:5432/db';
+    expect(sanitize(raw, { enabled: true })).toBe('postgres://[USER]:[PASS]@localhost:5432/db');
+  });
 });
