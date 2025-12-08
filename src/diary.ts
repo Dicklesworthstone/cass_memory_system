@@ -1,190 +1,105 @@
-import path from "node:path";
-import fs from "node:fs/promises";
-import { z } from "zod";
-import { 
-  Config, 
-  DiaryEntry, 
-  DiaryEntrySchema, 
-  CassHit,
-  RelatedSession,
-  RelatedSessionSchema,
-  SanitizationConfig
-} from "./types.js";
-import { 
-  extractDiary, 
-  generateSearchQueries 
-} from "./llm.js";
-import { 
-  safeCassSearch, 
-  cassExport, 
-  cassSearch 
-} from "./cass.js";
-import { 
-  sanitize, 
-  verifySanitization 
-} from "./sanitize.js";
-import { 
-  generateDiaryId, 
-  extractKeywords, 
-  now, 
-  ensureDir, 
-  expandPath,
-  log,
-  warn,
-  error as logError
-} from "./utils.js";
+import { z } from 'zod';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { Config, DiaryEntry, RelatedSession, DiaryEntrySchema } from './types.js';
+import { extractDiary } from './llm.js';
+import { getSanitizeConfig } from './config.js'; // Import helper
+import { sanitize } from './security.js';
+import { extractAgentFromPath } from './utils.js';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
-// --- Helpers ---
+const execFileAsync = promisify(execFile);
 
-function extractSessionMetadata(sessionPath: string): { agent: string; workspace?: string } {
-  const normalized = path.normalize(sessionPath);
+// Subset of schema for LLM extraction (omits relatedSessions which we do separately)
+const ExtractionSchema = DiaryEntrySchema.pick({
+  status: true,
+  accomplishments: true,
+  decisions: true,
+  challenges: true,
+  preferences: true,
+  keyLearnings: true,
+  tags: true,
+  searchAnchors: true
+});
+
+export async function generateDiary(sessionPath: string, config: Config): Promise<DiaryEntry> {
+  const rawContent = await exportSessionSafe(sessionPath);
   
-  // Detect agent
-  let agent = "unknown";
-  if (normalized.includes(".claude")) agent = "claude";
-  else if (normalized.includes(".cursor")) agent = "cursor";
-  else if (normalized.includes(".codex")) agent = "codex";
-  else if (normalized.includes(".aider")) agent = "aider";
+  // Use helper to get compiled regex patterns
+  const sanitizeConfig = getSanitizeConfig(config);
+  const sanitizedContent = sanitize(rawContent, sanitizeConfig);
   
-  return { agent };
-}
+  const agent = extractAgentFromPath(sessionPath);
+  // Extract workspace name from path (heuristic: parent dir)
+  const workspace = path.basename(path.dirname(sessionPath));
 
-async function enrichWithRelatedSessions(
-  diary: DiaryEntry, 
-  config: Config
-): Promise<DiaryEntry> {
-  if (!config.enrichWithCrossAgent) return diary;
-
-  // 1. Build keyword set from diary content
-  const textContent = [
-    ...diary.keyLearnings,
-    ...diary.challenges,
-    ...diary.accomplishments
-  ].join(" ");
+  const metadata = { sessionPath, agent, workspace };
   
-  const keywords = extractKeywords(textContent);
-  if (keywords.length === 0) return diary;
-
-  // 2. Query cass
-  const query = keywords.slice(0, 5).join(" "); // Top 5 keywords
-  const hits = await safeCassSearch(query, {
-    limit: 5,
-    days: config.sessionLookbackDays,
-  }, config.cassPath);
-
-  // 3. Filter and Format
-  const related: RelatedSession[] = hits
-    .filter(h => h.agent !== diary.agent) // Cross-agent only
-    .map(h => ({
-      sessionPath: h.source_path,
-      agent: h.agent,
-      relevanceScore: h.score || 0, 
-      snippet: h.snippet
-    }));
-
-  // 4. Attach to diary
-  if (related.length > 0) {
-    diary.relatedSessions = related;
-  }
-
-  return diary;
-}
-
-// --- Main Generator ---
-
-export async function generateDiary(
-  sessionPath: string,
-  config: Config
-): Promise<DiaryEntry> {
-  log(`Generating diary for ${sessionPath}...`);
-
-  // 1. Export Session
-  const rawContent = await cassExport(sessionPath, "markdown", config.cassPath);
-  if (!rawContent) {
-    throw new Error(`Failed to export session: ${sessionPath}`);
-  }
-
-  // 2. Sanitize
-  const sanitizedContent = sanitize(rawContent, config.sanitization as SanitizationConfig);
-  
-  const verification = verifySanitization(sanitizedContent);
-  if (verification.containsPotentialSecrets) {
-    warn(`[Diary] Potential secrets detected after sanitization in ${sessionPath}: ${verification.warnings.join(", ")}`);
-  }
-
-  // 3. Extract Metadata
-  const metadata = extractSessionMetadata(sessionPath);
-
-  // 4. LLM Extraction
-  const ExtractionSchema = DiaryEntrySchema.omit({ 
-    id: true, 
-    sessionPath: true, 
-    timestamp: true, 
-    relatedSessions: true, 
-    searchAnchors: true 
-  });
-
+  // Extract structured data using LLM
   const extracted = await extractDiary(
     ExtractionSchema,
-    sanitizedContent,
-    { ...metadata, sessionPath },
+    sanitizedContent, 
+    metadata,
     config
   );
 
-  // 5. Assemble Entry
-  const diary: DiaryEntry = {
-    id: generateDiaryId(sessionPath),
-    sessionPath,
-    timestamp: now(),
-    agent: metadata.agent,
-    workspace: metadata.workspace,
-    status: extracted.status,
-    accomplishments: extracted.accomplishments,
-    decisions: extracted.decisions,
-    challenges: extracted.challenges,
-    preferences: extracted.preferences,
-    keyLearnings: extracted.keyLearnings,
-    tags: extracted.tags,
-    searchAnchors: [], 
-    relatedSessions: [] // Initialize empty
-  };
-
-  const anchorText = [
-    ...diary.keyLearnings, 
-    ...diary.challenges
-  ].join(" ");
-  diary.searchAnchors = extractKeywords(anchorText);
-
-  // 7. Enrich (Cross-Agent)
-  const enrichedDiary = await enrichWithRelatedSessions(diary, config);
-
-  return enrichedDiary;
-}
-
-// --- Persistence ---
-
-export async function saveDiary(diary: DiaryEntry, config: Config): Promise<void> {
-  const diaryPath = path.join(expandPath(config.diaryDir), `${diary.id}.json`);
-  await ensureDir(path.dirname(diaryPath));
+  const related = await enrichWithRelatedSessions(sanitizedContent, config);
   
-  await fs.writeFile(diaryPath, JSON.stringify(diary, null, 2));
-  log(`Saved diary to ${diaryPath}`);
+  const diary: DiaryEntry = {
+    id: `diary-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    sessionPath,
+    timestamp: new Date().toISOString(),
+    agent,
+    workspace,
+    status: extracted.status,
+    accomplishments: extracted.accomplishments || [],
+    decisions: extracted.decisions || [],
+    challenges: extracted.challenges || [],
+    preferences: extracted.preferences || [],
+    keyLearnings: extracted.keyLearnings || [],
+    tags: extracted.tags || [],
+    searchAnchors: extracted.searchAnchors || [],
+    relatedSessions: related
+  };
+  
+  await saveDiaryEntry(diary, config);
+  
+  return diary;
 }
 
-export async function loadDiary(idOrPath: string, config: Config): Promise<DiaryEntry | null> {
-  let fullPath = idOrPath;
-  if (!idOrPath.includes("/") && !idOrPath.endsWith(".json")) {
-    fullPath = path.join(expandPath(config.diaryDir), `${idOrPath}.json`);
-  }
-
-  if (!(await fs.stat(fullPath).catch(() => null))) return null;
-
+async function exportSessionSafe(sessionPath: string): Promise<string> {
   try {
-    const content = await fs.readFile(fullPath, "utf-8");
-    const json = JSON.parse(content);
-    return DiaryEntrySchema.parse(json);
-  } catch (err: any) {
-    logError(`Failed to load diary ${fullPath}: ${err.message}`);
-    return null;
+    const { stdout } = await execFileAsync('cass', ['export', sessionPath, '--format', 'markdown'], {
+      timeout: 30000,
+      maxBuffer: 50 * 1024 * 1024
+    });
+    return stdout;
+  } catch (error) {
+    throw new Error(`Failed to export session: ${error}`);
+  }
+}
+
+async function enrichWithRelatedSessions(content: string, config: Config): Promise<RelatedSession[]> {
+  // Placeholder for cross-agent enrichment
+  return []; 
+}
+
+async function saveDiaryEntry(entry: DiaryEntry, config: Config): Promise<void> {
+  if (!config.diaryDir) return;
+  
+  // Atomic write
+  const filename = `${entry.id}.json`;
+  const filePath = path.join(config.diaryDir, filename);
+  const tempPath = `${filePath}.tmp`;
+  
+  await fs.mkdir(config.diaryDir, { recursive: true });
+  
+  try {
+    await fs.writeFile(tempPath, JSON.stringify(entry, null, 2));
+    await fs.rename(tempPath, filePath);
+  } catch (error) {
+    try { await fs.unlink(tempPath); } catch {}
+    throw error;
   }
 }
