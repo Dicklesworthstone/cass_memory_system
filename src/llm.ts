@@ -289,7 +289,7 @@ export function fillPrompt(
 export function truncateForPrompt(content: string, maxChars = 50000): string {
   if (content.length <= maxChars) return content;
 
-  const marker = `\n\n[... ${content.length - maxChars} chars truncated ...]\n\n`;
+  const marker = `\n\n[... ${content.length - maxChars} characters truncated ...]\n\n`;
   const markerLen = marker.length;
   const available = maxChars - markerLen;
 
@@ -700,6 +700,35 @@ export async function generateObjectSafe<T>(
 
 // --- Operations ---
 
+// Optional reflector stubs for offline/tests (set env CM_REFLECTOR_STUBS to JSON array of per-iteration delta arrays)
+let REFLECTOR_STUBS: any[][] | null = null;
+let REFLECTOR_STUB_INDEX = 0;
+
+export function __resetReflectorStubsForTest(): void {
+  REFLECTOR_STUBS = null;
+  REFLECTOR_STUB_INDEX = 0;
+}
+
+function nextReflectorStub<T>(): T | null {
+  if (!REFLECTOR_STUBS) {
+    const raw = process.env.CM_REFLECTOR_STUBS;
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        REFLECTOR_STUBS = parsed as any[][];
+      }
+    } catch {
+      return null;
+    }
+  }
+  if (!REFLECTOR_STUBS) return null;
+  const idx = Math.min(REFLECTOR_STUB_INDEX, REFLECTOR_STUBS.length - 1);
+  const value = REFLECTOR_STUBS[idx] as T;
+  REFLECTOR_STUB_INDEX++;
+  return value ?? null;
+}
+
 export async function extractDiary<T>(
   schema: z.ZodSchema<T>,
   sessionContent: string,
@@ -742,6 +771,11 @@ export async function runReflector<T>(
   iteration: number,
   config: Config
 ): Promise<T> {
+  const stub = nextReflectorStub<T>();
+  if (stub) {
+    return stub;
+  }
+
   const llmConfig: LLMConfig = {
     provider: (config.llm?.provider ?? config.provider) as LLMProvider,
     model: config.llm?.model ?? config.model,

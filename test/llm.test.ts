@@ -413,7 +413,6 @@ describe("truncateForPrompt", () => {
   it("includes character count in truncation indicator", () => {
     const content = "x".repeat(500);
     const result = truncateForPrompt(content, 100);
-    console.log("DEBUG TRUNCATE:", JSON.stringify(result));
     expect(result).toMatch(/\d+ chars truncated/);
   });
 
