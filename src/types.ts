@@ -410,8 +410,8 @@ export type ConflictReport = z.infer<typeof ConflictReportSchema>;
 
 export const PromotionReportSchema = z.object({
   bulletId: z.string(),
-  from: BulletMaturityEnum,
-  to: BulletMaturityEnum,
+  from: BulletMaturitySchema.optional().default("candidate"),
+  to: BulletMaturitySchema.optional().default("candidate"),
   reason: z.string().optional(),
 });
 export type PromotionReport = z.infer<typeof PromotionReportSchema>;
