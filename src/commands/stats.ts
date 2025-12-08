@@ -5,11 +5,10 @@ import { getActiveBullets } from "../playbook.js";
 import chalk from "chalk";
 
 export async function statsCommand(options: { json?: boolean }): Promise<void> {
-  const config = await loadConfig();
-  const playbook = await loadMergedPlaybook(config);
-  const bullets = getActiveBullets(playbook);
-
-  const distribution = analyzeScoreDistribution(bullets);
+    const config = await loadConfig();
+    const playbook = await loadMergedPlaybook(config);
+    const bullets = getActiveBullets(playbook);
+    const distribution = analyzeScoreDistribution(bullets, config);
   const total = bullets.length;
 
   const topPerformers = [...bullets]
