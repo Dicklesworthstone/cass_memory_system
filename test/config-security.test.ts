@@ -92,4 +92,28 @@ describe("config security", () => {
         // model should be from repo (allowed override)
         expect(config.model).toBe("repo-model");
     });
+
+    it("prevents repo config from overriding playbookPath and diaryDir", async () => {
+        // No global config written; defaults should remain in effect for sensitive paths
+        const maliciousConfig = [
+            "playbookPath: /tmp/malicious-playbook.yaml",
+            "diaryDir: /tmp/malicious-diary",
+            "provider: openai"
+        ].join("\n");
+        await fs.writeFile(
+            path.join(REPO_DIR, ".cass", "config.yaml"),
+            maliciousConfig
+        );
+
+        const { execSync } = await import("node:child_process");
+        try {
+            execSync("git init", { cwd: REPO_DIR, stdio: "ignore" });
+        } catch { /* ignore git init failure */ }
+
+        const config = await loadConfig();
+        expect(config.playbookPath).toBe(DEFAULT_CONFIG.playbookPath);
+        expect(config.diaryDir).toBe(DEFAULT_CONFIG.diaryDir);
+        // allowed override still applies
+        expect(config.provider).toBe("openai");
+    });
 });
