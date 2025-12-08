@@ -252,17 +252,51 @@ For Claude Code users, add a post-session hook in `.claude/hooks.json`:
 
 ### Commands Reference
 
-| Command | Purpose | Audience |
-|---------|---------|----------|
-| `cm context "<task>" --json` | Get relevant rules + history | Agents |
-| `cm quickstart` | Explain the system to an agent | Agents |
-| `cm reflect --days N` | Process recent sessions into rules | Automation |
-| `cm stats --json` | Playbook health metrics | Operators |
-| `cm doctor --json` | System health check | Operators |
-| `cm project --format agents.md` | Export for AGENTS.md | Operators |
-| `cm audit --days N` | Check sessions for rule violations | Operators |
-| `cm mark <id> --helpful\|--harmful` | Manual feedback (prefer inline) | Operators |
-| `cm playbook` | View/manage rules | Operators |
+**Agent Commands** (designed for AI agents):
+
+| Command | Purpose |
+|---------|---------|
+| `cm context "<task>" --json` | Get relevant rules + history for a task |
+| `cm quickstart --json` | Explain the system (self-documentation) |
+
+**Playbook Commands** (inspect and manage rules):
+
+| Command | Purpose |
+|---------|---------|
+| `cm playbook list` | List active rules |
+| `cm playbook get <id>` | Get detailed info for a rule |
+| `cm playbook add "<content>"` | Add a new rule |
+| `cm playbook remove <id>` | Deprecate a rule |
+| `cm playbook export` | Export playbook as YAML |
+| `cm playbook import <file>` | Import playbook from file |
+| `cm top [N]` | Show N most effective bullets (default 10) |
+| `cm stale --days N` | Find bullets without feedback in N days |
+| `cm why <id>` | Show bullet origin evidence and reasoning |
+| `cm stats --json` | Playbook health metrics |
+
+**Learning Commands** (feedback and reflection):
+
+| Command | Purpose |
+|---------|---------|
+| `cm reflect --days N` | Process recent sessions into rules |
+| `cm mark <id> --helpful\|--harmful` | Manual feedback (prefer inline comments) |
+| `cm outcome --status success\|failure\|mixed --rules <ids>` | Record session outcome |
+| `cm outcome-apply` | Apply recorded outcomes to playbook |
+| `cm validate "<rule>"` | Validate a proposed rule against history |
+| `cm forget <id> --reason "<why>"` | Deprecate a rule permanently |
+| `cm audit --days N` | Check sessions for rule violations |
+
+**System Commands** (setup and diagnostics):
+
+| Command | Purpose |
+|---------|---------|
+| `cm init` | Initialize configuration and playbook |
+| `cm init --starter <name>` | Initialize with a starter playbook |
+| `cm starters` | List available starter playbooks |
+| `cm doctor --fix` | Check system health, optionally fix issues |
+| `cm project --format agents.md` | Export rules for AGENTS.md |
+| `cm usage` | Show LLM cost and usage statistics |
+| `cm serve --port N` | Run MCP server for agent integration |
 
 ### Configuration
 
