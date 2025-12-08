@@ -77,9 +77,10 @@ export function detectConflicts(
     const markersInOld = hasMarker(b.content, [...NEGATIVE_MARKERS, ...POSITIVE_MARKERS, ...EXCEPTION_MARKERS]);
     
     // Optimization: Check overlap first. 
-    // We allow overlap >= 0.2 if markers are present, otherwise require 0.25
-    if (overlap < 0.2) continue;
-    if (overlap < 0.25 && (!markersInNew && !markersInOld)) continue;
+    // When strong markers are present, allow lower overlap threshold.
+    const hasDirectiveMarkers = markersInNew || markersInOld;
+    const minOverlap = hasDirectiveMarkers ? 0.1 : 0.2;
+    if (overlap < minOverlap) continue;
 
     const newNeg = hasMarker(newContent, NEGATIVE_MARKERS);
     const oldNeg = hasMarker(b.content, NEGATIVE_MARKERS);
@@ -89,7 +90,7 @@ export function detectConflicts(
     const oldExc = hasMarker(b.content, EXCEPTION_MARKERS);
 
     // Heuristic 1: Negation conflict (one negative, one affirmative)
-    if (overlap >= 0.2 && newNeg !== oldNeg) {
+    if (overlap >= minOverlap && newNeg !== oldNeg) {
       conflicts.push({
         id: b.id,
         content: b.content,
@@ -99,7 +100,7 @@ export function detectConflicts(
     }
 
     // Heuristic 2: Opposite sentiment (must vs avoid)
-    if (overlap >= 0.2 && ((newPos && oldNeg) || (oldPos && newNeg))) {
+    if (overlap >= minOverlap && ((newPos && oldNeg) || (oldPos && newNeg))) {
       conflicts.push({
         id: b.id,
         content: b.content,
@@ -109,7 +110,7 @@ export function detectConflicts(
     }
 
     // Heuristic 3: Scope conflict (always vs exception)
-    if (overlap >= 0.2 && ((newPos && oldExc) || (oldPos && newExc))) {
+    if (overlap >= minOverlap && ((newPos && oldExc) || (oldPos && newExc))) {
       conflicts.push({
         id: b.id,
         content: b.content,
