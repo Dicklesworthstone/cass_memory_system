@@ -9,7 +9,7 @@ import {
 import { generateBulletId, generateDiaryId, now } from "../../src/utils.js";
 
 export function createTestConfig(overrides: Partial<Config> = {}): Config {
-  return {
+  const defaults: Config = {
     schema_version: 1,
     provider: "anthropic",
     model: "claude-3-5-sonnet-20241022",
@@ -51,21 +51,25 @@ export function createTestConfig(overrides: Partial<Config> = {}): Config {
       minFeedbackForActive: 3,
       minHelpfulForProven: 10,
       maxHarmfulRatioForProven: 0.1
-    },
-    ...overrides
+    }
   };
-}
 
-export function daysAgo(days: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() - days);
-  return d.toISOString();
-}
-
-export function daysFromNow(days: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() + days);
-  return d.toISOString();
+  return {
+    ...defaults,
+    ...overrides,
+    sanitization: {
+      ...defaults.sanitization,
+      ...(overrides.sanitization || {})
+    },
+    budget: {
+      ...defaults.budget,
+      ...(overrides.budget || {})
+    },
+    scoring: {
+      ...defaults.scoring,
+      ...(overrides.scoring || {})
+    }
+  };
 }
 
 export function createTestBullet(overrides: Partial<PlaybookBullet> = {}): PlaybookBullet {
@@ -129,33 +133,36 @@ export function createTestPlaybook(bullets: PlaybookBullet[] = []): Playbook {
   };
 }
 
-export function createFeedbackEvent(
-  type: "helpful" | "harmful",
-  overrides: Partial<Omit<FeedbackEvent, "type">> | number = {}
-): FeedbackEvent {
-  // Handle legacy daysAgo signature if number passed
-  if (typeof overrides === "number") {
-    const date = new Date();
-    date.setDate(date.getDate() - overrides);
-    return {
-      type,
-      timestamp: date.toISOString(),
-      sessionPath: "/tmp/session.jsonl"
-    };
-  }
+export function createTestFeedbackEvent(type: "helpful" | "harmful", daysAgo = 0): FeedbackEvent {
+  const date = new Date();
+  date.setDate(date.getDate() - daysAgo);
 
-  const now = new Date().toISOString();
   return {
     type,
-    timestamp: overrides.timestamp ?? now,
-    sessionPath: overrides.sessionPath ?? "/tmp/session.jsonl",
-    context: overrides.context,
-    reason: overrides.reason,
-    decayedValue: overrides.decayedValue, // Explicitly include this
-    ...overrides
+    timestamp: date.toISOString(),
+    sessionPath: "/tmp/session.jsonl"
   };
 }
 
-// Backwards-compatible aliases used by existing tests
-export const createTestFeedbackEvent = createFeedbackEvent;
-export const createBullet = createTestBullet;
+/**
+ * Create a feedback event with optional overrides.
+ * More flexible than createTestFeedbackEvent - allows partial overrides.
+ */
+export function createFeedbackEvent(
+  type: "helpful" | "harmful",
+  overrides: Partial<Omit<FeedbackEvent, "type">> = {}
+): FeedbackEvent {
+  return {
+    type,
+    timestamp: overrides.timestamp || now(),
+    sessionPath: overrides.sessionPath || "/tmp/session.jsonl",
+    ...(overrides.reason ? { reason: overrides.reason } : {}),
+    ...(overrides.context ? { context: overrides.context } : {})
+  };
+}
+
+export function daysAgo(days: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  return d.toISOString();
+}
