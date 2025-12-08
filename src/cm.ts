@@ -1,6 +1,11 @@
 #!/usr/bin/env bun
 import { initCommand } from "./commands/init.js";
 import { contextCommand } from "./commands/context.js";
+import { reflectCommand } from "./commands/reflect.js";
+import { markCommand } from "./commands/mark.js";
+import { playbookCommand } from "./commands/playbook.js";
+import { statsCommand } from "./commands/stats.js";
+import { doctorCommand } from "./commands/doctor.js";
 import chalk from "chalk";
 
 async function main() {
@@ -26,8 +31,6 @@ async function main() {
       case 'context': {
         const taskIndex = args.findIndex(a => !a.startsWith('-') && a !== 'context');
         const task = taskIndex !== -1 ? args[taskIndex] : '';
-        
-        // Simple flag parsing
         const json = args.includes('--json');
         const workspaceIndex = args.indexOf('--workspace');
         const workspace = workspaceIndex !== -1 ? args[workspaceIndex + 1] : undefined;
@@ -41,11 +44,53 @@ async function main() {
         break;
       }
 
-      case 'mark':
-      case 'playbook':
+      case 'mark': {
+        const helpful = args.includes('--helpful');
+        const harmful = args.includes('--harmful');
+        const sessionIndex = args.indexOf('--session');
+        const session = sessionIndex !== -1 ? args[sessionIndex + 1] : undefined;
+        const reasonIndex = args.indexOf('--reason');
+        const reason = reasonIndex !== -1 ? args[reasonIndex + 1] : undefined;
+        const id = args.find(a => !a.startsWith('-') && a !== 'mark');
+        
+        if (!id) {
+          console.error(chalk.red('Error: Bullet ID required'));
+          process.exit(1);
+        }
+
+        await markCommand(id, { helpful, harmful, session, reason, json: args.includes('--json') });
+        break;
+      }
+
+      case 'reflect': {
+        const daysIndex = args.indexOf('--days');
+        const days = daysIndex !== -1 ? parseInt(args[daysIndex + 1]) : undefined;
+        const dryRun = args.includes('--dry-run');
+        await reflectCommand({ days, dryRun, json: args.includes('--json') });
+        break;
+      }
+
+      case 'playbook': {
+        const subcommand = args[1] || 'list';
+        const subArgs = args.slice(2);
+        const categoryIndex = args.indexOf('--category');
+        const category = categoryIndex !== -1 ? args[categoryIndex + 1] : undefined;
+        
+        await playbookCommand(subcommand, subArgs, { 
+          json: args.includes('--json'),
+          all: args.includes('--all'),
+          category
+        });
+        break;
+      }
+
+      case 'stats':
+        await statsCommand({ json: args.includes('--json') });
+        break;
+
+      case 'doctor':
       case 'status':
-      case 'reflect':
-        console.log(chalk.yellow(`Command '${command}' is not yet implemented in this version.`));
+        await doctorCommand({ json: args.includes('--json'), fix: args.includes('--fix') });
         break;
 
       default:
@@ -70,10 +115,11 @@ Universal memory system for AI coding agents.
 ${chalk.bold('COMMANDS')}
   init                    Initialize configuration and playbook
   context <task>          Get relevant context for a task
-  mark <rule> <fb>        (Coming soon) Record helpful/harmful feedback
-  playbook                (Coming soon) Manage playbook rules
-  status                  (Coming soon) System health
-  reflect                 (Coming soon) Extract rules from sessions
+  mark <rule> <fb>        Record helpful/harmful feedback
+  playbook                Manage playbook rules (list, add, remove)
+  status                  System health check
+  stats                   Playbook statistics
+  reflect                 Extract rules from recent sessions
 
 ${chalk.bold('OPTIONS')}
   --json                  Output in JSON format

@@ -201,27 +201,3 @@ export function analyzeScoreDistribution(
 
   return { excellent, good, neutral, atRisk };
 }
-
-// ---------------------------------------------------------------------------
-// Score Distribution Analysis
-// ---------------------------------------------------------------------------
-
-export function analyzeScoreDistribution(
-  bullets: PlaybookBullet[],
-  config: Config
-): { excellent: number; good: number; neutral: number; atRisk: number } {
-  let excellent = 0;
-  let good = 0;
-  let neutral = 0;
-  let atRisk = 0;
-
-  for (const bullet of bullets) {
-    const score = getEffectiveScore(bullet, config);
-    if (score >= 5) excellent++;
-    else if (score >= 2) good++;
-    else if (score >= 0) neutral++;
-    else atRisk++;
-  }
-
-  return { excellent, good, neutral, atRisk };
-}

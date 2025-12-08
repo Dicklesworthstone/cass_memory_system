@@ -13,6 +13,8 @@ export const HarmfulReasonEnum = z.enum([
   "other"
 ]);
 export type HarmfulReason = z.infer<typeof HarmfulReasonEnum>;
+// Export alias for backward compatibility
+export const HarmfulReasonSchema = HarmfulReasonEnum;
 
 export const SessionStatusEnum = z.enum(["success", "failure", "mixed"]);
 export type SessionStatus = z.infer<typeof SessionStatusEnum>;
@@ -74,9 +76,7 @@ export const PlaybookBulletSchema = z.object({
   promotedAt: z.string().optional(),
   helpfulCount: z.number().default(0),
   harmfulCount: z.number().default(0),
-  feedbackEvents: z.array(FeedbackEventSchema).default([]),
-  helpfulEvents: z.array(FeedbackEventSchema).default([]),
-  harmfulEvents: z.array(FeedbackEventSchema).default([]),
+  feedbackEvents: z.array(FeedbackEventSchema).default([]), 
   lastValidatedAt: z.string().optional(),
   confidenceDecayHalfLifeDays: z.number().default(90),
   createdAt: z.string(),
@@ -100,16 +100,9 @@ export type PlaybookBullet = z.infer<typeof PlaybookBulletSchema>;
 // NEW BULLET DATA
 // ============================================================================
 
-export const NewBulletDataSchema = z.object({
-  category: z.string(),
+export const NewBulletDataSchema = PlaybookBulletSchema.partial().extend({
   content: z.string(),
-  tags: z.array(z.string()).optional().default([]),
-  searchPointer: z.string().optional(),
-  scope: BulletScopeEnum.optional().default("global"),
-  workspace: z.string().optional(),
-  kind: BulletKindEnum.optional().default("stack_pattern"),
-  type: BulletTypeEnum.optional().default("rule"),
-  isNegative: z.boolean().optional().default(false)
+  category: z.string()
 });
 export type NewBulletData = z.infer<typeof NewBulletDataSchema>;
 
@@ -117,44 +110,56 @@ export type NewBulletData = z.infer<typeof NewBulletDataSchema>;
 // PLAYBOOK DELTA
 // ============================================================================
 
+export const AddDeltaSchema = z.object({
+  type: z.literal("add"),
+  bullet: NewBulletDataSchema,
+  reason: z.string(),
+  sourceSession: z.string()
+});
+
+export const HelpfulDeltaSchema = z.object({
+  type: z.literal("helpful"),
+  bulletId: z.string(),
+  sourceSession: z.string().optional(),
+  context: z.string().optional() // Ensure optional
+});
+
+export const HarmfulDeltaSchema = z.object({
+  type: z.literal("harmful"),
+  bulletId: z.string(),
+  sourceSession: z.string().optional(),
+  reason: HarmfulReasonEnum.optional(),
+  context: z.string().optional()
+});
+
+export const ReplaceDeltaSchema = z.object({
+  type: z.literal("replace"),
+  bulletId: z.string(),
+  newContent: z.string(),
+  reason: z.string().optional()
+});
+
+export const DeprecateDeltaSchema = z.object({
+  type: z.literal("deprecate"),
+  bulletId: z.string(),
+  reason: z.string(),
+  replacedBy: z.string().optional()
+});
+
+export const MergeDeltaSchema = z.object({
+  type: z.literal("merge"),
+  bulletIds: z.array(z.string()),
+  mergedContent: z.string(),
+  reason: z.string().optional()
+});
+
 export const PlaybookDeltaSchema = z.discriminatedUnion("type", [
-  z.object({
-    type: z.literal("add"),
-    bullet: NewBulletDataSchema,
-    reason: z.string(),
-    sourceSession: z.string()
-  }),
-  z.object({
-    type: z.literal("helpful"),
-    bulletId: z.string(),
-    sourceSession: z.string().optional(),
-    context: z.string().optional()
-  }),
-  z.object({
-    type: z.literal("harmful"),
-    bulletId: z.string(),
-    sourceSession: z.string().optional(),
-    reason: HarmfulReasonEnum.optional(),
-    context: z.string().optional()
-  }),
-  z.object({
-    type: z.literal("replace"),
-    bulletId: z.string(),
-    newContent: z.string(),
-    reason: z.string()
-  }),
-  z.object({
-    type: z.literal("deprecate"),
-    bulletId: z.string(),
-    reason: z.string(),
-    replacedBy: z.string().optional()
-  }),
-  z.object({
-    type: z.literal("merge"),
-    bulletIds: z.array(z.string()),
-    mergedContent: z.string(),
-    reason: z.string()
-  })
+  AddDeltaSchema,
+  HelpfulDeltaSchema,
+  HarmfulDeltaSchema,
+  ReplaceDeltaSchema,
+  DeprecateDeltaSchema,
+  MergeDeltaSchema,
 ]);
 export type PlaybookDelta = z.infer<typeof PlaybookDeltaSchema>;
 
@@ -233,9 +238,7 @@ export type DiaryEntry = z.infer<typeof DiaryEntrySchema>;
 
 export const SanitizationConfigSchema = z.object({
   enabled: z.boolean().default(true),
-  extraPatterns: z.array(z.string()).default([]),
-  auditLog: z.boolean().default(false),
-  auditLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),
+  extraPatterns: z.array(z.string()).default([])
 });
 export type SanitizationConfig = z.infer<typeof SanitizationConfigSchema>;
 
@@ -283,10 +286,7 @@ export const ConfigSchema = z.object({
   verbose: z.boolean().default(false),
   jsonOutput: z.boolean().default(false),
   // Sanitization
-  sanitization: z.object({
-    enabled: z.boolean().default(true),
-    extraPatterns: z.array(z.string()).default([])
-  }).default({})
+  sanitization: SanitizationConfigSchema.default({}) // Use schema directly
 });
 export type Config = z.infer<typeof ConfigSchema>;
 
@@ -347,7 +347,8 @@ export const ContextResultSchema = z.object({
   antiPatterns: z.array(ScoredBulletSchema),
   historySnippets: z.array(CassSearchHitSchema),
   deprecatedWarnings: z.array(z.string()),
-  suggestedCassQueries: z.array(z.string())
+  suggestedCassQueries: z.array(z.string()),
+  formattedPrompt: z.string().optional(), // Raw text for agent
 });
 export type ContextResult = z.infer<typeof ContextResultSchema>;
 
@@ -381,6 +382,10 @@ export const ValidationResultSchema = z.object({
   reason: z.string(),
   evidence: z.array(z.string()), // Citations
   refinedRule: z.string().optional(),
+  // Compatibility fields
+  approved: z.boolean().optional(),
+  supportingEvidence: z.array(ValidationEvidenceSchema).default([]),
+  contradictingEvidence: z.array(ValidationEvidenceSchema).default([])
 });
 export type ValidationResult = z.infer<typeof ValidationResultSchema>;
 
@@ -410,8 +415,8 @@ export type ConflictReport = z.infer<typeof ConflictReportSchema>;
 
 export const PromotionReportSchema = z.object({
   bulletId: z.string(),
-  from: BulletMaturitySchema.optional().default("candidate"),
-  to: BulletMaturitySchema.optional().default("candidate"),
+  from: BulletMaturitySchema,
+  to: BulletMaturitySchema,
   reason: z.string().optional(),
 });
 export type PromotionReport = z.infer<typeof PromotionReportSchema>;
@@ -489,7 +494,6 @@ export const ReflectionStatsSchema = z.object({
 });
 export type ReflectionStats = z.infer<typeof ReflectionStatsSchema>;
 
-// Exported Schemas object for runtime validation
 export const Schemas = {
   FeedbackEvent: FeedbackEventSchema,
   PlaybookBullet: PlaybookBulletSchema,
