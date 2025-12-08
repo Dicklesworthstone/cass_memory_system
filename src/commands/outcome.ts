@@ -1,17 +1,20 @@
 import chalk from "chalk";
 import { loadConfig } from "../config.js";
-import { loadPlaybook, savePlaybook, findBullet } from "../playbook.js";
-import { calculateMaturityState, getEffectiveScore } from "../scoring.js";
-import { now, expandPath, fileExists } from "../utils.js";
-import { FeedbackEvent, PlaybookBullet } from "../types.js";
-import { withLock } from "../lock.js";
-import { applyOutcomeFeedback, loadOutcomes } from "../outcome.js";
+import { 
+  recordOutcome, 
+  applyOutcomeFeedback, 
+  scoreImplicitFeedback,
+  loadOutcomes,
+  OutcomeInput,
+  OutcomeStatus,
+  Sentiment 
+} from "../outcome.js";
+import { error as logError } from "../utils.js";
 
-type OutcomeStatus = "success" | "failure" | "mixed";
-type Sentiment = "positive" | "negative" | "neutral";
+// Re-export for backward compat if needed
+export { detectSentiment, scoreImplicitFeedback } from "../outcome.js";
 
-const FAST_THRESHOLD_SECONDS = 600; // 10 minutes
-const SLOW_THRESHOLD_SECONDS = 3600; // 1 hour
+// --- Helpers duplicate in outcome.ts now, removing local definitions ---
 
 const POSITIVE_PATTERNS = [
   /that worked/i,
@@ -31,114 +34,14 @@ const NEGATIVE_PATTERNS = [
   /undo/i,
 ];
 
-export function detectSentiment(text?: string): Sentiment {
+// Keep detection logic exposed if useful, or rely on flags
+function detectSentiment(text?: string): Sentiment {
   if (!text) return "neutral";
   const positiveCount = POSITIVE_PATTERNS.filter((p) => p.test(text)).length;
   const negativeCount = NEGATIVE_PATTERNS.filter((p) => p.test(text)).length;
   if (positiveCount > negativeCount) return "positive";
   if (negativeCount > positiveCount) return "negative";
   return "neutral";
-}
-
-type OutcomeSignals = {
-  status: OutcomeStatus;
-  durationSeconds?: number;
-  errorCount?: number;
-  hadRetries?: boolean;
-  sentiment?: Sentiment;
-};
-
-export function scoreImplicitFeedback(signals: OutcomeSignals): {
-  type: "helpful" | "harmful";
-  decayedValue: number;
-  context: string;
-} | null {
-  let helpfulScore = 0;
-  let harmfulScore = 0;
-  const reasons: string[] = [];
-
-  if (signals.status === "success") {
-    helpfulScore += 1;
-    reasons.push("success");
-  } else if (signals.status === "failure") {
-    harmfulScore += 1;
-    reasons.push("failure");
-  } else {
-    // mixed
-    helpfulScore += 0.1;
-    harmfulScore += 0.1;
-    reasons.push("mixed");
-  }
-
-  if (typeof signals.durationSeconds === "number") {
-    if (signals.durationSeconds > 0 && signals.durationSeconds < FAST_THRESHOLD_SECONDS && signals.status !== "failure") {
-      helpfulScore += 0.5;
-      reasons.push("fast");
-    } else if (signals.durationSeconds > SLOW_THRESHOLD_SECONDS) {
-      harmfulScore += 0.3;
-      reasons.push("slow");
-    }
-  }
-
-  if (typeof signals.errorCount === "number") {
-    if (signals.errorCount >= 2) {
-      harmfulScore += 0.7;
-      reasons.push("errors>=2");
-    } else if (signals.errorCount === 1) {
-      harmfulScore += 0.3;
-      reasons.push("error");
-    }
-  }
-
-  if (signals.hadRetries) {
-    harmfulScore += 0.5;
-    reasons.push("retries");
-  }
-
-  if (signals.sentiment === "positive") {
-    helpfulScore += 0.3;
-    reasons.push("sentiment+");
-  } else if (signals.sentiment === "negative") {
-    harmfulScore += 0.5;
-    reasons.push("sentiment-");
-  }
-
-  const helpfulFinal = Math.max(0, helpfulScore);
-  const harmfulFinal = Math.max(0, harmfulScore);
-
-  if (helpfulFinal === 0 && harmfulFinal === 0) return null;
-
-  if (helpfulFinal >= harmfulFinal) {
-    return {
-      type: "helpful",
-      decayedValue: Math.min(2, Math.max(0.1, helpfulFinal)),
-      context: reasons.join(", "),
-    };
-  }
-
-  return {
-    type: "harmful",
-    decayedValue: Math.min(2, Math.max(0.1, harmfulFinal)),
-    context: reasons.join(", "),
-  };
-}
-
-async function resolveTargetPath(bulletId: string, globalPath: string, repoPath: string): Promise<string | null> {
-  if (await fileExists(repoPath)) {
-    try {
-      const repoPlaybook = await loadPlaybook(repoPath);
-      if (findBullet(repoPlaybook, bulletId)) {
-        return repoPath;
-      }
-    } catch {
-      // fall back to global
-    }
-  }
-  if (await fileExists(globalPath)) {
-    const globalPlaybook = await loadPlaybook(globalPath);
-    if (findBullet(globalPlaybook, bulletId)) return globalPath;
-  }
-  return null;
 }
 
 export async function outcomeCommand(
@@ -171,89 +74,54 @@ export async function outcomeCommand(
   }
 
   const sentiment = flags.sentiment ? (flags.sentiment as Sentiment) : detectSentiment(flags.text);
-  const signals: OutcomeSignals = {
-    status,
-    durationSeconds: flags.duration,
+  
+  // 1. Construct OutcomeInput
+  const ruleIds = flags.rules.split(",").map((r) => r.trim()).filter(Boolean);
+  
+  const input: OutcomeInput = {
+    sessionId: flags.session || "cli-manual",
+    outcome: status,
+    rulesUsed: ruleIds,
+    durationSec: flags.duration,
     errorCount: flags.errors,
     hadRetries: flags.retries,
     sentiment,
+    notes: flags.text
   };
 
-  const scored = scoreImplicitFeedback(signals);
+  // 2. Preview Score (User Feedback)
+  const scored = scoreImplicitFeedback(input);
   if (!scored) {
     console.error(chalk.yellow("No implicit signal strong enough to record feedback."));
     process.exit(0);
   }
 
   const config = await loadConfig();
-  const globalPath = expandPath(config.playbookPath);
-  const repoPath = expandPath(".cass/playbook.yaml");
-  const missing: string[] = [];
-  const recorded: Array<{ id: string; target: string; score: number; type: "helpful" | "harmful" }> = [];
 
-  const ruleIds = flags.rules
-    .split(",")
-    .map((r) => r.trim())
-    .filter(Boolean);
-
-  // Group rules by target path to minimize locking/IO
-  const updatesByPath: Record<string, string[]> = {};
-  
-  for (const ruleId of ruleIds) {
-    const targetPath = await resolveTargetPath(ruleId, globalPath, repoPath);
-    if (!targetPath) {
-      missing.push(ruleId);
-      continue;
-    }
-    if (!updatesByPath[targetPath]) {
-      updatesByPath[targetPath] = [];
-    }
-    updatesByPath[targetPath].push(ruleId);
+  // 3. Record (Log)
+  try {
+    await recordOutcome(input, config);
+  } catch (err: any) {
+    logError(`Failed to log outcome: ${err.message}`);
+    // Continue to apply feedback even if logging fails? Probably yes.
   }
 
-  // Process each playbook file once
-  for (const [targetPath, batchRuleIds] of Object.entries(updatesByPath)) {
-    await withLock(targetPath, async () => {
-      const playbook = await loadPlaybook(targetPath);
-      let modified = false;
+  // 4. Apply Feedback (Learn)
+  // Create a temporary record-like object to pass to applyOutcomeFeedback
+  // We can just use input + timestamp, applyOutcomeFeedback expects OutcomeRecord array
+  const tempRecord = {
+    ...input,
+    recordedAt: new Date().toISOString(),
+    path: "cli-transient" 
+  };
 
-      for (const ruleId of batchRuleIds) {
-        const bullet = findBullet(playbook, ruleId);
-        if (!bullet) {
-          // Should not happen given resolveTargetPath check, but safe guard
-          missing.push(ruleId);
-          continue;
-        }
+  const result = await applyOutcomeFeedback([tempRecord], config);
 
-        const event: FeedbackEvent = {
-          type: scored.type,
-          timestamp: now(),
-          sessionPath: flags.session,
-          reason: scored.type === "harmful" ? "other" : undefined,
-          context: scored.context || undefined,
-          decayedValue: scored.decayedValue,
-        };
-
-        bullet.feedbackEvents = bullet.feedbackEvents || [];
-        bullet.feedbackEvents.push(event);
-        bullet.updatedAt = now();
-        bullet.maturity = calculateMaturityState(bullet, config);
-        modified = true;
-
-        const effectiveScore = getEffectiveScore(bullet, config);
-        recorded.push({ id: ruleId, target: targetPath, score: effectiveScore, type: scored.type });
-      }
-
-      if (modified) {
-        await savePlaybook(playbook, targetPath);
-      }
-    });
-  }
-
+  // 5. Report
   const payload = {
     success: true,
-    recorded,
-    missing,
+    applied: result.applied,
+    missing: result.missing,
     type: scored.type,
     weight: scored.decayedValue,
     sentiment,
@@ -264,21 +132,16 @@ export async function outcomeCommand(
     return;
   }
 
-  if (recorded.length > 0) {
+  if (result.applied > 0) {
     console.log(
       chalk.green(
-        `✓ Recorded implicit ${scored.type} feedback (${scored.decayedValue.toFixed(2)}) for ${recorded.length} rule(s)`
+        `✓ Recorded implicit ${scored.type} feedback (${scored.decayedValue.toFixed(2)}) for ${result.applied} rule(s)`
       )
     );
-    recorded.forEach((r) => {
-      console.log(
-        `  - ${r.id} (${r.type}) → ${chalk.gray(r.target)} (score now ${r.score.toFixed(2)})`
-      );
-    });
   }
 
-  if (missing.length > 0) {
-    console.log(chalk.yellow(`Skipped missing rules: ${missing.join(", ")}`));
+  if (result.missing.length > 0) {
+    console.log(chalk.yellow(`Skipped missing rules: ${result.missing.join(", ")}`));
   }
 }
 
