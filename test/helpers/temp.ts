@@ -27,62 +27,57 @@ export async function writeFileInDir(dir: string, relative: string, contents: st
 
 /**
  * Creates a dummy executable file that can be used as a stub for CLI tools.
- * The stub will print the provided output to stdout when executed.
- *
+ * 
  * @param dir - Directory to create the stub in
- * @param exitCode - Exit code the stub should return (default: 0)
- * @param stdout - Output to print to stdout (default: "")
- * @param name - Name of the executable (default: "cass")
- * @returns Absolute path to the stub executable
+ * @param outputs - Map of command args to stdout, or simple stdout string, or legacy exit code
+ * @param outputOrName - (Legacy) stdout or name
+ * @param nameArg - (Legacy) name
  */
-type CassStubOptions = {
-  exitCode?: number;
-  healthExit?: number;
-  indexExit?: number;
-  search?: string;
-  export?: string;
-  expand?: string;
-  timeline?: string;
-};
+export async function makeCassStub(dir: string, outputs: any = 0, outputOrName: any = "", nameArg = "cass"): Promise<string> {
+  let name = nameArg;
+  let scriptContent = "";
 
-function shQuote(text: string): string {
-  return `'${text.replace(/'/g, `'\"'\"'`)}'`;
-}
+  if (typeof outputs === "object" && outputs !== null) {
+    // Complex mode: outputs is a map of subcommand -> stdout
+    // Example: { search: '[...]', timeline: '{...}' }
+    // We generate a shell script case statement
+    
+    const cases = Object.entries(outputs).map(([cmd, out]) => {
+      // Escape single quotes
+      const safeOut = String(out).replace(/'/g, "'\\''");
+      return `  *${cmd}*) 
+    echo '${safeOut}'
+    ;;`;
+    }).join("\n");
 
-export async function makeCassStub(dir: string, opts: CassStubOptions = {}, name = "cass"): Promise<string> {
+    scriptContent = `#!/bin/sh
+case "$*" in
+${cases}
+  *) 
+    echo '[]' # Default empty json array
+    ;; 
+esac
+exit 0
+`;
+  } else if (typeof outputs === "number") {
+    // Legacy mode: (dir, exitCode, stdout, name)
+    const exitCode = outputs;
+    const stdout = outputOrName;
+    name = nameArg;
+    scriptContent = `#!/bin/sh
+echo '${stdout}'
+exit ${exitCode}
+`;
+  } else {
+    // String mode? assume stdout
+    scriptContent = `#!/bin/sh
+echo '${outputs}'
+exit 0
+`;
+  }
+
   const stubPath = path.join(dir, name);
-  const exitCode = opts.exitCode ?? 0;
-  const healthExit = opts.healthExit ?? exitCode;
-  const indexExit = opts.indexExit ?? exitCode;
-  const searchOut = opts.search ?? '[{"source_path":"/sessions/s1.jsonl","line_number":1,"agent":"stub","snippet":"hello","score":0.9}]';
-  const exportOut = opts.export ?? "# Session transcript";
-  const expandOut = opts.expand ?? "context lines";
-  const timelineOut = opts.timeline ?? '{"groups":[{"date":"2025-01-01","sessions":[{"path":"/sessions/s1.jsonl","agent":"stub"}]}]}';
-
-  const script = [
-    "#!/bin/sh",
-    'cmd="$1"; shift',
-    'case "$cmd" in',
-    '  --version) exit 0 ;;',
-    `  health) exit ${healthExit} ;;`,
-    `  index) exit ${indexExit} ;;`,
-    '  search)',
-    `    echo ${shQuote(searchOut)}`,
-    `    exit ${exitCode} ;;`,
-    '  export)',
-    `    echo ${shQuote(exportOut)}`,
-    `    exit ${exitCode} ;;`,
-    '  expand)',
-    `    echo ${shQuote(expandOut)}`,
-    `    exit ${exitCode} ;;`,
-    '  timeline)',
-    `    echo ${shQuote(timelineOut)}`,
-    `    exit ${exitCode} ;;`,
-    `  *) exit ${exitCode} ;;`,
-    "esac",
-  ].join("\n");
-
-  await writeFile(stubPath, script);
+  await writeFile(stubPath, scriptContent);
   await chmod(stubPath, 0o755);
   return stubPath;
 }
