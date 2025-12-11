@@ -250,12 +250,14 @@ export async function cassSearch(
       timeout: (options.timeout || 30) * 1000
     });
 
-    const rawHits = parseCassOutput(stdout);
+    const rawResult = parseCassOutput(stdout);
+
+    // Extract hits array from cass response wrapper (cass returns {hits: [...], count: ...})
+    // Also handle legacy/direct array format for backwards compatibility
+    const rawHits = rawResult?.hits ?? (Array.isArray(rawResult) ? rawResult : [rawResult]);
 
     // Validate and parse with Zod
-    return Array.isArray(rawHits) 
-      ? rawHits.map((h: any) => CassHitSchema.parse(h))
-      : [CassHitSchema.parse(rawHits)];
+    return rawHits.map((h: any) => CassHitSchema.parse(h));
 
   } catch (err: any) {
     if (err.code === CASS_EXIT_CODES.NOT_FOUND) return [];
