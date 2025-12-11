@@ -311,7 +311,7 @@ export const CassSearchHitSchema = z.object({
   title: z.string().optional(),
   snippet: z.string(),
   score: z.number().optional(),
-  created_at: z.union([z.string(), z.number()]).optional(),
+  created_at: z.union([z.string(), z.number(), z.null()]).optional(),
 }).transform(data => ({
   ...data,
   sessionPath: data.source_path,
