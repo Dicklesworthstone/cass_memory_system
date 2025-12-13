@@ -280,12 +280,20 @@ export function fillPrompt(
   template: string,
   values: Record<string, string>
 ): string {
-  let result = template;
-  for (const [key, value] of Object.entries(values)) {
-    // Use a replacement function to avoid special pattern interpretation (e.g. $&, $1)
-    result = result.replace(new RegExp(`\\{${key}\\}`, "g"), () => value);
-  }
-  return result;
+  // Use a single-pass regex replacement to prevent recursive substitution vulnerabilities.
+  // This constructs a regex like /\{key1\}|\{key2\}|.../g and replaces each match.
+  
+  const keys = Object.keys(values);
+  if (keys.length === 0) return template;
+
+  // Escape keys for regex safety (though keys are usually trusted identifiers)
+  const escapedKeys = keys.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const pattern = new RegExp(`\\{(${escapedKeys.join("|")})\\}`, "g");
+
+  return template.replace(pattern, (match, key) => {
+    // Return the value for the matched key, or the original match if somehow undefined
+    return values[key] ?? match;
+  });
 }
 
 // --- Resilience Wrapper ---

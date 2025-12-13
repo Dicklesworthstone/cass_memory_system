@@ -400,7 +400,7 @@ export async function handleSessionExportFailure(
   log(`cass export failed for ${sessionPath}: ${exportError.message}. Attempting fallback parse...`, true);
 
   try {
-    const fileContent = await fs.readFile(path.resolve(sessionPath), "utf-8");
+    const fileContent = await fs.readFile(expandPath(sessionPath), "utf-8");
     const ext = path.extname(sessionPath).toLowerCase();
     const activeConfig = config || await loadConfig();
     const sanitizeConfig = getSanitizeConfig(activeConfig);

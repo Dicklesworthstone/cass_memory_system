@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { Config, FeedbackEvent, HarmfulReason } from "./types.js";
-import { expandPath, ensureDir, fileExists, now } from "./utils.js";
+import { Config, FeedbackEvent } from "./types.js";
+import { expandPath, ensureDir, fileExists, now, resolveRepoDir } from "./utils.js";
 import { sanitize } from "./sanitize.js";
 import { getSanitizeConfig } from "./config.js";
 import { loadPlaybook, savePlaybook, findBullet } from "./playbook.js";
@@ -123,22 +123,17 @@ export function scoreImplicitFeedback(signals: OutcomeInput): {
 // --- Persistence ---
 
 export async function resolveOutcomeLogPath(): Promise<string> {
-  const repoPath = expandPath(".cass/outcomes.jsonl");
-  const repoDirExists = await fileExists(expandPath(".cass"));
-
-  if (repoDirExists) {
-    return repoPath;
-  }
+  const repoDir = await resolveRepoDir();
+  const useRepoLog = repoDir ? await fileExists(repoDir) : false;
+  if (useRepoLog) return path.join(repoDir!, "outcomes.jsonl");
 
   return expandPath("~/.cass-memory/outcomes.jsonl");
 }
 
 async function resolveContextLogPath(): Promise<string> {
-  const repoPath = expandPath(".cass/context-log.jsonl");
-  const repoDirExists = await fileExists(expandPath(".cass"));
-  if (repoDirExists) {
-    return repoPath;
-  }
+  const repoDir = await resolveRepoDir();
+  const useRepoLog = repoDir ? await fileExists(repoDir) : false;
+  if (useRepoLog) return path.join(repoDir!, "context-log.jsonl");
   return expandPath("~/.cass-memory/context-log.jsonl");
 }
 
@@ -234,9 +229,13 @@ function enrichOutcomeWithContext(outcome: OutcomeRecord, contextLog: ContextLog
   return { ...outcome, rulesUsed: match.ruleIds };
 }
 
-async function resolveTargetPath(bulletId: string, globalPath: string, repoPath: string): Promise<string | null> {
+async function resolveTargetPath(
+  bulletId: string,
+  globalPath: string,
+  repoPath: string | null
+): Promise<string | null> {
   // Prefer repo
-  if (await fileExists(repoPath)) {
+  if (repoPath && (await fileExists(repoPath))) {
     try {
       const repoPlaybook = await loadPlaybook(repoPath);
       if (findBullet(repoPlaybook, bulletId)) {
@@ -265,7 +264,8 @@ export async function applyOutcomeFeedback(
   const list = Array.isArray(outcomes) ? outcomes : [outcomes];
   
   const globalPath = expandPath(config.playbookPath);
-  const repoPath = expandPath(".cass/playbook.yaml");
+  const repoDir = await resolveRepoDir();
+  const repoPath = repoDir ? path.join(repoDir, "playbook.yaml") : null;
 
   let applied = 0;
   const missing: string[] = [];
