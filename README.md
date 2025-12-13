@@ -269,6 +269,7 @@ For Claude Code users, add a post-session hook in `.claude/hooks.json`:
 | `cm playbook remove <id>` | Deprecate a rule |
 | `cm playbook export` | Export playbook as YAML |
 | `cm playbook import <file>` | Import playbook from file |
+| `cm similar "<query>"` | Find bullets similar to a query (semantic if enabled) |
 | `cm top [N]` | Show N most effective bullets (default 10) |
 | `cm stale --days N` | Find bullets without feedback in N days |
 | `cm why <id>` | Show bullet origin evidence and reasoning |
@@ -345,8 +346,13 @@ Repo config overrides global config. Command-line flags override both.
 |--------|------|---------|-------------|
 | `autoReflect` | boolean | `false` | Auto-run reflection after sessions |
 | `validationEnabled` | boolean | `true` | Validate new rules against history |
-| `enrichWithCrossAgent` | boolean | `true` | Include other agents' sessions |
+| `crossAgent.enabled` | boolean | `false` | Enable cross-agent diary enrichment (opt-in) |
+| `crossAgent.consentGiven` | boolean | `false` | Records explicit consent for cross-agent enrichment |
+| `crossAgent.consentDate` | string\|null | `null` | When consent was granted (ISO timestamp) |
+| `crossAgent.agents` | string[] | `[]` | Optional allowlist; empty means “all agents” when enabled |
+| `crossAgent.auditLog` | boolean | `true` | Write local audit events when cross-agent enrichment occurs |
 | `semanticSearchEnabled` | boolean | `false` | Enable embedding-based search |
+| `embeddingModel` | string | `Xenova/all-MiniLM-L6-v2` | Embedding model for semantic search (set to `none` to force keyword-only) |
 | `dedupSimilarityThreshold` | number | `0.85` | Threshold for duplicate detection |
 
 **Example config.json:**
@@ -361,7 +367,7 @@ Repo config overrides global config. Command-line flags override both.
     "harmfulMultiplier": 5
   },
   "maxBulletsInContext": 30,
-  "enrichWithCrossAgent": false
+  "crossAgent": { "enabled": false }
 }
 ```
 
@@ -386,6 +392,7 @@ Repo config overrides global config. Command-line flags override both.
 - **Secret sanitization**: API keys, tokens, passwords auto-redacted
 - **No telemetry**: Zero network calls except optional LLM
 - **Cross-agent is opt-in**: Must explicitly enable in config
+- **Privacy controls**: Use `cm privacy status|enable|disable` to inspect and manage cross-agent enrichment
 
 ---
 
