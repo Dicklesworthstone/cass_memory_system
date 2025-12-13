@@ -45,6 +45,54 @@ export function getSanitizeConfig(config?: Config): SanitizationConfig {
   };
 }
 
+// --- LLM Config Migration ---
+
+/**
+ * Track if we've already warned about deprecated llm.* config shape.
+ * We only warn once per process to avoid spam.
+ */
+let _llmMigrationWarned = false;
+
+/**
+ * Migrate deprecated llm.* config to canonical top-level provider/model.
+ * If llm.provider or llm.model is set, copy to top-level and warn once.
+ *
+ * Canonical shape (as of v0.1.0):
+ *   { provider: "anthropic", model: "claude-sonnet-4-20250514", ... }
+ *
+ * Deprecated shape:
+ *   { llm: { provider: "anthropic", model: "..." }, ... }
+ *
+ * After migration, the llm field is removed from the config.
+ */
+function migrateLlmConfig(config: Partial<any>): Partial<any> {
+  if (!config.llm) return config;
+
+  const { llm, ...rest } = config;
+
+  // Migrate provider if set in llm and not at top-level
+  if (llm.provider && !rest.provider) {
+    rest.provider = llm.provider;
+  }
+
+  // Migrate model if set in llm and not at top-level
+  if (llm.model && !rest.model) {
+    rest.model = llm.model;
+  }
+
+  // Warn once about deprecated config shape
+  if (!_llmMigrationWarned) {
+    _llmMigrationWarned = true;
+    warn(
+      `Config uses deprecated 'llm.provider/llm.model' shape. ` +
+      `Please migrate to top-level 'provider' and 'model' fields. ` +
+      `Run 'cm doctor' for details.`
+    );
+  }
+
+  return rest;
+}
+
 // --- Loading ---
 
 async function loadConfigFile(filePath: string): Promise<Partial<Config>> {
@@ -112,14 +160,19 @@ async function loadRepoConfig(repoCassDir: string): Promise<{
 export async function loadConfig(cliOverrides: Partial<Config> = {}): Promise<Config> {
   const defaults = getCachedDefaults();
   const globalConfigPath = expandPath("~/.cass-memory/config.json");
-  const globalConfig = await loadConfigFile(globalConfigPath);
+  const globalConfigRaw = await loadConfigFile(globalConfigPath);
+
+  // Migrate deprecated llm.* shape to top-level
+  const globalConfig = migrateLlmConfig(globalConfigRaw);
 
   let repoConfig: Partial<Config> = {};
   const repoCassDir = await resolveRepoDir();
 
   if (repoCassDir) {
-    const { config } = await loadRepoConfig(repoCassDir);
-    repoConfig = config;
+    const { config: repoConfigRaw } = await loadRepoConfig(repoCassDir);
+
+    // Migrate deprecated llm.* shape to top-level
+    repoConfig = migrateLlmConfig(repoConfigRaw);
 
     // Security: Prevent repo from overriding sensitive paths
     delete repoConfig.cassPath;
@@ -127,11 +180,14 @@ export async function loadConfig(cliOverrides: Partial<Config> = {}): Promise<Co
     delete repoConfig.diaryDir;
   }
 
+  // Migrate CLI overrides as well (unlikely but complete)
+  const migratedOverrides = migrateLlmConfig(cliOverrides);
+
   const merged = {
     ...defaults,
     ...globalConfig,
     ...repoConfig,
-    ...cliOverrides,
+    ...migratedOverrides,
     sanitization: {
       ...defaults.sanitization,
       ...(globalConfig.sanitization || {}),

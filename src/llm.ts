@@ -263,12 +263,14 @@ For each rule, determine if the session:
 - VIOLATED the rule (with evidence)
 - Rule was NOT APPLICABLE to this session
 
+IMPORTANT: To save space, ONLY return results for rules that were explicitly FOLLOWED or VIOLATED. Omit rules that were NOT APPLICABLE.
+
 Respond with:
 {
   "results": [
     {
       "ruleId": string,
-      "status": "followed" | "violated" | "not_applicable",
+      "status": "followed" | "violated",
       "evidence": string
     }
   ],
@@ -389,12 +391,9 @@ async function monitoredGenerateObject<T>(
   }) as GenerateObjectResult<T>;
 
   if (result.usage) {
-    const modelName = config.llm?.model ?? config.model;
-    const provider = (config.llm?.provider ?? config.provider);
-
     await recordCost(config, {
-      provider,
-      model: modelName,
+      provider: config.provider,
+      model: config.model,
       tokensIn: result.usage.promptTokens,
       tokensOut: result.usage.completionTokens,
       context
@@ -411,8 +410,8 @@ export async function generateObjectSafe<T>(
   maxAttempts: number = 3
 ): Promise<T> {
   const llmConfig: LLMConfig = {
-    provider: (config.llm?.provider ?? config.provider) as LLMProvider,
-    model: config.llm?.model ?? config.model,
+    provider: config.provider as LLMProvider,
+    model: config.model,
     apiKey: config.apiKey
   };
   const model = getModel(llmConfig);
@@ -656,8 +655,8 @@ export async function llmWithFallback<T>(
   prompt: string,
   config: Config
 ): Promise<T> {
-  const primaryProvider = (config.llm?.provider ?? config.provider) as LLMProvider;
-  const primaryModel = config.llm?.model ?? config.model;
+  const primaryProvider = config.provider as LLMProvider;
+  const primaryModel = config.model;
 
   const availableProviders = getAvailableProviders();
   const providerOrder: Array<{ provider: LLMProvider; model: string }> = [];

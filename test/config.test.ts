@@ -627,6 +627,116 @@ maxReflectorIterations: 4
 });
 
 // =============================================================================
+// loadConfig() - LLM config migration (deprecated llm.* shape)
+// =============================================================================
+describe("loadConfig() - LLM config migration", () => {
+  test("migrates llm.provider to top-level provider", async () => {
+    await withTempCassHome(async (env) => {
+      // Write deprecated config shape
+      await writeFile(
+        env.configPath,
+        JSON.stringify({
+          llm: { provider: "openai" }
+        })
+      );
+
+      const config = await loadConfig();
+      expect(config.provider).toBe("openai");
+    });
+  });
+
+  test("migrates llm.model to top-level model", async () => {
+    await withTempCassHome(async (env) => {
+      // Write deprecated config shape
+      await writeFile(
+        env.configPath,
+        JSON.stringify({
+          llm: { model: "gpt-4-turbo" }
+        })
+      );
+
+      const config = await loadConfig();
+      expect(config.model).toBe("gpt-4-turbo");
+    });
+  });
+
+  test("migrates both llm.provider and llm.model together", async () => {
+    await withTempCassHome(async (env) => {
+      await writeFile(
+        env.configPath,
+        JSON.stringify({
+          llm: { provider: "google", model: "gemini-pro" }
+        })
+      );
+
+      const config = await loadConfig();
+      expect(config.provider).toBe("google");
+      expect(config.model).toBe("gemini-pro");
+    });
+  });
+
+  test("top-level provider takes precedence over llm.provider", async () => {
+    await withTempCassHome(async (env) => {
+      await writeFile(
+        env.configPath,
+        JSON.stringify({
+          provider: "anthropic",
+          llm: { provider: "openai" }
+        })
+      );
+
+      const config = await loadConfig();
+      // Top-level should win
+      expect(config.provider).toBe("anthropic");
+    });
+  });
+
+  test("top-level model takes precedence over llm.model", async () => {
+    await withTempCassHome(async (env) => {
+      await writeFile(
+        env.configPath,
+        JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          llm: { model: "gpt-4" }
+        })
+      );
+
+      const config = await loadConfig();
+      // Top-level should win
+      expect(config.model).toBe("claude-sonnet-4-20250514");
+    });
+  });
+
+  test("migration works for repo config too", async () => {
+    await withTempCassHome(async () => {
+      await withTempDir("config-llm-repo", async (repoDir) => {
+        execSync("git init", { cwd: repoDir, stdio: "pipe" });
+        execSync('git config user.email "test@test.com"', { cwd: repoDir, stdio: "pipe" });
+        execSync('git config user.name "Test"', { cwd: repoDir, stdio: "pipe" });
+
+        await mkdir(join(repoDir, ".cass"), { recursive: true });
+        await writeFile(
+          join(repoDir, ".cass", "config.json"),
+          JSON.stringify({
+            llm: { provider: "openai", model: "gpt-4-turbo" }
+          })
+        );
+
+        const originalCwd = process.cwd();
+        try {
+          process.chdir(repoDir);
+          const config = await loadConfig();
+          expect(config.provider).toBe("openai");
+          expect(config.model).toBe("gpt-4-turbo");
+        } finally {
+          process.chdir(originalCwd);
+        }
+      });
+    });
+  });
+});
+
+// =============================================================================
 // loadConfig() - Environment variables
 // =============================================================================
 describe("loadConfig() - Environment variables", () => {
