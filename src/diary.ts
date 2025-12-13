@@ -38,6 +38,41 @@ import {
 
 // --- Helpers ---
 
+function normalizeAgentName(agent: string | undefined): string {
+  return (agent || "").trim().toLowerCase();
+}
+
+async function appendCrossAgentAuditLog(
+  diary: DiaryEntry,
+  related: RelatedSession[],
+  config: Config
+): Promise<void> {
+  try {
+    if (config.crossAgent?.auditLog === false) return;
+
+    const logPath = expandPath("~/.cass-memory/privacy-audit.jsonl");
+    await ensureDir(path.dirname(logPath));
+
+    const relatedAgents = Array.from(
+      new Set(related.map((r) => normalizeAgentName(r.agent)).filter(Boolean))
+    ).sort();
+
+    const payload = {
+      timestamp: now(),
+      event: "cross_agent_enrichment",
+      sourceAgent: normalizeAgentName(diary.agent),
+      sourceSessionHash: hashContent(diary.sessionPath),
+      relatedSessionCount: related.length,
+      relatedAgents,
+      allowlistAgents: (config.crossAgent?.agents || []).map(normalizeAgentName).filter(Boolean),
+    };
+
+    await fs.appendFile(logPath, JSON.stringify(payload) + "\n", "utf-8");
+  } catch {
+    // Best-effort: privacy auditing must never break diary generation.
+  }
+}
+
 export function formatRawSession(content: string, ext: string): string {
   const normalizedExt = (ext.startsWith(".") ? ext : `.${ext}`).toLowerCase();
 
@@ -115,7 +150,8 @@ async function enrichWithRelatedSessions(
   diary: DiaryEntry, 
   config: Config
 ): Promise<DiaryEntry> {
-  if (!config.enrichWithCrossAgent) return diary;
+  const cross = config.crossAgent;
+  if (!cross?.enabled || !cross.consentGiven) return diary;
 
   // 1. Build keyword set from diary content
   const textContent = [
@@ -134,9 +170,13 @@ async function enrichWithRelatedSessions(
     days: config.sessionLookbackDays,
   }, config.cassPath);
 
+  const allowlist = (cross.agents || []).map(normalizeAgentName).filter(Boolean);
+  const diaryAgent = normalizeAgentName(diary.agent);
+
   // 3. Filter and Format
   const related: RelatedSession[] = hits
-    .filter(h => h.agent !== diary.agent) // Cross-agent only
+    .filter(h => normalizeAgentName(h.agent) !== diaryAgent) // Cross-agent only
+    .filter(h => allowlist.length === 0 || allowlist.includes(normalizeAgentName(h.agent)))
     .map(h => ({
       sessionPath: h.source_path,
       agent: h.agent,
@@ -145,6 +185,7 @@ async function enrichWithRelatedSessions(
     }));
 
   // 4. Attach to diary
+  await appendCrossAgentAuditLog(diary, related, config);
   if (related.length > 0) {
     diary.relatedSessions = related;
   }
@@ -191,8 +232,9 @@ function extractFilePaths(content: string): string[] {
   const patterns = [
     // Common file patterns
     /[\w./\\-]+\.(ts|tsx|js|jsx|py|go|rs|java|c|cpp|h|hpp|md|json|yaml|yml|toml|txt|css|scss|html)/gi,
-    // src/ or test/ paths
-    /(?:src|test|lib|app|pages|components)[\/\\][\w./\\-]+/gi
+    // src/ or test/ paths - generalized to be less opinionated but still useful
+    // Matches path-like strings containing a slash
+    /[\w.-]+[\/\\][\w./\\-]+\.\w+/gi
   ];
 
   const matches = new Set<string>();
@@ -292,7 +334,7 @@ export async function generateDiaryFast(
 
   // 5. Assemble Entry
   const diary: DiaryEntry = {
-    id: generateDiaryId(sessionPath),
+    id: generateDiaryId(sessionPath, sanitizedContent), // Use content for deterministic ID
     sessionPath,
     timestamp: now(),
     agent: metadata.agent,
@@ -371,7 +413,7 @@ export async function generateDiary(
 
   // 5. Assemble Entry
   const diary: DiaryEntry = {
-    id: generateDiaryId(sessionPath),
+    id: generateDiaryId(sessionPath, sanitizedContent), // Use content for deterministic ID
     sessionPath,
     timestamp: now(),
     agent: metadata.agent,

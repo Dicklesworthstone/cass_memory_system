@@ -1,12 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
 import { Config, ConfigSchema, SanitizationConfig, BudgetConfig } from "./types.js";
-import { fileExists, warn, atomicWrite, expandPath, normalizeYamlKeys } from "./utils.js";
-
-const execAsync = promisify(exec);
+import { fileExists, warn, atomicWrite, expandPath, normalizeYamlKeys, resolveRepoDir } from "./utils.js";
 
 // --- Defaults ---
 
@@ -30,8 +26,15 @@ export const DEFAULT_CONFIG: Config = {
   minRelevanceScore: 0.1,
   maxRelatedSessions: 5,
   validationEnabled: true,
-  enrichWithCrossAgent: true,
+  crossAgent: {
+    enabled: false,
+    consentGiven: false,
+    consentDate: null,
+    agents: [],
+    auditLog: true,
+  },
   semanticSearchEnabled: false,
+  embeddingModel: "Xenova/all-MiniLM-L6-v2",
   verbose: false,
   jsonOutput: false,
   scoring: {
@@ -70,25 +73,6 @@ export function getSanitizeConfig(config?: Config): SanitizationConfig {
   };
 }
 
-// --- Repo Context ---
-
-async function detectRepoContext(): Promise<{ inRepo: boolean; repoRoot?: string; cassDir?: string }> {
-  try {
-    const { stdout } = await execAsync("git rev-parse --show-toplevel");
-    const repoRoot = stdout.trim();
-    const cassDir = path.join(repoRoot, ".cass");
-    const hasCassDir = await fileExists(cassDir);
-    
-    return {
-      inRepo: true,
-      repoRoot,
-      cassDir: hasCassDir ? cassDir : undefined,
-    };
-  } catch {
-    return { inRepo: false };
-  }
-}
-
 // --- Loading ---
 
 async function loadConfigFile(filePath: string): Promise<Partial<Config>> {
@@ -115,9 +99,10 @@ export async function loadConfig(cliOverrides: Partial<Config> = {}): Promise<Co
   const globalConfig = await loadConfigFile(globalConfigPath);
 
   let repoConfig: Partial<Config> = {};
-  const repoContext = await detectRepoContext();
-  if (repoContext.cassDir) {
-    repoConfig = await loadConfigFile(path.join(repoContext.cassDir, "config.yaml"));
+  const repoCassDir = await resolveRepoDir();
+  
+  if (repoCassDir) {
+    repoConfig = await loadConfigFile(path.join(repoCassDir, "config.yaml"));
     
     // Security: Prevent repo from overriding sensitive paths
     delete repoConfig.cassPath;
@@ -135,6 +120,12 @@ export async function loadConfig(cliOverrides: Partial<Config> = {}): Promise<Co
       ...(globalConfig.sanitization || {}),
       ...(repoConfig.sanitization || {}),
       ...(cliOverrides.sanitization || {}),
+    },
+    crossAgent: {
+      ...DEFAULT_CONFIG.crossAgent,
+      ...(globalConfig.crossAgent || {}),
+      ...(repoConfig.crossAgent || {}),
+      ...(cliOverrides.crossAgent || {}),
     },
     scoring: {
         ...DEFAULT_CONFIG.scoring,

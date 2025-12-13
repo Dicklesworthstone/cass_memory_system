@@ -1,14 +1,34 @@
 import { getDefaultConfig } from "../config.js";
 import { createEmptyPlaybook, loadPlaybook, savePlaybook } from "../playbook.js";
-import { expandPath, fileExists, warn, log, resolveRepoDir, ensureRepoStructure, ensureGlobalStructure } from "../utils.js";
+import { expandPath, fileExists, warn, log, resolveRepoDir, ensureRepoStructure, ensureGlobalStructure, getCliName } from "../utils.js";
 import { cassAvailable } from "../cass.js";
 import { applyStarter, loadStarter } from "../starters.js";
 import chalk from "chalk";
 import yaml from "yaml";
+import readline from "node:readline";
 
-type InitOptions = { force?: boolean; json?: boolean; repo?: boolean; starter?: string };
+type InitOptions = { force?: boolean; json?: boolean; repo?: boolean; starter?: string; interactive?: boolean };
+
+async function promptYesNo(question: string): Promise<boolean> {
+  if (!process.stdin.isTTY) return false;
+
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  return new Promise<boolean>((resolve) => {
+    rl.question(question, (answer) => {
+      rl.close();
+      const normalized = answer.trim().toLowerCase();
+      resolve(normalized === "y" || normalized === "yes");
+    });
+  });
+}
 
 export async function initCommand(options: InitOptions) {
+  const cli = getCliName();
+
   // If --repo flag is provided, initialize repo-level .cass/ structure
   if (options.repo) {
     await initRepoCommand(options);
@@ -32,6 +52,37 @@ export async function initCommand(options: InitOptions) {
       log(chalk.yellow("Already initialized. Use --force to reinitialize."), true);
     }
     return;
+  }
+
+  // Privacy-first: cross-agent enrichment requires explicit consent.
+  // Only prompt in interactive CLI usage (tests/programmatic calls do not pass `interactive`).
+  if (!alreadyInitialized && options.interactive && !options.json && process.stdin.isTTY && process.stdout.isTTY) {
+    console.log(chalk.bold(`\nWelcome to ${cli}!\n`));
+    console.log("Cross-Agent Enrichment (Optional):");
+    console.log("cass-memory can enrich your diary entries by searching sessions from other agents (Claude, Cursor, Codex, etc.).");
+    console.log("This never uploads data, but it may pull context across tools on your machine.\n");
+
+    const enable = await promptYesNo("Enable cross-agent enrichment? [y/N]: ");
+    if (enable) {
+      config.crossAgent = {
+        ...config.crossAgent,
+        enabled: true,
+        consentGiven: true,
+        consentDate: new Date().toISOString(),
+        // Default to common known agents; user can refine via `cm privacy allow/deny`.
+        agents: ["claude", "cursor", "codex", "aider"],
+      };
+      console.log(chalk.green("\n✓ Cross-agent enrichment enabled.\n"));
+    } else {
+      config.crossAgent = {
+        ...config.crossAgent,
+        enabled: false,
+        consentGiven: false,
+        consentDate: null,
+        agents: [],
+      };
+      console.log(chalk.yellow("\nCross-agent enrichment disabled (default).\n"));
+    }
   }
 
   // Create structure
@@ -95,12 +146,12 @@ export async function initCommand(options: InitOptions) {
       console.log(chalk.green(`✓ Applied starter "${starterOutcome.name}" (${starterOutcome.added} added, ${starterOutcome.skipped} skipped)`));
     }
     console.log("");
-    console.log(chalk.bold("cass-memory initialized successfully!"));
+    console.log(chalk.bold(`${cli} initialized successfully!`));
     console.log("");
     console.log("Next steps:");
-    console.log(chalk.cyan("  cass-memory context \"your task\" --json  # Get context for a task"));
-    console.log(chalk.cyan("  cass-memory doctor                       # Check system health"));
-    console.log(chalk.cyan("  cass-memory init --repo                  # Initialize repo-level .cass/"));
+    console.log(chalk.cyan(`  ${cli} context "your task" --json  # Get context for a task`));
+    console.log(chalk.cyan(`  ${cli} doctor                     # Check system health`));
+    console.log(chalk.cyan(`  ${cli} init --repo                # Initialize repo-level .cass/`));
   }
 }
 
@@ -110,7 +161,7 @@ async function seedStarter(
 ): Promise<{ added: number; skipped: number; name: string }> {
   const starter = await loadStarter(starterName);
   if (!starter) {
-    throw new Error(`Starter "${starterName}" not found. Run "cm starters" to list available names.`);
+    throw new Error(`Starter "${starterName}" not found. Run "${getCliName()} starters" to list available names.`);
   }
 
   const playbook = await loadPlaybook(playbookPath);
