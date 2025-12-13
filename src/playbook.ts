@@ -23,7 +23,8 @@ import {
   hashContent,
   jaccardSimilarity,
   atomicWrite,
-  extractAgentFromPath
+  extractAgentFromPath,
+  resolveRepoDir
 } from "./utils.js";
 import { z } from "zod";
 import { getEffectiveScore, isStale } from "./scoring.js";
@@ -305,7 +306,7 @@ async function isBlockedContent(content: string, blockedLog: BlockedEntry[]): Pr
   return false;
 }
 
-function mergePlaybooks(global: Playbook, repo: Playbook | null): Playbook {
+export function mergePlaybooks(global: Playbook, repo: Playbook | null): Playbook {
   if (!repo) return global;
   
   const merged = createEmptyPlaybook("merged-playbook");
@@ -331,9 +332,11 @@ export async function loadMergedPlaybook(config: Config): Promise<Playbook> {
   const globalPlaybook = await loadPlaybook(config.playbookPath);
   
   let repoPlaybook: Playbook | null = null;
-  const repoPath = path.resolve(process.cwd(), ".cass", "playbook.yaml");
   
-  if (await fileExists(repoPath)) {
+  const repoDir = await resolveRepoDir();
+  const repoPath = repoDir ? path.join(repoDir, "playbook.yaml") : null;
+  
+  if (repoPath && await fileExists(repoPath)) {
     repoPlaybook = await loadPlaybook(repoPath);
   }
   
@@ -341,8 +344,13 @@ export async function loadMergedPlaybook(config: Config): Promise<Playbook> {
   
   const globalBlocked = await loadBlockedLog("~/.cass-memory/blocked.log");
   const globalToxic = await loadBlockedLog("~/.cass-memory/toxic_bullets.log");
-  const repoBlocked = await loadBlockedLog(path.resolve(process.cwd(), ".cass", "blocked.log"));
-  const repoToxic = await loadBlockedLog(path.resolve(process.cwd(), ".cass", "toxic.log"));
+  
+  const repoBlockedPath = repoDir ? path.join(repoDir, "blocked.log") : null;
+  const repoBlocked = repoBlockedPath ? await loadBlockedLog(repoBlockedPath) : [];
+
+  const repoToxicPath = repoDir ? path.join(repoDir, "toxic.log") : null;
+  const repoToxic = repoToxicPath ? await loadBlockedLog(repoToxicPath) : [];
+  
   const allBlocked = [...globalBlocked, ...globalToxic, ...repoBlocked, ...repoToxic];
 
   if (allBlocked.length > 0) {

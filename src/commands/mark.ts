@@ -1,10 +1,11 @@
 import { loadConfig } from "../config.js";
 import { loadPlaybook, savePlaybook, findBullet } from "../playbook.js";
 import { getEffectiveScore, calculateMaturityState } from "../scoring.js";
-import { now, error as logError, expandPath } from "../utils.js";
+import { now, error as logError, expandPath, resolveRepoDir } from "../utils.js";
 import { HarmfulReason, HarmfulReasonEnum, FeedbackEvent } from "../types.js";
 import { withLock } from "../lock.js";
 import chalk from "chalk";
+import path from "node:path";
 
 type MarkFlags = { helpful?: boolean; harmful?: boolean; reason?: string; session?: string; json?: boolean };
 
@@ -22,16 +23,20 @@ export async function recordFeedback(
   const config = await loadConfig();
 
   const globalPath = expandPath(config.playbookPath);
-  const repoPath = expandPath(".cass/playbook.yaml");
+  
+  const repoDir = await resolveRepoDir();
+  const repoPath = repoDir ? path.join(repoDir, "playbook.yaml") : null;
 
   let saveTarget = globalPath;
-  try {
-    const repoPlaybook = await loadPlaybook(repoPath);
-    if (findBullet(repoPlaybook, bulletId)) {
-      saveTarget = repoPath;
+  if (repoPath) {
+    try {
+      const repoPlaybook = await loadPlaybook(repoPath);
+      if (findBullet(repoPlaybook, bulletId)) {
+        saveTarget = repoPath;
+      }
+    } catch {
+      // Ignore if repo playbook doesn't exist or load fails, stick to global
     }
-  } catch {
-    // Ignore if repo playbook doesn't exist, stick to global
   }
 
   let score = 0;
@@ -75,7 +80,15 @@ export async function recordFeedback(
     }
 
     targetBullet.updatedAt = now();
-    targetBullet.maturity = calculateMaturityState(targetBullet, config);
+    const newMaturity = calculateMaturityState(targetBullet, config);
+    targetBullet.maturity = newMaturity;
+
+    if (newMaturity === "deprecated" && !targetBullet.deprecated) {
+        targetBullet.deprecated = true;
+        targetBullet.deprecatedAt = now();
+        targetBullet.state = "retired";
+        targetBullet.deprecationReason = targetBullet.deprecationReason || "Automatically deprecated due to harmful feedback ratio";
+    }
 
     await savePlaybook(targetPlaybook, saveTarget);
     

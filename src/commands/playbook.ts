@@ -1,10 +1,11 @@
 import { loadConfig } from "../config.js";
 import { loadMergedPlaybook, addBullet, deprecateBullet, savePlaybook, findBullet, getActiveBullets, loadPlaybook } from "../playbook.js";
-import { error as logError, fileExists, now } from "../utils.js";
+import { error as logError, fileExists, now, resolveRepoDir, truncate, confirmDangerousAction, getCliName } from "../utils.js";
 import { withLock } from "../lock.js";
 import { getEffectiveScore, getDecayedCounts } from "../scoring.js";
 import { PlaybookBullet, Playbook, PlaybookSchema, PlaybookBulletSchema } from "../types.js";
 import { readFile } from "node:fs/promises";
+import path from "node:path";
 import chalk from "chalk";
 import yaml from "yaml";
 import { z } from "zod";
@@ -126,7 +127,7 @@ function detectFormat(content: string, filePath?: string): "yaml" | "json" {
 export async function playbookCommand(
   action: "list" | "add" | "remove" | "get" | "export" | "import",
   args: string[],
-  flags: { category?: string; json?: boolean; hard?: boolean; reason?: string; all?: boolean; replace?: boolean; yaml?: boolean }
+  flags: { category?: string; json?: boolean; hard?: boolean; yes?: boolean; reason?: string; all?: boolean; replace?: boolean; yaml?: boolean }
 ) {
   const config = await loadConfig();
 
@@ -385,12 +386,11 @@ export async function playbookCommand(
       logError("Content required for add");
       process.exit(1);
     }
-    
-    // Lock global playbook for writing
+
     await withLock(config.playbookPath, async () => {
-        const { loadPlaybook } = await import("../playbook.js");
-        const playbook = await loadPlaybook(config.playbookPath);
-        
+      const { loadPlaybook } = await import("../playbook.js");
+      const playbook = await loadPlaybook(config.playbookPath);
+
       const bullet = addBullet(
         playbook,
         {
@@ -403,13 +403,13 @@ export async function playbookCommand(
         config.scoring.decayHalfLifeDays
       );
 
-        await savePlaybook(playbook, config.playbookPath);
+      await savePlaybook(playbook, config.playbookPath);
 
-        if (flags.json) {
-          console.log(JSON.stringify({ success: true, bullet }, null, 2));
-        } else {
-          console.log(chalk.green(`✓ Added bullet ${bullet.id}`));
-        }
+      if (flags.json) {
+        console.log(JSON.stringify({ success: true, bullet }, null, 2));
+      } else {
+        console.log(chalk.green(`✓ Added bullet ${bullet.id}`));
+      }
     });
     return;
   }
@@ -427,14 +427,66 @@ export async function playbookCommand(
     let checkPlaybook = await loadPlaybook(config.playbookPath);
     
     if (!findBullet(checkPlaybook, id)) {
-        const repoPath = ".cass/playbook.yaml";
-        const repoPlaybook = await loadPlaybook(repoPath);
-        if (findBullet(repoPlaybook, id)) {
+      const repoDir = await resolveRepoDir();
+      const repoPath = repoDir ? path.join(repoDir, "playbook.yaml") : null;
+
+      if (repoPath && (await fileExists(repoPath))) {
+        try {
+          const repoPlaybook = await loadPlaybook(repoPath);
+          if (findBullet(repoPlaybook, id)) {
             savePath = repoPath;
-        } else {
-            logError(`Bullet ${id} not found`);
-            process.exit(1);
+            checkPlaybook = repoPlaybook;
+          }
+        } catch {
+          // Ignore repo playbook load errors and report not found below.
         }
+      }
+
+      if (!findBullet(checkPlaybook, id)) {
+        logError(`Bullet ${id} not found`);
+        process.exit(1);
+      }
+    }
+
+    if (flags.hard) {
+      const candidate = findBullet(checkPlaybook, id);
+      const preview = candidate
+        ? truncate(candidate.content.trim().replace(/\s+/g, " "), 100)
+        : "";
+
+      const confirmed = await confirmDangerousAction({
+        action: `Permanently delete bullet ${id}`,
+        details: [
+          `File: ${savePath}`,
+          preview ? `Preview: "${preview}"` : undefined,
+          `Tip: Use --yes to confirm in non-interactive mode`,
+        ].filter(Boolean) as string[],
+        confirmPhrase: "DELETE",
+        yes: flags.yes,
+        json: flags.json,
+      });
+
+      if (!confirmed) {
+        const cli = getCliName();
+        if (flags.json) {
+          console.log(
+            JSON.stringify(
+              {
+                success: false,
+                error: "Confirmation required for --hard deletion",
+                hint: `${cli} playbook remove ${id} --hard --yes`,
+              },
+              null,
+              2
+            )
+          );
+        } else {
+          logError("Refusing to permanently delete without confirmation.");
+          console.log(chalk.gray(`Re-run with: ${cli} playbook remove ${id} --hard --yes`));
+          console.log(chalk.gray(`Or omit --hard to deprecate instead.`));
+        }
+        process.exit(1);
+      }
     }
 
     // Acquire lock on the target file
@@ -449,7 +501,18 @@ export async function playbookCommand(
         }
 
         if (flags.hard) {
+          const preview = truncate(bullet.content.trim().replace(/\s+/g, " "), 100);
           playbook.bullets = playbook.bullets.filter(b => b.id !== id);
+          await savePlaybook(playbook, savePath);
+
+          if (flags.json) {
+            console.log(JSON.stringify({ success: true, id, action: "deleted", path: savePath, preview }, null, 2));
+          } else {
+            console.log(chalk.green(`✓ Deleted bullet ${id}`));
+            console.log(chalk.gray(`  File: ${savePath}`));
+            console.log(chalk.gray(`  Preview: "${preview}"`));
+          }
+          return;
         } else {
           deprecateBullet(playbook, id, flags.reason || "Removed via CLI");
         }

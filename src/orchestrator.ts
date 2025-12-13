@@ -1,14 +1,14 @@
 import { Config, CurationResult, Playbook, PlaybookDelta, DecisionLogEntry } from "./types.js";
-import { loadMergedPlaybook, loadPlaybook, savePlaybook, findBullet } from "./playbook.js";
+import { loadMergedPlaybook, loadPlaybook, savePlaybook, findBullet, mergePlaybooks } from "./playbook.js";
 import { ProcessedLog, getProcessedLogPath } from "./tracking.js";
 import { findUnprocessedSessions, cassExport } from "./cass.js";
 import { generateDiary } from "./diary.js";
 import { reflectOnSession } from "./reflect.js";
 import { validateDelta } from "./validate.js";
 import { curatePlaybook } from "./curate.js";
-import { expandPath, log, warn, error, now, fileExists } from "./utils.js";
+import { expandPath, log, warn, error, now, fileExists, resolveRepoDir } from "./utils.js";
 import { withLock } from "./lock.js";
-import path from "path";
+import path from "node:path";
 
 export interface ReflectionOptions {
   days?: number;
@@ -39,8 +39,9 @@ export async function orchestrateReflection(
 ): Promise<ReflectionOutcome> {
   const logPath = expandPath(getProcessedLogPath(options.workspace));
   const globalPath = expandPath(config.playbookPath);
-  const repoPath = expandPath(".cass/playbook.yaml");
-  const hasRepo = await fileExists(repoPath);
+  const repoDir = await resolveRepoDir();
+  const repoPath = repoDir ? path.join(repoDir, "playbook.yaml") : null;
+  const hasRepo = repoPath ? await fileExists(repoPath) : false;
 
   // 1. Lock the Workspace Log to serialize reflection for this specific workspace
   return withLock(logPath, async () => {
@@ -92,7 +93,7 @@ export async function orchestrateReflection(
         const content = await cassExport(sessionPath, "text", config.cassPath, config) || "";
         if (content.length < 50) {
           // Mark as processed so we don't retry
-          processedLog.add({
+          await processedLog.append({
             sessionPath,
             processedAt: now(),
             diaryId: diary.id,
@@ -116,7 +117,7 @@ export async function orchestrateReflection(
           allDeltas.push(...validatedDeltas);
         }
 
-        processedLog.add({
+        await processedLog.append({
           sessionPath,
           processedAt: now(),
           diaryId: diary.id,
@@ -124,8 +125,8 @@ export async function orchestrateReflection(
         });
         sessionsProcessed++;
         
-        // Save log incrementally
-        await processedLog.save();
+        // Save log incrementally - removed as append handles persistence
+        // await processedLog.save();
 
       } catch (err: any) {
         errors.push(`Failed to process ${sessionPath}: ${err.message}`);
@@ -155,8 +156,11 @@ export async function orchestrateReflection(
       const globalPlaybook = await loadPlaybook(globalPath);
       let repoPlaybook: Playbook | null = null;
       if (hasRepo) {
-        repoPlaybook = await loadPlaybook(repoPath);
+        repoPlaybook = await loadPlaybook(repoPath!);
       }
+      
+      // Create fresh merged context to ensure deduplication uses up-to-date data
+      const freshMerged = mergePlaybooks(globalPlaybook, repoPlaybook);
 
       // Partition deltas (Routing Logic)
       const globalDeltas: PlaybookDelta[] = [];
@@ -184,13 +188,13 @@ export async function orchestrateReflection(
 
       // Apply Curation
       if (globalDeltas.length > 0) {
-        globalResult = curatePlaybook(globalPlaybook, globalDeltas, config, snapshotPlaybook);
+        globalResult = curatePlaybook(globalPlaybook, globalDeltas, config, freshMerged);
         await savePlaybook(globalResult.playbook, globalPath);
       }
 
       if (repoDeltas.length > 0 && repoPlaybook) {
-        repoResult = curatePlaybook(repoPlaybook, repoDeltas, config, snapshotPlaybook);
-        await savePlaybook(repoResult.playbook, repoPath);
+        repoResult = curatePlaybook(repoPlaybook, repoDeltas, config, freshMerged);
+        await savePlaybook(repoResult.playbook, repoPath!);
       }
     };
 
@@ -203,8 +207,8 @@ export async function orchestrateReflection(
       }
     });
 
-    // Final log save
-    await processedLog.save();
+    // Final log save - removed as append handled it
+    // await processedLog.save();
 
     return {
       sessionsProcessed,
