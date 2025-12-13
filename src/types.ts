@@ -201,6 +201,24 @@ export const PlaybookSchema = z.object({
 export type Playbook = z.infer<typeof PlaybookSchema>;
 
 // ============================================================================
+// EMBEDDING CACHE
+// ============================================================================
+
+export const EmbeddingCacheEntrySchema = z.object({
+  contentHash: z.string(),
+  embedding: z.array(z.number()),
+  computedAt: z.string()
+});
+export type EmbeddingCacheEntry = z.infer<typeof EmbeddingCacheEntrySchema>;
+
+export const EmbeddingCacheSchema = z.object({
+  version: z.string(),
+  model: z.string(),
+  bullets: z.record(EmbeddingCacheEntrySchema).default({})
+});
+export type EmbeddingCache = z.infer<typeof EmbeddingCacheSchema>;
+
+// ============================================================================
 // RELATED SESSION
 // ============================================================================
 
@@ -264,6 +282,33 @@ export const BudgetConfigSchema = z.object({
 });
 export type BudgetConfig = z.infer<typeof BudgetConfigSchema>;
 
+// ============================================================================
+// CROSS-AGENT PRIVACY SETTINGS
+// ============================================================================
+
+export const CrossAgentConfigSchema = z.object({
+  /**
+   * Master toggle for cross-agent enrichment features.
+   * When false, the system will not pull in sessions from other agents for enrichment.
+   */
+  enabled: z.boolean().default(false),
+  /**
+   * Explicit user consent flag. We require this in addition to `enabled`
+   * so operators can distinguish "enabled by config edit" from "explicitly consented".
+   */
+  consentGiven: z.boolean().default(false),
+  /** ISO timestamp of when consent was granted (if any). */
+  consentDate: z.string().nullable().optional(),
+  /**
+   * Allowlist of agent names (e.g., ["claude","cursor"]).
+   * Empty means "no allowlist restriction" (all agents are allowed) when enabled.
+   */
+  agents: z.array(z.string()).default([]),
+  /** When true, writes audit events when cross-agent enrichment occurs. */
+  auditLog: z.boolean().default(true),
+});
+export type CrossAgentConfig = z.infer<typeof CrossAgentConfigSchema>;
+
 export const ConfigSchema = z.object({
   schema_version: z.number().default(1),
   llm: z.object({
@@ -289,8 +334,9 @@ export const ConfigSchema = z.object({
   minRelevanceScore: z.number().default(0.1),
   maxRelatedSessions: z.number().default(5),
   validationEnabled: z.boolean().default(true),
-  enrichWithCrossAgent: z.boolean().default(true),
+  crossAgent: CrossAgentConfigSchema.default({}),
   semanticSearchEnabled: z.boolean().default(false),
+  embeddingModel: z.string().default("Xenova/all-MiniLM-L6-v2"),
   verbose: z.boolean().default(false),
   jsonOutput: z.boolean().default(false),
   apiKey: z.string().optional(),
