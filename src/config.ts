@@ -6,70 +6,41 @@ import { fileExists, warn, atomicWrite, expandPath, normalizeYamlKeys, resolveRe
 
 // --- Defaults ---
 
-export const DEFAULT_CONFIG: Config = {
-  schema_version: 1,
-  provider: "anthropic",
-  model: "claude-3-5-sonnet-20241022",
-  cassPath: "cass",
-  playbookPath: "~/.cass-memory/playbook.yaml",
-  diaryDir: "~/.cass-memory/diary",
-  maxReflectorIterations: 3,
-  autoReflect: false,
-  dedupSimilarityThreshold: 0.70,
-  pruneHarmfulThreshold: 10,
-  defaultDecayHalfLife: 90,
-  maxBulletsInContext: 50,
-  maxHistoryInContext: 10,
-  sessionLookbackDays: 7,
-  validationLookbackDays: 90,
-  relatedSessionsDays: 30,
-  minRelevanceScore: 0.1,
-  maxRelatedSessions: 5,
-  validationEnabled: true,
-  crossAgent: {
-    enabled: false,
-    consentGiven: false,
-    consentDate: null,
-    agents: [],
-    auditLog: true,
-  },
-  semanticSearchEnabled: false,
-  semanticWeight: 0.6,
-  embeddingModel: "Xenova/all-MiniLM-L6-v2",
-  verbose: false,
-  jsonOutput: false,
-  scoring: {
-    decayHalfLifeDays: 90,
-    harmfulMultiplier: 4,
-    minFeedbackForActive: 3,
-    minHelpfulForProven: 10,
-    maxHarmfulRatioForProven: 0.1
-  },
-  budget: {
-    dailyLimit: 0.10,
-    monthlyLimit: 2.00,
-    warningThreshold: 80,
-    currency: "USD"
-  },
-  sanitization: {
-    enabled: true,
-    extraPatterns: [],
-    auditLog: false,
-    auditLevel: "info",
-  },
-};
-
+/**
+ * Get default configuration by parsing an empty object through ConfigSchema.
+ * This ensures ConfigSchema is the single source of truth for all defaults.
+ *
+ * The schema defines all defaults via .default() modifiers. By parsing {},
+ * we get a fully populated Config object with all schema-defined defaults.
+ */
 export function getDefaultConfig(): Config {
-  if (typeof structuredClone === "function") {
-    return structuredClone(DEFAULT_CONFIG);
-  }
-  return JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+  return ConfigSchema.parse({});
 }
 
+/**
+ * Cached default config for internal use.
+ * Lazily initialized on first access.
+ */
+let _cachedDefaults: Config | null = null;
+
+function getCachedDefaults(): Config {
+  if (_cachedDefaults === null) {
+    _cachedDefaults = getDefaultConfig();
+  }
+  return _cachedDefaults;
+}
+
+/**
+ * @deprecated Use getDefaultConfig() instead.
+ * This export is retained for backward compatibility but now delegates to ConfigSchema.
+ */
+export const DEFAULT_CONFIG: Config = ConfigSchema.parse({});
+
 export function getSanitizeConfig(config?: Config): SanitizationConfig {
-  const conf = config?.sanitization ?? DEFAULT_CONFIG.sanitization;
+  const defaults = getCachedDefaults();
+  const conf = config?.sanitization ?? defaults.sanitization;
   return {
-    ...DEFAULT_CONFIG.sanitization,
+    ...defaults.sanitization,
     ...conf,
   };
 }
@@ -139,6 +110,7 @@ async function loadRepoConfig(repoCassDir: string): Promise<{
 }
 
 export async function loadConfig(cliOverrides: Partial<Config> = {}): Promise<Config> {
+  const defaults = getCachedDefaults();
   const globalConfigPath = expandPath("~/.cass-memory/config.json");
   const globalConfig = await loadConfigFile(globalConfigPath);
 
@@ -156,28 +128,34 @@ export async function loadConfig(cliOverrides: Partial<Config> = {}): Promise<Co
   }
 
   const merged = {
-    ...DEFAULT_CONFIG,
+    ...defaults,
     ...globalConfig,
     ...repoConfig,
     ...cliOverrides,
     sanitization: {
-      ...DEFAULT_CONFIG.sanitization,
+      ...defaults.sanitization,
       ...(globalConfig.sanitization || {}),
       ...(repoConfig.sanitization || {}),
       ...(cliOverrides.sanitization || {}),
     },
     crossAgent: {
-      ...DEFAULT_CONFIG.crossAgent,
+      ...defaults.crossAgent,
       ...(globalConfig.crossAgent || {}),
       ...(repoConfig.crossAgent || {}),
       ...(cliOverrides.crossAgent || {}),
     },
     scoring: {
-        ...DEFAULT_CONFIG.scoring,
-        ...(globalConfig.scoring || {}),
-        ...(repoConfig.scoring || {}),
-        ...(cliOverrides.scoring || {}),
-    }
+      ...defaults.scoring,
+      ...(globalConfig.scoring || {}),
+      ...(repoConfig.scoring || {}),
+      ...(cliOverrides.scoring || {}),
+    },
+    budget: {
+      ...defaults.budget,
+      ...(globalConfig.budget || {}),
+      ...(repoConfig.budget || {}),
+      ...(cliOverrides.budget || {}),
+    },
   };
 
   const result = ConfigSchema.safeParse(merged);

@@ -40,7 +40,7 @@ describe("getDefaultConfig()", () => {
     // Core fields
     expect(config.schema_version).toBe(1);
     expect(config.provider).toBe("anthropic");
-    expect(config.model).toBe("claude-3-5-sonnet-20241022");
+    expect(config.model).toBe("claude-sonnet-4-20250514");
     expect(config.cassPath).toBe("cass");
 
     // Nested objects
@@ -206,7 +206,7 @@ describe("loadConfig() - CLI overrides", () => {
       // With isolated HOME and no config files, should return pure defaults
       const config = await loadConfig({});
       expect(config.provider).toBe("anthropic");
-      expect(config.model).toBe("claude-3-5-sonnet-20241022");
+      expect(config.model).toBe("claude-sonnet-4-20250514");
     });
   });
 });
@@ -243,7 +243,7 @@ describe("loadConfig() - Global config file", () => {
       const config = await loadConfig();
 
       expect(config.provider).toBe("anthropic");
-      expect(config.model).toBe("claude-3-5-sonnet-20241022");
+      expect(config.model).toBe("claude-sonnet-4-20250514");
     });
   });
 
@@ -260,7 +260,7 @@ describe("loadConfig() - Global config file", () => {
       const config = await loadConfig();
 
       expect(config.provider).toBe("openai");
-      expect(config.model).toBe("claude-3-5-sonnet-20241022"); // default
+      expect(config.model).toBe("claude-sonnet-4-20250514"); // default
     });
   });
 
@@ -771,5 +771,78 @@ describe("DEFAULT_CONFIG", () => {
 
   test("has valid provider", () => {
     expect(["anthropic", "openai", "google"]).toContain(DEFAULT_CONFIG.provider);
+  });
+});
+
+// =============================================================================
+// Defaults Snapshot Test - Single Source of Truth
+// =============================================================================
+describe("Config Defaults Snapshot", () => {
+  /**
+   * This test locks in the key user-facing defaults.
+   * If any of these change, this test will fail loudly.
+   * Update this test ONLY when intentionally changing defaults.
+   *
+   * The purpose is to prevent accidental drift between types.ts and config.ts.
+   */
+  test("key defaults are locked in and match ConfigSchema", () => {
+    const defaults = getDefaultConfig();
+
+    // LLM Settings
+    expect(defaults.provider).toBe("anthropic");
+    expect(defaults.model).toBe("claude-sonnet-4-20250514");
+
+    // Paths
+    expect(defaults.cassPath).toBe("cass");
+    expect(defaults.playbookPath).toBe("~/.cass-memory/playbook.yaml");
+    expect(defaults.diaryDir).toBe("~/.cass-memory/diary");
+
+    // Scoring
+    expect(defaults.scoring.decayHalfLifeDays).toBe(90);
+    expect(defaults.scoring.harmfulMultiplier).toBe(4);
+    expect(defaults.scoring.minFeedbackForActive).toBe(3);
+    expect(defaults.scoring.minHelpfulForProven).toBe(10);
+    expect(defaults.scoring.maxHarmfulRatioForProven).toBe(0.1);
+
+    // Budget
+    expect(defaults.budget.dailyLimit).toBe(0.10);
+    expect(defaults.budget.monthlyLimit).toBe(2.00);
+    expect(defaults.budget.warningThreshold).toBe(80);
+    expect(defaults.budget.currency).toBe("USD");
+
+    // Key thresholds
+    expect(defaults.dedupSimilarityThreshold).toBe(0.85);
+    expect(defaults.pruneHarmfulThreshold).toBe(3);
+    expect(defaults.maxBulletsInContext).toBe(50);
+    expect(defaults.maxHistoryInContext).toBe(10);
+    expect(defaults.minRelevanceScore).toBe(0.1);
+
+    // Feature flags
+    expect(defaults.validationEnabled).toBe(true);
+    expect(defaults.semanticSearchEnabled).toBe(false);
+    expect(defaults.autoReflect).toBe(false);
+    expect(defaults.crossAgent.enabled).toBe(false);
+  });
+
+  test("getDefaultConfig() returns same values as DEFAULT_CONFIG", () => {
+    const fromFunction = getDefaultConfig();
+    const fromExport = DEFAULT_CONFIG;
+
+    // Core values should be identical
+    expect(fromFunction.provider).toBe(fromExport.provider);
+    expect(fromFunction.model).toBe(fromExport.model);
+    expect(fromFunction.dedupSimilarityThreshold).toBe(fromExport.dedupSimilarityThreshold);
+    expect(fromFunction.pruneHarmfulThreshold).toBe(fromExport.pruneHarmfulThreshold);
+  });
+
+  test("loadConfig with no files returns schema defaults", async () => {
+    await withTempCassHome(async () => {
+      const config = await loadConfig({});
+
+      // Should match ConfigSchema defaults exactly
+      expect(config.model).toBe("claude-sonnet-4-20250514");
+      expect(config.dedupSimilarityThreshold).toBe(0.85);
+      expect(config.pruneHarmfulThreshold).toBe(3);
+    });
   });
 });
