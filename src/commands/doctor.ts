@@ -624,8 +624,9 @@ export async function runSelfTest(config: Config): Promise<HealthCheck[]> {
   const availableProviders = getAvailableProviders();
   const currentProvider = config.provider;
   const hasCurrentProvider = availableProviders.includes(currentProvider);
+  const hasConfigApiKey = !!config.apiKey;
 
-  if (availableProviders.length === 0) {
+  if (availableProviders.length === 0 && !hasConfigApiKey) {
     checks.push({
       category: "Self-Test",
       item: "LLM System",
@@ -633,13 +634,28 @@ export async function runSelfTest(config: Config): Promise<HealthCheck[]> {
       message: "No API keys configured",
       details: { availableProviders: [], currentProvider },
     });
-  } else if (!hasCurrentProvider) {
+  } else if (!hasCurrentProvider && !hasConfigApiKey) {
     checks.push({
       category: "Self-Test",
       item: "LLM System",
       status: "warn",
       message: `Current provider (${currentProvider}) not available, have: ${availableProviders.join(", ")}`,
       details: { availableProviders, currentProvider },
+    });
+  } else if (hasConfigApiKey) {
+    // API key provided directly in config
+    checks.push({
+      category: "Self-Test",
+      item: "LLM System",
+      status: "pass",
+      message: `${currentProvider} (${config.model})`,
+      details: {
+        availableProviders,
+        currentProvider,
+        model: config.model,
+        semanticSearchEnabled: config.semanticSearchEnabled,
+        keySource: "config"
+      },
     });
   } else {
     // Check for API key validity (format check, not actual API call)
