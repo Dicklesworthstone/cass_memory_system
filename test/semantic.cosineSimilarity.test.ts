@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { batchEmbed, cosineSimilarity, embedText, findSemanticDuplicates, ModelLoadProgress, ProgressCallback, WarmupResult, warmupEmbeddings, isModelCached } from "../src/semantic.js";
+import { batchEmbed, cosineSimilarity, embedText, findSemanticDuplicates, ModelLoadProgress, ProgressCallback, WarmupResult, warmupEmbeddings, isModelCached, getSemanticStatus, formatSemanticModeMessage, SemanticStatus } from "../src/semantic.js";
 
 describe("semantic: cosineSimilarity", () => {
   test("returns 1 for identical vectors", () => {
@@ -98,5 +98,80 @@ describe("semantic: warmup types", () => {
 
   test("isModelCached is exported as a function", () => {
     expect(typeof isModelCached).toBe("function");
+  });
+});
+
+describe("semantic: getSemanticStatus", () => {
+  test("returns disabled status when semanticSearchEnabled is false", () => {
+    const status = getSemanticStatus({ semanticSearchEnabled: false });
+    expect(status.enabled).toBe(false);
+    expect(status.available).toBe(false);
+    expect(status.reason).toContain("disabled");
+    expect(status.enableHint).toBeDefined();
+    expect(status.enableHint).toContain("semanticSearchEnabled");
+  });
+
+  test("returns disabled status when embeddingModel is 'none'", () => {
+    const status = getSemanticStatus({ semanticSearchEnabled: true, embeddingModel: "none" });
+    expect(status.enabled).toBe(false);
+    expect(status.available).toBe(false);
+    expect(status.reason).toContain("none");
+  });
+
+  test("returns enabled status when semanticSearchEnabled is true", () => {
+    const status = getSemanticStatus({ semanticSearchEnabled: true });
+    expect(status.enabled).toBe(true);
+    expect(status.available).toBe(true);
+    expect(status.reason).toContain("enabled");
+    expect(status.enableHint).toBeUndefined();
+  });
+
+  test("uses default model when embeddingModel not specified", () => {
+    const status = getSemanticStatus({ semanticSearchEnabled: true });
+    expect(status.model).toBe("Xenova/all-MiniLM-L6-v2");
+  });
+
+  test("uses custom model when specified", () => {
+    const status = getSemanticStatus({ semanticSearchEnabled: true, embeddingModel: "custom-model" });
+    expect(status.model).toBe("custom-model");
+  });
+});
+
+describe("semantic: formatSemanticModeMessage", () => {
+  test("formats semantic mode message", () => {
+    const status: SemanticStatus = {
+      enabled: true,
+      available: true,
+      reason: "Semantic search enabled",
+      model: "Xenova/all-MiniLM-L6-v2",
+    };
+    const message = formatSemanticModeMessage("semantic", status);
+    expect(message).toContain("semantic search");
+    expect(message).toContain("Xenova/all-MiniLM-L6-v2");
+  });
+
+  test("formats keyword mode with enable hint", () => {
+    const status: SemanticStatus = {
+      enabled: false,
+      available: false,
+      reason: "Semantic search is disabled in config",
+      enableHint: "Set semanticSearchEnabled: true in ~/.cass-memory/config.yaml",
+      model: "Xenova/all-MiniLM-L6-v2",
+    };
+    const message = formatSemanticModeMessage("keyword", status);
+    expect(message).toContain("keyword search");
+    expect(message).toContain("semanticSearchEnabled");
+  });
+
+  test("formats keyword mode for offline fallback", () => {
+    const status: SemanticStatus = {
+      enabled: true,
+      available: false,
+      reason: "Model not available",
+      model: "Xenova/all-MiniLM-L6-v2",
+    };
+    const message = formatSemanticModeMessage("keyword", status);
+    expect(message).toContain("keyword search");
+    expect(message).toContain("offline");
   });
 });

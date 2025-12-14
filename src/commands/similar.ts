@@ -1,10 +1,11 @@
 import chalk from "chalk";
 import { loadConfig } from "../config.js";
 import { loadMergedPlaybook, getActiveBullets } from "../playbook.js";
-import { findSimilarBulletsSemantic } from "../semantic.js";
+import { findSimilarBulletsSemantic, getSemanticStatus, formatSemanticModeMessage } from "../semantic.js";
 import { getEffectiveScore } from "../scoring.js";
-import { error as logError, jaccardSimilarity, truncate, getCliName } from "../utils.js";
+import { error as logError, jaccardSimilarity, truncate, getCliName, printJson, printJsonError } from "../utils.js";
 import { PlaybookBullet } from "../types.js";
+import { getOutputStyle } from "../output.js";
 
 export type SimilarScope = "global" | "workspace" | "all";
 
@@ -127,22 +128,28 @@ export async function similarCommand(query: string, flags: SimilarFlags): Promis
     const result = await generateSimilarResults(query, flags);
 
     if (flags.json) {
-      console.log(JSON.stringify(result, null, 2));
+      printJson(result);
       return;
     }
+
+    const config = await loadConfig();
+    const semanticStatus = getSemanticStatus(config);
+    const style = getOutputStyle();
+    const modeMessage = formatSemanticModeMessage(result.mode, semanticStatus);
 
     console.log(chalk.bold(`SIMILAR BULLETS TO: "${result.query}"`));
     console.log("=".repeat(Math.max(10, Math.min(80, result.query.length + 22))));
     console.log("");
 
-    if (result.mode === "keyword") {
-      console.log(
-        chalk.yellow(
-          "Note: Using keyword similarity (embeddings disabled or unavailable)."
-        )
-      );
-      console.log("");
+    // Show mode with appropriate styling
+    if (result.mode === "semantic") {
+      const icon = style.emoji ? "🔍 " : "";
+      console.log(chalk.green(`${icon}${modeMessage}`));
+    } else {
+      const icon = style.emoji ? "🔤 " : "";
+      console.log(chalk.yellow(`${icon}${modeMessage}`));
     }
+    console.log("");
 
     if (result.results.length === 0) {
       console.log(chalk.gray("No matches found (try lowering --threshold)."));
@@ -167,7 +174,11 @@ export async function similarCommand(query: string, flags: SimilarFlags): Promis
     const cli = getCliName();
     console.log(`TIP: Use '${cli} playbook get <id>' to see full details`);
   } catch (err: any) {
-    logError(err?.message || String(err));
+    if (flags.json) {
+      printJsonError(err);
+    } else {
+      logError(err?.message || String(err));
+    }
     process.exit(1);
   }
 }

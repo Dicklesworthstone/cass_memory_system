@@ -523,6 +523,94 @@ export interface WarmupResult {
   error?: string;
 }
 
+export interface SemanticStatus {
+  /** Whether semantic search is enabled in config */
+  enabled: boolean;
+  /** Whether the model is available (cached/online) */
+  available: boolean;
+  /** Human-readable reason for the current state */
+  reason: string;
+  /** Short hint for enabling semantic search (if disabled) */
+  enableHint?: string;
+  /** The embedding model being used */
+  model: string;
+}
+
+/**
+ * Get the current semantic search status for messaging and diagnostics.
+ *
+ * This helper consolidates semantic state checks for consistent messaging
+ * across commands (context, similar, stats, doctor).
+ *
+ * @param config - The loaded Config object (or just the relevant fields)
+ * @returns SemanticStatus with enabled, available, reason, and enableHint
+ */
+export function getSemanticStatus(config: {
+  semanticSearchEnabled?: boolean;
+  embeddingModel?: string;
+}): SemanticStatus {
+  const model = typeof config.embeddingModel === "string" && config.embeddingModel.trim() !== ""
+    ? config.embeddingModel.trim()
+    : DEFAULT_EMBEDDING_MODEL;
+
+  // Check if explicitly disabled via config
+  if (config.semanticSearchEnabled === false) {
+    return {
+      enabled: false,
+      available: false,
+      reason: "Semantic search is disabled in config",
+      enableHint: "Set semanticSearchEnabled: true in ~/.cass-memory/config.yaml",
+      model,
+    };
+  }
+
+  // Check if disabled via model="none"
+  if (model === "none") {
+    return {
+      enabled: false,
+      available: false,
+      reason: "Embedding model is set to 'none'",
+      enableHint: "Remove embeddingModel: none from config or set a valid model",
+      model,
+    };
+  }
+
+  // Semantic is enabled in config - model availability is determined at runtime
+  return {
+    enabled: true,
+    available: true, // Assume available; actual check happens during embedding
+    reason: "Semantic search enabled",
+    model,
+  };
+}
+
+/**
+ * Format a one-line semantic mode indicator for human output.
+ *
+ * @param mode - The mode being used ("semantic" or "keyword")
+ * @param status - The semantic status from getSemanticStatus
+ * @returns A concise, actionable message for the user
+ */
+export function formatSemanticModeMessage(
+  mode: "semantic" | "keyword",
+  status: SemanticStatus
+): string {
+  if (mode === "semantic") {
+    return `Using semantic search (${status.model})`;
+  }
+
+  // Keyword mode - explain why and how to enable semantic
+  if (!status.enabled && status.enableHint) {
+    return `Using keyword search. ${status.enableHint}`;
+  }
+
+  if (status.enabled && !status.available) {
+    return `Using keyword search (model unavailable offline). Run any semantic command online to cache the model.`;
+  }
+
+  return "Using keyword search";
+}
+
 /**
  * Pre-load the embedding model for faster subsequent queries.
  *
