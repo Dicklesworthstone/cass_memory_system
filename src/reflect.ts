@@ -5,7 +5,13 @@ import {
   Playbook,
   PlaybookBullet,
   PlaybookDelta,
-  PlaybookDeltaSchema,
+  // Import individual schemas to construct LLM-specific loose schema
+  AddDeltaSchema,
+  HelpfulDeltaSchema,
+  HarmfulDeltaSchema,
+  ReplaceDeltaSchema,
+  DeprecateDeltaSchema,
+  MergeDeltaSchema,
   CassHit,
   DecisionLogEntry
 } from "./types.js";
@@ -152,9 +158,24 @@ export function deduplicateDeltas(newDeltas: PlaybookDelta[], existing: Playbook
 
 // --- Main Reflector ---
 
+// Define a loose schema for LLM output where sourceSession is optional for 'add' deltas.
+// We will inject sourceSession systematically in the code, saving tokens and reducing validation errors.
+const LLMAddDeltaSchema = AddDeltaSchema.extend({
+  sourceSession: z.string().optional()
+});
+
+const LLMPlaybookDeltaSchema = z.discriminatedUnion("type", [
+  LLMAddDeltaSchema,
+  HelpfulDeltaSchema,
+  HarmfulDeltaSchema,
+  ReplaceDeltaSchema,
+  DeprecateDeltaSchema,
+  MergeDeltaSchema,
+]);
+
 // Schema for the LLM output - array of deltas
 const ReflectorOutputSchema = z.object({
-  deltas: z.array(PlaybookDeltaSchema)
+  deltas: z.array(LLMPlaybookDeltaSchema)
 });
 
 // Early exit logic
@@ -232,15 +253,15 @@ export async function reflectOnSession(
         config
       );
 
-      const validDeltas = output.deltas.map(d => {
+      const validDeltas: PlaybookDelta[] = output.deltas.map(d => {
         if (d.type === "add") {
           // Force sourceSession injection
-          return { ...d, sourceSession: diary.sessionPath };
+          return { ...d, sourceSession: diary.sessionPath } as PlaybookDelta;
         }
         if ((d.type === "helpful" || d.type === "harmful") && !d.sourceSession) {
-          return { ...d, sourceSession: diary.sessionPath };
+          return { ...d, sourceSession: diary.sessionPath } as PlaybookDelta;
         }
-        return d;
+        return d as PlaybookDelta;
       });
 
       const uniqueDeltas = deduplicateDeltas(validDeltas, allDeltas);
