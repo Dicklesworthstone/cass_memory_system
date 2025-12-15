@@ -393,7 +393,7 @@ describe("playbook import command", () => {
         capture.restore();
       }
 
-      expect(process.exitCode).toBe(1);
+      expect(process.exitCode as number | undefined).toBe(1);
       process.exitCode = undefined; // Clean up
       const result = JSON.parse(capture.logs.join("\n"));
       expect(result.success).toBe(false);
@@ -425,7 +425,7 @@ describe("playbook import command", () => {
         capture.restore();
       }
 
-      expect(process.exitCode).toBe(1);
+      expect(process.exitCode as number | undefined).toBe(1);
       process.exitCode = undefined; // Clean up
       const result = JSON.parse(capture.logs.join("\n"));
       expect(result.success).toBe(false);

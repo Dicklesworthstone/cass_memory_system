@@ -1,7 +1,7 @@
 import { loadConfig } from "../config.js";
 import { getUsageStats } from "../cost.js";
 import chalk from "chalk";
-import { error as logError, printJson, printJsonError } from "../utils.js";
+import { error as logError, printJsonResult, printJsonError } from "../utils.js";
 import { iconPrefix, formatTipPrefix } from "../output.js";
 
 export interface UsageOptions {
@@ -14,7 +14,7 @@ export async function usageCommand(options: UsageOptions = {}): Promise<void> {
     const stats = await getUsageStats(config);
 
     if (options.json) {
-      printJson(stats);
+      printJsonResult(stats);
       return;
     }
 

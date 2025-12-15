@@ -6,7 +6,7 @@ import readline from "node:readline";
 import chalk from "chalk";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
-import type { ContextResult } from "./types.js";
+import { ErrorCode, type ContextResult } from "./types.js";
 import { iconPrefix } from "./output.js";
 
 const execAsync = promisify(exec);
@@ -1686,6 +1686,7 @@ export function extractAgentFromPath(sessionPath: string): string {
   if (lower.includes(".cursor")) return "cursor";
   if (lower.includes(".codex")) return "codex";
   if (lower.includes(".aider")) return "aider";
+  if (lower.includes(".pi/agent/sessions") || lower.includes(".pi\\agent\\sessions")) return "pi_agent";
   return "unknown";
 }
 
@@ -1891,7 +1892,9 @@ export function warn(msg: string): void {
 export type JsonErrorPayload = {
   success: false;
   error: string;
-  code?: string;
+  code: string;
+  hint?: string;
+  retryable?: boolean;
   details?: unknown;
 };
 
@@ -1905,7 +1908,7 @@ export function printJson(value: unknown): void {
 
 export function printJsonError(
   err: unknown,
-  options: { code?: string; details?: unknown } = {}
+  options: { code?: string; hint?: string; retryable?: boolean; details?: unknown } = {}
 ): void {
   const message =
     err instanceof Error
@@ -1920,10 +1923,14 @@ export function printJsonError(
             }
           })();
 
+  const code = options.code ?? ErrorCode.UNKNOWN_ERROR;
+
   const payload: JsonErrorPayload = {
     success: false,
+    code,
     error: message,
-    ...(options.code ? { code: options.code } : {}),
+    ...(options.hint ? { hint: options.hint } : {}),
+    ...(typeof options.retryable === "boolean" ? { retryable: options.retryable } : {}),
     ...(options.details !== undefined ? { details: options.details } : {}),
   };
 
@@ -1956,17 +1963,26 @@ export interface JsonResultOptions {
  * printJsonResult({ rulesProvided: ["b-123"] }, { effect: false, reason: "No signal strong enough" });
  * // → { "success": true, "effect": false, "reason": "...", "rulesProvided": [...] }
  */
-export function printJsonResult<T extends Record<string, unknown>>(
-  data: T,
+export function printJsonResult(
+  data: unknown,
   options: JsonResultOptions = {}
 ): void {
   const { effect = true, reason } = options;
-  const payload = {
+  const base = {
     success: true as const,
     ...(effect === false ? { effect: false as const, reason } : {}),
-    ...data,
   };
-  printJson(payload);
+
+  // Prefer a flat top-level payload when data is object-like; otherwise wrap.
+  if (data && typeof data === "object" && !Array.isArray(data)) {
+    // Protect reserved top-level keys from accidental collisions.
+    const { success: _ignoredSuccess, effect: _ignoredEffect, reason: _ignoredReason, ...rest } =
+      data as Record<string, unknown> & { success?: unknown; effect?: unknown; reason?: unknown };
+    printJson({ ...base, ...rest });
+    return;
+  }
+
+  printJson({ ...base, data });
 }
 
 // --- String Normalization ---

@@ -149,13 +149,15 @@ export function formatRawSession(content: string, ext: string): string {
 
 function extractSessionMetadata(sessionPath: string): { agent: string; workspace?: string } {
   const normalized = path.normalize(sessionPath);
+  const lower = normalized.toLowerCase();
   
   // Detect agent
   let agent = "unknown";
-  if (normalized.includes(".claude")) agent = "claude";
-  else if (normalized.includes(".cursor")) agent = "cursor";
-  else if (normalized.includes(".codex")) agent = "codex";
-  else if (normalized.includes(".aider")) agent = "aider";
+  if (lower.includes(".claude")) agent = "claude";
+  else if (lower.includes(".cursor")) agent = "cursor";
+  else if (lower.includes(".codex")) agent = "codex";
+  else if (lower.includes(".aider")) agent = "aider";
+  else if (lower.includes(".pi/agent/sessions") || lower.includes(".pi\\agent\\sessions")) agent = "pi_agent";
   
   return { agent };
 }

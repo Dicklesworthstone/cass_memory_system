@@ -46,7 +46,7 @@ const ICONS: Record<IconName, { emoji: string; plain: string }> = {
   chart: { emoji: "📊", plain: "" },
   star: { emoji: "🌟", plain: "" },
   check: { emoji: "✅", plain: "" },
-  warning: { emoji: "⚠️", plain: "" },
+  warning: { emoji: "⚠️", plain: "[!]" },
   neutral: { emoji: "⚪", plain: "" },
   pin: { emoji: "📌", plain: "" },
   tip: { emoji: "💡", plain: "" },
@@ -77,6 +77,24 @@ export function icon(name: IconName): string {
 
 export function iconPrefix(name: IconName): string {
   const value = icon(name);
+  return value ? `${value} ` : "";
+}
+
+export function agentIcon(agent: string): string {
+  const style = getOutputStyle();
+  if (!style.emoji) return "";
+
+  const key = agent.trim().toLowerCase();
+  if (key.includes("pi_agent")) return "🟠";
+  if (key.includes("claude")) return "🟣";
+  if (key.includes("cursor")) return "🔵";
+  if (key.includes("codex")) return "🟢";
+  if (key.includes("aider")) return "🟡";
+  return "";
+}
+
+export function agentIconPrefix(agent: string): string {
+  const value = agentIcon(agent);
   return value ? `${value} ` : "";
 }
 

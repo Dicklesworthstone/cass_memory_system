@@ -176,9 +176,17 @@ export class TestSummaryAggregator {
 }
 
 export function createTestLogger(testNameOrLevel: string | Level = "info", minLevel: Level = "info"): TestLogger {
+  const envLevel = process.env.TEST_LOG_LEVEL?.trim().toLowerCase();
+  const hasEnvOverride = envLevel && ["debug", "info", "warn", "error"].includes(envLevel);
+  const effectiveMinLevel: Level = hasEnvOverride
+    ? (envLevel as Level)
+    : process.env.DEBUG
+      ? minLevel
+      : "error";
+
   // Backwards compat: if first arg looks like a level, use it as level with generic name
   if (["debug", "info", "warn", "error"].includes(testNameOrLevel)) {
-    return new TestLogger("test", testNameOrLevel as Level);
+    return new TestLogger("test", effectiveMinLevel ?? (testNameOrLevel as Level));
   }
-  return new TestLogger(testNameOrLevel, minLevel);
+  return new TestLogger(testNameOrLevel, effectiveMinLevel);
 }

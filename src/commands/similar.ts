@@ -3,7 +3,7 @@ import { loadConfig } from "../config.js";
 import { loadMergedPlaybook, getActiveBullets } from "../playbook.js";
 import { findSimilarBulletsSemantic, getSemanticStatus, formatSemanticModeMessage } from "../semantic.js";
 import { getEffectiveScore } from "../scoring.js";
-import { error as logError, jaccardSimilarity, truncate, getCliName, printJson, printJsonError } from "../utils.js";
+import { error as logError, jaccardSimilarity, truncate, getCliName, printJsonResult, printJsonError } from "../utils.js";
 import { ErrorCode, PlaybookBullet } from "../types.js";
 import { getOutputStyle } from "../output.js";
 
@@ -128,7 +128,7 @@ export async function similarCommand(query: string, flags: SimilarFlags): Promis
     const result = await generateSimilarResults(query, flags);
 
     if (flags.json) {
-      printJson(result);
+      printJsonResult(result);
       return;
     }
 

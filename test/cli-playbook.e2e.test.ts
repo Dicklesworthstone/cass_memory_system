@@ -418,7 +418,7 @@ describe("E2E: CLI playbook command", () => {
           capture.restore();
         }
 
-        expect(process.exitCode).toBe(1);
+        expect(process.exitCode as number | undefined).toBe(1);
         process.exitCode = undefined; // Clean up
         const output = capture.logs.join("\n");
         const result = JSON.parse(output);
@@ -479,7 +479,7 @@ describe("E2E: CLI playbook command", () => {
           capture.restore();
         }
 
-        expect(process.exitCode).toBe(1);
+        expect(process.exitCode as number | undefined).toBe(1);
         expect(capture.errors.some(e => e.includes("not found"))).toBe(true);
         process.exitCode = undefined;
       });
@@ -678,7 +678,7 @@ describe("E2E: CLI playbook command", () => {
           capture.restore();
         }
 
-        expect(process.exitCode).toBe(1);
+        expect(process.exitCode as number | undefined).toBe(1);
         const output = capture.logs.join("\n");
         const result = JSON.parse(output);
 
@@ -985,7 +985,7 @@ describe("E2E: CLI playbook command", () => {
           capture.restore();
         }
 
-        expect(process.exitCode).toBe(1);
+        expect(process.exitCode as number | undefined).toBe(1);
         const output = capture.logs.join("\n");
         const result = JSON.parse(output);
         expect(result.success).toBe(false);

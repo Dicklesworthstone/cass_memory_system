@@ -1,6 +1,6 @@
 import { loadConfig, DEFAULT_CONFIG } from "../config.js";
 import { cassAvailable, cassStats, cassSearch, safeCassSearch } from "../cass.js";
-import { error as logError, fileExists, resolveRepoDir, resolveGlobalDir, expandPath, getCliName, getVersion, checkAbort, isPermissionError, handlePermissionError, printJson, printJsonError, atomicWrite } from "../utils.js";
+import { error as logError, fileExists, resolveRepoDir, resolveGlobalDir, expandPath, getCliName, getVersion, checkAbort, isPermissionError, handlePermissionError, printJsonResult, printJsonError, atomicWrite } from "../utils.js";
 import { isLLMAvailable, getAvailableProviders, validateApiKey } from "../llm.js";
 import { SECRET_PATTERNS, compileExtraPatterns } from "../sanitize.js";
 import { loadPlaybook, savePlaybook, createEmptyPlaybook } from "../playbook.js";
@@ -1131,7 +1131,7 @@ export async function doctorCommand(options: {
       if (selfTest) {
         payload.selfTest = await runSelfTest(config);
       }
-      printJson(payload);
+      printJsonResult(payload);
       return;
     }
 

@@ -44,6 +44,15 @@ afterAll(() => {
       process.env[key] = value;
     }
   }
+
+  // Ensure the overall test process exits cleanly when the suite passes.
+  process.exitCode = undefined;
+});
+
+afterEach(() => {
+  // Some command tests intentionally set process.exitCode to simulate CLI failures.
+  // Ensure it never leaks across tests (and doesn't force bun test to exit non-zero).
+  process.exitCode = undefined;
 });
 
 // Global timeout for tests (can be overridden per-test)

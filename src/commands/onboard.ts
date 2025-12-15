@@ -12,7 +12,7 @@ import { loadConfig } from "../config.js";
 import { loadMergedPlaybook } from "../playbook.js";
 import { cassSearch, cassExport, handleCassUnavailable, CassSearchOptions } from "../cass.js";
 import { getCliName, expandPath, formatRelativeTime, printJson, printJsonError, printJsonResult } from "../utils.js";
-import { formatKv, formatRule, getOutputStyle, icon } from "../output.js";
+import { agentIconPrefix, formatKv, formatRule, getOutputStyle, icon, iconPrefix } from "../output.js";
 import { ErrorCode } from "../types.js";
 import {
   loadOnboardState,
@@ -520,7 +520,7 @@ export async function onboardCommand(
         console.log(chalk.yellow.bold("UNDERREPRESENTED (1-2 rules):"));
         for (const cat of gapAnalysis.gaps.underrepresented) {
           const count = gapAnalysis.byCategory[cat].count;
-          console.log(chalk.yellow(`  ⚠ ${cat} (${count} rules)`));
+          console.log(chalk.yellow(`  ${iconPrefix("warning")}${cat} (${count} rules)`));
         }
         console.log("");
       }
@@ -653,7 +653,7 @@ export async function onboardCommand(
         }
       } else {
         for (const s of sessions) {
-          console.log(chalk.cyan(`[${s.agent}] ${path.basename(s.workspace)}`));
+          console.log(chalk.cyan(`${agentIconPrefix(s.agent)}[${s.agent}] ${path.basename(s.workspace)}`));
           console.log(chalk.dim(`  ${s.path}`));
           if (options.fillGaps && s.gapScore !== undefined && s.gapScore > 0) {
             const cats = s.matchedCategories?.join(", ") || "";

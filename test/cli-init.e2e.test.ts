@@ -458,7 +458,7 @@ describe("E2E: CLI init command", () => {
           err.includes("Not in a git repository") || err.includes("git repo")
         );
         expect(hasError).toBe(true);
-        expect(process.exitCode).toBe(1);
+        expect(process.exitCode as number | undefined).toBe(1);
         process.exitCode = undefined;
       } finally {
         process.chdir(originalCwd);
@@ -488,7 +488,7 @@ describe("E2E: CLI init command", () => {
 
         expect(result.success).toBe(false);
         expect(result.error).toContain("Not in a git repository");
-        expect(process.exitCode).toBe(1);
+        expect(process.exitCode as number | undefined).toBe(1);
         process.exitCode = undefined;
       } finally {
         process.chdir(originalCwd);

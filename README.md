@@ -85,7 +85,7 @@ This mirrors how human expertise develops: raw experiences (episodic) are consol
 ┌─────────────────────────────────────────────────────────────────────┐
 │                    EPISODIC MEMORY (cass)                           │
 │   Raw session logs from all agents — the "ground truth"             │
-│   Claude Code │ Codex │ Cursor │ Aider │ Gemini │ ChatGPT │ ...    │
+│   Claude Code │ Codex │ Cursor │ Aider │ PI │ Gemini │ ChatGPT │ ... │
 └───────────────────────────┬─────────────────────────────────────────┘
                             │ cass search
                             ▼
@@ -117,7 +117,8 @@ Sessions from all your AI coding agents feed a unified knowledge base:
 Claude Code session    →  ┐
 Cursor session         →  │→  Unified Playbook  →  All agents benefit
 Codex session          →  │
-Aider session          →  ┘
+Aider session          →  │
+PI session             →  ┘
 ```
 
 A debugging technique discovered in Cursor is immediately available to Claude Code. No manual knowledge transfer required.
@@ -227,6 +228,7 @@ cm context "fix the auth timeout bug" --json
 
 ```json
 {
+  "success": true,
   "task": "fix the auth timeout bug",
   "relevantBullets": [
     {
@@ -268,12 +270,11 @@ Errors are structured and include recovery hints:
 
 ```json
 {
-  "error": {
-    "code": "PLAYBOOK_NOT_FOUND",
-    "message": "Playbook file not found at ~/.cass-memory/playbook.yaml",
-    "hint": "Run 'cm init' to create a new playbook",
-    "retryable": false
-  }
+  "success": false,
+  "code": "PLAYBOOK_NOT_FOUND",
+  "error": "Playbook file not found at ~/.cass-memory/playbook.yaml",
+  "hint": "Run 'cm init' to create a new playbook",
+  "retryable": false
 }
 ```
 
@@ -1432,6 +1433,7 @@ flowchart TB
         CX[Codex]
         CR[Cursor]
         AD[Aider]
+        PI[PI]
         GM[Gemini]
     end
 
@@ -1459,6 +1461,7 @@ flowchart TB
     CX --> NRM
     CR --> NRM
     AD --> NRM
+    PI --> NRM
     GM --> NRM
     NRM --> IDX
 

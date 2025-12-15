@@ -485,7 +485,8 @@ describe("E2E: CLI context command", () => {
         expect(result.degraded?.cass).toBeDefined();
         expect(result.degraded?.cass?.available).toBe(false);
         expect(result.degraded?.cass?.reason).toBe("INDEX_MISSING");
-        expect(result.suggestedCassQueries).toContain("cass index");
+        expect(result.degraded?.cass?.suggestedFix).toContain("cass index");
+        expect(result.suggestedCassQueries.every((q) => q.startsWith("cass search "))).toBe(true);
       });
     });
 

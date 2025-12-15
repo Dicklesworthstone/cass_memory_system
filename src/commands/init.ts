@@ -1,6 +1,6 @@
 import { getDefaultConfig } from "../config.js";
 import { createEmptyPlaybook, loadPlaybook, savePlaybook } from "../playbook.js";
-import { expandPath, fileExists, warn, log, resolveRepoDir, ensureRepoStructure, ensureGlobalStructure, getCliName, printJson, atomicWrite, printJsonError } from "../utils.js";
+import { expandPath, fileExists, warn, log, resolveRepoDir, ensureRepoStructure, ensureGlobalStructure, getCliName, printJsonResult, atomicWrite, printJsonError } from "../utils.js";
 import { ErrorCode } from "../types.js";
 import { cassAvailable } from "../cass.js";
 import { applyStarter, loadStarter } from "../starters.js";
@@ -116,7 +116,7 @@ export async function initCommand(options: InitOptions) {
         consentGiven: true,
         consentDate: new Date().toISOString(),
         // Default to common known agents; user can refine via `cm privacy allow/deny`.
-        agents: ["claude", "cursor", "codex", "aider"],
+        agents: ["claude", "cursor", "codex", "aider", "pi_agent"],
       };
       console.log(chalk.green(`\n${icon("success")} Cross-agent enrichment enabled.\n`));
     } else {
@@ -171,8 +171,7 @@ export async function initCommand(options: InitOptions) {
 
   // Output
   if (options.json) {
-    printJson({
-      success: true,
+    printJsonResult({
       configPath,
       created: result.created,
       existed: result.existed,
@@ -373,8 +372,7 @@ async function initRepoCommand(options: InitOptions) {
   }
 
   if (options.json) {
-    printJson({
-      success: true,
+    printJsonResult({
       cassDir,
       created: result.created,
       existed: result.existed,

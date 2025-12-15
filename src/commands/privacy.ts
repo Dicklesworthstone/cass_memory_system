@@ -146,7 +146,7 @@ export async function privacyCommand(
           ? Array.from(new Set(requested))
           : discoveredAgents.length > 0
             ? discoveredAgents.sort()
-            : ["claude", "cursor", "codex", "aider"];
+            : ["claude", "cursor", "codex", "aider", "pi_agent"];
 
       config.crossAgent = {
         ...config.crossAgent,

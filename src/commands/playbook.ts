@@ -1,6 +1,6 @@
 import { loadConfig } from "../config.js";
 import { loadMergedPlaybook, addBullet, deprecateBullet, savePlaybook, findBullet, getActiveBullets, loadPlaybook } from "../playbook.js";
-import { error as logError, fileExists, now, resolveRepoDir, truncate, confirmDangerousAction, getCliName, printJson, printJsonResult, printJsonError } from "../utils.js";
+import { error as logError, fileExists, now, resolveRepoDir, truncate, confirmDangerousAction, getCliName, printJsonResult, printJsonError } from "../utils.js";
 import { withLock } from "../lock.js";
 import { getEffectiveScore, getDecayedCounts } from "../scoring.js";
 import { PlaybookBullet, Playbook, PlaybookSchema, PlaybookBulletSchema, ErrorCode } from "../types.js";
@@ -341,7 +341,7 @@ export async function playbookCommand(
     if (flags.json || (!flags.yaml && flags.json !== false)) {
       // Default to JSON if --json specified or neither specified
       if (flags.json) {
-        printJson(exportData);
+        printJsonResult(exportData);
       } else {
         // Default: YAML (more human-readable)
         console.log(yaml.stringify(exportData));
@@ -603,7 +603,7 @@ export async function playbookCommand(
       }
 
       if (flags.json) {
-        printJson(result);
+        printJsonResult(result);
       } else {
         console.log(chalk.bold("BATCH ADD RESULTS"));
         console.log("");
@@ -639,8 +639,16 @@ export async function playbookCommand(
     // Single rule add (existing behavior)
     const content = args[0];
     if (!content) {
-      logError("Content required for add");
-      throw new Error("Content required for add");
+      if (flags.json) {
+        printJsonError("Content required for add", {
+          code: ErrorCode.MISSING_REQUIRED,
+          details: { missing: "content", usage: "cm playbook add <content>" }
+        });
+      } else {
+        logError("Content required for add");
+      }
+      process.exitCode = 1;
+      return;
     }
 
     await withLock(config.playbookPath, async () => {
@@ -656,16 +664,16 @@ export async function playbookCommand(
         // In strict mode, fail on warnings
         if (flags.strict && hasIssues(validation)) {
           if (flags.json) {
-            printJson({
-              success: false,
-              error: "Validation failed in strict mode",
-              validation,
+            printJsonError("Validation failed in strict mode", {
+              code: ErrorCode.VALIDATION_FAILED,
+              details: { validation }
             });
           } else {
             console.log(chalk.red("Validation failed (--strict mode):"));
             console.log(formatValidationResult(validation));
           }
-          throw new Error("Validation failed in strict mode");
+          process.exitCode = 1;
+          return;
         }
       }
 
