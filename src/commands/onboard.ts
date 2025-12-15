@@ -642,7 +642,12 @@ export async function onboardCommand(
         : "SAMPLED SESSIONS FOR ANALYSIS";
       console.log(chalk.bold(title));
       if (options.fillGaps) {
-        console.log(chalk.dim(`(prioritized for: ${gapAnalysis.gaps.critical.concat(gapAnalysis.gaps.underrepresented).slice(0, 3).join(", ")})`));
+        const priorityCategories = gapAnalysis.gaps.critical.concat(gapAnalysis.gaps.underrepresented).slice(0, 3);
+        if (priorityCategories.length > 0) {
+          console.log(chalk.dim(`(prioritized for: ${priorityCategories.join(", ")})`));
+        } else {
+          console.log(chalk.dim("(no gaps to fill - using diverse sampling)"));
+        }
       }
       if (filtered > 0) {
         console.log(chalk.dim(`(${filtered} already-processed sessions filtered out)`));
