@@ -24,6 +24,7 @@ import { whyCommand } from "./commands/why.js";
 import { undoCommand } from "./commands/undo.js";
 import { privacyCommand } from "./commands/privacy.js";
 import { similarCommand } from "./commands/similar.js";
+import { onboardCommand } from "./commands/onboard.js";
 
 const program = new Command();
 const toInt = (value: string) => parseInt(value, 10);
@@ -311,6 +312,18 @@ program.command("outcome-apply")
   .option("--limit <n>", "Max outcomes to load (default 50)", toInt)
   .option("--json", "Output JSON")
   .action(async (opts: any) => await applyOutcomeLogCommand(opts));
+
+// --- Onboard (agent-native guided onboarding) ---
+program.command("onboard")
+  .description("Agent-native guided onboarding (no API costs)")
+  .option("--status", "Check onboarding status")
+  .option("--sample", "Sample diverse sessions for analysis")
+  .option("--read <path>", "Read/export a session for analysis")
+  .option("--prompt", "Show extraction instructions for agent")
+  .option("--guided", "Show full guided onboarding flow")
+  .option("--limit <n>", "Number of sessions to sample", toInt)
+  .option("--json", "Output JSON")
+  .action(async (opts: any) => await onboardCommand(opts));
 
 /**
  * Detect if --json flag is present in argv (before commander parses).
