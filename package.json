@@ -1,6 +1,6 @@
 {
   "name": "cass-memory",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Universal memory system for AI coding agents - implements ACE framework",
   "author": "cass-memory contributors",
