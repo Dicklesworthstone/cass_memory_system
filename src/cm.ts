@@ -314,7 +314,7 @@ program.command("outcome")
   .option("--sentiment <sentiment>", "positive|negative|neutral")
   .option("--text <text>", "Session notes to auto-detect sentiment")
   .option("--json", "Output JSON")
-  .action(async (status: string, rules: string, opts: any) => await outcomeCommand(undefined, { ...opts, status, rules }));
+  .action(async (status: string, rules: string, opts: any) => await outcomeCommand({ ...opts, status, rules }));
 
 // --- Outcome Apply ---
 program.command("outcome-apply")

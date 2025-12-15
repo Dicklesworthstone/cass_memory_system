@@ -5,6 +5,7 @@ import {
   applyOutcomeFeedback,
   scoreImplicitFeedback,
   loadOutcomes,
+  detectSentiment,
   OutcomeInput,
   OutcomeStatus,
   Sentiment
@@ -13,40 +14,9 @@ import { error as logError, printJsonResult } from "../utils.js";
 import { icon } from "../output.js";
 
 // Re-export for backward compat if needed
-export { scoreImplicitFeedback } from "../outcome.js";
-
-// --- Helpers duplicate in outcome.ts now, removing local definitions ---
-
-const POSITIVE_PATTERNS = [
-  /that worked/i,
-  /perfect/i,
-  /thanks/i,
-  /great/i,
-  /exactly what i needed/i,
-  /solved it/i,
-];
-
-const NEGATIVE_PATTERNS = [
-  /that('s| is) wrong/i,
-  /doesn't work/i,
-  /broke/i,
-  /not what i wanted/i,
-  /try again/i,
-  /undo/i,
-];
-
-// Keep detection logic exposed if useful, or rely on flags
-function detectSentiment(text?: string): Sentiment {
-  if (!text) return "neutral";
-  const positiveCount = POSITIVE_PATTERNS.filter((p) => p.test(text)).length;
-  const negativeCount = NEGATIVE_PATTERNS.filter((p) => p.test(text)).length;
-  if (positiveCount > negativeCount) return "positive";
-  if (negativeCount > positiveCount) return "negative";
-  return "neutral";
-}
+export { scoreImplicitFeedback, detectSentiment } from "../outcome.js";
 
 export async function outcomeCommand(
-  _task: string | undefined,
   flags: {
     session?: string;
     status?: string;

@@ -13,6 +13,35 @@ import { withLock } from "./lock.js";
 export type OutcomeStatus = "success" | "failure" | "partial" | "mixed"; // added mixed to match CLI
 export type Sentiment = "positive" | "negative" | "neutral";
 
+// --- Sentiment Detection ---
+
+const POSITIVE_PATTERNS = [
+  /that worked/i,
+  /perfect/i,
+  /thanks/i,
+  /great/i,
+  /exactly what i needed/i,
+  /solved it/i,
+];
+
+const NEGATIVE_PATTERNS = [
+  /that('s| is) wrong/i,
+  /doesn't work/i,
+  /broke/i,
+  /not what i wanted/i,
+  /try again/i,
+  /undo/i,
+];
+
+export function detectSentiment(text?: string): Sentiment {
+  if (!text) return "neutral";
+  const positiveCount = POSITIVE_PATTERNS.filter((p) => p.test(text)).length;
+  const negativeCount = NEGATIVE_PATTERNS.filter((p) => p.test(text)).length;
+  if (positiveCount > negativeCount) return "positive";
+  if (negativeCount > positiveCount) return "negative";
+  return "neutral";
+}
+
 export interface OutcomeInput {
   sessionId: string;
   outcome: OutcomeStatus;
