@@ -9,7 +9,7 @@
 import { loadConfig } from "../config.js";
 import { loadPlaybook, savePlaybook, findBullet, removeFromBlockedLog } from "../playbook.js";
 import { ErrorCode, PlaybookBullet, Config, FeedbackEvent } from "../types.js";
-import { now, expandPath, getCliName, truncate, confirmDangerousAction, resolveRepoDir, fileExists, printJson, printJsonResult, printJsonError } from "../utils.js";
+import { now, expandPath, getCliName, truncate, confirmDangerousAction, resolveRepoDir, fileExists, printJsonResult, printJsonError } from "../utils.js";
 import { withLock } from "../lock.js";
 import chalk from "chalk";
 import { icon } from "../output.js";
@@ -26,7 +26,6 @@ export interface UndoFlags {
 }
 
 interface UndoResult {
-  success: boolean;
   bulletId: string;
   action: "un-deprecate" | "undo-feedback" | "hard-delete";
   path?: string;
@@ -321,7 +320,6 @@ export async function undoCommand(
       await savePlaybook(currentPlaybook, playbookPath);
 
       result = {
-        success: true,
         bulletId,
         action: "hard-delete",
         path: playbookPath,
@@ -350,7 +348,6 @@ export async function undoCommand(
       await savePlaybook(currentPlaybook, playbookPath);
 
       result = {
-        success: true,
         bulletId,
         action: "undo-feedback",
         before,
@@ -388,7 +385,6 @@ export async function undoCommand(
       await savePlaybook(currentPlaybook, playbookPath);
 
       result = {
-        success: true,
         bulletId,
         action: "un-deprecate",
         before,
@@ -402,8 +398,7 @@ export async function undoCommand(
     }
 
     if (flags.json) {
-      // Result already includes success: true
-      printJson(result);
+      printJsonResult(result);
     } else {
       printUndoResult(result, bullet);
     }
