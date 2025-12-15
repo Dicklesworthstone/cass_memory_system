@@ -3,3 +3,6 @@
 {"id":"cass_memory_system-gn8h","ts":"2025-12-07T21:50:16.054251Z","by":"jemanuel","reason":"batch delete"}
 {"id":"cass_memory_system-bxfx","ts":"2025-12-07T21:50:16.057369Z","by":"jemanuel","reason":"batch delete"}
 {"id":"cass_memory_system-js90","ts":"2025-12-07T21:50:16.061448Z","by":"jemanuel","reason":"batch delete"}
+{"id":"cass_memory_system-ta8h","ts":"2025-12-15T17:04:01.562738Z","by":"git-history-backfill","reason":"recovered from git history (pruned from manifest)"}
+{"id":"cass_memory_system-ck67","ts":"2025-12-15T17:04:01.568077Z","by":"git-history-backfill","reason":"recovered from git history (pruned from manifest)"}
+{"id":"cass_memory_system-mmsw","ts":"2025-12-15T17:04:01.572462Z","by":"git-history-backfill","reason":"recovered from git history (pruned from manifest)"}
