@@ -316,14 +316,30 @@ async function computeDoctorChecks(
   }
 
   // 3) LLM config (optional - system works without it via graceful degradation)
-  const hasApiKey = isLLMAvailable(config.provider) || !!config.apiKey;
+  const availableProviders = getAvailableProviders();
+  const hasAnyApiKey = availableProviders.length > 0 || !!config.apiKey;
+  const configuredProviderAvailable = isLLMAvailable(config.provider) || !!config.apiKey;
+
+  let llmMessage: string;
+  let llmStatus: CheckStatus = "warn";
+
+  if (hasAnyApiKey) {
+    llmStatus = "pass";
+    if (configuredProviderAvailable) {
+      llmMessage = `Provider: ${config.provider} (ready)`;
+    } else {
+      llmMessage = `Provider: ${config.provider} not configured, but ${availableProviders.join(", ")} available (will auto-fallback)`;
+    }
+  } else {
+    llmMessage = `No API keys set (optional - set ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_GENERATIVE_AI_API_KEY for AI-powered reflection)`;
+  }
+
   checks.push({
     category: "LLM Configuration",
     item: "Provider",
-    status: hasApiKey ? "pass" : "warn",
-    message: hasApiKey
-      ? `Provider: ${config.provider}, API Key: Set`
-      : `Provider: ${config.provider}, API Key: Not set (optional - needed for AI-powered reflection)`,
+    status: llmStatus,
+    message: llmMessage,
+    details: { configuredProvider: config.provider, availableProviders },
   });
 
   // 4) Repo-level .cass/ structure (if in a git repo)
