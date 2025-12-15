@@ -26,7 +26,7 @@ import {
   getGapSearchQueries,
   scoreSessionForGaps,
   detectCategories,
-  RULE_CATEGORIES as GAP_RULE_CATEGORIES,
+  RULE_CATEGORIES,
   type PlaybookGapAnalysis,
   type RuleCategory,
 } from "../gap-analysis.js";
@@ -68,18 +68,7 @@ interface OnboardJsonOutput {
   gapAnalysis?: PlaybookGapAnalysis;
 }
 
-const RULE_CATEGORIES = [
-  "debugging",
-  "testing",
-  "architecture",
-  "workflow",
-  "documentation",
-  "integration",
-  "collaboration",
-  "git",
-  "security",
-  "performance",
-];
+// RULE_CATEGORIES is imported from gap-analysis.ts (single source of truth)
 
 const EXAMPLE_RULES = [
   { rule: "Before implementing a fix, search the codebase to verify the issue still exists", category: "debugging" },
@@ -95,25 +84,16 @@ async function getOnboardStatus(): Promise<OnboardStatus> {
   const playbook = await loadMergedPlaybook(config);
   const availability = await handleCassUnavailable({ cassPath: config.cassPath });
 
-  let totalConversations = 0;
-  let totalMessages = 0;
-
-  if (availability.canContinue && availability.fallbackMode === "none") {
-    try {
-      // Get cass stats by searching with a broad query
-      const hits = await cassSearch("*", { limit: 1 }, availability.resolvedCassPath || "cass");
-      // We can't get exact stats from search, so estimate based on doctor info
-      // This is a simplified approach
-      totalConversations = 100; // Placeholder - would need cass stats command
-      totalMessages = 1000;
-    } catch {
-      // Ignore errors
-    }
-  }
+  // We don't have a reliable way to get conversation counts from cass
+  // so we leave these as 0 (unknown) rather than using fake placeholder values
+  const totalConversations = 0;
+  const totalMessages = 0;
 
   const playbookRules = playbook.bullets.filter(b => b.state !== "retired" && !b.deprecated).length;
-  const onboardingRatio = totalConversations > 0 ? (playbookRules / totalConversations) * 100 : 0;
-  const needsOnboarding = playbookRules < 20 && totalConversations > 10;
+  // Ratio is meaningless without real conversation counts
+  const onboardingRatio = 0;
+  // Base needs assessment on playbook size alone since we can't count conversations
+  const needsOnboarding = playbookRules < 20;
 
   let recommendation: string;
   if (!availability.canContinue || availability.fallbackMode === "playbook-only") {
@@ -343,11 +323,22 @@ ${EXAMPLE_RULES.map(e => `- [${e.category}] "${e.rule}"`).join("\n")}
 
 ## After Analysis
 
-For each rule you identify, add it using:
+**Recommended (batch add):** Create a JSON array and add all rules at once:
 
 \`\`\`bash
-cm playbook add "Your rule content" --category "category"
+# Create rules.json with extracted rules:
+# [{"content": "Rule 1...", "category": "debugging"}, {"content": "Rule 2...", "category": "testing"}]
+
+cm playbook add --file rules.json --check
 \`\`\`
+
+**Alternative (single add):** Add rules one at a time:
+
+\`\`\`bash
+cm playbook add "Your rule content" --category "category" --check
+\`\`\`
+
+The \`--check\` flag validates rules before adding (similarity, quality, category match).
 `.trim();
 }
 
@@ -546,7 +537,7 @@ export async function onboardCommand(
 
       // Show category breakdown
       console.log(chalk.bold("CATEGORY BREAKDOWN:"));
-      for (const cat of GAP_RULE_CATEGORIES) {
+      for (const cat of RULE_CATEGORIES) {
         const analysis = gapAnalysis.byCategory[cat];
         const bar = "█".repeat(Math.min(20, analysis.count)) + "░".repeat(Math.max(0, 20 - analysis.count));
         const statusColor = analysis.status === "critical" ? chalk.red
