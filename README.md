@@ -364,6 +364,280 @@ stdout = data only, stderr = diagnostics. Exit 0 = success.
 
 ---
 
+## 🎓 Agent-Native Onboarding
+
+Building a playbook from scratch can be daunting—but you don't need to spend money on LLM API calls to do it. The **agent-native onboarding** system leverages the AI coding agent you're already paying for (via Claude Max, ChatGPT Pro, Cursor Pro, etc.) to analyze historical sessions and extract rules.
+
+### The Zero-Cost Approach
+
+Traditional approaches to building a playbook might suggest using external LLM APIs to analyze sessions and extract rules. But if you're already running an AI coding agent, **that agent can do the analysis work itself**—at no additional cost.
+
+```
+Traditional approach:
+  Sessions → External LLM API → Rules → $ cost per session
+
+Agent-native approach:
+  Sessions → Your Agent (already paid for) → Rules → $0 additional cost
+```
+
+The `cm onboard` command guides your agent through analyzing historical sessions and extracting valuable rules.
+
+### Quick Start
+
+```bash
+# 1. Check status and see recommendations
+cm onboard --status
+
+# 2. Get sessions to analyze (filtered by gaps in your playbook)
+cm onboard --sample --fill-gaps
+
+# 3. Read a session with rich context
+cm onboard --read /path/to/session.jsonl --template
+
+# 4. Add extracted rules (one at a time or batch)
+cm playbook add "Your rule content" --category "debugging"
+# Or batch add:
+cm playbook add --file rules.json
+
+# 5. Mark session as processed
+cm onboard --mark-done /path/to/session.jsonl
+```
+
+### Gap Analysis
+
+Not all playbook categories are equally represented. The gap analysis system identifies **underrepresented categories** so you can prioritize which sessions to analyze.
+
+**Categories tracked:**
+- `debugging` — Error resolution, bug fixing, tracing
+- `testing` — Unit tests, mocks, assertions, coverage
+- `architecture` — Design patterns, module structure, abstractions
+- `workflow` — Task management, CI/CD, deployment
+- `documentation` — Comments, READMEs, API docs
+- `integration` — APIs, HTTP, JSON parsing, endpoints
+- `collaboration` — Code review, PRs, team coordination
+- `git` — Version control, branching, merging
+- `security` — Auth, encryption, vulnerability prevention
+- `performance` — Optimization, caching, profiling
+
+**Category status thresholds:**
+| Status | Rule Count | Priority |
+|--------|------------|----------|
+| `critical` | 0 rules | High |
+| `underrepresented` | 1-2 rules | Medium |
+| `adequate` | 3-10 rules | Low |
+| `well-covered` | 11+ rules | None |
+
+```bash
+# View detailed gap analysis
+cm onboard --gaps
+
+# Sample sessions prioritized for gap-filling
+cm onboard --sample --fill-gaps
+```
+
+### Progress Tracking
+
+Onboarding progress persists across sessions, so agents can resume where they left off even after context window limits are reached.
+
+**State stored at:** `~/.cass-memory/onboarding-state.json`
+
+```json
+{
+  "version": 1,
+  "startedAt": "2025-01-15T10:30:00Z",
+  "lastUpdatedAt": "2025-01-15T14:45:00Z",
+  "processedSessions": [
+    {
+      "path": "/Users/x/.claude/sessions/session-001.jsonl",
+      "processedAt": "2025-01-15T11:00:00Z",
+      "rulesExtracted": 3
+    }
+  ],
+  "stats": {
+    "totalSessionsProcessed": 5,
+    "totalRulesExtracted": 12
+  }
+}
+```
+
+Commands for progress management:
+```bash
+# Check progress
+cm onboard --status
+
+# Mark a session as done (even if no rules extracted)
+cm onboard --mark-done /path/to/session.jsonl
+
+# Reset progress to start fresh
+cm onboard --reset
+```
+
+### Batch Rule Addition
+
+After analyzing a session, add multiple rules at once using the batch add feature:
+
+```bash
+# Create a JSON file with rules
+cat > rules.json << 'EOF'
+[
+  {"content": "Always run tests before committing", "category": "testing"},
+  {"content": "Check token expiry before auth debugging", "category": "debugging"},
+  {"content": "AVOID: Mocking entire modules in tests", "category": "testing"}
+]
+EOF
+
+# Add all rules at once
+cm playbook add --file rules.json
+
+# Or pipe from another command
+echo '[{"content": "Rule from stdin", "category": "workflow"}]' | cm playbook add --file -
+
+# Track which session the rules came from
+cm playbook add --file rules.json --session /path/to/session.jsonl
+```
+
+The `--session` flag automatically updates onboarding progress, crediting the session with the number of rules extracted.
+
+### Template Output for Rich Context
+
+The `--template` flag provides agents with rich contextual information to guide extraction:
+
+```bash
+cm onboard --read /path/to/session.jsonl --template --json
+```
+
+**Template output includes:**
+
+```json
+{
+  "metadata": {
+    "path": "/path/to/session.jsonl",
+    "workspace": "/Users/x/project",
+    "messageCount": 127,
+    "topicHints": ["debugging", "testing", "git"]
+  },
+  "context": {
+    "relatedRules": [
+      {"id": "b-abc123", "content": "...", "similarity": 0.72}
+    ],
+    "playbookGaps": {
+      "critical": ["security", "performance"],
+      "underrepresented": ["collaboration"]
+    },
+    "suggestedFocus": "This session may contain security patterns - you have NO rules in this area!"
+  },
+  "extractionFormat": {
+    "schema": {"content": "string", "category": "string"},
+    "categories": ["debugging", "testing", "architecture", ...],
+    "examples": [...]
+  },
+  "sessionContent": "..."
+}
+```
+
+**Template features:**
+- **Topic hints**: Categories detected from session content using keyword matching
+- **Related rules**: Existing playbook rules similar to the session content (via semantic search if enabled)
+- **Playbook gaps**: Categories with missing or few rules
+- **Suggested focus**: AI-generated guidance on what to prioritize based on gaps and detected topics
+- **Examples**: Sample rules showing proper format for each category
+
+### Gap-Targeted Sampling Algorithm
+
+When using `--fill-gaps`, the sampling algorithm prioritizes sessions likely to contain patterns for underrepresented categories:
+
+```
+1. Analyze playbook → Identify critical/underrepresented categories
+2. Generate search queries from category keywords:
+   - "security" → "security auth token"
+   - "performance" → "performance optimize cache"
+3. Search cass with gap-targeted queries
+4. Score each session against gaps:
+   - Session matches critical category: +3 points
+   - Session matches underrepresented category: +2 points
+   - Session matches adequate category: +1 point
+5. Sort sessions by gap score (highest first)
+6. Filter out already-processed sessions
+7. Return top N sessions
+```
+
+**Category keyword detection** uses a lightweight approach (no external APIs required):
+
+```typescript
+// Example: detecting categories from text
+const CATEGORY_KEYWORDS = {
+  debugging: ["debug", "error", "fix", "bug", "trace", "stack", ...],
+  testing: ["test", "mock", "assert", "expect", "jest", "vitest", ...],
+  security: ["security", "auth", "token", "encrypt", "permission", ...],
+  // ... more categories
+};
+
+// Count keyword matches → category with most matches wins
+```
+
+### Targeted Sampling Options
+
+Filter sessions by various criteria to focus on specific areas:
+
+```bash
+# Filter by workspace/project
+cm onboard --sample --workspace /Users/x/my-project
+
+# Filter by agent
+cm onboard --sample --agent claude
+cm onboard --sample --agent cursor
+
+# Filter by recency
+cm onboard --sample --days 30
+
+# Combine filters
+cm onboard --sample --agent claude --days 14 --workspace /Users/x/api-project
+
+# Include already-processed sessions (for re-analysis)
+cm onboard --sample --include-processed
+
+# Adjust sample size
+cm onboard --sample --limit 20
+```
+
+### Onboarding Workflow for Agents
+
+Recommended protocol for AI agents doing onboarding:
+
+```markdown
+## Onboarding Protocol
+
+### Phase 1: Assessment
+1. Run `cm onboard --status --json` to check current progress
+2. Run `cm onboard --gaps --json` to see category distribution
+3. Decide target: ~20 rules across diverse categories for a good initial playbook
+
+### Phase 2: Session Analysis Loop
+For each session until target reached:
+1. `cm onboard --sample --fill-gaps --json` → get prioritized sessions
+2. `cm onboard --read <path> --template --json` → get session with context
+3. Analyze session content, identify 2-5 reusable patterns
+4. Format as rules following extraction guidelines
+5. `cm playbook add --file rules.json --session <path>` → add rules
+6. Repeat with next session
+
+### Phase 3: Verification
+1. `cm onboard --status` → verify progress
+2. `cm onboard --gaps` → check remaining gaps
+3. `cm stats --json` → verify playbook health
+```
+
+### Why Agent-Native Onboarding?
+
+1. **Zero additional cost**: Uses the AI agent you're already paying for
+2. **Better analysis**: Your agent understands your codebase context
+3. **Resumable**: Progress persists across sessions
+4. **Gap-aware**: Automatically prioritizes underrepresented categories
+5. **Batch-friendly**: Add multiple rules efficiently
+6. **Self-documenting**: Template output guides extraction
+
+---
+
 ## 📦 Installation
 
 ### One-Liner (Recommended)
