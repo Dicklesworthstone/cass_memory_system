@@ -1,8 +1,8 @@
 import { loadConfig } from "../config.js";
 import { loadPlaybook, savePlaybook, findBullet } from "../playbook.js";
 import { getEffectiveScore, calculateMaturityState } from "../scoring.js";
-import { now, error as logError, expandPath, resolveRepoDir, printJsonResult } from "../utils.js";
-import { HarmfulReason, HarmfulReasonEnum, FeedbackEvent } from "../types.js";
+import { now, error as logError, expandPath, resolveRepoDir, printJsonResult, printJsonError } from "../utils.js";
+import { HarmfulReason, HarmfulReasonEnum, FeedbackEvent, ErrorCode } from "../types.js";
 import { withLock } from "../lock.js";
 import chalk from "chalk";
 import { icon } from "../output.js";
@@ -120,7 +120,16 @@ export async function markCommand(
       console.log(`  Effective Score: ${result.score.toFixed(2)}`);
     }
   } catch (err: any) {
-    logError(err?.message || String(err));
-    process.exit(1);
+    const message = err?.message || String(err);
+    if (flags.json) {
+      // Determine appropriate error code based on error message
+      const code = message.includes("not found") ? ErrorCode.BULLET_NOT_FOUND
+        : message.includes("Must specify") ? ErrorCode.MISSING_REQUIRED
+        : ErrorCode.VALIDATION_FAILED;
+      printJsonError(message, { code, details: { bulletId } });
+    } else {
+      logError(message);
+    }
+    process.exitCode = 1;
   }
 }

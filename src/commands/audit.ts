@@ -4,7 +4,7 @@ import { scanSessionsForViolations } from "../audit.js";
 import { AuditResult } from "../types.js";
 import { cassTimeline } from "../cass.js";
 import chalk from "chalk";
-import { error as logError, printJson, printJsonResult } from "../utils.js";
+import { error as logError, printJsonError, printJsonResult } from "../utils.js";
 import { ErrorCode } from "../types.js";
 
 export async function auditCommand(flags: { days?: number; json?: boolean }) {
@@ -13,10 +13,11 @@ export async function auditCommand(flags: { days?: number; json?: boolean }) {
     if (!config.apiKey) {
       const message = "Audit requires LLM access (missing API key). Set ANTHROPIC_API_KEY or OPENAI_API_KEY, or run with a provider configured in config.";
       if (flags.json) {
-        printJson({ success: false, error: message, code: ErrorCode.MISSING_REQUIRED });
+        printJsonError(message, { code: ErrorCode.MISSING_REQUIRED });
       } else {
-        console.warn(message);
+        logError(message);
       }
+      process.exitCode = 1;
       return;
     }
 
@@ -84,13 +85,14 @@ export async function auditCommand(flags: { days?: number; json?: boolean }) {
         console.log("");
       });
     }
-  } catch (err: any) {
-    if (flags.json) {
-      printJson({ success: false, error: err.message, code: ErrorCode.AUDIT_FAILED });
-    } else {
-      logError(`Audit failed: ${err.message}`);
-    }
-    // Don't kill the process - let the caller handle the error or let it bubble up
-    throw err;
-  }
+	  } catch (err: any) {
+	    const message = err?.message || String(err);
+	    if (flags.json) {
+	      printJsonError(message, { code: ErrorCode.AUDIT_FAILED });
+	    } else {
+	      logError(`Audit failed: ${message}`);
+	    }
+	    process.exitCode = 1;
+	    return;
+	  }
 }

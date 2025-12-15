@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 import { Command } from "commander";
 import chalk from "chalk";
-import { getCliName, getVersion } from "./utils.js";
+import { getCliName, getVersion, printJsonError } from "./utils.js";
+import { ErrorCode } from "./types.js";
 import { initCommand } from "./commands/init.js";
 import { contextCommand } from "./commands/context.js";
 import { markCommand } from "./commands/mark.js";
@@ -103,8 +104,16 @@ playbook.command("add")
   .action(async (content: string | undefined, opts: any) => {
     // If --file is provided, content is optional
     if (!opts.file && !content) {
-      console.error("Error: content argument required unless using --file");
-      process.exit(1);
+      if (opts.json) {
+        printJsonError("Content argument required unless using --file", {
+          code: ErrorCode.MISSING_REQUIRED,
+          details: { missing: "content", usage: "cm playbook add <content> [--file <path>]" },
+        });
+      } else {
+        console.error("Error: content argument required unless using --file");
+      }
+      process.exitCode = 1;
+      return;
     }
     await playbookCommand("add", content ? [content] : [], opts);
   });
@@ -426,13 +435,7 @@ function handleError(error: unknown): never {
 
   if (hasJsonFlag()) {
     // JSON mode: structured error object to stdout for parseability
-    console.log(JSON.stringify({
-      success: false,
-      error: {
-        message,
-        code: "CLI_ERROR",
-      },
-    }));
+    printJsonError(message, { code: ErrorCode.INTERNAL_ERROR });
   } else {
     // Human mode: colored error to stderr
     console.error(`${chalk.red(`${cliName}: error:`)} ${message}`);

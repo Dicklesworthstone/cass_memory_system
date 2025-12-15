@@ -408,25 +408,18 @@ describe("E2E: CLI playbook command", () => {
         ]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
-        // Mock process.exit to prevent test from exiting
-        const originalExit = process.exit;
-        let exitCode: number | undefined;
-        process.exit = ((code?: number) => {
-          exitCode = code;
-          throw new Error(`process.exit(${code})`);
-        }) as typeof process.exit;
+        // Reset exitCode before test
+        process.exitCode = undefined;
 
         const capture = captureConsole();
         try {
           await playbookCommand("remove", ["to-delete"], { hard: true, json: true });
-        } catch (e: any) {
-          // Expected - process.exit was called
         } finally {
           capture.restore();
-          process.exit = originalExit;
         }
 
-        expect(exitCode).toBe(1);
+        expect(process.exitCode).toBe(1);
+        process.exitCode = undefined; // Clean up
         const output = capture.logs.join("\n");
         const result = JSON.parse(output);
         expect(result.success).toBe(false);
@@ -478,26 +471,17 @@ describe("E2E: CLI playbook command", () => {
         ]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
-        // Mock process.exit to prevent test from exiting
-        const originalExit = process.exit;
-        let exitCode: number | undefined;
-        process.exit = ((code?: number) => {
-          exitCode = code;
-          throw new Error(`process.exit(${code})`);
-        }) as typeof process.exit;
-
+        process.exitCode = undefined;
         const capture = captureConsole();
         try {
           await playbookCommand("remove", ["nonexistent-id"], {});
-        } catch (e: any) {
-          // Expected - process.exit was called
         } finally {
           capture.restore();
-          process.exit = originalExit;
         }
 
-        expect(exitCode).toBe(1);
+        expect(process.exitCode).toBe(1);
         expect(capture.errors.some(e => e.includes("not found"))).toBe(true);
+        process.exitCode = undefined;
       });
     });
 
@@ -686,29 +670,22 @@ describe("E2E: CLI playbook command", () => {
         ]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
-        const originalExit = process.exit;
-        let exitCode: number | undefined;
-        process.exit = ((code?: number) => {
-          exitCode = code;
-          throw new Error(`process.exit(${code})`);
-        }) as typeof process.exit;
-
+        process.exitCode = undefined;
         const capture = captureConsole();
         try {
           await playbookCommand("get", ["auth"], { json: true });
-        } catch (e: any) {
-          // Expected
         } finally {
           capture.restore();
-          process.exit = originalExit;
         }
 
+        expect(process.exitCode).toBe(1);
         const output = capture.logs.join("\n");
         const result = JSON.parse(output);
 
         expect(result.success).toBe(false);
-        expect(result.suggestions).toBeDefined();
-        expect(result.suggestions.length).toBeGreaterThan(0);
+        expect(result.details?.suggestions).toBeDefined();
+        expect(result.details.suggestions.length).toBeGreaterThan(0);
+        process.exitCode = undefined;
       });
     });
   });
@@ -1000,28 +977,20 @@ describe("E2E: CLI playbook command", () => {
         const playbook = createTestPlaybook([]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
-        const originalExit = process.exit;
-        let exitCode: number | undefined;
-        process.exit = ((code?: number) => {
-          exitCode = code;
-          throw new Error(`process.exit(${code})`);
-        }) as typeof process.exit;
-
+        process.exitCode = undefined;
         const capture = captureConsole();
         try {
           await playbookCommand("import", ["/nonexistent/file.json"], { json: true });
-        } catch (e: any) {
-          // Expected
         } finally {
           capture.restore();
-          process.exit = originalExit;
         }
 
-        expect(exitCode).toBe(1);
+        expect(process.exitCode).toBe(1);
         const output = capture.logs.join("\n");
         const result = JSON.parse(output);
         expect(result.success).toBe(false);
         expect(result.error).toContain("not found");
+        process.exitCode = undefined;
       });
     });
   });

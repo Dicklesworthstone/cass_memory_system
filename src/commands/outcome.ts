@@ -10,7 +10,8 @@ import {
   OutcomeStatus,
   Sentiment
 } from "../outcome.js";
-import { error as logError, printJsonResult } from "../utils.js";
+import { error as logError, printJsonResult, printJsonError } from "../utils.js";
+import { ErrorCode } from "../types.js";
 import { icon } from "../output.js";
 
 // Re-export for backward compat if needed
@@ -30,18 +31,42 @@ export async function outcomeCommand(
   }
 ) {
   if (!flags.status) {
-    console.error(chalk.red("Outcome status is required (usage: cm outcome <status> <rules>)"));
-    process.exit(1);
+    if (flags.json) {
+      printJsonError("Outcome status is required", {
+        code: ErrorCode.MISSING_REQUIRED,
+        details: { missing: "status", usage: "cm outcome <status> <rules>" }
+      });
+    } else {
+      console.error(chalk.red("Outcome status is required (usage: cm outcome <status> <rules>)"));
+    }
+    process.exitCode = 1;
+    return;
   }
   if (!flags.rules) {
-    console.error(chalk.red("At least one rule id is required (usage: cm outcome <status> <rules>)"));
-    process.exit(1);
+    if (flags.json) {
+      printJsonError("At least one rule id is required", {
+        code: ErrorCode.MISSING_REQUIRED,
+        details: { missing: "rules", usage: "cm outcome <status> <rules>" }
+      });
+    } else {
+      console.error(chalk.red("At least one rule id is required (usage: cm outcome <status> <rules>)"));
+    }
+    process.exitCode = 1;
+    return;
   }
 
   const status = flags.status as OutcomeStatus;
   if (!["success", "failure", "mixed"].includes(status)) {
-    console.error(chalk.red("Status must be one of success|failure|mixed"));
-    process.exit(1);
+    if (flags.json) {
+      printJsonError("Status must be one of success|failure|mixed", {
+        code: ErrorCode.INVALID_INPUT,
+        details: { field: "status", received: flags.status, valid: ["success", "failure", "mixed"] }
+      });
+    } else {
+      console.error(chalk.red("Status must be one of success|failure|mixed"));
+    }
+    process.exitCode = 1;
+    return;
   }
 
   const sentiment = flags.sentiment ? (flags.sentiment as Sentiment) : detectSentiment(flags.text);

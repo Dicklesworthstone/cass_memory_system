@@ -383,24 +383,18 @@ describe("playbook import command", () => {
       await writeFile(path.join(dir, ".cass-memory", "config.json"), JSON.stringify(config, null, 2));
       process.env.HOME = dir;
 
-      const originalExit = process.exit;
-      let exitCode: number | undefined;
-      process.exit = ((code?: number) => {
-        exitCode = code;
-        throw new Error(`process.exit(${code})`);
-      }) as typeof process.exit;
+      // Reset exitCode before test
+      process.exitCode = undefined;
 
       const capture = captureConsole();
       try {
         await playbookCommand("import", ["/nonexistent/file.yaml"], { json: true });
-      } catch {
-        // Expected
       } finally {
         capture.restore();
-        process.exit = originalExit;
       }
 
-      expect(exitCode).toBe(1);
+      expect(process.exitCode).toBe(1);
+      process.exitCode = undefined; // Clean up
       const result = JSON.parse(capture.logs.join("\n"));
       expect(result.success).toBe(false);
       expect(result.error).toContain("not found");
@@ -421,24 +415,18 @@ describe("playbook import command", () => {
       const importFile = path.join(dir, "bad.yaml");
       await writeFile(importFile, "bullets:\n  - id: missing-closing-quote\n    content: 'unclosed string");
 
-      const originalExit = process.exit;
-      let exitCode: number | undefined;
-      process.exit = ((code?: number) => {
-        exitCode = code;
-        throw new Error(`process.exit(${code})`);
-      }) as typeof process.exit;
+      // Reset exitCode before test
+      process.exitCode = undefined;
 
       const capture = captureConsole();
       try {
         await playbookCommand("import", [importFile], { json: true });
-      } catch {
-        // Expected
       } finally {
         capture.restore();
-        process.exit = originalExit;
       }
 
-      expect(exitCode).toBe(1);
+      expect(process.exitCode).toBe(1);
+      process.exitCode = undefined; // Clean up
       const result = JSON.parse(capture.logs.join("\n"));
       expect(result.success).toBe(false);
       expect(result.error).toContain("Parse error");

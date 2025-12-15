@@ -4,7 +4,7 @@ import { loadMergedPlaybook, getActiveBullets } from "../playbook.js";
 import { findSimilarBulletsSemantic, getSemanticStatus, formatSemanticModeMessage } from "../semantic.js";
 import { getEffectiveScore } from "../scoring.js";
 import { error as logError, jaccardSimilarity, truncate, getCliName, printJson, printJsonError } from "../utils.js";
-import { PlaybookBullet } from "../types.js";
+import { ErrorCode, PlaybookBullet } from "../types.js";
 import { getOutputStyle } from "../output.js";
 
 export type SimilarScope = "global" | "workspace" | "all";
@@ -174,11 +174,18 @@ export async function similarCommand(query: string, flags: SimilarFlags): Promis
     const cli = getCliName();
     console.log(`TIP: Use '${cli} playbook get <id>' to see full details`);
   } catch (err: any) {
+    const message = err?.message || String(err);
     if (flags.json) {
-      printJsonError(err);
+      const code =
+        message.includes("Query is required") ||
+        message.includes("--threshold must be between") ||
+        message.includes("Invalid --scope")
+          ? ErrorCode.INVALID_INPUT
+          : ErrorCode.INTERNAL_ERROR;
+      printJsonError(message, { code, details: { query } });
     } else {
-      logError(err?.message || String(err));
+      logError(message);
     }
-    process.exit(1);
+    process.exitCode = 1;
   }
 }

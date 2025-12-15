@@ -2,7 +2,8 @@ import { loadConfig } from "../config.js";
 import { loadPlaybook, savePlaybook, findBullet, addBullet } from "../playbook.js";
 import { appendBlockedLog } from "../playbook.js";
 import path from "node:path";
-import { fileExists, now, error as logError, resolveRepoDir, expandPath, printJsonResult } from "../utils.js";
+import { fileExists, now, error as logError, resolveRepoDir, expandPath, printJsonResult, printJsonError } from "../utils.js";
+import { ErrorCode } from "../types.js";
 import { withLock } from "../lock.js";
 import chalk from "chalk";
 import { icon } from "../output.js";
@@ -12,8 +13,16 @@ export async function forgetCommand(
   flags: { reason?: string; invert?: boolean; json?: boolean }
 ) {
   if (!flags.reason) {
-    logError("Reason required for forget");
-    process.exit(1);
+    if (flags.json) {
+      printJsonError("Reason required for forget", {
+        code: ErrorCode.MISSING_REQUIRED,
+        details: { missing: "reason", usage: "cm forget <bulletId> --reason <reason>" }
+      });
+    } else {
+      logError("Reason required for forget");
+    }
+    process.exitCode = 1;
+    return;
   }
 
   const config = await loadConfig();

@@ -8,8 +8,8 @@
  */
 import { loadConfig } from "../config.js";
 import { loadPlaybook, savePlaybook, findBullet, removeFromBlockedLog } from "../playbook.js";
-import { PlaybookBullet, Config, FeedbackEvent } from "../types.js";
-import { now, expandPath, getCliName, truncate, confirmDangerousAction, resolveRepoDir, fileExists, printJson, printJsonResult } from "../utils.js";
+import { ErrorCode, PlaybookBullet, Config, FeedbackEvent } from "../types.js";
+import { now, expandPath, getCliName, truncate, confirmDangerousAction, resolveRepoDir, fileExists, printJson, printJsonResult, printJsonError } from "../utils.js";
 import { withLock } from "../lock.js";
 import chalk from "chalk";
 import { icon } from "../output.js";
@@ -158,12 +158,16 @@ export async function undoCommand(
 
   if (!location) {
     if (flags.json) {
-      printJson({ success: false, error: `Bullet not found: ${bulletId}` });
+      printJsonError(`Bullet not found: ${bulletId}`, {
+        code: ErrorCode.BULLET_NOT_FOUND,
+        details: { bulletId }
+      });
     } else {
       console.error(chalk.red(`Error: Bullet not found: ${bulletId}`));
       console.log(chalk.gray(`Use '${cli} playbook list' to see available bullets.`));
     }
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
 
   const { playbook, path: playbookPath, location: loc } = location;
@@ -197,11 +201,15 @@ export async function undoCommand(
       } else if (flags.feedback) {
         if (!lastEvent) {
           if (flags.json) {
-            printJson({ success: false, error: `No feedback events to undo for bullet ${bulletId}` });
+            printJsonError(`No feedback events to undo for bullet ${bulletId}`, {
+              code: ErrorCode.VALIDATION_FAILED,
+              details: { bulletId, action: "undo-feedback" }
+            });
           } else {
             console.error(chalk.yellow(`No feedback events to undo for bullet ${bulletId}`));
           }
-          throw new Error("No feedback events to undo for this bullet.");
+          process.exitCode = 1;
+          return;
         }
         actionType = "undo-feedback";
         wouldChange = `Would remove last ${lastEvent.type} feedback from ${lastEvent.timestamp?.slice(0, 10) || "unknown"}`;
@@ -209,16 +217,16 @@ export async function undoCommand(
       } else {
         if (!bullet.deprecated) {
           if (flags.json) {
-            printJson({
-              success: false,
-              error: `Bullet ${bulletId} is not deprecated`,
-              hint: "Use --feedback to undo the last feedback event, or --hard to delete"
+            printJsonError(`Bullet ${bulletId} is not deprecated`, {
+              code: ErrorCode.VALIDATION_FAILED,
+              details: { bulletId, hint: "Use --feedback to undo the last feedback event, or --hard to delete" }
             });
           } else {
             console.error(chalk.yellow(`Bullet ${bulletId} is not deprecated.`));
             console.log(chalk.gray("Use --feedback to undo the last feedback event, or --hard to delete."));
           }
-          throw new Error("Bullet is not deprecated. Use --feedback to undo the last feedback event, or --hard to delete.");
+          process.exitCode = 1;
+          return;
         }
         actionType = "un-deprecate";
         wouldChange = "Bullet would be restored to active state (deprecated → active, maturity reset to candidate if needed)";
@@ -285,8 +293,17 @@ export async function undoCommand(
       });
 
       if (!confirmed) {
-        // Throw error to break out of lock safely
-        throw new Error("Confirmation required for --hard deletion. Use --yes to confirm in non-interactive mode.");
+        if (flags.json) {
+          printJsonError("Confirmation required for --hard deletion", {
+            code: ErrorCode.MISSING_REQUIRED,
+            details: { confirmPhrase: "DELETE", hint: "Re-run with --yes in non-interactive mode" }
+          });
+        } else {
+          console.error(chalk.red("Confirmation required for --hard deletion."));
+          console.log(chalk.gray("Re-run with --yes to confirm in non-interactive mode."));
+        }
+        process.exitCode = 1;
+        return;
       }
 
       // Hard delete - remove the bullet entirely
@@ -317,7 +334,16 @@ export async function undoCommand(
       const { before, removedEvent } = undoLastFeedback(bullet);
 
       if (!removedEvent) {
-        throw new Error(`No feedback events to undo for bullet ${bulletId}`);
+        if (flags.json) {
+          printJsonError(`No feedback events to undo for bullet ${bulletId}`, {
+            code: ErrorCode.VALIDATION_FAILED,
+            details: { bulletId, action: "undo-feedback" }
+          });
+        } else {
+          console.error(chalk.yellow(`No feedback events to undo for bullet ${bulletId}`));
+        }
+        process.exitCode = 1;
+        return;
       }
 
       await savePlaybook(currentPlaybook, playbookPath);
@@ -337,7 +363,17 @@ export async function undoCommand(
     } else {
       // Default: un-deprecate
       if (!bullet.deprecated) {
-        throw new Error(`Bullet ${bulletId} is not deprecated. Use --feedback to undo the last feedback event, or --hard to delete.`);
+        if (flags.json) {
+          printJsonError(`Bullet ${bulletId} is not deprecated`, {
+            code: ErrorCode.VALIDATION_FAILED,
+            details: { bulletId, hint: "Use --feedback to undo the last feedback event, or --hard to delete" }
+          });
+        } else {
+          console.error(chalk.yellow(`Bullet ${bulletId} is not deprecated.`));
+          console.log(chalk.gray("Use --feedback to undo the last feedback event, or --hard to delete."));
+        }
+        process.exitCode = 1;
+        return;
       }
 
       const before = undeprecateBullet(bullet);

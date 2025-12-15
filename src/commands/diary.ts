@@ -3,7 +3,8 @@
 
 import { loadConfig } from "../config.js";
 import { generateDiary } from "../diary.js";
-import { expandPath, error as logError, printJsonResult } from "../utils.js";
+import { expandPath, error as logError, printJsonResult, printJsonError } from "../utils.js";
+import { ErrorCode } from "../types.js";
 import { cassExport, cassAvailable } from "../cass.js";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -37,8 +38,16 @@ export async function diaryCommand(
   // Validate session path exists
   const validatedPath = await validateSessionPath(sessionPath);
   if (!validatedPath) {
-    logError(`Session file not found: ${sessionPath}`);
-    process.exit(1);
+    if (options.json) {
+      printJsonError(`Session file not found: ${sessionPath}`, {
+        code: ErrorCode.FILE_NOT_FOUND,
+        details: { path: sessionPath }
+      });
+    } else {
+      logError(`Session file not found: ${sessionPath}`);
+    }
+    process.exitCode = 1;
+    return;
   }
 
   const config = await loadConfig();
@@ -51,8 +60,15 @@ export async function diaryCommand(
     await handleDiaryOutput(diary, options, config);
 
   } catch (err: any) {
-    logError(`Failed to generate diary: ${err.message}`);
-    process.exit(1);
+    if (options.json) {
+      printJsonError(`Failed to generate diary: ${err.message}`, {
+        code: ErrorCode.REFLECTION_FAILED,
+        details: { sessionPath }
+      });
+    } else {
+      logError(`Failed to generate diary: ${err.message}`);
+    }
+    process.exitCode = 1;
   }
 }
 

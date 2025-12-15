@@ -436,8 +436,6 @@ describe("E2E: CLI init command", () => {
     }, 30000);
 
     it.serial("repo init fails gracefully when not in git repo", async () => {
-      const logger = createTestLogger("debug");
-
       // Create a temp dir that is NOT a git repo
       const { mkdtemp, rm } = await import("node:fs/promises");
       const { tmpdir } = await import("node:os");
@@ -446,21 +444,11 @@ describe("E2E: CLI init command", () => {
       const originalCwd = process.cwd();
       process.chdir(tempDir);
 
-      // Mock process.exit to prevent test runner from exiting
-      const originalExit = process.exit;
-      let exitCode: number | undefined;
-      process.exit = ((code?: number) => {
-        exitCode = code;
-        throw new Error(`process.exit(${code})`);
-      }) as typeof process.exit;
-
       try {
+        process.exitCode = undefined;
         const capture = captureConsole();
         try {
           await initCommand({ repo: true });
-        } catch (e: any) {
-          // Expected - process.exit was called
-          logger.info("Caught expected exit", { message: e.message });
         } finally {
           capture.restore();
         }
@@ -470,9 +458,9 @@ describe("E2E: CLI init command", () => {
           err.includes("Not in a git repository") || err.includes("git repo")
         );
         expect(hasError).toBe(true);
-        expect(exitCode).toBe(1);
+        expect(process.exitCode).toBe(1);
+        process.exitCode = undefined;
       } finally {
-        process.exit = originalExit;
         process.chdir(originalCwd);
         await rm(tempDir, { recursive: true, force: true });
       }
@@ -486,19 +474,11 @@ describe("E2E: CLI init command", () => {
       const originalCwd = process.cwd();
       process.chdir(tempDir);
 
-      const originalExit = process.exit;
-      let exitCode: number | undefined;
-      process.exit = ((code?: number) => {
-        exitCode = code;
-        throw new Error(`process.exit(${code})`);
-      }) as typeof process.exit;
-
       try {
+        process.exitCode = undefined;
         const capture = captureConsole();
         try {
           await initCommand({ repo: true, json: true });
-        } catch {
-          // Expected
         } finally {
           capture.restore();
         }
@@ -508,9 +488,9 @@ describe("E2E: CLI init command", () => {
 
         expect(result.success).toBe(false);
         expect(result.error).toContain("Not in a git repository");
-        expect(exitCode).toBe(1);
+        expect(process.exitCode).toBe(1);
+        process.exitCode = undefined;
       } finally {
-        process.exit = originalExit;
         process.chdir(originalCwd);
         await rm(tempDir, { recursive: true, force: true });
       }

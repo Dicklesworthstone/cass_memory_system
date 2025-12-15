@@ -1,6 +1,7 @@
 import { getDefaultConfig } from "../config.js";
 import { createEmptyPlaybook, loadPlaybook, savePlaybook } from "../playbook.js";
-import { expandPath, fileExists, warn, log, resolveRepoDir, ensureRepoStructure, ensureGlobalStructure, getCliName, printJson, atomicWrite } from "../utils.js";
+import { expandPath, fileExists, warn, log, resolveRepoDir, ensureRepoStructure, ensureGlobalStructure, getCliName, printJson, atomicWrite, printJsonError } from "../utils.js";
+import { ErrorCode } from "../types.js";
 import { cassAvailable } from "../cass.js";
 import { applyStarter, loadStarter } from "../starters.js";
 import chalk from "chalk";
@@ -270,15 +271,16 @@ async function initRepoCommand(options: InitOptions) {
 
   if (!cassDir) {
     if (options.json) {
-      printJson({
-        success: false,
-        error: "Not in a git repository. Run from within a git repo."
+      printJsonError("Not in a git repository. Run from within a git repo.", {
+        code: ErrorCode.CONFIG_INVALID,
+        details: { hint: "cd into a git repository first" }
       });
     } else {
       console.error(chalk.red("Error: Not in a git repository."));
       console.error("Run this command from within a git repository.");
     }
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
 
   // Check if already initialized

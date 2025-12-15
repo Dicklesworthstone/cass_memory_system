@@ -8,7 +8,8 @@ import { loadConfig } from "../config.js";
 import { findDiaryBySession, loadDiary, loadAllDiaries } from "../diary.js";
 import { loadMergedPlaybook, findBullet } from "../playbook.js";
 import { getEffectiveScore } from "../scoring.js";
-import { truncate, printJson, printJsonResult } from "../utils.js";
+import { truncate, printJson, printJsonResult, printJsonError } from "../utils.js";
+import { ErrorCode } from "../types.js";
 import { PlaybookBullet, DiaryEntry, Config } from "../types.js";
 import chalk from "chalk";
 import { icon } from "../output.js";
@@ -76,11 +77,15 @@ export async function whyCommand(
   const bullet = findBullet(playbook, bulletId);
   if (!bullet) {
     if (flags.json) {
-      printJson({ success: false, error: `Bullet not found: ${bulletId}` });
+      printJsonError(`Bullet not found: ${bulletId}`, {
+        code: ErrorCode.BULLET_NOT_FOUND,
+        details: { bulletId }
+      });
     } else {
       console.error(chalk.red(`Error: Bullet not found: ${bulletId}`));
     }
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
 
   const result = await buildWhyResult(bullet, config, flags.verbose);

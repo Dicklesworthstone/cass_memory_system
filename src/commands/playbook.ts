@@ -1,9 +1,9 @@
 import { loadConfig } from "../config.js";
 import { loadMergedPlaybook, addBullet, deprecateBullet, savePlaybook, findBullet, getActiveBullets, loadPlaybook } from "../playbook.js";
-import { error as logError, fileExists, now, resolveRepoDir, truncate, confirmDangerousAction, getCliName, printJson, printJsonResult } from "../utils.js";
+import { error as logError, fileExists, now, resolveRepoDir, truncate, confirmDangerousAction, getCliName, printJson, printJsonResult, printJsonError } from "../utils.js";
 import { withLock } from "../lock.js";
 import { getEffectiveScore, getDecayedCounts } from "../scoring.js";
-import { PlaybookBullet, Playbook, PlaybookSchema, PlaybookBulletSchema } from "../types.js";
+import { PlaybookBullet, Playbook, PlaybookSchema, PlaybookBulletSchema, ErrorCode } from "../types.js";
 import { validateRule, formatValidationResult, hasIssues, type ValidationResult } from "../rule-validation.js";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -356,18 +356,30 @@ export async function playbookCommand(
   if (action === "import") {
     const filePath = args[0];
     if (!filePath) {
-      logError("File path required for import");
-      process.exit(1);
+      if (flags.json) {
+        printJsonError("File path required for import", {
+          code: ErrorCode.MISSING_REQUIRED,
+          details: { missing: "filePath", usage: "cm playbook import <file>" }
+        });
+      } else {
+        logError("File path required for import");
+      }
+      process.exitCode = 1;
+      return;
     }
 
     // Check file exists
     if (!(await fileExists(filePath))) {
       if (flags.json) {
-        printJson({ success: false, error: `File not found: ${filePath}` });
+        printJsonError(`File not found: ${filePath}`, {
+          code: ErrorCode.FILE_NOT_FOUND,
+          details: { path: filePath }
+        });
       } else {
         logError(`File not found: ${filePath}`);
       }
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
 
     // Read and parse file
@@ -383,11 +395,15 @@ export async function playbookCommand(
       }
     } catch (err: any) {
       if (flags.json) {
-        printJson({ success: false, error: `Parse error: ${err.message}` });
+        printJsonError(`Parse error: ${err.message}`, {
+          code: ErrorCode.INVALID_INPUT,
+          details: { format, path: filePath }
+        });
       } else {
         logError(`Failed to parse ${format.toUpperCase()}: ${err.message}`);
       }
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
 
     // Validate imported bullets
@@ -397,11 +413,15 @@ export async function playbookCommand(
     const bulletsArray = importedData.bullets || importedData;
     if (!Array.isArray(bulletsArray)) {
       if (flags.json) {
-        printJson({ success: false, error: "Invalid format: expected bullets array" });
+        printJsonError("Invalid format: expected bullets array", {
+          code: ErrorCode.INVALID_INPUT,
+          details: { expected: "array", path: filePath }
+        });
       } else {
         logError("Invalid format: expected bullets array or playbook with bullets field");
       }
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
 
     for (let i = 0; i < bulletsArray.length; i++) {
@@ -429,12 +449,16 @@ export async function playbookCommand(
 
     if (validationErrors.length > 0 && importedBullets.length === 0) {
       if (flags.json) {
-        printJson({ success: false, errors: validationErrors });
+        printJsonError("All bullets failed validation", {
+          code: ErrorCode.VALIDATION_FAILED,
+          details: { errors: validationErrors, path: filePath }
+        });
       } else {
         logError("All bullets failed validation:");
         validationErrors.forEach(e => console.error(`  - ${e}`));
       }
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
 
     // Merge with existing playbook
@@ -492,8 +516,16 @@ export async function playbookCommand(
   if (action === "get") {
     const id = args[0];
     if (!id) {
-      logError("Bullet ID required for get");
-      process.exit(1);
+      if (flags.json) {
+        printJsonError("Bullet ID required for get", {
+          code: ErrorCode.MISSING_REQUIRED,
+          details: { missing: "bulletId", usage: "cm playbook get <bulletId>" }
+        });
+      } else {
+        logError("Bullet ID required for get");
+      }
+      process.exitCode = 1;
+      return;
     }
 
     const playbook = await loadMergedPlaybook(config);
@@ -504,10 +536,9 @@ export async function playbookCommand(
       const similar = findSimilarIds(allBullets, id);
 
       if (flags.json) {
-        printJson({
-          success: false,
-          error: `Bullet '${id}' not found`,
-          suggestions: similar.length > 0 ? similar : undefined
+        printJsonError(`Bullet '${id}' not found`, {
+          code: ErrorCode.BULLET_NOT_FOUND,
+          details: { bulletId: id, suggestions: similar.length > 0 ? similar : undefined }
         });
       } else {
         logError(`Bullet '${id}' not found`);
@@ -515,7 +546,8 @@ export async function playbookCommand(
           console.log(chalk.yellow(`Did you mean: ${similar.join(", ")}?`));
         }
       }
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
 
     const effectiveScore = getEffectiveScore(bullet, config);
@@ -676,8 +708,16 @@ export async function playbookCommand(
   if (action === "remove") {
     const id = args[0];
     if (!id) {
-      logError("ID required for remove");
-      process.exit(1);
+      if (flags.json) {
+        printJsonError("ID required for remove", {
+          code: ErrorCode.MISSING_REQUIRED,
+          details: { missing: "bulletId", usage: "cm playbook remove <bulletId>" }
+        });
+      } else {
+        logError("ID required for remove");
+      }
+      process.exitCode = 1;
+      return;
     }
 
     // Determine target first (read-only check)
@@ -702,8 +742,16 @@ export async function playbookCommand(
       }
 
       if (!findBullet(checkPlaybook, id)) {
-        logError(`Bullet ${id} not found`);
-        process.exit(1);
+        if (flags.json) {
+          printJsonError(`Bullet ${id} not found`, {
+            code: ErrorCode.BULLET_NOT_FOUND,
+            details: { bulletId: id }
+          });
+        } else {
+          logError(`Bullet ${id} not found`);
+        }
+        process.exitCode = 1;
+        return;
       }
     }
 
@@ -771,17 +819,17 @@ export async function playbookCommand(
       if (!confirmed) {
         const cli = getCliName();
         if (flags.json) {
-          printJson({
-            success: false,
-            error: "Confirmation required for --hard deletion",
-            hint: `${cli} playbook remove ${id} --hard --yes`,
+          printJsonError("Confirmation required for --hard deletion", {
+            code: ErrorCode.MISSING_REQUIRED,
+            details: { bulletId: id, hint: `${cli} playbook remove ${id} --hard --yes` }
           });
         } else {
           logError("Refusing to permanently delete without confirmation.");
           console.log(chalk.gray(`Re-run with: ${cli} playbook remove ${id} --hard --yes`));
           console.log(chalk.gray(`Or omit --hard to deprecate instead.`));
         }
-        process.exit(1);
+        process.exitCode = 1;
+        return;
       }
     }
 
@@ -792,8 +840,16 @@ export async function playbookCommand(
         const bullet = findBullet(playbook, id);
 
         if (!bullet) {
-             logError(`Bullet ${id} disappeared during lock acquisition`);
-             process.exit(1);
+          if (flags.json) {
+            printJsonError(`Bullet ${id} disappeared during lock acquisition`, {
+              code: ErrorCode.BULLET_NOT_FOUND,
+              details: { bulletId: id }
+            });
+          } else {
+            logError(`Bullet ${id} disappeared during lock acquisition`);
+          }
+          process.exitCode = 1;
+          return;
         }
 
         if (flags.hard) {

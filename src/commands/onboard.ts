@@ -11,8 +11,9 @@ import chalk from "chalk";
 import { loadConfig } from "../config.js";
 import { loadMergedPlaybook } from "../playbook.js";
 import { cassSearch, cassExport, handleCassUnavailable, CassSearchOptions } from "../cass.js";
-import { getCliName, expandPath, formatRelativeTime, printJson, printJsonResult } from "../utils.js";
+import { getCliName, expandPath, formatRelativeTime, printJson, printJsonError, printJsonResult } from "../utils.js";
 import { formatKv, formatRule, getOutputStyle, icon } from "../output.js";
+import { ErrorCode } from "../types.js";
 import {
   loadOnboardState,
   markSessionProcessed,
@@ -675,10 +676,14 @@ export async function onboardCommand(
     if (options.template) {
       if (!content) {
         if (options.json) {
-          printJson({ success: false, error: "Failed to read session", sessionPath: options.read });
+          printJsonError("Failed to read session", {
+            code: ErrorCode.SESSION_NOT_FOUND,
+            details: { sessionPath: options.read }
+          });
         } else {
           console.error(chalk.red(`Failed to read session: ${options.read}`));
         }
+        process.exitCode = 1;
         return;
       }
 
