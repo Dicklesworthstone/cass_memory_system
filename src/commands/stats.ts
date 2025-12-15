@@ -6,7 +6,7 @@ import {
   isStale
 } from "../scoring.js";
 import { findSemanticDuplicates } from "../semantic.js";
-import { tokenize } from "../utils.js";
+import { tokenize, printJsonResult } from "../utils.js";
 import chalk from "chalk";
 import { iconPrefix } from "../output.js";
 
@@ -84,7 +84,7 @@ export async function statsCommand(options: { json?: boolean }): Promise<void> {
   };
 
   if (options.json) {
-    console.log(JSON.stringify(stats, null, 2));
+    printJsonResult(stats);
     return;
   }
 

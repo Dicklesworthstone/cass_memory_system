@@ -9,7 +9,8 @@ import {
   OutcomeStatus,
   Sentiment
 } from "../outcome.js";
-import { error as logError } from "../utils.js";
+import { error as logError, printJsonResult } from "../utils.js";
+import { icon } from "../output.js";
 
 // Re-export for backward compat if needed
 export { scoreImplicitFeedback } from "../outcome.js";
@@ -92,8 +93,15 @@ export async function outcomeCommand(
   // 2. Preview Score (User Feedback)
   const scored = scoreImplicitFeedback(input);
   if (!scored) {
+    if (flags.json) {
+      printJsonResult(
+        { feedbackRecorded: false, rulesProvided: ruleIds },
+        { effect: false, reason: "No implicit signal strong enough to record feedback" }
+      );
+      return;
+    }
     console.error(chalk.yellow("No implicit signal strong enough to record feedback."));
-    process.exit(0);
+    return;
   }
 
   const config = await loadConfig();
@@ -118,24 +126,21 @@ export async function outcomeCommand(
   const result = await applyOutcomeFeedback([tempRecord], config);
 
   // 5. Report
-  const payload = {
-    success: true,
-    applied: result.applied,
-    missing: result.missing,
-    type: scored.type,
-    weight: scored.decayedValue,
-    sentiment,
-  };
-
   if (flags.json) {
-    console.log(JSON.stringify(payload, null, 2));
+    printJsonResult({
+      applied: result.applied,
+      missing: result.missing,
+      type: scored.type,
+      weight: scored.decayedValue,
+      sentiment,
+    });
     return;
   }
 
   if (result.applied > 0) {
     console.log(
       chalk.green(
-        `✓ Recorded implicit ${scored.type} feedback (${scored.decayedValue.toFixed(2)}) for ${result.applied} rule(s)`
+        `${icon("success")} Recorded implicit ${scored.type} feedback (${scored.decayedValue.toFixed(2)}) for ${result.applied} rule(s)`
       )
     );
   }
@@ -152,12 +157,19 @@ export async function applyOutcomeLogCommand(flags: { session?: string; limit?: 
   if (flags.session) {
     const filtered = outcomes.filter((o) => o.sessionId === flags.session);
     if (filtered.length === 0) {
+      if (flags.json) {
+        printJsonResult(
+          { session: flags.session, outcomesFound: 0, applied: 0, missing: [] },
+          { effect: false, reason: `No outcomes found for session ${flags.session}` }
+        );
+        return;
+      }
       console.error(chalk.yellow(`No outcomes found for session ${flags.session}`));
-      process.exit(0);
+      return;
     }
     const result = await applyOutcomeFeedback(filtered, config);
     if (flags.json) {
-      console.log(JSON.stringify({ ...result, session: flags.session }, null, 2));
+      printJsonResult({ ...result, session: flags.session });
       return;
     }
     console.log(chalk.green(`Applied outcome feedback for session ${flags.session}: ${result.applied} updates`));
@@ -170,7 +182,7 @@ export async function applyOutcomeLogCommand(flags: { session?: string; limit?: 
   // No session filter: apply latest (limit) outcomes.
   const result = await applyOutcomeFeedback(outcomes, config);
   if (flags.json) {
-    console.log(JSON.stringify({ ...result, totalOutcomes: outcomes.length }, null, 2));
+    printJsonResult({ ...result, totalOutcomes: outcomes.length });
     return;
   }
   console.log(chalk.green(`Applied outcome feedback for ${outcomes.length} outcomes: ${result.applied} updates`));

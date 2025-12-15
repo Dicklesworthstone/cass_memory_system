@@ -10,7 +10,7 @@
  */
 
 import chalk from "chalk";
-import { getCliName } from "../utils.js";
+import { getCliName, printJsonResult } from "../utils.js";
 
 function getQuickstartText(cli: string): string {
   return `
@@ -170,7 +170,7 @@ function getQuickstartJson(cli: string) {
 export async function quickstartCommand(flags: { json?: boolean }) {
   const cli = getCliName();
   if (flags.json) {
-    console.log(JSON.stringify(getQuickstartJson(cli), null, 2));
+    printJsonResult(getQuickstartJson(cli));
   } else {
     // Colorize headers in terminal output
     const colored = getQuickstartText(cli)

@@ -7,7 +7,7 @@
 import { loadConfig } from "../config.js";
 import { loadMergedPlaybook, getActiveBullets } from "../playbook.js";
 import { getEffectiveScore } from "../scoring.js";
-import { truncate, getCliName } from "../utils.js";
+import { truncate, getCliName, printJsonResult } from "../utils.js";
 import { PlaybookBullet, Config } from "../types.js";
 import chalk from "chalk";
 
@@ -143,7 +143,7 @@ export async function staleCommand(
   staleBullets.sort((a, b) => b.daysSinceLastFeedback - a.daysSinceLastFeedback);
 
   if (flags.json) {
-    console.log(JSON.stringify({
+    printJsonResult({
       timestamp: new Date().toISOString(),
       threshold,
       count: staleBullets.length,
@@ -152,7 +152,7 @@ export async function staleCommand(
         scope: flags.scope || "all"
       },
       bullets: staleBullets
-    }, null, 2));
+    });
     return;
   }
 

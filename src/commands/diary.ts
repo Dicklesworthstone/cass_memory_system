@@ -3,7 +3,7 @@
 
 import { loadConfig } from "../config.js";
 import { generateDiary } from "../diary.js";
-import { expandPath, error as logError } from "../utils.js";
+import { expandPath, error as logError, printJsonResult } from "../utils.js";
 import { cassExport, cassAvailable } from "../cass.js";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -94,8 +94,7 @@ export async function handleDiaryOutput(
   config: import("../types.js").Config
 ): Promise<void> {
   if (options.json) {
-    // JSON output
-    console.log(JSON.stringify(diary, null, 2));
+    printJsonResult({ diary });
     return;
   }
 

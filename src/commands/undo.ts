@@ -9,9 +9,10 @@
 import { loadConfig } from "../config.js";
 import { loadPlaybook, savePlaybook, findBullet, removeFromBlockedLog } from "../playbook.js";
 import { PlaybookBullet, Config, FeedbackEvent } from "../types.js";
-import { now, expandPath, getCliName, truncate, confirmDangerousAction, resolveRepoDir, fileExists } from "../utils.js";
+import { now, expandPath, getCliName, truncate, confirmDangerousAction, resolveRepoDir, fileExists, printJson, printJsonResult } from "../utils.js";
 import { withLock } from "../lock.js";
 import chalk from "chalk";
+import { icon } from "../output.js";
 import path from "node:path";
 import fs from "node:fs/promises";
 
@@ -156,9 +157,8 @@ export async function undoCommand(
   const location = await findBulletLocation(bulletId, config);
 
   if (!location) {
-    const error = { error: `Bullet not found: ${bulletId}` };
     if (flags.json) {
-      console.log(JSON.stringify(error, null, 2));
+      printJson({ success: false, error: `Bullet not found: ${bulletId}` });
     } else {
       console.error(chalk.red(`Error: Bullet not found: ${bulletId}`));
       console.log(chalk.gray(`Use '${cli} playbook list' to see available bullets.`));
@@ -196,9 +196,8 @@ export async function undoCommand(
         applyCommand = `${cli} undo ${bulletId} --hard --yes`;
       } else if (flags.feedback) {
         if (!lastEvent) {
-          const error = { error: `No feedback events to undo for bullet ${bulletId}` };
           if (flags.json) {
-            console.log(JSON.stringify(error, null, 2));
+            printJson({ success: false, error: `No feedback events to undo for bullet ${bulletId}` });
           } else {
             console.error(chalk.yellow(`No feedback events to undo for bullet ${bulletId}`));
           }
@@ -209,12 +208,12 @@ export async function undoCommand(
         applyCommand = `${cli} undo ${bulletId} --feedback`;
       } else {
         if (!bullet.deprecated) {
-          const error = {
-            error: `Bullet ${bulletId} is not deprecated`,
-            hint: "Use --feedback to undo the last feedback event, or --hard to delete"
-          };
           if (flags.json) {
-            console.log(JSON.stringify(error, null, 2));
+            printJson({
+              success: false,
+              error: `Bullet ${bulletId} is not deprecated`,
+              hint: "Use --feedback to undo the last feedback event, or --hard to delete"
+            });
           } else {
             console.error(chalk.yellow(`Bullet ${bulletId} is not deprecated.`));
             console.log(chalk.gray("Use --feedback to undo the last feedback event, or --hard to delete."));
@@ -247,7 +246,7 @@ export async function undoCommand(
       };
 
       if (flags.json) {
-        console.log(JSON.stringify({ success: true, plan }, null, 2));
+        printJsonResult({ plan });
       } else {
         console.log(chalk.bold.yellow("DRY RUN - No changes will be made"));
         console.log(chalk.gray("─".repeat(50)));
@@ -366,7 +365,8 @@ export async function undoCommand(
     }
 
     if (flags.json) {
-      console.log(JSON.stringify(result, null, 2));
+      // Result already includes success: true
+      printJson(result);
     } else {
       printUndoResult(result, bullet);
     }
@@ -413,6 +413,6 @@ function printUndoResult(result: UndoResult, bullet?: PlaybookBullet): void {
   }
 
   console.log();
-  console.log(chalk.green(`✓ ${result.message}`));
+  console.log(chalk.green(`${icon("success")} ${result.message}`));
   console.log();
 }

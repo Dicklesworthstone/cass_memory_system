@@ -8,9 +8,10 @@ import { loadConfig } from "../config.js";
 import { findDiaryBySession, loadDiary, loadAllDiaries } from "../diary.js";
 import { loadMergedPlaybook, findBullet } from "../playbook.js";
 import { getEffectiveScore } from "../scoring.js";
-import { truncate } from "../utils.js";
+import { truncate, printJson, printJsonResult } from "../utils.js";
 import { PlaybookBullet, DiaryEntry, Config } from "../types.js";
 import chalk from "chalk";
+import { icon } from "../output.js";
 
 export interface WhyFlags {
   verbose?: boolean;
@@ -74,9 +75,8 @@ export async function whyCommand(
 
   const bullet = findBullet(playbook, bulletId);
   if (!bullet) {
-    const error = { error: `Bullet not found: ${bulletId}` };
     if (flags.json) {
-      console.log(JSON.stringify(error, null, 2));
+      printJson({ success: false, error: `Bullet not found: ${bulletId}` });
     } else {
       console.error(chalk.red(`Error: Bullet not found: ${bulletId}`));
     }
@@ -86,7 +86,7 @@ export async function whyCommand(
   const result = await buildWhyResult(bullet, config, flags.verbose);
 
   if (flags.json) {
-    console.log(JSON.stringify(result, null, 2));
+    printJsonResult({ ...result });
   } else {
     printWhyResult(result, flags.verbose);
   }
@@ -250,8 +250,8 @@ function printWhyResult(result: WhyResult, verbose?: boolean): void {
     console.log(chalk.bold(`FEEDBACK HISTORY (${helpfulCount} helpful, ${harmfulCount} harmful):`));
     console.log(chalk.gray("─".repeat(40)));
     for (const f of result.feedbackHistory.slice(0, verbose ? 10 : 5)) {
-      const icon = f.type === "helpful" ? chalk.green("✓") : chalk.red("✗");
-      console.log(`  ${f.timestamp.slice(0, 10)}: ${icon} ${f.type}${f.sessionPath ? ` (${f.sessionPath.split("/").pop()})` : ""}`);
+      const feedbackIcon = f.type === "helpful" ? chalk.green(icon("success")) : chalk.red(icon("failure"));
+      console.log(`  ${f.timestamp.slice(0, 10)}: ${feedbackIcon} ${f.type}${f.sessionPath ? ` (${f.sessionPath.split("/").pop()})` : ""}`);
     }
     if (result.feedbackHistory.length > (verbose ? 10 : 5)) {
       console.log(chalk.gray(`  ... (${result.feedbackHistory.length - (verbose ? 10 : 5)} more)`));

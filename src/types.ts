@@ -677,20 +677,75 @@ export const CommandResultSchema = z.object({
 });
 export type CommandResult = z.infer<typeof CommandResultSchema>;
 
+// ============================================================================
+// ERROR CODES
+// ============================================================================
+
+/**
+ * Standard error codes for programmatic error handling.
+ * Use ErrorCode.X for autocomplete-friendly access.
+ * Use CMErrorCodeEnum for Zod schema validation.
+ */
+export const ErrorCode = {
+  // Input validation errors (4xx-like)
+  INVALID_INPUT: "INVALID_INPUT",
+  MISSING_REQUIRED: "MISSING_REQUIRED",
+  BULLET_NOT_FOUND: "BULLET_NOT_FOUND",
+  SESSION_NOT_FOUND: "SESSION_NOT_FOUND",
+  PLAYBOOK_NOT_FOUND: "PLAYBOOK_NOT_FOUND",
+  PLAYBOOK_CORRUPT: "PLAYBOOK_CORRUPT",
+  CONFIG_INVALID: "CONFIG_INVALID",
+
+  // External service errors (5xx-like)
+  CASS_NOT_FOUND: "CASS_NOT_FOUND",
+  CASS_INDEX_STALE: "CASS_INDEX_STALE",
+  CASS_SEARCH_FAILED: "CASS_SEARCH_FAILED",
+  LLM_API_ERROR: "LLM_API_ERROR",
+  LLM_RATE_LIMITED: "LLM_RATE_LIMITED",
+  LLM_BUDGET_EXCEEDED: "LLM_BUDGET_EXCEEDED",
+
+  // File system errors
+  FILE_NOT_FOUND: "FILE_NOT_FOUND",
+  FILE_PERMISSION_DENIED: "FILE_PERMISSION_DENIED",
+  FILE_WRITE_FAILED: "FILE_WRITE_FAILED",
+  LOCK_ACQUISITION_FAILED: "LOCK_ACQUISITION_FAILED",
+
+  // Operational errors
+  SANITIZATION_FAILED: "SANITIZATION_FAILED",
+  VALIDATION_FAILED: "VALIDATION_FAILED",
+  REFLECTION_FAILED: "REFLECTION_FAILED",
+  AUDIT_FAILED: "AUDIT_FAILED",
+
+  // Generic fallbacks
+  INTERNAL_ERROR: "INTERNAL_ERROR",
+  UNKNOWN_ERROR: "UNKNOWN_ERROR",
+} as const;
+export type ErrorCodeType = typeof ErrorCode[keyof typeof ErrorCode];
+
+// Zod enum for schema validation (mirrors ErrorCode)
 export const CMErrorCodeEnum = z.enum([
+  "INVALID_INPUT",
+  "MISSING_REQUIRED",
+  "BULLET_NOT_FOUND",
+  "SESSION_NOT_FOUND",
+  "PLAYBOOK_NOT_FOUND",
+  "PLAYBOOK_CORRUPT",
+  "CONFIG_INVALID",
   "CASS_NOT_FOUND",
   "CASS_INDEX_STALE",
   "CASS_SEARCH_FAILED",
-  "PLAYBOOK_CORRUPT",
-  "PLAYBOOK_NOT_FOUND",
-  "CONFIG_INVALID",
   "LLM_API_ERROR",
-  "LLM_RATE_LIMIT",
+  "LLM_RATE_LIMITED",
   "LLM_BUDGET_EXCEEDED",
-  "SANITIZATION_FAILED",
   "FILE_NOT_FOUND",
-  "PERMISSION_DENIED",
-  "INVALID_INPUT",
+  "FILE_PERMISSION_DENIED",
+  "FILE_WRITE_FAILED",
+  "LOCK_ACQUISITION_FAILED",
+  "SANITIZATION_FAILED",
+  "VALIDATION_FAILED",
+  "REFLECTION_FAILED",
+  "AUDIT_FAILED",
+  "INTERNAL_ERROR",
   "UNKNOWN_ERROR"
 ]);
 export type CMErrorCode = z.infer<typeof CMErrorCodeEnum>;

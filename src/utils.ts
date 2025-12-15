@@ -1930,6 +1930,45 @@ export function printJsonError(
   printJson(payload);
 }
 
+/**
+ * Options for printJsonResult() to handle soft success cases.
+ */
+export interface JsonResultOptions {
+  /** Whether the operation had its intended effect (default: true) */
+  effect?: boolean;
+  /** Reason explaining why effect is false (required when effect is false) */
+  reason?: string;
+}
+
+/**
+ * Print a success JSON response with consistent structure.
+ *
+ * All JSON responses include `success: true`. For "soft success" cases
+ * (command ran but had no effect), set `effect: false` with a reason.
+ *
+ * @example
+ * // Normal success
+ * printJsonResult({ bulletId, type, newState });
+ * // → { "success": true, "bulletId": "...", "type": "...", "newState": "..." }
+ *
+ * @example
+ * // Soft success (ran but no effect)
+ * printJsonResult({ rulesProvided: ["b-123"] }, { effect: false, reason: "No signal strong enough" });
+ * // → { "success": true, "effect": false, "reason": "...", "rulesProvided": [...] }
+ */
+export function printJsonResult<T extends Record<string, unknown>>(
+  data: T,
+  options: JsonResultOptions = {}
+): void {
+  const { effect = true, reason } = options;
+  const payload = {
+    success: true as const,
+    ...(effect === false ? { effect: false as const, reason } : {}),
+    ...data,
+  };
+  printJson(payload);
+}
+
 // --- String Normalization ---
 
 /**

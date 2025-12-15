@@ -1,9 +1,10 @@
 import fs from "node:fs/promises";
 import chalk from "chalk";
+import { icon } from "../output.js";
 import { getDefaultConfig, saveConfig } from "../config.js";
 import { cassAvailable, cassTimeline } from "../cass.js";
 import { Config, ConfigSchema } from "../types.js";
-import { expandPath, ensureGlobalStructure, fileExists, now, getCliName } from "../utils.js";
+import { expandPath, ensureGlobalStructure, fileExists, now, getCliName, printJsonResult } from "../utils.js";
 
 function normalizeAgentName(agent: string): string {
   return agent.trim().toLowerCase();
@@ -102,7 +103,7 @@ export async function privacyCommand(
       };
 
       if (flags.json) {
-        console.log(JSON.stringify(result, null, 2));
+        printJsonResult(result);
         return;
       }
 
@@ -157,11 +158,10 @@ export async function privacyCommand(
 
       await saveConfig(config);
 
-      const result = { success: true, crossAgent: config.crossAgent };
       if (flags.json) {
-        console.log(JSON.stringify(result, null, 2));
+        printJsonResult({ crossAgent: config.crossAgent });
       } else {
-        console.log(chalk.green("✓ Cross-agent enrichment enabled"));
+        console.log(chalk.green(`${icon("success")} Cross-agent enrichment enabled`));
         console.log(`  Allowlist: ${formatAgentList(allowlist)}`);
       }
       return;
@@ -171,11 +171,10 @@ export async function privacyCommand(
       config.crossAgent = { ...config.crossAgent, enabled: false };
       await saveConfig(config);
 
-      const result = { success: true, crossAgent: config.crossAgent };
       if (flags.json) {
-        console.log(JSON.stringify(result, null, 2));
+        printJsonResult({ crossAgent: config.crossAgent });
       } else {
-        console.log(chalk.green("✓ Cross-agent enrichment disabled"));
+        console.log(chalk.green(`${icon("success")} Cross-agent enrichment disabled`));
       }
       return;
     }
@@ -193,11 +192,10 @@ export async function privacyCommand(
       };
       await saveConfig(config);
 
-      const result = { success: true, crossAgent: config.crossAgent };
       if (flags.json) {
-        console.log(JSON.stringify(result, null, 2));
+        printJsonResult({ crossAgent: config.crossAgent });
       } else {
-        console.log(chalk.green(`✓ Allowed agent '${normalized}'`));
+        console.log(chalk.green(`${icon("success")} Allowed agent '${normalized}'`));
         console.log(`  Allowlist: ${formatAgentList(next)}`);
       }
       return;
@@ -216,11 +214,10 @@ export async function privacyCommand(
       };
       await saveConfig(config);
 
-      const result = { success: true, crossAgent: config.crossAgent };
       if (flags.json) {
-        console.log(JSON.stringify(result, null, 2));
+        printJsonResult({ crossAgent: config.crossAgent });
       } else {
-        console.log(chalk.green(`✓ Removed agent '${normalized}' from allowlist`));
+        console.log(chalk.green(`${icon("success")} Removed agent '${normalized}' from allowlist`));
         console.log(`  Allowlist: ${formatAgentList(next)}`);
       }
       return;

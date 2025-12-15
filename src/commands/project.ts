@@ -7,6 +7,7 @@ import {
 } from "../playbook.js";
 import { error as logError, fileExists, getCliName, atomicWrite } from "../utils.js";
 import chalk from "chalk";
+import { icon } from "../output.js";
 
 export async function projectCommand(
   flags: { output?: string; force?: boolean; format?: string; top?: number; showCounts?: boolean }
@@ -58,7 +59,7 @@ export async function projectCommand(
       }
 
       await atomicWrite(outputPath, output);
-      console.log(chalk.green(`✓ Exported to ${outputPath}`));
+      console.log(chalk.green(`${icon("success")} Exported to ${outputPath}`));
       return;
     }
 

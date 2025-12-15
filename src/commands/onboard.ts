@@ -11,8 +11,8 @@ import chalk from "chalk";
 import { loadConfig } from "../config.js";
 import { loadMergedPlaybook } from "../playbook.js";
 import { cassSearch, cassExport, handleCassUnavailable, CassSearchOptions } from "../cass.js";
-import { getCliName, expandPath, formatRelativeTime } from "../utils.js";
-import { formatKv, formatRule, getOutputStyle } from "../output.js";
+import { getCliName, expandPath, formatRelativeTime, printJson, printJsonResult } from "../utils.js";
+import { formatKv, formatRule, getOutputStyle, icon } from "../output.js";
 import {
   loadOnboardState,
   markSessionProcessed,
@@ -347,7 +347,7 @@ function getGuidedOnboardingText(cli: string, status: OnboardStatus): string {
 # Agent-Native Onboarding Guide
 
 ${chalk.bold("Current Status:")}
-${status.cassAvailable ? chalk.green("✓ cass available") : chalk.red("✗ cass not available")}
+${status.cassAvailable ? chalk.green(`${icon("success")} cass available`) : chalk.red(`${icon("failure")} cass not available`)}
 ${chalk.cyan(`Playbook rules: ${status.playbookRules}`)}
 
 ${chalk.bold.yellow(status.recommendation)}
@@ -412,7 +412,7 @@ function getGuidedOnboardingJson(cli: string, status: OnboardStatus): OnboardJso
   return {
     status,
     step: "guided",
-    categories: RULE_CATEGORIES,
+    categories: [...RULE_CATEGORIES],
     examples: EXAMPLE_RULES,
     extractionPrompt: getExtractionPrompt(),
   };
@@ -461,9 +461,9 @@ export async function onboardCommand(
     }
     await resetOnboardState();
     if (options.json) {
-      console.log(JSON.stringify({ success: true, message: "Onboarding progress reset" }));
+      printJsonResult({ message: "Onboarding progress reset" });
     } else {
-      console.log(chalk.green("✓ Onboarding progress reset"));
+      console.log(chalk.green(`${icon("success")} Onboarding progress reset`));
     }
     return;
   }
@@ -473,15 +473,14 @@ export async function onboardCommand(
     const sessionPath = options.markDone;
     await markSessionProcessed(sessionPath, 0, { skipped: true });
     if (options.json) {
-      console.log(JSON.stringify({
-        success: true,
+      printJsonResult({
         message: "Session marked as processed",
         sessionPath,
         rulesExtracted: 0,
         skipped: true,
-      }));
+      });
     } else {
-      console.log(chalk.green(`✓ Marked as processed: ${sessionPath}`));
+      console.log(chalk.green(`${icon("success")} Marked as processed: ${sessionPath}`));
       console.log(chalk.dim("  (0 rules extracted - session skipped)"));
     }
     return;
@@ -498,7 +497,7 @@ export async function onboardCommand(
   // Gap analysis standalone view
   if (options.gaps) {
     if (options.json) {
-      console.log(JSON.stringify({ status, progress, gapAnalysis }, null, 2));
+      printJsonResult({ status, progress, gapAnalysis });
     } else {
       const maxWidth = Math.min(getOutputStyle().width, 84);
       console.log(chalk.bold("PLAYBOOK GAP ANALYSIS"));
@@ -510,7 +509,7 @@ export async function onboardCommand(
       if (gapAnalysis.gaps.critical.length > 0) {
         console.log(chalk.red.bold("CRITICAL (0 rules):"));
         for (const cat of gapAnalysis.gaps.critical) {
-          console.log(chalk.red(`  ✗ ${cat}`));
+          console.log(chalk.red(`  ${icon("failure")} ${cat}`));
         }
         console.log("");
       }
@@ -530,7 +529,7 @@ export async function onboardCommand(
         console.log(chalk.green.bold("WELL-COVERED (11+ rules):"));
         for (const cat of gapAnalysis.wellCovered) {
           const count = gapAnalysis.byCategory[cat].count;
-          console.log(chalk.green(`  ✓ ${cat} (${count} rules)`));
+          console.log(chalk.green(`  ${icon("success")} ${cat} (${count} rules)`));
         }
         console.log("");
       }
@@ -557,7 +556,7 @@ export async function onboardCommand(
   // Status check
   if (options.status) {
     if (options.json) {
-      console.log(JSON.stringify({ status, progress, gapAnalysis }, null, 2));
+      printJsonResult({ status, progress, gapAnalysis });
     } else {
       const maxWidth = Math.min(getOutputStyle().width, 84);
       console.log(chalk.bold("ONBOARDING STATUS"));
@@ -617,7 +616,7 @@ export async function onboardCommand(
     });
 
     if (options.json) {
-      console.log(JSON.stringify({
+      printJsonResult({
         status,
         progress,
         step: "sample",
@@ -626,7 +625,7 @@ export async function onboardCommand(
         filtered,
         sessionsRemaining: sessions.length,
         gapAnalysis: options.fillGaps ? gapAnalysis : undefined,
-      }, null, 2));
+      });
     } else {
       const title = options.fillGaps
         ? "SAMPLED SESSIONS FOR GAP-FILLING"
@@ -676,7 +675,7 @@ export async function onboardCommand(
     if (options.template) {
       if (!content) {
         if (options.json) {
-          console.log(JSON.stringify({ error: "Failed to read session", sessionPath: options.read }));
+          printJson({ success: false, error: "Failed to read session", sessionPath: options.read });
         } else {
           console.error(chalk.red(`Failed to read session: ${options.read}`));
         }
@@ -740,14 +739,14 @@ export async function onboardCommand(
         },
         extractionFormat: {
           schema: { content: "string", category: "string" },
-          categories: RULE_CATEGORIES,
+          categories: [...RULE_CATEGORIES],
           examples: EXAMPLE_RULES,
         },
         sessionContent: content,
       };
 
       if (options.json) {
-        console.log(JSON.stringify(templateOutput, null, 2));
+        printJsonResult(templateOutput);
       } else {
         console.log(chalk.bold("SESSION ANALYSIS TEMPLATE"));
         console.log(chalk.dim(formatRule("─", { maxWidth: 60 })));
@@ -802,13 +801,13 @@ export async function onboardCommand(
 
     // Standard read (non-template)
     if (options.json) {
-      console.log(JSON.stringify({
+      printJsonResult({
         status,
         step: "read",
         sessionPath: options.read,
         sessionContent: content,
         extractionPrompt: getExtractionPrompt(),
-      }, null, 2));
+      });
     } else {
       if (content) {
         console.log(chalk.bold(`SESSION: ${options.read}`));
@@ -831,13 +830,13 @@ export async function onboardCommand(
   // Show extraction prompt
   if (options.prompt) {
     if (options.json) {
-      console.log(JSON.stringify({
+      printJsonResult({
         status,
         step: "prompt",
         extractionPrompt: getExtractionPrompt(),
-        categories: RULE_CATEGORIES,
+        categories: [...RULE_CATEGORIES],
         examples: EXAMPLE_RULES,
-      }, null, 2));
+      });
     } else {
       console.log(getExtractionPrompt());
     }
@@ -846,7 +845,7 @@ export async function onboardCommand(
 
   // Guided mode (default)
   if (options.json) {
-    console.log(JSON.stringify(getGuidedOnboardingJson(cli, status), null, 2));
+    printJsonResult({ ...getGuidedOnboardingJson(cli, status) });
   } else {
     const colored = getGuidedOnboardingText(cli, status)
       .replace(/^# (.+)$/gm, chalk.bold.blue("# $1"))

@@ -7,7 +7,7 @@ import chalk from "chalk";
 import yaml from "yaml";
 import readline from "node:readline";
 import fs from "node:fs/promises";
-import { iconPrefix, formatKv } from "../output.js";
+import { iconPrefix, icon, formatKv } from "../output.js";
 
 type InitOptions = { force?: boolean; yes?: boolean; json?: boolean; repo?: boolean; starter?: string; interactive?: boolean };
 
@@ -117,7 +117,7 @@ export async function initCommand(options: InitOptions) {
         // Default to common known agents; user can refine via `cm privacy allow/deny`.
         agents: ["claude", "cursor", "codex", "aider"],
       };
-      console.log(chalk.green("\n✓ Cross-agent enrichment enabled.\n"));
+      console.log(chalk.green(`\n${icon("success")} Cross-agent enrichment enabled.\n`));
     } else {
       config.crossAgent = {
         ...config.crossAgent,
@@ -182,7 +182,7 @@ export async function initCommand(options: InitOptions) {
   } else {
     if (result.created.length > 0) {
       for (const file of result.created) {
-        console.log(chalk.green(`✓ Created ~/.cass-memory/${file}`));
+        console.log(chalk.green(`${icon("success")} Created ~/.cass-memory/${file}`));
       }
     }
     if (result.existed.length > 0) {
@@ -209,7 +209,7 @@ export async function initCommand(options: InitOptions) {
     if (starterOutcome) {
       console.log(
         chalk.green(
-          `✓ Applied starter "${starterOutcome.name}" (${starterOutcome.added} added, ${starterOutcome.skipped} skipped)`
+          `${icon("success")} Applied starter "${starterOutcome.name}" (${starterOutcome.added} added, ${starterOutcome.skipped} skipped)`
         )
       );
     }
@@ -383,7 +383,7 @@ async function initRepoCommand(options: InitOptions) {
 
     if (result.created.length > 0) {
       for (const file of result.created) {
-        console.log(chalk.green(`✓ Created .cass/${file}`));
+        console.log(chalk.green(`${icon("success")} Created .cass/${file}`));
       }
     }
 
@@ -405,7 +405,7 @@ async function initRepoCommand(options: InitOptions) {
     }
 
     if (starterOutcome) {
-      console.log(chalk.green(`✓ Applied starter "${starterOutcome.name}" (${starterOutcome.added} added, ${starterOutcome.skipped} skipped)`));
+      console.log(chalk.green(`${icon("success")} Applied starter "${starterOutcome.name}" (${starterOutcome.added} added, ${starterOutcome.skipped} skipped)`));
     }
 
     console.log("");

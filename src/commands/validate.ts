@@ -2,7 +2,7 @@ import chalk from "chalk";
 import { loadConfig } from "../config.js";
 import { evidenceCountGate } from "../validate.js";
 import { safeCassSearch } from "../cass.js";
-import { extractKeywords } from "../utils.js";
+import { extractKeywords, printJsonResult } from "../utils.js";
 import { runValidator } from "../llm.js";
 
 type ValidateOptions = {
@@ -125,7 +125,7 @@ function classifyOutcome(snippet: string): string {
 
 function printResult(result: ValidationOutput, options: ValidateOptions) {
   if (options.json) {
-    console.log(JSON.stringify(result, null, 2));
+    printJsonResult({ ...result });
     return;
   }
 

@@ -2,8 +2,8 @@ import { loadConfig } from "../config.js";
 import { orchestrateReflection } from "../orchestrator.js";
 import { getUsageStats, formatCostSummary } from "../cost.js";
 import chalk from "chalk";
-import { getCliName } from "../utils.js";
-import { formatKv, formatRule, getOutputStyle, iconPrefix, wrapText } from "../output.js";
+import { getCliName, printJson, printJsonResult } from "../utils.js";
+import { formatKv, formatRule, getOutputStyle, iconPrefix, icon, wrapText } from "../output.js";
 import type { PlaybookDelta } from "../types.js";
 
 type DeltaType = PlaybookDelta["type"];
@@ -90,7 +90,7 @@ export async function reflectCommand(
         }
         if (event.phase === "session_done") {
           const suffix = event.deltasGenerated > 0 ? ` (${event.deltasGenerated} deltas)` : "";
-          console.log(chalk.dim(`✓ [${event.index}/${event.totalSessions}] processed${suffix}`));
+          console.log(chalk.dim(`${icon("success")} [${event.index}/${event.totalSessions}] processed${suffix}`));
           return;
         }
         if (event.phase === "session_error") {
@@ -111,7 +111,7 @@ export async function reflectCommand(
 
   if (options.dryRun) {
     if (options.json) {
-      console.log(JSON.stringify(result.dryRunDeltas, null, 2));
+      printJsonResult({ deltas: result.dryRunDeltas });
     } else {
       const deltas = result.dryRunDeltas || [];
       const byType = summarizeDeltas(deltas);
@@ -171,11 +171,11 @@ export async function reflectCommand(
   }
 
   if (options.json) {
-    console.log(JSON.stringify({
+    printJsonResult({
       global: result.globalResult,
       repo: result.repoResult,
       errors: result.errors
-    }, null, 2));
+    });
     return;
   }
 

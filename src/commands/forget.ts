@@ -2,9 +2,10 @@ import { loadConfig } from "../config.js";
 import { loadPlaybook, savePlaybook, findBullet, addBullet } from "../playbook.js";
 import { appendBlockedLog } from "../playbook.js";
 import path from "node:path";
-import { fileExists, now, error as logError, resolveRepoDir, expandPath } from "../utils.js";
+import { fileExists, now, error as logError, resolveRepoDir, expandPath, printJsonResult } from "../utils.js";
 import { withLock } from "../lock.js";
 import chalk from "chalk";
+import { icon } from "../output.js";
 
 export async function forgetCommand(
   bulletId: string, 
@@ -80,15 +81,14 @@ export async function forgetCommand(
     await savePlaybook(playbook, savePath);
 
     if (flags.json) {
-      console.log(JSON.stringify({
-        success: true,
+      printJsonResult({
         bulletId,
         action: "forgotten",
         inverted: !!antiPatternId,
         antiPatternId
-      }, null, 2));
+      });
     } else {
-      console.log(chalk.green(`✓ Forgot bullet ${bulletId}`));
+      console.log(chalk.green(`${icon("success")} Forgot bullet ${bulletId}`));
       if (antiPatternId) {
         console.log(chalk.blue(`  Inverted to anti-pattern: ${antiPatternId}`));
       }

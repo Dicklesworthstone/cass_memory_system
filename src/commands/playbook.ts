@@ -1,6 +1,6 @@
 import { loadConfig } from "../config.js";
 import { loadMergedPlaybook, addBullet, deprecateBullet, savePlaybook, findBullet, getActiveBullets, loadPlaybook } from "../playbook.js";
-import { error as logError, fileExists, now, resolveRepoDir, truncate, confirmDangerousAction, getCliName } from "../utils.js";
+import { error as logError, fileExists, now, resolveRepoDir, truncate, confirmDangerousAction, getCliName, printJson, printJsonResult } from "../utils.js";
 import { withLock } from "../lock.js";
 import { getEffectiveScore, getDecayedCounts } from "../scoring.js";
 import { PlaybookBullet, Playbook, PlaybookSchema, PlaybookBulletSchema } from "../types.js";
@@ -10,7 +10,7 @@ import path from "node:path";
 import chalk from "chalk";
 import yaml from "yaml";
 import { z } from "zod";
-import { iconPrefix } from "../output.js";
+import { iconPrefix, icon } from "../output.js";
 
 // Helper function to format a bullet for detailed display
 function formatBulletDetails(bullet: PlaybookBullet, effectiveScore: number, decayedCounts: { decayedHelpful: number; decayedHarmful: number }): string {
@@ -341,7 +341,7 @@ export async function playbookCommand(
     if (flags.json || (!flags.yaml && flags.json !== false)) {
       // Default to JSON if --json specified or neither specified
       if (flags.json) {
-        console.log(JSON.stringify(exportData, null, 2));
+        printJson(exportData);
       } else {
         // Default: YAML (more human-readable)
         console.log(yaml.stringify(exportData));
@@ -363,7 +363,7 @@ export async function playbookCommand(
     // Check file exists
     if (!(await fileExists(filePath))) {
       if (flags.json) {
-        console.log(JSON.stringify({ success: false, error: `File not found: ${filePath}` }, null, 2));
+        printJson({ success: false, error: `File not found: ${filePath}` });
       } else {
         logError(`File not found: ${filePath}`);
       }
@@ -383,7 +383,7 @@ export async function playbookCommand(
       }
     } catch (err: any) {
       if (flags.json) {
-        console.log(JSON.stringify({ success: false, error: `Parse error: ${err.message}` }, null, 2));
+        printJson({ success: false, error: `Parse error: ${err.message}` });
       } else {
         logError(`Failed to parse ${format.toUpperCase()}: ${err.message}`);
       }
@@ -397,7 +397,7 @@ export async function playbookCommand(
     const bulletsArray = importedData.bullets || importedData;
     if (!Array.isArray(bulletsArray)) {
       if (flags.json) {
-        console.log(JSON.stringify({ success: false, error: "Invalid format: expected bullets array" }, null, 2));
+        printJson({ success: false, error: "Invalid format: expected bullets array" });
       } else {
         logError("Invalid format: expected bullets array or playbook with bullets field");
       }
@@ -429,7 +429,7 @@ export async function playbookCommand(
 
     if (validationErrors.length > 0 && importedBullets.length === 0) {
       if (flags.json) {
-        console.log(JSON.stringify({ success: false, errors: validationErrors }, null, 2));
+        printJson({ success: false, errors: validationErrors });
       } else {
         logError("All bullets failed validation:");
         validationErrors.forEach(e => console.error(`  - ${e}`));
@@ -467,16 +467,15 @@ export async function playbookCommand(
       await savePlaybook(existingPlaybook, config.playbookPath);
 
       if (flags.json) {
-        console.log(JSON.stringify({
-          success: true,
+        printJsonResult({
           file: filePath,
           added,
           skipped,
           updated,
           validationWarnings: validationErrors.length > 0 ? validationErrors : undefined,
-        }, null, 2));
+        });
       } else {
-        console.log(chalk.green(`✓ Imported playbook from ${filePath}`));
+        console.log(chalk.green(`${icon("success")} Imported playbook from ${filePath}`));
         console.log(`  - ${chalk.green(added)} bullets added`);
         console.log(`  - ${chalk.yellow(skipped)} bullets skipped (already exist)`);
         if (updated > 0) {
@@ -505,11 +504,11 @@ export async function playbookCommand(
       const similar = findSimilarIds(allBullets, id);
 
       if (flags.json) {
-        console.log(JSON.stringify({
+        printJson({
           success: false,
           error: `Bullet '${id}' not found`,
           suggestions: similar.length > 0 ? similar : undefined
-        }, null, 2));
+        });
       } else {
         logError(`Bullet '${id}' not found`);
         if (similar.length > 0) {
@@ -526,8 +525,7 @@ export async function playbookCommand(
       const ageMs = Date.now() - new Date(bullet.createdAt).getTime();
       const ageDays = Math.floor(ageMs / (1000 * 60 * 60 * 24));
 
-      console.log(JSON.stringify({
-        success: true,
+      printJsonResult({
         bullet: {
           ...bullet,
           effectiveScore,
@@ -535,7 +533,7 @@ export async function playbookCommand(
           decayedHarmful: decayedCounts.decayedHarmful,
           ageDays
         }
-      }, null, 2));
+      });
     } else {
       console.log(formatBulletDetails(bullet, effectiveScore, decayedCounts));
     }
@@ -551,7 +549,7 @@ export async function playbookCommand(
     }
 
     if (flags.json) {
-      console.log(JSON.stringify(bullets, null, 2));
+      printJsonResult({ bullets });
     } else {
       console.log(chalk.bold(`PLAYBOOK RULES (${bullets.length}):`));
       bullets.forEach((b: any) => {
@@ -573,26 +571,26 @@ export async function playbookCommand(
       }
 
       if (flags.json) {
-        console.log(JSON.stringify(result, null, 2));
+        printJson(result);
       } else {
         console.log(chalk.bold("BATCH ADD RESULTS"));
         console.log("");
         if (result.added.length > 0) {
-          console.log(chalk.green(`✓ Added ${result.added.length} rules:`));
+          console.log(chalk.green(`${icon("success")} Added ${result.added.length} rules:`));
           for (const r of result.added) {
             console.log(chalk.dim(`  ${r.id}: ${truncate(r.content, 60)}`));
           }
         }
         if (result.skipped.length > 0) {
           console.log("");
-          console.log(chalk.yellow(`⊘ Skipped ${result.skipped.length} rules (--strict):`));
+          console.log(chalk.yellow(`${icon("skipped")} Skipped ${result.skipped.length} rules (--strict):`));
           for (const r of result.skipped) {
             console.log(chalk.dim(`  "${truncate(r.content, 40)}": ${r.reason}`));
           }
         }
         if (result.failed.length > 0) {
           console.log("");
-          console.log(chalk.red(`✗ Failed ${result.failed.length} rules:`));
+          console.log(chalk.red(`${icon("failure")} Failed ${result.failed.length} rules:`));
           for (const r of result.failed) {
             console.log(chalk.dim(`  "${truncate(r.content, 40)}": ${r.error}`));
           }
@@ -626,11 +624,11 @@ export async function playbookCommand(
         // In strict mode, fail on warnings
         if (flags.strict && hasIssues(validation)) {
           if (flags.json) {
-            console.log(JSON.stringify({
+            printJson({
               success: false,
               error: "Validation failed in strict mode",
               validation,
-            }, null, 2));
+            });
           } else {
             console.log(chalk.red("Validation failed (--strict mode):"));
             console.log(formatValidationResult(validation));
@@ -660,16 +658,16 @@ export async function playbookCommand(
       }
 
       if (flags.json) {
-        const result: any = { success: true, bullet };
+        const result: Record<string, unknown> = { bullet };
         if (validation) result.validation = validation;
-        console.log(JSON.stringify(result, null, 2));
+        printJsonResult(result);
       } else {
         if (validation) {
           console.log(chalk.bold("Validation:"));
           console.log(formatValidationResult(validation));
           console.log("");
         }
-        console.log(chalk.green(`✓ Added bullet ${bullet.id}`));
+        console.log(chalk.green(`${icon("success")} Added bullet ${bullet.id}`));
       }
     });
     return;
@@ -736,7 +734,7 @@ export async function playbookCommand(
       };
 
       if (flags.json) {
-        console.log(JSON.stringify({ success: true, plan }, null, 2));
+        printJsonResult({ plan });
       } else {
         console.log(chalk.bold.yellow("DRY RUN - No changes will be made"));
         console.log(chalk.gray("─".repeat(50)));
@@ -773,17 +771,11 @@ export async function playbookCommand(
       if (!confirmed) {
         const cli = getCliName();
         if (flags.json) {
-          console.log(
-            JSON.stringify(
-              {
-                success: false,
-                error: "Confirmation required for --hard deletion",
-                hint: `${cli} playbook remove ${id} --hard --yes`,
-              },
-              null,
-              2
-            )
-          );
+          printJson({
+            success: false,
+            error: "Confirmation required for --hard deletion",
+            hint: `${cli} playbook remove ${id} --hard --yes`,
+          });
         } else {
           logError("Refusing to permanently delete without confirmation.");
           console.log(chalk.gray(`Re-run with: ${cli} playbook remove ${id} --hard --yes`));
@@ -810,9 +802,9 @@ export async function playbookCommand(
           await savePlaybook(playbook, savePath);
 
           if (flags.json) {
-            console.log(JSON.stringify({ success: true, id, action: "deleted", path: savePath, preview: bulletPreview }, null, 2));
+            printJsonResult({ id, action: "deleted", path: savePath, preview: bulletPreview });
           } else {
-            console.log(chalk.green(`✓ Deleted bullet ${id}`));
+            console.log(chalk.green(`${icon("success")} Deleted bullet ${id}`));
             console.log(chalk.gray(`  File: ${savePath}`));
             console.log(chalk.gray(`  Preview: "${bulletPreview}"`));
           }
@@ -824,9 +816,9 @@ export async function playbookCommand(
         await savePlaybook(playbook, savePath);
 
         if (flags.json) {
-          console.log(JSON.stringify({ success: true, id, action: flags.hard ? "deleted" : "deprecated" }, null, 2));
+          printJsonResult({ id, action: flags.hard ? "deleted" : "deprecated" });
         } else {
-          console.log(chalk.green(`✓ ${flags.hard ? "Deleted" : "Deprecated"} bullet ${id}`));
+          console.log(chalk.green(`${icon("success")} ${flags.hard ? "Deleted" : "Deprecated"} bullet ${id}`));
         }
     });
   }

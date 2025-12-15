@@ -1,6 +1,6 @@
 import chalk from "chalk";
 import { listStarters } from "../starters.js";
-import { getCliName } from "../utils.js";
+import { getCliName, printJsonResult } from "../utils.js";
 
 export interface StartersOptions {
   json?: boolean;
@@ -10,7 +10,7 @@ export async function startersCommand(options: StartersOptions = {}) {
   const starters = await listStarters();
 
   if (options.json) {
-    console.log(JSON.stringify({ starters }, null, 2));
+    printJsonResult({ starters });
     return;
   }
 

@@ -1,10 +1,11 @@
 import { loadConfig } from "../config.js";
 import { loadPlaybook, savePlaybook, findBullet } from "../playbook.js";
 import { getEffectiveScore, calculateMaturityState } from "../scoring.js";
-import { now, error as logError, expandPath, resolveRepoDir } from "../utils.js";
+import { now, error as logError, expandPath, resolveRepoDir, printJsonResult } from "../utils.js";
 import { HarmfulReason, HarmfulReasonEnum, FeedbackEvent } from "../types.js";
 import { withLock } from "../lock.js";
 import chalk from "chalk";
+import { icon } from "../output.js";
 import path from "node:path";
 
 type MarkFlags = { helpful?: boolean; harmful?: boolean; reason?: string; session?: string; json?: boolean };
@@ -107,15 +108,14 @@ export async function markCommand(
     const result = await recordFeedback(bulletId, flags);
 
     if (flags.json) {
-      console.log(JSON.stringify({
-        success: true,
+      printJsonResult({
         bulletId,
         type: result.type,
         newState: result.state,
         effectiveScore: result.score
-      }, null, 2));
+      });
     } else {
-      console.log(chalk.green(`✓ Marked bullet ${bulletId} as ${result.type}`));
+      console.log(chalk.green(`${icon("success")} Marked bullet ${bulletId} as ${result.type}`));
       console.log(`  New State: ${result.state}`);
       console.log(`  Effective Score: ${result.score.toFixed(2)}`);
     }

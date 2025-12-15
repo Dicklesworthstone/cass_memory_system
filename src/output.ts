@@ -37,7 +37,10 @@ type IconName =
   | "trophy"
   | "thumbsUp"
   | "clock"
-  | "merge";
+  | "merge"
+  | "success"   // Simple checkmark for success messages
+  | "failure"   // Simple X for failure messages
+  | "skipped";  // Circle-slash for skipped items
 
 const ICONS: Record<IconName, { emoji: string; plain: string }> = {
   chart: { emoji: "📊", plain: "" },
@@ -62,6 +65,9 @@ const ICONS: Record<IconName, { emoji: string; plain: string }> = {
   thumbsUp: { emoji: "👍", plain: "" },
   clock: { emoji: "🕐", plain: "" },
   merge: { emoji: "🔄", plain: "" },
+  success: { emoji: "✓", plain: "[OK]" },
+  failure: { emoji: "✗", plain: "[FAIL]" },
+  skipped: { emoji: "⊘", plain: "[SKIP]" },
 };
 
 export function icon(name: IconName): string {

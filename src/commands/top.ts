@@ -7,7 +7,7 @@
 import { loadConfig } from "../config.js";
 import { loadMergedPlaybook, getActiveBullets } from "../playbook.js";
 import { getEffectiveScore } from "../scoring.js";
-import { truncate, formatLastHelpful } from "../utils.js";
+import { truncate, formatLastHelpful, printJsonResult } from "../utils.js";
 import { PlaybookBullet, Config } from "../types.js";
 import chalk from "chalk";
 import { formatMaturityIcon, formatRule } from "../output.js";
@@ -77,7 +77,7 @@ export async function topCommand(
   }));
 
   if (flags.json) {
-    console.log(JSON.stringify({
+    printJsonResult({
       timestamp: new Date().toISOString(),
       count: ranked.length,
       filters: {
@@ -85,7 +85,7 @@ export async function topCommand(
         category: flags.category || null
       },
       bullets: ranked
-    }, null, 2));
+    });
     return;
   }
 

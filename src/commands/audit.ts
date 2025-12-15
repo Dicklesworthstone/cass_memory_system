@@ -4,7 +4,8 @@ import { scanSessionsForViolations } from "../audit.js";
 import { AuditResult } from "../types.js";
 import { cassTimeline } from "../cass.js";
 import chalk from "chalk";
-import { error as logError } from "../utils.js";
+import { error as logError, printJson, printJsonResult } from "../utils.js";
+import { ErrorCode } from "../types.js";
 
 export async function auditCommand(flags: { days?: number; json?: boolean }) {
   try {
@@ -12,7 +13,7 @@ export async function auditCommand(flags: { days?: number; json?: boolean }) {
     if (!config.apiKey) {
       const message = "Audit requires LLM access (missing API key). Set ANTHROPIC_API_KEY or OPENAI_API_KEY, or run with a provider configured in config.";
       if (flags.json) {
-        console.log(JSON.stringify({ error: message, code: "missing_api_key" }, null, 2));
+        printJson({ success: false, error: message, code: ErrorCode.MISSING_REQUIRED });
       } else {
         console.warn(message);
       }
@@ -27,7 +28,7 @@ export async function auditCommand(flags: { days?: number; json?: boolean }) {
     // Safety check: timeline might be empty or malformed
     if (!timeline || !timeline.groups) {
       if (flags.json) {
-        console.log(JSON.stringify({ violations: [], stats: { sessionsScanned: 0, rulesChecked: 0, violationsFound: 0, bySeverity: { high: 0, medium: 0, low: 0 } }, scannedAt: new Date().toISOString() }, null, 2));
+        printJsonResult({ violations: [], stats: { sessionsScanned: 0, rulesChecked: 0, violationsFound: 0, bySeverity: { high: 0, medium: 0, low: 0 } }, scannedAt: new Date().toISOString() });
       } else {
         console.log(chalk.yellow("No session history found."));
       }
@@ -38,7 +39,7 @@ export async function auditCommand(flags: { days?: number; json?: boolean }) {
 
     if (sessions.length === 0) {
       if (flags.json) {
-        console.log(JSON.stringify({ violations: [], stats: { sessionsScanned: 0, rulesChecked: 0, violationsFound: 0, bySeverity: { high: 0, medium: 0, low: 0 } }, scannedAt: new Date().toISOString() }, null, 2));
+        printJsonResult({ violations: [], stats: { sessionsScanned: 0, rulesChecked: 0, violationsFound: 0, bySeverity: { high: 0, medium: 0, low: 0 } }, scannedAt: new Date().toISOString() });
       } else {
         console.log(chalk.yellow(`No sessions found in the last ${flags.days || 7} days.`));
       }
@@ -67,7 +68,7 @@ export async function auditCommand(flags: { days?: number; json?: boolean }) {
     };
 
     if (flags.json) {
-      console.log(JSON.stringify(result, null, 2));
+      printJsonResult(result);
     } else {
       console.log(chalk.bold(`AUDIT RESULTS (last ${flags.days || 7} days)`));
       console.log(`Sessions scanned: ${stats.sessionsScanned}`);
@@ -85,7 +86,7 @@ export async function auditCommand(flags: { days?: number; json?: boolean }) {
     }
   } catch (err: any) {
     if (flags.json) {
-      console.log(JSON.stringify({ error: err.message, code: "audit_error" }, null, 2));
+      printJson({ success: false, error: err.message, code: ErrorCode.AUDIT_FAILED });
     } else {
       logError(`Audit failed: ${err.message}`);
     }

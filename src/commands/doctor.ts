@@ -1011,7 +1011,7 @@ export async function applyFixes(
         success: true,
         message: "Fixed successfully",
       });
-      if (!quiet) console.log(chalk.green("  ✓ Fixed"));
+      if (!quiet) console.log(chalk.green(`  ${icon("success")} Fixed`));
     } catch (err: any) {
       if (isPermissionError(err)) {
         // Handle permission errors gracefully
@@ -1022,7 +1022,7 @@ export async function applyFixes(
         success: false,
         message: err.message,
       });
-      if (!quiet) console.log(chalk.red(`  ✗ Failed: ${err.message}`));
+      if (!quiet) console.log(chalk.red(`  ${icon("failure")} Failed: ${err.message}`));
     }
   }
 
@@ -1032,9 +1032,9 @@ export async function applyFixes(
 
   if (!quiet) {
     console.log(chalk.bold("\n--- Fix Summary ---"));
-    console.log(chalk.green(`✓ ${succeeded} fix(es) applied successfully`));
+    console.log(chalk.green(`${icon("success")} ${succeeded} fix(es) applied successfully`));
     if (failed > 0) {
-      console.log(chalk.red(`✗ ${failed} fix(es) failed`));
+      console.log(chalk.red(`${icon("failure")} ${failed} fix(es) failed`));
     }
   }
 
