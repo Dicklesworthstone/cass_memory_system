@@ -9,7 +9,7 @@
  * - JSON output format
  */
 import { describe, test, expect } from "bun:test";
-import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
+import { writeFileSync, readFileSync, existsSync } from "node:fs";
 import yaml from "yaml";
 import { join } from "node:path";
 import { Playbook, PlaybookBullet } from "../src/types.js";
