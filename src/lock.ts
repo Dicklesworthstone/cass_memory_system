@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { expandPath } from "./utils.js";
+import { expandPath, warn } from "./utils.js";
 
 /** Maximum age in milliseconds for a lock file before it's considered stale */
 const STALE_LOCK_THRESHOLD_MS = 30_000; // 30 seconds
@@ -58,7 +58,7 @@ async function tryRemoveStaleLock(lockPath: string, thresholdMs = STALE_LOCK_THR
   try {
     if (await isLockStale(lockPath, thresholdMs)) {
       await fs.rm(lockPath, { recursive: true, force: true });
-      console.warn(`[lock] Removed stale lock: ${lockPath}`);
+      warn(`[lock] Removed stale lock: ${lockPath}`);
       return true;
     }
   } catch {
@@ -91,7 +91,7 @@ async function tryRemoveAbandonedLock(lockPath: string): Promise<boolean> {
     if (pidIsRunning(pid)) return false;
 
     await fs.rm(lockPath, { recursive: true, force: true });
-    console.warn(`[lock] Removed abandoned lock (dead PID ${pid}): ${lockPath}`);
+    warn(`[lock] Removed abandoned lock (dead PID ${pid}): ${lockPath}`);
     return true;
   } catch {
     return false;
@@ -110,8 +110,12 @@ export async function withLock<T>(
   const maxRetries = options.retries ?? 20;
   const retryDelay = options.delay ?? 100;
   const staleThreshold = options.staleLockThresholdMs ?? STALE_LOCK_THRESHOLD_MS;
+  const expandedTargetPath = typeof targetPath === "string" ? expandPath(targetPath) : "";
+  if (!expandedTargetPath) {
+    throw new Error("withLock targetPath must be a non-empty path");
+  }
   // Use .lock.d to clearly indicate directory
-  const lockPath = `${expandPath(targetPath)}.lock.d`;
+  const lockPath = `${expandedTargetPath}.lock.d`;
   const pid = process.pid.toString();
 
   for (let i = 0; i < maxRetries; i++) {
@@ -156,7 +160,7 @@ export async function withLock<T>(
           if (content.trim() === pid) {
             safeToDelete = true;
           } else {
-            console.warn(`[lock] Lock stolen by PID ${content.trim()}, not deleting: ${lockPath}`);
+            warn(`[lock] Lock stolen by PID ${content.trim()}, not deleting: ${lockPath}`);
           }
         } catch {
           // If we can't read the PID file (ENOENT), it implies the lock structure is gone or corrupted.
