@@ -64,7 +64,7 @@ export async function evidenceCountGate(
   const hits = await safeCassSearch(keywords.join(" "), {
     limit: 20,
     days: config.validationLookbackDays
-  }, config.cassPath);
+  }, config.cassPath, config);
 
   let successCount = 0;
   let failureCount = 0;
@@ -234,7 +234,7 @@ export async function validateDelta(
 
   // 2. Run LLM
   const keywords = extractKeywords(content);
-  const evidenceHits = await safeCassSearch(keywords.join(" "), { limit: 10 }, config.cassPath);
+  const evidenceHits = await safeCassSearch(keywords.join(" "), { limit: 10 }, config.cassPath, config);
   const formattedEvidence = formatEvidence(evidenceHits);
 
   const rawResult = await runValidator(content, formattedEvidence, config);

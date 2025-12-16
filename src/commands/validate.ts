@@ -68,7 +68,7 @@ export async function validateCommand(
   const hits = await safeCassSearch(extractKeywords(proposedRule).join(" "), {
     limit: 10,
     days: config.validationLookbackDays
-  }, config.cassPath);
+  }, config.cassPath, config);
 
   const formattedEvidence = hits
     .map(

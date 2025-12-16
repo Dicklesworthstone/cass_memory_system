@@ -291,7 +291,7 @@ export async function removeFromBlockedLog(bulletId: string, logPath: string): P
     if (found) {
       // Write back the filtered entries
       const newContent = filteredLines.length > 0 ? filteredLines.join("\n") + "\n" : "";
-      await fs.writeFile(expanded, newContent, "utf-8");
+      await atomicWrite(expanded, newContent);
     }
 
     return found;
@@ -686,8 +686,8 @@ export function computeFullStats(playbook: Playbook, config: Config): PlaybookSt
     
     const score = getEffectiveScore(b, config);
     // Thresholds aligned with scoring.ts analyzeScoreDistribution
-    if (score >= 5) stats.scoreDistribution.excellent++;
-    else if (score >= 2) stats.scoreDistribution.good++;
+    if (score >= 10) stats.scoreDistribution.excellent++;
+    else if (score >= 5) stats.scoreDistribution.good++;
     else if (score >= 0) stats.scoreDistribution.neutral++;
     else stats.scoreDistribution.atRisk++;
   }
