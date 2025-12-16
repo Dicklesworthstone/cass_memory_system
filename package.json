@@ -21,6 +21,7 @@
     "build:all": "bun run build:linux && bun run build:macos-arm && bun run build:macos-x64 && bun run build:windows",
     "build": "bun run build:current",
     "typecheck": "tsc --noEmit",
+    "lint": "bun run typecheck",
     "typecheck:watch": "tsc --noEmit --watch",
     "test": "bun test",
     "test:unit": "bun test test/*.test.ts --exclude '*integration*' --exclude '*e2e*'",
