@@ -8,11 +8,11 @@ import { loadConfig } from "../config.js";
 import { findDiaryBySession, loadDiary, loadAllDiaries } from "../diary.js";
 import { loadMergedPlaybook, findBullet } from "../playbook.js";
 import { getEffectiveScore } from "../scoring.js";
-import { truncate, printJsonResult, printJsonError, expandPath } from "../utils.js";
+import { truncate, printJsonResult, printJsonError, expandPath, getCliName } from "../utils.js";
 import { ErrorCode } from "../types.js";
 import { PlaybookBullet, DiaryEntry, Config } from "../types.js";
 import chalk from "chalk";
-import { icon } from "../output.js";
+import { formatKv, formatRule, formatTipPrefix, getOutputStyle, icon, wrapText } from "../output.js";
 import path from "node:path";
 
 export interface WhyFlags {
@@ -199,87 +199,130 @@ async function buildWhyResult(
 }
 
 function printWhyResult(result: WhyResult, verbose?: boolean): void {
-  console.log(chalk.bold("\nWHY WAS THIS RULE LEARNED?"));
-  console.log(chalk.gray("═".repeat(50)));
-  console.log();
+  const style = getOutputStyle();
+  const cli = getCliName();
+  const maxWidth = Math.min(style.width, 84);
+  const divider = chalk.dim(formatRule("─", { maxWidth }));
+  const wrapWidth = Math.max(24, maxWidth - 4);
 
-  // Bullet info
-  console.log(chalk.bold(`Bullet: ${result.bullet.id}`));
-  console.log(`Content: ${chalk.cyan(`"${result.bullet.content}"`)}`);
-  console.log(chalk.gray(`Category: ${result.bullet.category} | Maturity: ${result.bullet.maturity}`));
-  console.log(chalk.gray(`Created: ${result.bullet.createdAt.slice(0, 10)} (${result.bullet.daysAgo} days ago)`));
-  console.log();
+  const scoreColor =
+    result.bullet.score >= 5 ? chalk.green : result.bullet.score >= 0 ? chalk.white : chalk.red;
 
-  // Reasoning
-  if (result.reasoning) {
-    console.log(chalk.bold("ORIGINAL REASONING:"));
-    console.log(chalk.gray("─".repeat(40)));
-    const reasoningText = verbose ? result.reasoning : truncate(result.reasoning, 300);
-    console.log(`  ${reasoningText}`);
-    console.log();
-  } else {
-    console.log(chalk.yellow("No original reasoning recorded"));
-    console.log();
+  console.log(chalk.bold("WHY"));
+  console.log(divider);
+  console.log(
+    chalk.bold(`[${result.bullet.id}]`) +
+      chalk.dim(
+        ` ${result.bullet.category} • ${result.bullet.maturity} • score ${scoreColor(
+          result.bullet.score.toFixed(1)
+        )}`
+      )
+  );
+  console.log("");
+
+  console.log(chalk.bold("Summary"));
+  console.log(divider);
+  console.log(
+    formatKv(
+      [
+        {
+          key: "Created",
+          value: `${result.bullet.createdAt.slice(0, 10)} (${result.bullet.daysAgo} days ago)`,
+        },
+        {
+          key: "Feedback",
+          value: `${result.currentStatus.helpfulCount} helpful / ${result.currentStatus.harmfulCount} harmful • ${result.currentStatus.effectiveness}`,
+        },
+      ],
+      { indent: "  ", width: maxWidth }
+    )
+  );
+  console.log("");
+
+  console.log(chalk.bold("Rule"));
+  console.log(divider);
+  for (const line of wrapText(result.bullet.content, wrapWidth)) {
+    console.log(`  ${line}`);
   }
+  console.log("");
 
-  // Source sessions
-  if (result.sourceSessions.length > 0) {
-    console.log(chalk.bold(`SOURCE SESSIONS (${result.sourceSessions.length}):`));
-    console.log(chalk.gray("─".repeat(40)));
+  console.log(chalk.bold("Reasoning"));
+  console.log(divider);
+  if (result.reasoning) {
+    const reasoningText = verbose ? result.reasoning : truncate(result.reasoning, 400);
+    for (const line of wrapText(reasoningText, wrapWidth)) {
+      console.log(chalk.gray(`  ${line}`));
+    }
+  } else {
+    console.log(chalk.dim("  (No original reasoning recorded)"));
+  }
+  console.log("");
+
+  console.log(chalk.bold(`Sources (${result.sourceSessions.length})`));
+  console.log(divider);
+  if (result.sourceSessions.length === 0) {
+    console.log(chalk.dim("  (No source sessions recorded)"));
+  } else {
     for (let i = 0; i < result.sourceSessions.length; i++) {
       const s = result.sourceSessions[i];
       const pathShort = s.path.split(/[\\/]/).slice(-2).join("/");
-      console.log(`  ${i + 1}. ${chalk.blue(pathShort)}${s.date ? ` (${s.date})` : ""}`);
+      console.log(
+        `  ${i + 1}. ${chalk.blue(pathShort)}${s.date ? chalk.dim(` • ${s.date}`) : ""}`
+      );
       if (s.snippet) {
-        console.log(chalk.gray(`     "${truncate(s.snippet, 60)}"`));
+        for (const line of wrapText(`"${truncate(s.snippet, 140)}"`, wrapWidth - 2)) {
+          console.log(chalk.dim(`     ${line}`));
+        }
       }
     }
-    console.log();
-  } else {
-    console.log(chalk.gray("No source sessions recorded"));
-    console.log();
   }
+  console.log("");
 
-  // Evidence
   if (result.evidence.length > 0) {
-    console.log(chalk.bold("KEY EVIDENCE QUOTES:"));
-    console.log(chalk.gray("─".repeat(40)));
+    console.log(chalk.bold("Evidence"));
+    console.log(divider);
     for (const e of result.evidence) {
-      console.log(chalk.green(`  • "${truncate(e, 70)}"`));
+      for (const line of wrapText(`• ${truncate(e, 180)}`, wrapWidth)) {
+        console.log(chalk.green(`  ${line}`));
+      }
     }
-    console.log();
+    console.log("");
   }
 
-  // Diary entries
   if (result.diaryEntries.length > 0) {
-    console.log(chalk.bold("RELATED DIARY ENTRIES:"));
-    console.log(chalk.gray("─".repeat(40)));
+    console.log(chalk.bold("Related diary entries"));
+    console.log(divider);
     for (const d of result.diaryEntries) {
-      console.log(`  ${d.date}: ${chalk.gray(truncate(d.content, 60))}`);
+      for (const line of wrapText(`${d.date}: ${truncate(d.content, 200)}`, wrapWidth)) {
+        console.log(chalk.dim(`  ${line}`));
+      }
     }
-    console.log();
+    console.log("");
   }
 
-  // Feedback history
-  const { helpfulCount, harmfulCount } = result.currentStatus;
   if (result.feedbackHistory.length > 0) {
-    console.log(chalk.bold(`FEEDBACK HISTORY (${helpfulCount} helpful, ${harmfulCount} harmful):`));
-    console.log(chalk.gray("─".repeat(40)));
+    console.log(
+      chalk.bold(
+        `Feedback history (${result.currentStatus.helpfulCount} helpful, ${result.currentStatus.harmfulCount} harmful)`
+      )
+    );
+    console.log(divider);
+
     for (const f of result.feedbackHistory.slice(0, verbose ? 10 : 5)) {
-      const feedbackIcon = f.type === "helpful" ? chalk.green(icon("success")) : chalk.red(icon("failure"));
-      console.log(`  ${f.timestamp.slice(0, 10)}: ${feedbackIcon} ${f.type}${f.sessionPath ? ` (${f.sessionPath.split(/[\\/]/).pop()})` : ""}`);
+      const badge = f.type === "helpful" ? chalk.green(icon("success")) : chalk.red(icon("failure"));
+      const session = f.sessionPath ? ` • ${path.basename(f.sessionPath)}` : "";
+      const reason = f.type === "harmful" && f.reason ? ` • ${f.reason}` : "";
+      console.log(`  ${f.timestamp.slice(0, 10)} ${badge} ${f.type}${session}${reason}`);
     }
     if (result.feedbackHistory.length > (verbose ? 10 : 5)) {
-      console.log(chalk.gray(`  ... (${result.feedbackHistory.length - (verbose ? 10 : 5)} more)`));
+      console.log(chalk.dim(`  … (${result.feedbackHistory.length - (verbose ? 10 : 5)} more)`));
     }
-    console.log();
+    console.log("");
   }
 
-  // Current status
-  console.log(chalk.bold("CURRENT STATUS:"));
-  console.log(chalk.gray("─".repeat(40)));
-  const scoreColor = result.bullet.score >= 5 ? chalk.green : result.bullet.score >= 0 ? chalk.white : chalk.red;
-  console.log(`  Score: ${scoreColor(result.bullet.score.toFixed(1))} (${result.bullet.maturity})`);
-  console.log(`  Effectiveness: ${result.currentStatus.effectiveness}`);
-  console.log();
+  console.log(
+    chalk.gray(
+      `${formatTipPrefix()}Next: '${cli} playbook get ${result.bullet.id}' or '${cli} mark ${result.bullet.id} --helpful|--harmful --reason \"...\"'`
+    )
+  );
 }

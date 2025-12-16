@@ -1170,7 +1170,7 @@ export async function doctorCommand(options: {
     console.log("");
     if (overallStatus === "healthy") {
       const rocketSuffix = icon("rocket") ? ` ${icon("rocket")}` : "";
-      console.log(chalk.green(`System is healthy ready to rock!${rocketSuffix}`));
+      console.log(chalk.green(`System is healthy! Ready to rock${rocketSuffix}`));
     } else if (overallStatus === "degraded") {
       console.log(chalk.yellow("System is running in degraded mode."));
     } else {

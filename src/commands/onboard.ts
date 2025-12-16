@@ -9,7 +9,7 @@
 
 import chalk from "chalk";
 import { loadConfig } from "../config.js";
-import { loadMergedPlaybook } from "../playbook.js";
+import { loadMergedPlaybook, getActiveBullets } from "../playbook.js";
 import { cassExport, handleCassUnavailable, CassSearchOptions, safeCassSearchWithDegraded } from "../cass.js";
 import { getCliName, expandPath, formatRelativeTime, printJson, printJsonError, printJsonResult } from "../utils.js";
 import { agentIconPrefix, formatKv, formatRule, getOutputStyle, icon, iconPrefix } from "../output.js";
@@ -90,7 +90,8 @@ async function getOnboardStatus(): Promise<OnboardStatus> {
   const totalConversations = 0;
   const totalMessages = 0;
 
-  const playbookRules = playbook.bullets.filter(b => b.state !== "retired" && !b.deprecated).length;
+  // Use getActiveBullets for consistent filtering (includes maturity check)
+  const playbookRules = getActiveBullets(playbook).length;
   // Ratio is meaningless without real conversation counts
   const onboardingRatio = 0;
   // Base needs assessment on playbook size alone since we can't count conversations
@@ -712,7 +713,7 @@ export async function onboardCommand(
 
       // Find related rules using semantic search (if enabled)
       let relatedRules: Array<{ id: string; content: string; similarity: number }> = [];
-      const activeBullets = playbook.bullets.filter(b => b.state !== "retired" && !b.deprecated);
+      const activeBullets = getActiveBullets(playbook);
       if (config.semanticSearchEnabled && activeBullets.length > 0) {
         try {
           const matches = await findSimilarBulletsSemantic(
