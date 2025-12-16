@@ -424,7 +424,7 @@ export class ProcessedLog {
               this.entries.set(entry.sessionPath, {
                 sessionPath: entry.sessionPath,
                 processedAt: entry.processedAt || new Date().toISOString(),
-                diaryId: entry.diaryId || entry.id, // Handle both keys for robustcompat
+                diaryId: entry.diaryId || entry.id, // Handle both keys for compatibility
                 deltasGenerated: typeof entry.deltasGenerated === 'number' ? entry.deltasGenerated : 0
               });
             }
