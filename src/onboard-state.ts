@@ -172,19 +172,10 @@ export async function markSessionProcessed(
 }
 
 /**
- * Reset onboarding state (delete state file)
+ * Reset onboarding state (overwrite with empty state).
  */
 export async function resetOnboardState(): Promise<void> {
-  const statePath = getStatePath();
-
-  try {
-    await fs.unlink(statePath);
-  } catch (err: any) {
-    if (err?.code !== "ENOENT") {
-      throw err;
-    }
-    // File doesn't exist, that's fine
-  }
+  await saveOnboardState(createEmptyState());
 }
 
 /**
