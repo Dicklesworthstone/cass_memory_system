@@ -421,7 +421,8 @@ export async function contextCommand(
     const cass = result.degraded.cass;
     const suggested = Array.isArray(cass.suggestedFix) ? cass.suggestedFix.filter(Boolean) : [];
     const primaryHint = suggested[0] || `${cli} doctor`;
-    console.log(chalk.yellow(`${iconPrefix("warning")}History unavailable (cass: ${cass.reason}).`));
+    const remoteOnlyNote = cassHits.length > 0 ? " (showing remote history only)" : "";
+    console.log(chalk.yellow(`${iconPrefix("warning")}Local history unavailable (cass: ${cass.reason})${remoteOnlyNote}.`));
     console.log(chalk.yellow(`  Next: ${primaryHint}`));
     console.log("");
   }

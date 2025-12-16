@@ -32,6 +32,7 @@ Run this before starting any non-trivial task. It returns:
 
 - **Degraded mode is normal**: If \`cass\` is missing, not indexed, or times out, context still works but history may be disabled. Run \`${cli} doctor\` and follow recommended actions.
 - **Privacy by default**: Cross-agent enrichment is **opt-in and off by default**. Check with \`${cli} privacy status\`.
+- **Remote history (optional)**: If configured, \`historySnippets\` may include remote hits tagged with \`origin.kind="remote"\` and \`origin.host\` (agents can filter on this field).
 
 ## What You Usually DON'T Need To Do
 
@@ -119,12 +120,13 @@ function getQuickstartJson(cli: string) {
     oneCommand: `${cli} context "<task>" --json`,
     expectations: {
       degradedMode: `If cass is missing/not indexed, historySnippets may be empty; run ${cli} doctor for next steps.`,
-      privacy: `Cross-agent enrichment is opt-in and off by default; check ${cli} privacy status.`
+      privacy: `Cross-agent enrichment is opt-in and off by default; check ${cli} privacy status.`,
+      remoteHistory: `Optional: remote cass via SSH can add remote hits to historySnippets; filter by historySnippets[].origin.kind ("local"|"remote").`
     },
     whatItReturns: [
       "relevantBullets: Rules that may help",
       "antiPatterns: Pitfalls to avoid",
-      "historySnippets: Past solutions",
+      "historySnippets: Past solutions (local + optional remote; see origin.kind/origin.host)",
       "suggestedCassQueries: Deeper searches"
     ],
     doNotDo: [

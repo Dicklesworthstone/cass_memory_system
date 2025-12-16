@@ -389,7 +389,7 @@ export async function cassSearch(
 
 function shellEscapePosix(arg: string): string {
   // Safe single-quote escaping for POSIX shells: ' -> '"'"'
-  return `'${arg.replace(/'/g, `'\"'\"'`)}'`;
+  return "'" + arg.replace(/'/g, "'\"'\"'") + "'";
 }
 
 function buildCassSearchArgs(query: string, options: CassSearchOptions = {}): string[] {
@@ -511,6 +511,90 @@ function classifyCassSearchError(err: any, query: string): CassDegradedInfo {
   };
 }
 
+function classifyRemoteCassSearchFailure(
+  err: unknown,
+  sshTarget: string,
+  label: string,
+  query: string,
+  options: CassSearchOptions
+): CassDegradedInfo {
+  const rawMessage = normalizeCassErrorMessage(err);
+  const stderr = typeof (err as any)?.stderr === "string" ? (err as any).stderr : "";
+  const msg = rawMessage.split("\n")[0]?.trim() || rawMessage;
+  const lower = `${msg}\n${stderr}`.toLowerCase();
+  const code = (err as any)?.code;
+  const display = label && label !== sshTarget ? `${label} (${sshTarget})` : sshTarget;
+
+  if (
+    code === 255 ||
+    lower.includes("could not resolve hostname") ||
+    lower.includes("connection refused") ||
+    lower.includes("no route to host") ||
+    lower.includes("permission denied") ||
+    lower.includes("connection timed out") ||
+    lower.includes("operation timed out")
+  ) {
+    return {
+      available: false,
+      reason: "OTHER",
+      message: `ssh to ${display} failed; remote history unavailable.`,
+      suggestedFix: [`ssh ${sshTarget} true`, `ssh ${sshTarget} cass health`],
+    };
+  }
+
+  if (
+    code === 127 ||
+    lower.includes("command not found") ||
+    lower.includes("cass: not found") ||
+    lower.includes("cass: command not found")
+  ) {
+    return {
+      available: false,
+      reason: "NOT_FOUND",
+      message: `cass not found on ${display}; remote history disabled for this host.`,
+      suggestedFix: [`ssh ${sshTarget} cargo install cass`, `ssh ${sshTarget} cass index --full`],
+    };
+  }
+
+  const base = classifyCassSearchError(err as any, query);
+  if (base.reason === "TIMEOUT") {
+    return {
+      available: false,
+      reason: "TIMEOUT",
+      message: `remote(${display}): ${base.message}`,
+      suggestedFix: [
+        `ssh ${sshTarget} cass search "${query.replace(/"/g, '\\"')}" --robot --limit ${Math.max(1, Math.min(5, options.limit || 5))} --days ${Math.max(1, Math.min(30, options.days || 7))}`,
+        `ssh ${sshTarget} cass health`,
+      ],
+    };
+  }
+
+  if (base.reason === "INDEX_MISSING") {
+    return {
+      available: false,
+      reason: "INDEX_MISSING",
+      message: `remote(${display}): ${base.message}`,
+      suggestedFix: [`ssh ${sshTarget} cass index --full`, `ssh ${sshTarget} cass health`],
+    };
+  }
+
+  if (base.reason === "NOT_FOUND") {
+    return {
+      available: false,
+      reason: "NOT_FOUND",
+      message: `remote(${display}): ${base.message}`,
+      suggestedFix: [`ssh ${sshTarget} cargo install cass`, `ssh ${sshTarget} cass index --full`],
+    };
+  }
+
+  return {
+    available: false,
+    reason: "OTHER",
+    message: `remote(${display}): ${base.message}`,
+    suggestedFix: [`ssh ${sshTarget} cass health`],
+  };
+}
+
 export async function safeCassSearchWithDegraded(
   query: string,
   options: CassSearchOptions = {},
@@ -549,20 +633,21 @@ export async function safeCassSearchWithDegraded(
     }));
 
   // Start remote searches in parallel if enabled (don't wait for local availability check)
-  const remoteSearchPromises: Array<Promise<{ host: string; label: string; hits: CassHit[]; error?: string }>> = [];
+  const remoteSearchPromises: Array<Promise<{ host: string; label: string; hits: CassHit[]; error?: unknown }>> = [];
   const remoteEnabled = activeConfig.remoteCass?.enabled && activeConfig.remoteCass.hosts?.length > 0;
+  const remoteSearchOptions: CassSearchOptions = {
+    ...options,
+    limit: Math.min(options.limit || 10, 5), // Cap remote results
+    timeout: Math.min(options.timeout || 15, 15),
+  };
 
   if (remoteEnabled) {
     for (const hostConfig of activeConfig.remoteCass.hosts) {
       const label = coerceRemoteHostLabel(hostConfig);
       remoteSearchPromises.push(
-        sshCassSearch(hostConfig, query, {
-          ...options,
-          limit: Math.min(options.limit || 10, 5), // Cap remote results
-          timeout: Math.min(options.timeout || 15, 15)
-        })
+        sshCassSearch(hostConfig, query, remoteSearchOptions)
           .then(hits => ({ host: hostConfig.host, label, hits, error: undefined }))
-          .catch(err => ({ host: hostConfig.host, label, hits: [], error: err?.message || String(err) }))
+          .catch(err => ({ host: hostConfig.host, label, hits: [], error: err }))
       );
     }
   }
@@ -573,13 +658,10 @@ export async function safeCassSearchWithDegraded(
     const remoteResults = await Promise.all(remoteSearchPromises);
     const remoteHits = remoteResults.flatMap(r => processRemoteHits(r.hits));
     const remoteDegraded = remoteResults
-      .filter(r => r.error)
-      .map(r => ({
+      .filter((r) => r.error)
+      .map((r) => ({
         host: r.host,
-        available: false as const,
-        reason: "OTHER" as CassDegradedReason,
-        message: r.label && r.label !== r.host ? `SSH search failed (${r.label}): ${r.error}` : `SSH search failed: ${r.error}`,
-        suggestedFix: [`ssh ${r.host} cass health`]
+        ...classifyRemoteCassSearchFailure(r.error, r.host, r.label, query, remoteSearchOptions),
       }));
 
     return {
@@ -610,13 +692,10 @@ export async function safeCassSearchWithDegraded(
     const remoteResults = await Promise.all(remoteSearchPromises);
     const remoteHits = remoteResults.flatMap(r => processRemoteHits(r.hits));
     const remoteDegraded = remoteResults
-      .filter(r => r.error)
-      .map(r => ({
+      .filter((r) => r.error)
+      .map((r) => ({
         host: r.host,
-        available: false as const,
-        reason: "OTHER" as CassDegradedReason,
-        message: r.label && r.label !== r.host ? `SSH search failed (${r.label}): ${r.error}` : `SSH search failed: ${r.error}`,
-        suggestedFix: [`ssh ${r.host} cass health`]
+        ...classifyRemoteCassSearchFailure(r.error, r.host, r.label, query, remoteSearchOptions),
       }));
 
     // Merge and sort by score (higher first), local hits preferred for equal scores
@@ -645,13 +724,10 @@ export async function safeCassSearchWithDegraded(
     const remoteResults = await Promise.all(remoteSearchPromises);
     const remoteHits = remoteResults.flatMap(r => processRemoteHits(r.hits));
     const remoteDegraded = remoteResults
-      .filter(r => r.error)
-      .map(r => ({
+      .filter((r) => r.error)
+      .map((r) => ({
         host: r.host,
-        available: false as const,
-        reason: "OTHER" as CassDegradedReason,
-        message: r.label && r.label !== r.host ? `SSH search failed (${r.label}): ${r.error}` : `SSH search failed: ${r.error}`,
-        suggestedFix: [`ssh ${r.host} cass health`]
+        ...classifyRemoteCassSearchFailure(r.error, r.host, r.label, query, remoteSearchOptions),
       }));
 
     // Best-effort fallback: if force flag set, attempt to parse whatever stdout we get.

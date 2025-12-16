@@ -23,6 +23,10 @@ export function createTestConfig(overrides: Partial<Config> = {}): Config {
     provider: "anthropic",
     model: "claude-3-5-sonnet-20241022",
     cassPath: "cass",
+    remoteCass: {
+      enabled: false,
+      hosts: []
+    },
     playbookPath: "/tmp/playbook.yaml",
     diaryDir: "/tmp/diary",
     maxReflectorIterations: 3,
