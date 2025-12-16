@@ -1,6 +1,6 @@
 {
   "name": "cass-memory",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "type": "module",
   "description": "Universal memory system for AI coding agents - implements ACE framework",
   "author": "Jeffrey Emanuel",
