@@ -251,6 +251,7 @@ cm context "fix the auth timeout bug" --json
     {
       "source_path": "~/.claude/sessions/session-001.jsonl",
       "agent": "claude",
+      "origin": { "kind": "local" },
       "snippet": "Fixed timeout by increasing token refresh interval...",
       "score": 0.87
     }
@@ -263,6 +264,8 @@ cm context "fix the auth timeout bug" --json
 ```
 
 **Design principle**: stdout contains only parseable JSON data; all diagnostics go to stderr.
+
+**Filtering remote vs local history:** `historySnippets[].origin.kind` is `"local"` or `"remote"`; remote hits include `origin.host`.
 
 ### Error Handling for Agents
 
@@ -1253,7 +1256,7 @@ Config lives at `~/.cass-memory/config.json` (global) and `.cass/config.json` (r
 
 **Precedence:** CLI flags > Repo config > Global config > Defaults
 
-**Security:** Repo config cannot override sensitive paths (`cassPath`, `playbookPath`, `diaryDir`).
+**Security:** Repo config cannot override sensitive paths (`cassPath`, `playbookPath`, `diaryDir`) or user-level consent settings (`crossAgent`, `remoteCass`).
 
 ### Complete Configuration Reference
 
@@ -1298,7 +1301,11 @@ Config lives at `~/.cass-memory/config.json` (global) and `.cass/config.json` (r
   "dedupSimilarityThreshold": 0.85,
 
   // Paths (usually auto-detected)
-  "cassPath": null,
+  "cassPath": "cass",
+  "remoteCass": {
+    "enabled": false,
+    "hosts": []
+  },
   "playbookPath": "~/.cass-memory/playbook.yaml",
   "diaryDir": "~/.cass-memory/diary"
 }
@@ -1343,6 +1350,15 @@ Config lives at `~/.cass-memory/config.json` (global) and `.cass/config.json` (r
 | `crossAgent.consentGiven` | `false` | Explicit consent flag |
 | `crossAgent.agents` | `[]` | Allowlist; empty means "all agents" |
 | `crossAgent.auditLog` | `true` | Log enrichment events |
+
+#### Remote History (SSH)
+
+Remote cass is **opt-in** and queries other machines via SSH (using your existing SSH config/keys). Remote hits are tagged with `historySnippets[].origin.kind="remote"` and `origin.host`.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `remoteCass.enabled` | `false` | Enable SSH-based remote cass history |
+| `remoteCass.hosts` | `[]` | List of SSH targets: `{ host: "workstation", label?: "work" }` |
 
 #### Semantic Search Settings
 

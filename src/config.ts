@@ -174,10 +174,12 @@ export async function loadConfig(cliOverrides: Partial<Config> = {}): Promise<Co
     // Migrate deprecated llm.* shape to top-level
     repoConfig = migrateLlmConfig(repoConfigRaw);
 
-    // Security: Prevent repo from overriding sensitive paths
+    // Security: Prevent repo from overriding sensitive user-level settings
     delete repoConfig.cassPath;
     delete repoConfig.playbookPath;
     delete repoConfig.diaryDir;
+    delete repoConfig.crossAgent;
+    delete repoConfig.remoteCass;
   }
 
   // Migrate CLI overrides as well (unlikely but complete)
