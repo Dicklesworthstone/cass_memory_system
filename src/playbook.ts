@@ -30,6 +30,7 @@ import {
 import { z } from "zod";
 import { getEffectiveScore, isStale } from "./scoring.js";
 import { formatMaturityIcon } from "./output.js";
+import { withLock } from "./lock.js";
 
 // --- Interfaces ---
 
@@ -248,8 +249,10 @@ export const loadToxicLog = loadBlockedLog;
 
 export async function appendBlockedLog(entry: BlockedEntry, logPath: string): Promise<void> {
   const expanded = expandPath(logPath);
-  await ensureDir(path.dirname(expanded));
-  await fs.appendFile(expanded, JSON.stringify(entry) + "\n", "utf-8");
+  await withLock(expanded, async () => {
+    await ensureDir(path.dirname(expanded));
+    await fs.appendFile(expanded, JSON.stringify(entry) + "\n", "utf-8");
+  });
 }
 
 /** @deprecated Use appendBlockedLog instead */
@@ -261,44 +264,46 @@ export const appendToxicLog = appendBlockedLog;
  */
 export async function removeFromBlockedLog(bulletId: string, logPath: string): Promise<boolean> {
   const expanded = expandPath(logPath);
-  if (!(await fileExists(expanded))) {
-    return false;
-  }
+  return await withLock(expanded, async () => {
+    if (!(await fileExists(expanded))) {
+      return false;
+    }
 
-  try {
-    const content = await fs.readFile(expanded, "utf-8");
-    const lines = content.split("\n");
-    const filteredLines: string[] = [];
-    let found = false;
+    try {
+      const content = await fs.readFile(expanded, "utf-8");
+      const lines = content.split("\n");
+      const filteredLines: string[] = [];
+      let found = false;
 
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
 
-      try {
-        const entry = JSON.parse(trimmed);
-        if (entry.id === bulletId) {
-          found = true;
-          continue; // Skip this entry
+        try {
+          const entry = JSON.parse(trimmed);
+          if (entry.id === bulletId) {
+            found = true;
+            continue; // Skip this entry
+          }
+          filteredLines.push(trimmed);
+        } catch {
+          // Keep malformed lines to not lose data
+          filteredLines.push(trimmed);
         }
-        filteredLines.push(trimmed);
-      } catch {
-        // Keep malformed lines to not lose data
-        filteredLines.push(trimmed);
       }
-    }
 
-    if (found) {
-      // Write back the filtered entries
-      const newContent = filteredLines.length > 0 ? filteredLines.join("\n") + "\n" : "";
-      await atomicWrite(expanded, newContent);
-    }
+      if (found) {
+        // Write back the filtered entries
+        const newContent = filteredLines.length > 0 ? filteredLines.join("\n") + "\n" : "";
+        await atomicWrite(expanded, newContent);
+      }
 
-    return found;
-  } catch (err: any) {
-    warn(`Failed to remove from blocked log ${expanded}: ${err.message}`);
-    return false;
-  }
+      return found;
+    } catch (err: any) {
+      warn(`Failed to remove from blocked log ${expanded}: ${err.message}`);
+      return false;
+    }
+  });
 }
 
 export function mergePlaybooks(global: Playbook, repo: Playbook | null): Playbook {

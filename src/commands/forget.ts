@@ -60,14 +60,12 @@ export async function forgetCommand(
         ? path.join(path.dirname(repoPath!), "blocked.log")
         : "~/.cass-memory/blocked.log";
 
-      await withLock(blockedLogPath, async () => {
-        await appendBlockedLog({
-          id: bullet.id,
-          content: bullet.content,
-          reason: flags.reason!,
-          forgottenAt: now()
-        }, blockedLogPath);
-      });
+      await appendBlockedLog({
+        id: bullet.id,
+        content: bullet.content,
+        reason: flags.reason!,
+        forgottenAt: now()
+      }, blockedLogPath);
 
       // 2. Invert if requested
       let antiPatternId: string | undefined;
