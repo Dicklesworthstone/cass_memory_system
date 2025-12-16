@@ -7,7 +7,8 @@ import {
   CassHitSchema,
   CassTimelineGroup,
   CassTimelineResult,
-  Config
+  Config,
+  RemoteCassHost
 } from "./types.js";
 import { log, error, expandPath } from "./utils.js";
 import { sanitize, compileExtraPatterns } from "./sanitize.js";
@@ -50,6 +51,11 @@ export interface SafeCassSearchResult {
   hits: CassHit[];
   degraded?: CassDegradedInfo;
   resolvedCassPath?: string;
+  /**
+   * Optional per-host degraded info for SSH-based remote cass queries.
+   * Present only when remote cass is enabled and one or more hosts fail.
+   */
+  remoteDegraded?: Array<CassDegradedInfo & { host: string }>;
 }
 
 // --- Helpers ---
@@ -381,6 +387,70 @@ export async function cassSearch(
   }
 }
 
+function shellEscapePosix(arg: string): string {
+  // Safe single-quote escaping for POSIX shells: ' -> '"'"'
+  return `'${arg.replace(/'/g, `'\"'\"'`)}'`;
+}
+
+function buildCassSearchArgs(query: string, options: CassSearchOptions = {}): string[] {
+  const args = ["search", query, "--robot"];
+
+  if (options.limit) args.push("--limit", options.limit.toString());
+  if (options.days) args.push("--days", options.days.toString());
+
+  if (options.agent) {
+    const agents = Array.isArray(options.agent) ? options.agent : [options.agent];
+    agents.forEach((a) => args.push("--agent", a));
+  }
+
+  if (options.workspace) args.push("--workspace", options.workspace);
+  if (options.fields) args.push("--fields", options.fields.join(","));
+
+  return args;
+}
+
+function coerceRemoteHostLabel(host: Config["remoteCass"]["hosts"][number]): string {
+  const label = typeof host.label === "string" && host.label.trim() ? host.label.trim() : host.host.trim();
+  return label || host.host;
+}
+
+async function sshCassSearch(
+  host: Config["remoteCass"]["hosts"][number],
+  query: string,
+  options: CassSearchOptions
+): Promise<CassHit[]> {
+  const commandArgs = ["cass", ...buildCassSearchArgs(query, options)];
+  const remoteCommand = commandArgs.map(shellEscapePosix).join(" ");
+  const sshArgs = [
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "ConnectTimeout=5",
+    host.host,
+    remoteCommand,
+  ];
+
+  const timeoutSeconds = options.timeout || 15;
+  const { stdout } = await execFileAsync("ssh", sshArgs, {
+    maxBuffer: 50 * 1024 * 1024,
+    timeout: timeoutSeconds * 1000,
+  });
+
+  const rawHits = parseCassJsonOutput(stdout);
+
+  let hitsArray: unknown[];
+  if (Array.isArray(rawHits)) {
+    hitsArray = rawHits;
+  } else if (rawHits && typeof rawHits === "object" && Array.isArray((rawHits as any).hits)) {
+    hitsArray = (rawHits as any).hits;
+  } else {
+    hitsArray = rawHits ? [rawHits] : [];
+  }
+
+  const hostLabel = coerceRemoteHostLabel(host);
+  return hitsArray.map((h: any) => ({ ...CassHitSchema.parse(h), origin: { kind: "remote", host: hostLabel } }));
+}
+
 // --- Safe Wrapper ---
 
 function normalizeCassErrorMessage(err: unknown): string {
@@ -454,15 +524,73 @@ export async function safeCassSearchWithDegraded(
   const force = options.force || process.env.CM_FORCE_CASS_SEARCH === "1";
   const availability = await handleCassUnavailable({ cassPath });
 
+  const activeConfig = config || await loadConfig();
+  const sanitizeConfig = getSanitizeConfig(activeConfig);
+
+  // Pre-compile patterns for performance (avoid recompilation per hit)
+  const compiledConfig = {
+    ...sanitizeConfig,
+    extraPatterns: compileExtraPatterns(sanitizeConfig.extraPatterns)
+  };
+
+  // Helper to sanitize and tag hits with origin
+  const processLocalHits = (hits: CassHit[]): CassHit[] =>
+    hits.map(hit => ({
+      ...hit,
+      snippet: sanitize(hit.snippet, compiledConfig),
+      origin: hit.origin || { kind: "local" as const }
+    }));
+
+  const processRemoteHits = (hits: CassHit[]): CassHit[] =>
+    hits.map(hit => ({
+      ...hit,
+      snippet: sanitize(hit.snippet, compiledConfig)
+      // origin already set by sshCassSearch
+    }));
+
+  // Start remote searches in parallel if enabled (don't wait for local availability check)
+  const remoteSearchPromises: Array<Promise<{ host: string; label: string; hits: CassHit[]; error?: string }>> = [];
+  const remoteEnabled = activeConfig.remoteCass?.enabled && activeConfig.remoteCass.hosts?.length > 0;
+
+  if (remoteEnabled) {
+    for (const hostConfig of activeConfig.remoteCass.hosts) {
+      const label = coerceRemoteHostLabel(hostConfig);
+      remoteSearchPromises.push(
+        sshCassSearch(hostConfig, query, {
+          ...options,
+          limit: Math.min(options.limit || 10, 5), // Cap remote results
+          timeout: Math.min(options.timeout || 15, 15)
+        })
+          .then(hits => ({ host: hostConfig.host, label, hits, error: undefined }))
+          .catch(err => ({ host: hostConfig.host, label, hits: [], error: err?.message || String(err) }))
+      );
+    }
+  }
+
+  // Handle local cass unavailable
   if (!force && availability.fallbackMode !== "none") {
+    // Still try to get remote results even if local is unavailable
+    const remoteResults = await Promise.all(remoteSearchPromises);
+    const remoteHits = remoteResults.flatMap(r => processRemoteHits(r.hits));
+    const remoteDegraded = remoteResults
+      .filter(r => r.error)
+      .map(r => ({
+        host: r.host,
+        available: false as const,
+        reason: "OTHER" as CassDegradedReason,
+        message: r.label && r.label !== r.host ? `SSH search failed (${r.label}): ${r.error}` : `SSH search failed: ${r.error}`,
+        suggestedFix: [`ssh ${r.host} cass health`]
+      }));
+
     return {
-      hits: [],
+      hits: remoteHits,
       degraded: {
         available: false,
         reason: "NOT_FOUND",
         message: availability.message,
         suggestedFix: ["cargo install cass", "cass index"],
       },
+      remoteDegraded: remoteDegraded.length > 0 ? remoteDegraded : undefined
     };
   }
 
@@ -473,23 +601,36 @@ export async function safeCassSearchWithDegraded(
       ? availability.resolvedCassPath
       : undefined;
 
-  const activeConfig = config || await loadConfig();
-  const sanitizeConfig = getSanitizeConfig(activeConfig);
-
-  // Pre-compile patterns for performance (avoid recompilation per hit)
-  const compiledConfig = {
-    ...sanitizeConfig,
-    extraPatterns: compileExtraPatterns(sanitizeConfig.extraPatterns)
-  };
-
   try {
-    const hits = await cassSearch(query, options, resolvedCassPath);
+    // Run local search
+    const localHits = await cassSearch(query, options, resolvedCassPath);
+    const processedLocalHits = processLocalHits(localHits);
+
+    // Await remote results
+    const remoteResults = await Promise.all(remoteSearchPromises);
+    const remoteHits = remoteResults.flatMap(r => processRemoteHits(r.hits));
+    const remoteDegraded = remoteResults
+      .filter(r => r.error)
+      .map(r => ({
+        host: r.host,
+        available: false as const,
+        reason: "OTHER" as CassDegradedReason,
+        message: r.label && r.label !== r.host ? `SSH search failed (${r.label}): ${r.error}` : `SSH search failed: ${r.error}`,
+        suggestedFix: [`ssh ${r.host} cass health`]
+      }));
+
+    // Merge and sort by score (higher first), local hits preferred for equal scores
+    const allHits = [...processedLocalHits, ...remoteHits].sort((a, b) => {
+      const scoreDiff = (b.score || 0) - (a.score || 0);
+      if (scoreDiff !== 0) return scoreDiff;
+      // Prefer local hits when scores are equal
+      return (a.origin?.kind === "local" ? 0 : 1) - (b.origin?.kind === "local" ? 0 : 1);
+    });
+
     return {
-      hits: hits.map(hit => ({
-        ...hit,
-        snippet: sanitize(hit.snippet, compiledConfig)
-      })),
+      hits: allHits,
       resolvedCassPath: resolvedCassPathForOutput,
+      remoteDegraded: remoteDegraded.length > 0 ? remoteDegraded : undefined
     };
   } catch (err: any) {
     const degraded = classifyCassSearchError(err, query);
@@ -499,6 +640,19 @@ export async function safeCassSearchWithDegraded(
         "cass health",
       ];
     }
+
+    // Still try to get remote results even if local fails
+    const remoteResults = await Promise.all(remoteSearchPromises);
+    const remoteHits = remoteResults.flatMap(r => processRemoteHits(r.hits));
+    const remoteDegraded = remoteResults
+      .filter(r => r.error)
+      .map(r => ({
+        host: r.host,
+        available: false as const,
+        reason: "OTHER" as CassDegradedReason,
+        message: r.label && r.label !== r.host ? `SSH search failed (${r.label}): ${r.error}` : `SSH search failed: ${r.error}`,
+        suggestedFix: [`ssh ${r.host} cass health`]
+      }));
 
     // Best-effort fallback: if force flag set, attempt to parse whatever stdout we get.
     if (options.force) {
@@ -513,13 +667,16 @@ export async function safeCassSearchWithDegraded(
         if (text.trim()) {
           const parsed = parseCassJsonOutput(text);
           const hitsArr = Array.isArray(parsed) ? parsed : [parsed];
+          const fallbackHits = hitsArr.map((hit: any) => ({
+            ...CassHitSchema.parse(hit),
+            snippet: sanitize(hit.snippet, compiledConfig),
+            origin: { kind: "local" as const }
+          }));
           return {
-            hits: hitsArr.map((hit: any) => ({
-              ...CassHitSchema.parse(hit),
-              snippet: sanitize(hit.snippet, compiledConfig)
-            })),
+            hits: [...fallbackHits, ...remoteHits],
             degraded,
             resolvedCassPath: resolvedCassPathForOutput,
+            remoteDegraded: remoteDegraded.length > 0 ? remoteDegraded : undefined
           };
         }
       } catch (fallbackErr: any) {
@@ -528,7 +685,12 @@ export async function safeCassSearchWithDegraded(
       }
     }
 
-    return { hits: [], degraded, resolvedCassPath: resolvedCassPathForOutput };
+    return {
+      hits: remoteHits,
+      degraded,
+      resolvedCassPath: resolvedCassPathForOutput,
+      remoteDegraded: remoteDegraded.length > 0 ? remoteDegraded : undefined
+    };
   }
 }
 

@@ -309,6 +309,29 @@ export const CrossAgentConfigSchema = z.object({
 });
 export type CrossAgentConfig = z.infer<typeof CrossAgentConfigSchema>;
 
+// ============================================================================
+// REMOTE CASS (OPTIONAL) — SSH-BASED REMOTE HISTORY
+// ============================================================================
+
+export const RemoteCassHostSchema = z.object({
+  /**
+   * SSH target (typically a Host alias from ~/.ssh/config).
+   * Examples: "workstation", "buildbox", "user@host".
+   */
+  host: z.string().min(1),
+  /** Optional display label (defaults to host). */
+  label: z.string().min(1).optional(),
+});
+export type RemoteCassHost = z.infer<typeof RemoteCassHostSchema>;
+
+export const RemoteCassConfigSchema = z.object({
+  /** Master toggle (no surprise network calls). */
+  enabled: z.boolean().default(false),
+  /** Remote hosts to query via SSH for cass history. */
+  hosts: z.array(RemoteCassHostSchema).default([]),
+}).default({});
+export type RemoteCassConfig = z.infer<typeof RemoteCassConfigSchema>;
+
 export const ConfigSchema = z.object({
   schema_version: z.number().default(1),
   llm: z.object({
@@ -318,6 +341,7 @@ export const ConfigSchema = z.object({
   provider: LLMProviderEnum.default("anthropic"),
   model: z.string().default("claude-sonnet-4-20250514"),
   cassPath: z.string().default("cass"),
+  remoteCass: RemoteCassConfigSchema.default({}),
   playbookPath: z.string().default("~/.cass-memory/playbook.yaml"),
   diaryDir: z.string().default("~/.cass-memory/diary"),
   scoring: ScoringConfigSectionSchema.default({}),
@@ -350,6 +374,12 @@ export type Config = z.infer<typeof ConfigSchema>;
 // CASS INTEGRATION TYPES
 // ============================================================================
 
+export const CassHitOriginSchema = z.object({
+  kind: z.enum(["local", "remote"]),
+  host: z.string().min(1).optional(),
+});
+export type CassHitOrigin = z.infer<typeof CassHitOriginSchema>;
+
 export const CassSearchHitSchema = z.object({
   source_path: z.string(),
   line_number: z.number(),
@@ -359,6 +389,7 @@ export const CassSearchHitSchema = z.object({
   snippet: z.string(),
   score: z.number().optional(),
   created_at: z.union([z.string(), z.number()]).nullable().optional(),
+  origin: CassHitOriginSchema.optional(),
 }).transform(data => ({
   ...data,
   sessionPath: data.source_path,
@@ -425,6 +456,7 @@ export type DegradedCass = z.infer<typeof DegradedCassSchema>;
 
 export const DegradedSummarySchema = z.object({
   cass: DegradedCassSchema.optional(),
+  remoteCass: z.array(DegradedCassSchema.extend({ host: z.string() })).optional(),
   semantic: z.unknown().optional(),
   llm: z.unknown().optional(),
 }).partial();

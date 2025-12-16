@@ -217,8 +217,11 @@ export async function generateContextResult(
     workspace: flags.workspace,
   }, config.cassPath, config);
   cassHits = cassResult.hits;
-  if (cassResult.degraded) {
-    degraded = { cass: cassResult.degraded };
+  if (cassResult.degraded || cassResult.remoteDegraded) {
+    degraded = {
+      cass: cassResult.degraded,
+      remoteCass: cassResult.remoteDegraded
+    };
   }
 
   const warnings: string[] = [];
@@ -472,10 +475,18 @@ export async function contextCommand(
     cassHits.slice(0, shown).forEach((h, i) => {
       const agent = h.agent || "unknown";
       const agentLabel = `${agentIconPrefix(agent)}${agent}`;
-      console.log(chalk.bold(`${i + 1}. ${agentLabel}`) + chalk.dim(` • ${h.source_path}`));
+      const isRemote = h.origin?.kind === "remote";
+      const hostLabel = isRemote && h.origin?.host ? ` [${h.origin.host}]` : "";
+
+      // Remote hits get dimmer styling
+      const headerStyle = isRemote ? chalk.dim : chalk.bold;
+      const snippetStyle = isRemote ? chalk.dim : chalk.gray;
+      const pathStyle = isRemote ? chalk.dim : chalk.dim;
+
+      console.log(headerStyle(`${i + 1}. ${agentLabel}${hostLabel}`) + pathStyle(` • ${h.source_path}`));
       const snippet = h.snippet.trim().replace(/\s+/g, " ");
       for (const line of wrapText(`"${snippet}"`, snippetWidth)) {
-        console.log(chalk.gray(`  ${line}`));
+        console.log(snippetStyle(`  ${line}`));
       }
       console.log("");
     });
