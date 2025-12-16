@@ -286,7 +286,7 @@ async function handleToolCall(name: string, args: any): Promise<any> {
 
       if (scope === "cass" || scope === "both") {
         const t0 = performance.now();
-        const hits = await safeCassSearch(args.query, { limit, days, agent, workspace }, config.cassPath);
+        const hits = await safeCassSearch(args.query, { limit, days, agent, workspace }, config.cassPath, config);
         maybeProfile("memory_search cass search", t0);
         result.cass = hits.map((h) => ({
           path: h.source_path,
@@ -451,9 +451,12 @@ export async function serveCommand(options: { port?: number; host?: string } = {
     }
 
     let raw = "";
+    let aborted = false;
     req.on("data", (chunk) => {
+      if (aborted) return;
       raw += chunk.toString();
       if (raw.length > MAX_BODY_BYTES) {
+        aborted = true;
         res.statusCode = 413;
         res.end(JSON.stringify(buildError(null, "Payload too large", -32600)));
         req.destroy();
@@ -461,6 +464,7 @@ export async function serveCommand(options: { port?: number; host?: string } = {
     });
 
     req.on("end", async () => {
+      if (aborted) return;
       try {
         const parsed = JSON.parse(raw) as JsonRpcRequest;
         const response = await routeRequest(parsed);
