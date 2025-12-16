@@ -56,14 +56,15 @@ export async function outcomeCommand(
   }
 
   const status = flags.status as OutcomeStatus;
-  if (!["success", "failure", "mixed"].includes(status)) {
+  const allowedStatuses: OutcomeStatus[] = ["success", "failure", "mixed", "partial"];
+  if (!allowedStatuses.includes(status)) {
     if (flags.json) {
-      printJsonError("Status must be one of success|failure|mixed", {
+      printJsonError(`Status must be one of ${allowedStatuses.join("|")}`, {
         code: ErrorCode.INVALID_INPUT,
-        details: { field: "status", received: flags.status, valid: ["success", "failure", "mixed"] }
+        details: { field: "status", received: flags.status, valid: allowedStatuses }
       });
     } else {
-      console.error(chalk.red("Status must be one of success|failure|mixed"));
+      console.error(chalk.red(`Status must be one of ${allowedStatuses.join("|")}`));
     }
     process.exitCode = 1;
     return;
@@ -102,23 +103,26 @@ export async function outcomeCommand(
   const config = await loadConfig();
 
   // 3. Record (Log)
+  let recordedOutcome: Awaited<ReturnType<typeof recordOutcome>> | null = null;
   try {
-    await recordOutcome(input, config);
+    recordedOutcome = await recordOutcome(input, config);
   } catch (err: any) {
     logError(`Failed to log outcome: ${err.message}`);
     // Continue to apply feedback even if logging fails? Probably yes.
   }
 
   // 4. Apply Feedback (Learn)
-  // Create a temporary record-like object to pass to applyOutcomeFeedback
-  // We can just use input + timestamp, applyOutcomeFeedback expects OutcomeRecord array
-  const tempRecord = {
-    ...input,
-    recordedAt: new Date().toISOString(),
-    path: "cli-transient" 
-  };
+  // Prefer the persisted record so outcome-apply can be idempotent across replays.
+  // If logging failed, fall back to an in-memory record.
+  const recordForApply =
+    recordedOutcome ??
+    ({
+      ...input,
+      recordedAt: new Date().toISOString(),
+      path: "cli-transient",
+    } as any);
 
-  const result = await applyOutcomeFeedback([tempRecord], config);
+  const result = await applyOutcomeFeedback([recordForApply], config);
 
   // 5. Report
   if (flags.json) {

@@ -39,6 +39,32 @@ describe("applyOutcomeFeedback", () => {
     });
   });
 
+  test("is idempotent when re-applying the same outcome record", async () => {
+    await withTempPlaybook(async (playbookPath) => {
+      const bullet = createTestBullet({ id: "b-idem" });
+      await savePlaybook(
+        { schema_version: 2, name: "pb", description: "", metadata: { createdAt: new Date().toISOString(), totalReflections: 0, totalSessionsProcessed: 0 }, deprecatedPatterns: [], bullets: [bullet] },
+        playbookPath
+      );
+
+      const recordedAt = new Date().toISOString();
+      const outcome: OutcomeRecord = {
+        sessionId: "/tmp/session-idempotent",
+        outcome: "success",
+        rulesUsed: ["b-idem"],
+        recordedAt,
+        path: playbookPath
+      };
+
+      const cfg = createTestConfig({ playbookPath });
+      const first = await applyOutcomeFeedback(outcome, cfg);
+      expect(first.applied).toBe(1);
+
+      const second = await applyOutcomeFeedback(outcome, cfg);
+      expect(second.applied).toBe(0);
+    });
+  });
+
   test("uses context log to fill missing rulesUsed", async () => {
     await withTempPlaybook(async (playbookPath) => {
       const bullet = createTestBullet({ id: "b-ctx" });

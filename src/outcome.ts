@@ -329,7 +329,8 @@ export async function applyOutcomeFeedback(
         bulletId: ruleId,
         feedback: {
           type: scored.type,
-          timestamp: now(),
+          // Use the outcome's recordedAt for stable idempotency across replays of the outcome log.
+          timestamp: enriched.recordedAt,
           sessionPath: enriched.sessionId,
           context: scored.context,
           decayedValue: scored.decayedValue,
@@ -355,6 +356,16 @@ export async function applyOutcomeFeedback(
         }
 
         bullet.feedbackEvents = bullet.feedbackEvents || [];
+        const alreadyRecorded = bullet.feedbackEvents.some(
+          (e) =>
+            e.type === item.feedback.type &&
+            e.sessionPath === item.feedback.sessionPath &&
+            e.timestamp === item.feedback.timestamp
+        );
+        if (alreadyRecorded) {
+          continue;
+        }
+
         bullet.feedbackEvents.push(item.feedback);
         
         // Update counters
