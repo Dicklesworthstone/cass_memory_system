@@ -5,9 +5,7 @@ import { loadConfig } from "../config.js";
 import { generateDiary } from "../diary.js";
 import { expandPath, error as logError, printJsonResult, printJsonError } from "../utils.js";
 import { ErrorCode } from "../types.js";
-import { cassExport, cassAvailable } from "../cass.js";
 import fs from "node:fs/promises";
-import path from "node:path";
 import chalk from "chalk";
 import { iconPrefix } from "../output.js";
 
