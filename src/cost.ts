@@ -1,7 +1,7 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 import { Config } from "./types.js";
-import { expandPath, ensureDir, atomicWrite, now, fileExists } from "./utils.js";
+import { expandPath, ensureDir, atomicWrite, now, fileExists, warn } from "./utils.js";
 import { withLock } from "./lock.js";
 import { icon } from "./output.js";
 
@@ -139,7 +139,7 @@ export async function checkBudget(config: Config): Promise<{ allowed: boolean; r
     }
   } catch (err) {
     // If read fails, fail open but warn
-    console.warn(`[Cost] Failed to read budget file: ${err}`);
+    warn(`[cost] Failed to read budget file: ${err}`);
   }
 
   return { allowed: true };
