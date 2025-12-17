@@ -82,12 +82,12 @@ describe("E2E: New User Onboarding", () => {
         const initResult = runCm(["init", "--json"], testDir);
         expect(initResult.exitCode).toBe(0);
 
-        const initResponse = JSON.parse(initResult.stdout);
+        const initResponse = JSON.parse(initResult.stdout) as any;
         expect(initResponse.success).toBe(true);
-        expect(initResponse.created).toContain("config.json");
-        expect(initResponse.created).toContain("playbook.yaml");
+        expect(initResponse.data.created).toContain("config.json");
+        expect(initResponse.data.created).toContain("playbook.yaml");
         logger.info("Step 2: Init completed successfully", {
-          created: initResponse.created,
+          created: initResponse.data.created,
         });
 
         // Verify structure created
@@ -103,7 +103,7 @@ describe("E2E: New User Onboarding", () => {
         );
         expect(contextResult1.exitCode).toBe(0);
 
-        const context1 = JSON.parse(contextResult1.stdout);
+        const context1 = (JSON.parse(contextResult1.stdout) as any).data;
         expect(context1.task).toBe("implement user authentication");
         expect(context1.relevantBullets).toEqual([]);
         logger.info("Step 3: Context with empty playbook", {
@@ -124,12 +124,12 @@ describe("E2E: New User Onboarding", () => {
         );
         expect(addResult.exitCode).toBe(0);
 
-        const addResponse = JSON.parse(addResult.stdout);
+        const addResponse = JSON.parse(addResult.stdout) as any;
         expect(addResponse.success).toBe(true);
-        expect(addResponse.bullet).toBeDefined();
-        expect(addResponse.bullet.id).toMatch(/^b-/);
+        expect(addResponse.data.bullet).toBeDefined();
+        expect(addResponse.data.bullet.id).toMatch(/^b-/);
 
-        const bulletId = addResponse.bullet.id;
+        const bulletId = addResponse.data.bullet.id;
         logger.info("Step 4: Added first bullet", { bulletId });
 
         // Verify playbook now has the bullet
@@ -148,7 +148,7 @@ describe("E2E: New User Onboarding", () => {
         );
         expect(contextResult2.exitCode).toBe(0);
 
-        const context2 = JSON.parse(contextResult2.stdout);
+        const context2 = (JSON.parse(contextResult2.stdout) as any).data;
         expect(context2.task).toBe("validate user input for login");
         // The bullet should be found since it's about validation/user input
         expect(context2.relevantBullets.length).toBeGreaterThanOrEqual(0);
@@ -160,13 +160,13 @@ describe("E2E: New User Onboarding", () => {
         const markResult = runCm(["mark", bulletId, "--helpful", "--json"], testDir);
         expect(markResult.exitCode).toBe(0);
 
-        const markResponse = JSON.parse(markResult.stdout);
+        const markResponse = JSON.parse(markResult.stdout) as any;
         expect(markResponse.success).toBe(true);
-        expect(markResponse.type).toBe("helpful");
+        expect(markResponse.data.type).toBe("helpful");
 
         // Verify helpfulCount via playbook get
         const getResult1 = runCm(["playbook", "get", bulletId, "--json"], testDir);
-        const bullet1 = JSON.parse(getResult1.stdout).bullet;
+        const bullet1 = (JSON.parse(getResult1.stdout) as any).data.bullet;
         expect(bullet1.helpfulCount).toBe(1);
         logger.info("Step 6: Marked bullet as helpful", {
           helpfulCount: bullet1.helpfulCount,
@@ -176,7 +176,7 @@ describe("E2E: New User Onboarding", () => {
         const markResult2 = runCm(["mark", bulletId, "--helpful", "--json"], testDir);
         expect(markResult2.exitCode).toBe(0);
         const getResult2 = runCm(["playbook", "get", bulletId, "--json"], testDir);
-        const bullet2 = JSON.parse(getResult2.stdout).bullet;
+        const bullet2 = (JSON.parse(getResult2.stdout) as any).data.bullet;
         expect(bullet2.helpfulCount).toBe(2);
 
         // Step 7: Run doctor to verify system health
@@ -186,7 +186,7 @@ describe("E2E: New User Onboarding", () => {
         const doctorResult = runCm(["doctor", "--json"], testDir);
         expect(doctorResult.exitCode).toBe(0);
 
-        const doctorResponse = JSON.parse(doctorResult.stdout);
+        const doctorResponse = (JSON.parse(doctorResult.stdout) as any).data;
         expect(doctorResponse.overallStatus).toBeDefined();
         expect(["healthy", "degraded", "unhealthy"]).toContain(doctorResponse.overallStatus);
         expect(doctorResponse.checks).toBeDefined();
@@ -244,7 +244,7 @@ describe("E2E: New User Onboarding", () => {
         ["playbook", "add", "Test bullet", "--json"],
         testDir
       );
-      const bulletId = JSON.parse(addResult.stdout).bullet.id;
+      const bulletId = (JSON.parse(addResult.stdout) as any).data.bullet.id;
 
       const result = runCm(["mark", bulletId, "--helpful"], testDir);
       expect(result.exitCode).toBe(0);
@@ -281,7 +281,7 @@ describe("E2E: New User Onboarding", () => {
 
       // Should detect missing config/playbook
       if (result.exitCode === 0) {
-        const response = JSON.parse(result.stdout);
+        const response = (JSON.parse(result.stdout) as any).data;
         // Doctor should report issues about missing setup
         expect(response.checks || response.issues).toBeDefined();
       } else {
@@ -296,7 +296,7 @@ describe("E2E: New User Onboarding", () => {
       const result = runCm(["stats", "--json"], testDir);
       expect(result.exitCode).toBe(0);
 
-      const stats = JSON.parse(result.stdout);
+      const stats = (JSON.parse(result.stdout) as any).data;
       expect(stats.total).toBe(0);
     });
 
@@ -306,8 +306,9 @@ describe("E2E: New User Onboarding", () => {
       const result = runCm(["playbook", "list", "--json"], testDir);
       expect(result.exitCode).toBe(0);
 
-      const listResponse = JSON.parse(result.stdout);
-      expect(listResponse).toEqual({ success: true, bullets: [] });
+      const listResponse = JSON.parse(result.stdout) as any;
+      expect(listResponse.success).toBe(true);
+      expect(listResponse.data).toEqual({ bullets: [] });
     });
   });
 
@@ -318,7 +319,7 @@ describe("E2E: New User Onboarding", () => {
 
       const parsed = JSON.parse(result.stdout);
       expect(parsed.success).toBe(false);
-      expect(parsed.code).toBe("MISSING_REQUIRED");
+      expect(parsed.error.code).toBe("MISSING_REQUIRED");
     });
 
     test("onboard sample redacts secrets from cass snippets", async () => {
@@ -349,12 +350,12 @@ describe("E2E: New User Onboarding", () => {
       const sample = runCm(["onboard", "sample", "--limit", "1", "--json"], testDir);
       expect(sample.exitCode).toBe(0);
 
-      const sampleJson = JSON.parse(sample.stdout);
+      const sampleJson = JSON.parse(sample.stdout) as any;
       expect(sampleJson.success).toBe(true);
-      expect(Array.isArray(sampleJson.sessions)).toBe(true);
-      expect(sampleJson.sessions.length).toBeGreaterThan(0);
+      expect(Array.isArray(sampleJson.data.sessions)).toBe(true);
+      expect(sampleJson.data.sessions.length).toBeGreaterThan(0);
 
-      const snippet = String(sampleJson.sessions[0]?.snippet || "");
+      const snippet = String(sampleJson.data.sessions[0]?.snippet || "");
       expect(snippet).toContain("[API_KEY]");
       expect(snippet).not.toContain(secretValue);
     });
@@ -376,11 +377,11 @@ describe("E2E: New User Onboarding", () => {
         ],
         testDir
       );
-      const bulletId = JSON.parse(addResult.stdout).bullet.id;
+      const bulletId = (JSON.parse(addResult.stdout) as any).data.bullet.id;
 
       // Get initial maturity
       const getResult1 = runCm(["playbook", "get", bulletId, "--json"], testDir);
-      const bullet1 = JSON.parse(getResult1.stdout).bullet;
+      const bullet1 = (JSON.parse(getResult1.stdout) as any).data.bullet;
       expect(bullet1.maturity).toBe("candidate");
       expect(bullet1.helpfulCount).toBe(0);
 
@@ -391,7 +392,7 @@ describe("E2E: New User Onboarding", () => {
 
       // Check maturity progressed
       const getResult2 = runCm(["playbook", "get", bulletId, "--json"], testDir);
-      const bullet2 = JSON.parse(getResult2.stdout).bullet;
+      const bullet2 = (JSON.parse(getResult2.stdout) as any).data.bullet;
       expect(bullet2.helpfulCount).toBe(3);
       expect(bullet2.maturity).toBe("established");
     });
@@ -404,19 +405,19 @@ describe("E2E: New User Onboarding", () => {
         ["playbook", "add", "Never use var, always use const or let", "--json"],
         testDir
       );
-      const bulletId = JSON.parse(addResult.stdout).bullet.id;
+      const bulletId = (JSON.parse(addResult.stdout) as any).data.bullet.id;
 
       // Mark harmful
       const markResult = runCm(["mark", bulletId, "--harmful", "--json"], testDir);
       expect(markResult.exitCode).toBe(0);
 
-      const markResponse = JSON.parse(markResult.stdout);
+      const markResponse = JSON.parse(markResult.stdout) as any;
       expect(markResponse.success).toBe(true);
-      expect(markResponse.type).toBe("harmful");
+      expect(markResponse.data.type).toBe("harmful");
 
       // Verify harmfulCount via playbook get
       const getResult = runCm(["playbook", "get", bulletId, "--json"], testDir);
-      const bullet = JSON.parse(getResult.stdout).bullet;
+      const bullet = (JSON.parse(getResult.stdout) as any).data.bullet;
       expect(bullet.harmfulCount).toBe(1);
     });
   });

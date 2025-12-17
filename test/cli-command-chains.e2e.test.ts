@@ -83,8 +83,9 @@ describe("CLI Command Chains E2E", () => {
         "--json"
       ], testDir);
       expect(addResult.exitCode).toBe(0);
-      const addResponse = JSON.parse(addResult.stdout);
-      const bulletId = addResponse.bullet.id;
+      const addResponse = JSON.parse(addResult.stdout) as any;
+      expect(addResponse.success).toBe(true);
+      const bulletId = addResponse.data.bullet.id;
       expect(bulletId).toMatch(/^b-/);
 
       // Step 3: Get initial context with the bullet
@@ -114,8 +115,8 @@ describe("CLI Command Chains E2E", () => {
       expect(contextResult2.exitCode).toBe(0);
 
       // Verify the bullet is included and context was retrieved
-      const context2 = JSON.parse(contextResult2.stdout);
-      expect(context2.task).toBeDefined();
+      const context2 = JSON.parse(contextResult2.stdout) as any;
+      expect(context2.data.task).toBeDefined();
       // Relevant bullets may or may not include our specific bullet depending on matching
       // The key test is that context works after marking
 
@@ -138,12 +139,12 @@ describe("CLI Command Chains E2E", () => {
         "--json"
       ], testDir);
       expect(addResult.exitCode).toBe(0);
-      const bulletId = JSON.parse(addResult.stdout).bullet.id;
+      const bulletId = (JSON.parse(addResult.stdout) as any).data.bullet.id;
 
       // Get initial state
       const getResult1 = runCm(["playbook", "get", bulletId, "--json"], testDir);
       expect(getResult1.exitCode).toBe(0);
-      const response1 = JSON.parse(getResult1.stdout);
+      const response1 = (JSON.parse(getResult1.stdout) as any).data;
       expect(response1.bullet.helpfulCount).toBe(0);
       expect(response1.bullet.maturity).toBe("candidate");
 
@@ -155,7 +156,7 @@ describe("CLI Command Chains E2E", () => {
       // Get updated state
       const getResult2 = runCm(["playbook", "get", bulletId, "--json"], testDir);
       expect(getResult2.exitCode).toBe(0);
-      const response2 = JSON.parse(getResult2.stdout);
+      const response2 = (JSON.parse(getResult2.stdout) as any).data;
       expect(response2.bullet.helpfulCount).toBe(3);
       // After 3 helpful marks, should transition to established
       expect(response2.bullet.maturity).toBe("established");
@@ -175,12 +176,12 @@ describe("CLI Command Chains E2E", () => {
         "--json"
       ], testDir);
       expect(addResult.exitCode).toBe(0);
-      const bulletId = JSON.parse(addResult.stdout).bullet.id;
+      const bulletId = (JSON.parse(addResult.stdout) as any).data.bullet.id;
 
       // Verify bullet is active
       const listResult1 = runCm(["playbook", "list", "--json"], testDir);
       expect(listResult1.exitCode).toBe(0);
-      const list1Response = JSON.parse(listResult1.stdout);
+      const list1Response = (JSON.parse(listResult1.stdout) as any).data;
       expect(list1Response.bullets.some((b: any) => b.id === bulletId)).toBe(true);
 
       // Forget the bullet
@@ -194,32 +195,32 @@ describe("CLI Command Chains E2E", () => {
       // Verify bullet is deprecated
       const getResult = runCm(["playbook", "get", bulletId, "--json"], testDir);
       expect(getResult.exitCode).toBe(0);
-      const forgottenResponse = JSON.parse(getResult.stdout);
+      const forgottenResponse = (JSON.parse(getResult.stdout) as any).data;
       expect(forgottenResponse.bullet.deprecated).toBe(true);
 
       // Bullet should not appear in active list
       const listResult2 = runCm(["playbook", "list", "--json"], testDir);
       expect(listResult2.exitCode).toBe(0);
-      const list2Response = JSON.parse(listResult2.stdout);
+      const list2Response = (JSON.parse(listResult2.stdout) as any).data;
       expect(list2Response.bullets.some((b: any) => b.id === bulletId)).toBe(false);
 
       // Undo the forget
       const undoResult = runCm(["undo", bulletId, "--json"], testDir);
       expect(undoResult.exitCode).toBe(0);
-      const undoResponse = JSON.parse(undoResult.stdout);
+      const undoResponse = JSON.parse(undoResult.stdout) as any;
       expect(undoResponse.success).toBe(true);
-      expect(undoResponse.action).toBe("un-deprecate");
+      expect(undoResponse.data.action).toBe("un-deprecate");
 
       // Verify bullet is restored
       const getResult2 = runCm(["playbook", "get", bulletId, "--json"], testDir);
       expect(getResult2.exitCode).toBe(0);
-      const restoredResponse = JSON.parse(getResult2.stdout);
+      const restoredResponse = (JSON.parse(getResult2.stdout) as any).data;
       expect(restoredResponse.bullet.deprecated).toBe(false);
 
       // Bullet should appear in active list again
       const listResult3 = runCm(["playbook", "list", "--json"], testDir);
       expect(listResult3.exitCode).toBe(0);
-      const list3Response = JSON.parse(listResult3.stdout);
+      const list3Response = (JSON.parse(listResult3.stdout) as any).data;
       expect(list3Response.bullets.some((b: any) => b.id === bulletId)).toBe(true);
     }, { timeout: 30000 });
 
@@ -235,7 +236,7 @@ describe("CLI Command Chains E2E", () => {
         "--json"
       ], testDir);
       expect(addResult.exitCode).toBe(0);
-      const bulletId = JSON.parse(addResult.stdout).bullet.id;
+      const bulletId = (JSON.parse(addResult.stdout) as any).data.bullet.id;
 
       // Mark as helpful twice
       runCm(["mark", bulletId, "--helpful", "--json"], testDir);
@@ -244,19 +245,19 @@ describe("CLI Command Chains E2E", () => {
       // Verify helpful count is 2
       const getResult1 = runCm(["playbook", "get", bulletId, "--json"], testDir);
       expect(getResult1.exitCode).toBe(0);
-      expect(JSON.parse(getResult1.stdout).bullet.helpfulCount).toBe(2);
+      expect((JSON.parse(getResult1.stdout) as any).data.bullet.helpfulCount).toBe(2);
 
       // Undo last feedback
       const undoResult = runCm(["undo", bulletId, "--feedback", "--json"], testDir);
       expect(undoResult.exitCode).toBe(0);
-      const undoResponse = JSON.parse(undoResult.stdout);
+      const undoResponse = JSON.parse(undoResult.stdout) as any;
       expect(undoResponse.success).toBe(true);
-      expect(undoResponse.action).toBe("undo-feedback");
+      expect(undoResponse.data.action).toBe("undo-feedback");
 
       // Verify helpful count is now 1
       const getResult2 = runCm(["playbook", "get", bulletId, "--json"], testDir);
       expect(getResult2.exitCode).toBe(0);
-      expect(JSON.parse(getResult2.stdout).bullet.helpfulCount).toBe(1);
+      expect((JSON.parse(getResult2.stdout) as any).data.bullet.helpfulCount).toBe(1);
     }, { timeout: 60000 });
 
     test.serial("undo --hard requires explicit confirmation (--yes) in non-interactive mode", () => {
@@ -269,7 +270,7 @@ describe("CLI Command Chains E2E", () => {
         "--json"
       ], testDir);
       expect(addResult.exitCode).toBe(0);
-      const bulletId = JSON.parse(addResult.stdout).bullet.id;
+      const bulletId = (JSON.parse(addResult.stdout) as any).data.bullet.id;
 
       // Without --yes this should refuse to delete (no TTY in tests)
       const hardNoConfirm = runCm(["undo", bulletId, "--hard", "--json"], testDir);
@@ -282,14 +283,14 @@ describe("CLI Command Chains E2E", () => {
       // With --yes it should delete
       const hardConfirmed = runCm(["undo", bulletId, "--hard", "--yes", "--json"], testDir);
       expect(hardConfirmed.exitCode).toBe(0);
-      const hardResponse = JSON.parse(hardConfirmed.stdout);
+      const hardResponse = JSON.parse(hardConfirmed.stdout) as any;
       expect(hardResponse.success).toBe(true);
-      expect(hardResponse.action).toBe("hard-delete");
+      expect(hardResponse.data.action).toBe("hard-delete");
 
       // Bullet should be gone from list
       const listAfterDelete = runCm(["playbook", "list", "--json"], testDir);
       expect(listAfterDelete.exitCode).toBe(0);
-      const listAfterDeleteResponse = JSON.parse(listAfterDelete.stdout);
+      const listAfterDeleteResponse = (JSON.parse(listAfterDelete.stdout) as any).data;
       expect(listAfterDeleteResponse.bullets.some((b: any) => b.id === bulletId)).toBe(false);
     }, { timeout: 60000 });
   });
@@ -309,7 +310,7 @@ describe("CLI Command Chains E2E", () => {
           "--json"
         ], testDir);
         expect(addResult.exitCode).toBe(0);
-        bullets.push(JSON.parse(addResult.stdout).bullet.id);
+        bullets.push((JSON.parse(addResult.stdout) as any).data.bullet.id);
       }
 
       // Mark some as helpful to vary scores
@@ -320,13 +321,13 @@ describe("CLI Command Chains E2E", () => {
       // Get stats
       const statsResult = runCm(["stats", "--json"], testDir);
       expect(statsResult.exitCode).toBe(0);
-      const stats = JSON.parse(statsResult.stdout);
+      const stats = (JSON.parse(statsResult.stdout) as any).data;
       expect(stats.total).toBe(5);
 
       // Get top bullets
       const topResult = runCm(["top", "--json"], testDir);
       expect(topResult.exitCode).toBe(0);
-      const top = JSON.parse(topResult.stdout);
+      const top = (JSON.parse(topResult.stdout) as any).data;
       expect(top.bullets).toBeDefined();
       expect(Array.isArray(top.bullets)).toBe(true);
       expect(top.bullets.length).toBeLessThanOrEqual(10);
@@ -334,7 +335,7 @@ describe("CLI Command Chains E2E", () => {
       // Get stale bullets (all should be stale since just created with 0 day threshold)
       const staleResult = runCm(["stale", "--days", "0", "--json"], testDir);
       expect(staleResult.exitCode).toBe(0);
-      const stale = JSON.parse(staleResult.stdout);
+      const stale = (JSON.parse(staleResult.stdout) as any).data;
       expect(stale.count).toBeDefined();
     }, { timeout: 30000 });
   });
@@ -352,12 +353,12 @@ describe("CLI Command Chains E2E", () => {
         "--json"
       ], testDir);
       expect(addResult.exitCode).toBe(0);
-      const bulletId = JSON.parse(addResult.stdout).bullet.id;
+      const bulletId = (JSON.parse(addResult.stdout) as any).data.bullet.id;
 
       // Get initial why
       const whyResult1 = runCm(["why", bulletId, "--json"], testDir);
       expect(whyResult1.exitCode).toBe(0);
-      const why1 = JSON.parse(whyResult1.stdout);
+      const why1 = (JSON.parse(whyResult1.stdout) as any).data;
       expect(why1.currentStatus.helpfulCount).toBe(0);
       expect(why1.feedbackHistory).toHaveLength(0);
 
@@ -367,7 +368,7 @@ describe("CLI Command Chains E2E", () => {
       // Get updated why
       const whyResult2 = runCm(["why", bulletId, "--json"], testDir);
       expect(whyResult2.exitCode).toBe(0);
-      const why2 = JSON.parse(whyResult2.stdout);
+      const why2 = (JSON.parse(whyResult2.stdout) as any).data;
       expect(why2.currentStatus.helpfulCount).toBe(1);
       expect(why2.feedbackHistory.length).toBeGreaterThanOrEqual(1);
     }, { timeout: 30000 });
@@ -381,7 +382,7 @@ describe("CLI Command Chains E2E", () => {
       // Verify doctor passes
       const doctorResult1 = runCm(["doctor", "--json"], testDir);
       expect(doctorResult1.exitCode).toBeLessThanOrEqual(1);
-      const doctor1 = JSON.parse(doctorResult1.stdout);
+      const doctor1 = (JSON.parse(doctorResult1.stdout) as any).data;
       expect(doctor1.checks).toBeDefined();
       expect(doctor1.overallStatus).toBeDefined();
 
@@ -421,7 +422,7 @@ describe("CLI Command Chains E2E", () => {
     test.serial("doctor --json --self-test includes selfTest results only when requested", () => {
       const base = runCm(["doctor", "--json"], testDir);
       expect(base.exitCode).toBeLessThanOrEqual(1);
-      const baseParsed = JSON.parse(base.stdout);
+      const baseParsed = (JSON.parse(base.stdout) as any).data;
       expect(baseParsed.checks).toBeDefined();
       expect(baseParsed.overallStatus).toBeDefined();
       expect(Array.isArray(baseParsed.recommendedActions)).toBe(true);
@@ -429,7 +430,7 @@ describe("CLI Command Chains E2E", () => {
 
       const withSelfTest = runCm(["doctor", "--json", "--self-test"], testDir);
       expect(withSelfTest.exitCode).toBeLessThanOrEqual(1);
-      const parsed = JSON.parse(withSelfTest.stdout);
+      const parsed = (JSON.parse(withSelfTest.stdout) as any).data;
       expect(parsed.checks).toBeDefined();
       expect(parsed.overallStatus).toBeDefined();
       expect(Array.isArray(parsed.recommendedActions)).toBe(true);
@@ -441,7 +442,7 @@ describe("CLI Command Chains E2E", () => {
       const result = runCm(["doctor", "--json", "--fix", "--dry-run"], testDir);
       expect(result.exitCode).toBeLessThanOrEqual(1);
 
-      const parsed = JSON.parse(result.stdout);
+      const parsed = (JSON.parse(result.stdout) as any).data;
       expect(parsed.fixPlan).toBeDefined();
       expect(Array.isArray(parsed.fixPlan.wouldApply)).toBe(true);
 
@@ -459,7 +460,7 @@ describe("CLI Command Chains E2E", () => {
       // Get quickstart guidance
       const quickstartResult = runCm(["quickstart", "--json"], testDir);
       expect(quickstartResult.exitCode).toBe(0);
-      const quickstart = JSON.parse(quickstartResult.stdout);
+      const quickstart = (JSON.parse(quickstartResult.stdout) as any).data;
       expect(quickstart.oneCommand).toContain("cm context");
 
       // Follow the quickstart advice - get context
@@ -469,7 +470,7 @@ describe("CLI Command Chains E2E", () => {
         "--json"
       ], testDir);
       expect(contextResult.exitCode).toBe(0);
-      const context = JSON.parse(contextResult.stdout);
+      const context = (JSON.parse(contextResult.stdout) as any).data;
       expect(context.task).toBe("implement a new feature");
     }, { timeout: 30000 });
   });
@@ -544,7 +545,7 @@ describe("CLI Command Chains E2E", () => {
       });
       expect(addResult.exitCode).toBe(0);
       const addJson = JSON.parse(addResult.stdout) as any;
-      const bulletId = addJson?.bullet?.id;
+      const bulletId = addJson?.data?.bullet?.id;
       expect(typeof bulletId).toBe("string");
       expect(bulletId).toMatch(/^b-/);
       logger.endStep("playbook-add", true);
@@ -564,10 +565,10 @@ describe("CLI Command Chains E2E", () => {
       });
       expect(contextResult.exitCode).toBe(0);
       const contextJson = JSON.parse(contextResult.stdout) as any;
-      expect(contextJson.task).toBe("validate user input");
-      expect(Array.isArray(contextJson.relevantBullets)).toBe(true);
-      expect(contextJson.relevantBullets.some((b: any) => b.id === bulletId)).toBe(true);
-      expect(contextJson.degraded?.cass?.available).toBe(false);
+      expect(contextJson.data.task).toBe("validate user input");
+      expect(Array.isArray(contextJson.data.relevantBullets)).toBe(true);
+      expect(contextJson.data.relevantBullets.some((b: any) => b.id === bulletId)).toBe(true);
+      expect(contextJson.data.degraded?.cass?.available).toBe(false);
       logger.endStep("context", true);
 
       // Step 4: Mark the surfaced bullet helpful
@@ -586,8 +587,8 @@ describe("CLI Command Chains E2E", () => {
       expect(markResult.exitCode).toBe(0);
       const markJson = JSON.parse(markResult.stdout) as any;
       expect(markJson.success).toBe(true);
-      expect(markJson.bulletId).toBe(bulletId);
-      expect(markJson.type).toBe("helpful");
+      expect(markJson.data.bulletId).toBe(bulletId);
+      expect(markJson.data.type).toBe("helpful");
       logger.endStep("mark", true);
 
       logger.step("fs-after-mark", "info", "File system state after mark", {
@@ -610,9 +611,9 @@ describe("CLI Command Chains E2E", () => {
       });
       expect(() => JSON.parse(doctorResult.stdout)).not.toThrow();
       const doctorJson = JSON.parse(doctorResult.stdout) as any;
-      expect(Array.isArray(doctorJson.checks)).toBe(true);
-      expect(typeof doctorJson.overallStatus).toBe("string");
-      expect(Array.isArray(doctorJson.recommendedActions)).toBe(true);
+      expect(Array.isArray(doctorJson.data.checks)).toBe(true);
+      expect(typeof doctorJson.data.overallStatus).toBe("string");
+      expect(Array.isArray(doctorJson.data.recommendedActions)).toBe(true);
       logger.endStep("doctor", true);
 
       logger.info("Onboarding flow complete", {
@@ -652,8 +653,8 @@ describe("CLI Command Chains E2E", () => {
       });
       expect(() => JSON.parse(doctorResult.stdout)).not.toThrow();
       const doctorJson = JSON.parse(doctorResult.stdout) as any;
-      expect(Array.isArray(doctorJson.fixableIssues)).toBe(true);
-      expect(doctorJson.fixableIssues.some((i: any) => i.id === "reset-config")).toBe(true);
+      expect(Array.isArray(doctorJson.data.fixableIssues)).toBe(true);
+      expect(doctorJson.data.fixableIssues.some((i: any) => i.id === "reset-config")).toBe(true);
       logger.endStep("doctor-detect", true);
 
       // Apply fixes (force allows cautious reset-config)
@@ -666,8 +667,8 @@ describe("CLI Command Chains E2E", () => {
       });
       expect(() => JSON.parse(fixResult.stdout)).not.toThrow();
       const fixJson = JSON.parse(fixResult.stdout) as any;
-      expect(Array.isArray(fixJson.fixResults)).toBe(true);
-      expect(fixJson.fixResults.some((r: any) => r.id === "reset-config" && r.success === true)).toBe(true);
+      expect(Array.isArray(fixJson.data.fixResults)).toBe(true);
+      expect(fixJson.data.fixResults.some((r: any) => r.id === "reset-config" && r.success === true)).toBe(true);
       logger.endStep("doctor-fix", true);
 
       // Subsequent commands should no longer warn about failing to load config.

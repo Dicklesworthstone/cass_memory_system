@@ -12,6 +12,7 @@ import { initCommand } from "../src/commands/init.js";
 import { withTempCassHome, TestEnv, createIsolatedEnvironment, cleanupEnvironment } from "./helpers/temp.js";
 import { withTempGitRepo, createTempGitRepo, cleanupTempGitRepo } from "./helpers/git.js";
 import { createTestLogger } from "./helpers/logger.js";
+import { createE2ELogger } from "./helpers/e2e-logger.js";
 
 // Helper to check if a file exists
 async function exists(filePath: string): Promise<boolean> {
@@ -50,57 +51,70 @@ function captureConsole() {
 describe("E2E: CLI init command", () => {
   describe("Global Init (~/.cass-memory)", () => {
     it.serial("creates global structure in fresh environment", async () => {
-      const logger = createTestLogger("debug");
-      logger.info("Starting fresh init test");
+      const log = createE2ELogger("cli-init: creates global structure (fresh)");
+      log.setRepro("bun test test/cli-init.e2e.test.ts");
 
-      await withTempCassHome(async (env) => {
-        logger.info("Created temp home", { home: env.home });
+      await log.run(async () => {
+        log.step("Starting fresh init test");
 
-        // Verify nothing exists yet (withTempCassHome creates the dirs but not config)
-        const configExists = await exists(env.configPath);
-        logger.info("Before init - config exists?", { configExists });
+        await withTempCassHome(async (env) => {
+          log.snapshot("env", {
+            home: env.home,
+            cassMemoryDir: env.cassMemoryDir,
+            configPath: env.configPath,
+            playbookPath: env.playbookPath,
+            diaryDir: env.diaryDir,
+          });
 
-        // Remove pre-created dirs to simulate truly fresh env
-        await rm(env.cassMemoryDir, { recursive: true, force: true });
+          // Verify nothing exists yet (withTempCassHome creates the dirs but not config)
+          const configExists = await exists(env.configPath);
+          log.step("Before init - config exists?", { configExists });
 
-        // Run init
-        const capture = captureConsole();
-        try {
-          await initCommand({});
-        } finally {
-          capture.restore();
-        }
+          // Remove pre-created dirs to simulate truly fresh env
+          log.step("Remove pre-created dirs", { cassMemoryDir: env.cassMemoryDir });
+          await rm(env.cassMemoryDir, { recursive: true, force: true });
 
-        logger.info("Init completed", { logs: capture.logs.length });
+          // Run init
+          const capture = captureConsole();
+          try {
+            log.startTimer("initCommand");
+            await initCommand({});
+            log.endTimer("initCommand");
+          } finally {
+            capture.restore();
+          }
 
-        // Verify structure created
-        const cassMemoryExists = await exists(env.cassMemoryDir);
-        expect(cassMemoryExists).toBe(true);
+          log.snapshot("initConsole", { logs: capture.logs.slice(0, 20), errors: capture.errors.slice(0, 20) });
 
-        // Verify config.json created
-        const configCreated = await exists(env.configPath);
-        expect(configCreated).toBe(true);
+          // Verify structure created
+          const cassMemoryExists = await exists(env.cassMemoryDir);
+          expect(cassMemoryExists).toBe(true);
 
-        // Verify playbook.yaml created
-        const playbookCreated = await exists(env.playbookPath);
-        expect(playbookCreated).toBe(true);
+          // Verify config.json created
+          const configCreated = await exists(env.configPath);
+          expect(configCreated).toBe(true);
 
-        // Verify diary directory created
-        const diaryExists = await exists(env.diaryDir);
-        expect(diaryExists).toBe(true);
+          // Verify playbook.yaml created
+          const playbookCreated = await exists(env.playbookPath);
+          expect(playbookCreated).toBe(true);
 
-        // Verify config is valid JSON
-        const configContent = await readFile(env.configPath, "utf-8");
-        const config = JSON.parse(configContent);
-        expect(config.schema_version).toBeDefined();
-        logger.info("Config validated", { schemaVersion: config.schema_version });
+          // Verify diary directory created
+          const diaryExists = await exists(env.diaryDir);
+          expect(diaryExists).toBe(true);
 
-        // Verify playbook is valid YAML
-        const playbookContent = await readFile(env.playbookPath, "utf-8");
-        const playbook = yaml.parse(playbookContent);
-        expect(playbook).toBeDefined();
-        expect(playbook.bullets).toEqual([]);
-        logger.info("Playbook validated", { bulletCount: playbook.bullets?.length ?? 0 });
+          // Verify config is valid JSON
+          const configContent = await readFile(env.configPath, "utf-8");
+          const config = JSON.parse(configContent);
+          log.snapshot("config", config);
+          expect(config.schema_version).toBeDefined();
+
+          // Verify playbook is valid YAML
+          const playbookContent = await readFile(env.playbookPath, "utf-8");
+          const playbook = yaml.parse(playbookContent);
+          log.snapshot("playbook", playbook);
+          expect(playbook).toBeDefined();
+          expect(playbook.bullets).toEqual([]);
+        });
       });
     });
 
@@ -137,7 +151,7 @@ describe("E2E: CLI init command", () => {
         const output = capture2.logs.join("\n");
         const result = JSON.parse(output);
         expect(result.success).toBe(false);
-        expect(result.error).toContain("Already initialized");
+        expect(result.error.message).toContain("Already initialized");
 
         // Config should NOT be overwritten
         const currentConfig = await readFile(env.configPath, "utf-8");
@@ -178,8 +192,9 @@ describe("E2E: CLI init command", () => {
         }
 
         const output = capture2.logs.join("\n");
-        const result = JSON.parse(output);
-        expect(result.success).toBe(true);
+        const payload = JSON.parse(output);
+        expect(payload.success).toBe(true);
+        const result = payload.data;
         expect(result.overwritten).toEqual(expect.arrayContaining(["config.json", "playbook.yaml"]));
         expect(Array.isArray(result.backups)).toBe(true);
 
@@ -216,11 +231,11 @@ describe("E2E: CLI init command", () => {
         // Should output valid JSON
         expect(capture.logs.length).toBeGreaterThan(0);
         const output = capture.logs.join("\n");
-        const result = JSON.parse(output);
+        const payload = JSON.parse(output);
 
-        expect(result.success).toBe(true);
-        expect(result.configPath).toContain(".cass-memory");
-        expect(Array.isArray(result.created)).toBe(true);
+        expect(payload.success).toBe(true);
+        expect(payload.data.configPath).toContain(".cass-memory");
+        expect(Array.isArray(payload.data.created)).toBe(true);
       });
     });
 
@@ -248,7 +263,7 @@ describe("E2E: CLI init command", () => {
         const result = JSON.parse(output);
 
         expect(result.success).toBe(false);
-        expect(result.error).toContain("Already initialized");
+        expect(result.error.message).toContain("Already initialized");
       });
     });
   });
@@ -384,8 +399,9 @@ describe("E2E: CLI init command", () => {
           }
 
           const output = capture2.logs.join("\n");
-          const result = JSON.parse(output);
-          expect(result.success).toBe(true);
+          const payload = JSON.parse(output);
+          const result = payload.data;
+          expect(payload.success).toBe(true);
           expect(result.overwritten).toEqual(expect.arrayContaining(["playbook.yaml", "blocked.log"]));
           expect(Array.isArray(result.backups)).toBe(true);
 
@@ -424,9 +440,10 @@ describe("E2E: CLI init command", () => {
           }
 
           const output = capture.logs.join("\n");
-          const result = JSON.parse(output);
+          const payload = JSON.parse(output);
+          const result = payload.data;
 
-          expect(result.success).toBe(true);
+          expect(payload.success).toBe(true);
           expect(result.cassDir).toContain(".cass");
           expect(Array.isArray(result.created)).toBe(true);
         } finally {
@@ -458,7 +475,7 @@ describe("E2E: CLI init command", () => {
           err.includes("Not in a git repository") || err.includes("git repo")
         );
         expect(hasError).toBe(true);
-        expect(process.exitCode as number | undefined).toBe(1);
+        expect(process.exitCode as number | undefined).toBe(3);
         process.exitCode = 0;
       } finally {
         process.chdir(originalCwd);
@@ -487,8 +504,8 @@ describe("E2E: CLI init command", () => {
         const result = JSON.parse(output);
 
         expect(result.success).toBe(false);
-        expect(result.error).toContain("Not in a git repository");
-        expect(process.exitCode as number | undefined).toBe(1);
+        expect(result.error.message).toContain("Not in a git repository");
+        expect(process.exitCode as number | undefined).toBe(3);
         process.exitCode = 0;
       } finally {
         process.chdir(originalCwd);

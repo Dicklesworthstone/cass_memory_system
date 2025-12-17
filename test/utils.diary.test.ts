@@ -1,9 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
+import { describe, it, expect } from "bun:test";
 import { findDiaryBySession } from "../src/diary.js";
 import { generateDiaryId } from "../src/utils.js";
-import { createTestConfig, createTestDiary } from "./helpers/factories.js";
+import { createTestDiary } from "./helpers/factories.js";
 import { withTempDir } from "./helpers/temp.js";
-import { writeFile, mkdir } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 
 describe("utils.generateDiaryId", () => {

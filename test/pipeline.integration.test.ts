@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { reflectOnSession } from "../src/reflect.js";
@@ -11,8 +11,6 @@ const diaryFixturePath = path.join(process.cwd(), "test/fixtures/diary-success.j
 
 describe("Pipeline integration: diary -> reflect -> curate (stubbed LLM)", () => {
   beforeEach(() => {
-    // Ensure no lingering module mocks from other suites
-    mock.restore();
     __resetReflectorStubsForTest();
   });
 

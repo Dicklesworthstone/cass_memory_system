@@ -1,14 +1,8 @@
-import { describe, it, expect, mock, beforeAll, afterAll } from "bun:test";
+import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { loadConfig, DEFAULT_CONFIG } from "../src/config.js";
-
-// Mock utilities
-const mockExpandPath = mock((p: string) => {
-    if (p.startsWith("~")) return path.join(os.tmpdir(), "cass-test", p.slice(1));
-    return p;
-});
 
 // We need to mock the file system module calls inside config.ts
 // But bun:test mocks are a bit limited for esm modules without module mocking.

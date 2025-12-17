@@ -11,23 +11,26 @@ import os from "node:os";
 // =============================================================================
 describe("getProcessedLogPath", () => {
   it("returns global log path when workspace is undefined", () => {
-    const expected = join(os.homedir(), ".cass-memory", "reflections", "global.processed.log");
+    const home = process.env.HOME || os.homedir();
+    const expected = join(home, ".cass-memory", "reflections", "global.processed.log");
     expect(getProcessedLogPath()).toBe(expected);
   });
 
   it("hashes workspace path for namespaced log", () => {
+    const home = process.env.HOME || os.homedir();
     const workspace = "/tmp/my-workspace";
     const hash = crypto.createHash("sha256").update(workspace).digest("hex").slice(0, 8);
-    const expected = join(os.homedir(), ".cass-memory", "reflections", `ws-${hash}.processed.log`);
+    const expected = join(home, ".cass-memory", "reflections", `ws-${hash}.processed.log`);
     expect(getProcessedLogPath(workspace)).toBe(expected);
   });
 
   it("expands tilde before hashing", () => {
+    const home = process.env.HOME || os.homedir();
     const workspace = "~/projects/demo";
-    const expanded = workspace.replace(/^~(?=$|\/)/, os.homedir());
+    const expanded = workspace.replace(/^~(?=$|\/)/, home);
     const normalized = resolve(expanded);
     const hash = crypto.createHash("sha256").update(normalized).digest("hex").slice(0, 8);
-    const expected = join(os.homedir(), ".cass-memory", "reflections", `ws-${hash}.processed.log`);
+    const expected = join(home, ".cass-memory", "reflections", `ws-${hash}.processed.log`);
     expect(getProcessedLogPath(workspace)).toBe(expected);
   });
 

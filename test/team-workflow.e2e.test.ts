@@ -176,7 +176,8 @@ describe("E2E: Team Workflow", () => {
           const doctorResult = runCm(["doctor", "--json"], cloneDir, { HOME: devHome });
           expect(doctorResult.exitCode).toBe(0);
 
-          const doctorResponse = JSON.parse(doctorResult.stdout);
+          const doctorPayload = JSON.parse(doctorResult.stdout);
+          const doctorResponse = doctorPayload.data;
           expect(doctorResponse.checks).toBeDefined();
           expect(doctorResponse.checks.length).toBeGreaterThan(0);
           expect(doctorResponse.overallStatus).toBeDefined();
@@ -198,7 +199,8 @@ describe("E2E: Team Workflow", () => {
           );
           expect(contextResult.exitCode).toBe(0);
 
-          const contextResponse = JSON.parse(contextResult.stdout);
+          const contextPayload = JSON.parse(contextResult.stdout);
+          const contextResponse = contextPayload.data;
           expect(contextResponse.task).toBe("typescript configuration");
 
           // The repo rule about TypeScript strict mode should be included
@@ -328,7 +330,8 @@ describe("E2E: Team Workflow", () => {
         });
         expect(contextResult.exitCode).toBe(0);
 
-        const context = JSON.parse(contextResult.stdout);
+        const contextPayload = JSON.parse(contextResult.stdout);
+        const context = contextPayload.data;
         const bulletContents = context.relevantBullets.map((b: any) => b.content);
 
         // Check that we see rules from both global and repo
@@ -429,7 +432,8 @@ describe("E2E: Team Workflow", () => {
         const statsResult = runCm(["stats", "--json"], repoDir, { HOME: leadHome });
         expect(statsResult.exitCode).toBe(0);
 
-        const stats = JSON.parse(statsResult.stdout);
+        const statsPayload = JSON.parse(statsResult.stdout);
+        const stats = statsPayload.data;
         // Should count at least 3 bullets (2 global + 1 repo)
         expect(stats.total).toBeGreaterThanOrEqual(3);
       } finally {
@@ -454,7 +458,8 @@ describe("E2E: Team Workflow", () => {
         });
         expect(listResult.exitCode).toBe(0);
 
-        const listResponse = JSON.parse(listResult.stdout);
+        const listPayload = JSON.parse(listResult.stdout);
+        const listResponse = listPayload.data;
         // Should include both global and repo rules
         expect(listResponse.bullets.length).toBeGreaterThanOrEqual(2);
 

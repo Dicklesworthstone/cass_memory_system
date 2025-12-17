@@ -83,7 +83,7 @@ describe("E2E CLI Smoke Test", () => {
     // Should return valid JSON object with bullets array
     const listResponse = JSON.parse(result.stdout);
     expect(listResponse.success).toBe(true);
-    expect(Array.isArray(listResponse.bullets)).toBe(true);
+    expect(Array.isArray(listResponse.data?.bullets)).toBe(true);
   });
 
   test("cm playbook add creates a bullet", () => {
@@ -98,8 +98,8 @@ describe("E2E CLI Smoke Test", () => {
 
     const response = JSON.parse(result.stdout);
     expect(response.success).toBe(true);
-    expect(response.bullet).toBeDefined();
-    expect(response.bullet.id).toMatch(/^b-/);
+    expect(response.data?.bullet).toBeDefined();
+    expect(response.data?.bullet?.id).toMatch(/^b-/);
   });
 
   test("cm context returns context (degraded without cass)", () => {
@@ -113,8 +113,8 @@ describe("E2E CLI Smoke Test", () => {
     expect(result.exitCode).toBeLessThanOrEqual(1);
 
     const context = JSON.parse(result.stdout);
-    expect(context.task).toBe("test task for smoke testing");
-    expect(Array.isArray(context.relevantBullets)).toBe(true);
+    expect(context.data?.task).toBe("test task for smoke testing");
+    expect(Array.isArray(context.data?.relevantBullets)).toBe(true);
   });
 
   test("cm stats returns playbook statistics", () => {
@@ -123,9 +123,9 @@ describe("E2E CLI Smoke Test", () => {
     expect(result.exitCode).toBe(0);
 
     const stats = JSON.parse(result.stdout);
-    expect(stats.total).toBeGreaterThanOrEqual(0);
-    expect(stats.byScope).toBeDefined();
-    expect(stats.scoreDistribution).toBeDefined();
+    expect(stats.data?.total).toBeGreaterThanOrEqual(0);
+    expect(stats.data?.byScope).toBeDefined();
+    expect(stats.data?.scoreDistribution).toBeDefined();
   });
 
   test("cm doctor checks system health", () => {
@@ -134,9 +134,9 @@ describe("E2E CLI Smoke Test", () => {
     expect(result.exitCode).toBeLessThanOrEqual(1);
 
     const health = JSON.parse(result.stdout);
-    expect(Array.isArray(health.checks)).toBe(true);
-    expect(typeof health.overallStatus).toBe("string");
-    expect(Array.isArray(health.recommendedActions)).toBe(true);
+    expect(Array.isArray(health.data?.checks)).toBe(true);
+    expect(typeof health.data?.overallStatus).toBe("string");
+    expect(Array.isArray(health.data?.recommendedActions)).toBe(true);
   });
 
   test("cm top shows effective bullets", () => {
@@ -145,8 +145,8 @@ describe("E2E CLI Smoke Test", () => {
     expect(result.exitCode).toBe(0);
 
     const top = JSON.parse(result.stdout);
-    expect(top.bullets).toBeDefined();
-    expect(Array.isArray(top.bullets)).toBe(true);
+    expect(top.data?.bullets).toBeDefined();
+    expect(Array.isArray(top.data?.bullets)).toBe(true);
   });
 
   test("cm stale finds stale bullets", () => {
@@ -155,8 +155,8 @@ describe("E2E CLI Smoke Test", () => {
     expect(result.exitCode).toBe(0);
 
     const stale = JSON.parse(result.stdout);
-    expect(stale.threshold).toBe(0);
-    expect(Array.isArray(stale.bullets)).toBe(true);
+    expect(stale.data?.threshold).toBe(0);
+    expect(Array.isArray(stale.data?.bullets)).toBe(true);
   });
 
   test("cm quickstart shows agent documentation", () => {
@@ -165,8 +165,8 @@ describe("E2E CLI Smoke Test", () => {
     expect(result.exitCode).toBe(0);
 
     const quickstart = JSON.parse(result.stdout);
-    expect(quickstart.oneCommand).toContain("cm context");
-    expect(quickstart.protocol).toBeDefined();
+    expect(quickstart.data?.oneCommand).toContain("cm context");
+    expect(quickstart.data?.protocol).toBeDefined();
   });
 
   test("cm usage shows LLM cost tracking", () => {
@@ -175,8 +175,8 @@ describe("E2E CLI Smoke Test", () => {
     expect(result.exitCode).toBe(0);
 
     const usage = JSON.parse(result.stdout);
-    expect(typeof usage.today).toBe("number");
-    expect(typeof usage.dailyLimit).toBe("number");
+    expect(typeof usage.data?.today).toBe("number");
+    expect(typeof usage.data?.dailyLimit).toBe("number");
   });
 
   test("cm project --output refuses to overwrite without --force", () => {
@@ -204,7 +204,7 @@ describe("E2E CLI Smoke Test", () => {
     const bad = runCm(["similar", "smoke test query", "--threshold", "2", "--json"], testDir);
     expect(bad.exitCode).toBe(1);
     const err = JSON.parse(bad.stdout);
-    expect(typeof err.error).toBe("string");
+    expect(typeof err.error?.message).toBe("string");
   });
 
   test("cm undo handles non-existent bullet gracefully", () => {
@@ -214,7 +214,7 @@ describe("E2E CLI Smoke Test", () => {
     expect(result.exitCode).toBe(1);
 
     const response = JSON.parse(result.stdout);
-    expect(response.error).toContain("not found");
+    expect(response.error?.message).toContain("not found");
   });
 
   test("cm undo --feedback fails when no feedback to undo", () => {
@@ -226,7 +226,7 @@ describe("E2E CLI Smoke Test", () => {
       "--json"
     ], testDir);
     expect(addResult.exitCode).toBe(0);
-    const bullet = JSON.parse(addResult.stdout).bullet;
+    const bullet = JSON.parse(addResult.stdout).data?.bullet;
 
     // Try to undo feedback when there's none
     const result = runCm(["undo", bullet.id, "--feedback", "--json"], testDir);

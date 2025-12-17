@@ -10,13 +10,13 @@
  *   await withLlmShim({
  *     extractDiary: { status: "success", accomplishments: ["built feature"] },
  *     reflector: { deltas: [{ type: "add", bullet: { content: "test" } }] },
- *   }, async () => {
- *     // Your test code here - LLM functions will return shim data
+ *   }, async (io) => {
+ *     // Your test code here - pass `io` into LLM functions
  *   });
  */
 
-import { mock } from "bun:test";
-import type { PlaybookDelta, DiaryEntry } from "../../src/types.js";
+import type { PlaybookDelta } from "../../src/types.js";
+import type { LLMIO } from "../../src/llm.js";
 
 // --- Types ---
 
@@ -107,7 +107,6 @@ export const DEFAULT_VALIDATOR_RESPONSE: ValidatorShimResponse = {
 
 // --- Shim Implementation ---
 
-let currentConfig: LlmShimConfig | null = null;
 let callLog: LlmCallLog | null = null;
 
 /**
@@ -131,8 +130,8 @@ export function clearLlmCallLog(): void {
 /**
  * Create a mock generateObject function that returns shim responses
  */
-function createMockGenerateObject(config: LlmShimConfig) {
-  return async (options: any) => {
+function createMockGenerateObject(config: LlmShimConfig): LLMIO["generateObject"] {
+  return async <T>(options: any) => {
     // Apply delay if configured
     if (config.delay) {
       await new Promise(resolve => setTimeout(resolve, config.delay));
@@ -176,7 +175,7 @@ function createMockGenerateObject(config: LlmShimConfig) {
           tags: response.tags || [],
           searchAnchors: response.searchAnchors || []
         }
-      };
+      } as any;
     }
 
     if (prompt.includes("reflect") || prompt.includes("delta") || prompt.includes("playbook")) {
@@ -212,7 +211,7 @@ function createMockGenerateObject(config: LlmShimConfig) {
             sourceSession: (d as any).sourceSession || "/test/session.jsonl"
           }))
         }
-      };
+      } as any;
     }
 
     if (prompt.includes("valid") || prompt.includes("evidence") || prompt.includes("verdict")) {
@@ -241,13 +240,13 @@ function createMockGenerateObject(config: LlmShimConfig) {
           refinedContent: response.refinedContent,
           supportingEvidence: response.supportingEvidence || []
         }
-      };
+      } as any;
     }
 
     // Default response for unknown LLM calls
     return {
       object: {}
-    };
+    } as any;
   };
 }
 
@@ -260,10 +259,8 @@ function createMockGenerateObject(config: LlmShimConfig) {
  */
 export async function withLlmShim<T>(
   config: LlmShimConfig,
-  fn: () => Promise<T>
+  fn: (io: LLMIO) => Promise<T>
 ): Promise<T> {
-  currentConfig = config;
-
   // Reset call log - only create if tracking is enabled
   if (config.trackCalls) {
     callLog = {
@@ -275,22 +272,14 @@ export async function withLlmShim<T>(
     callLog = null;
   }
 
-  const mockGenerateObject = createMockGenerateObject(config);
-
-  // Mock the ai module
-  mock.module("ai", () => ({
-    generateObject: mockGenerateObject,
-    generateText: async (options: any) => ({
-      text: "mocked text response"
-    })
-  }));
+  const io: LLMIO = {
+    generateObject: createMockGenerateObject(config),
+  };
 
   try {
-    return await fn();
+    return await fn(io);
   } finally {
-    currentConfig = null;
     // Don't clear callLog here so tests can inspect it after withLlmShim
-    mock.restore();
   }
 }
 

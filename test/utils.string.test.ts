@@ -4,6 +4,7 @@ import {
   tokenize,
   jaccardSimilarity,
   truncate,
+  truncateWithIndicator,
   truncateForContext,
   extractKeywords,
   generateBulletId,
@@ -182,6 +183,25 @@ describe("truncate", () => {
   it("handles unicode safely", () => {
     const result = truncate("Hello 世界 test", 10);
     expect(result.length).toBeLessThanOrEqual(10);
+  });
+});
+
+// =============================================================================
+// truncateWithIndicator
+// =============================================================================
+describe("truncateWithIndicator", () => {
+  it("returns unchanged string if shorter than max", () => {
+    expect(truncateWithIndicator("hello", 10)).toBe("hello");
+  });
+
+  it("appends indicator without reducing the slice", () => {
+    const result = truncateWithIndicator("hello world", 5);
+    expect(result).toBe("hello...");
+    expect(result).toHaveLength(8);
+  });
+
+  it("returns indicator when maxLen is 0 and text is non-empty", () => {
+    expect(truncateWithIndicator("hello", 0)).toBe("...");
   });
 });
 

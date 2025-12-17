@@ -88,7 +88,8 @@ describe("E2E: CLI doctor command", () => {
       const output = capture.logs.join("\n");
       expect(() => JSON.parse(output)).not.toThrow();
 
-      const result = JSON.parse(output);
+      const payload = JSON.parse(output);
+      const result = payload.data;
       expect(result).toHaveProperty("checks");
       expect(Array.isArray(result.checks)).toBe(true);
     });
@@ -102,7 +103,8 @@ describe("E2E: CLI doctor command", () => {
       }
 
       const output = capture.logs.join("\n");
-      const result = JSON.parse(output);
+      const payload = JSON.parse(output);
+      const result = payload.data;
 
       const categories = result.checks.map((c: any) => c.category);
 
@@ -156,7 +158,8 @@ describe("E2E: CLI doctor command", () => {
       }
 
       const output = capture.logs.join("\n");
-      const result = JSON.parse(output);
+      const payload = JSON.parse(output);
+      const result = payload.data;
 
       for (const check of result.checks) {
         expect(check).toHaveProperty("category");
@@ -417,7 +420,8 @@ describe("E2E: CLI doctor command", () => {
         }
 
         const output = capture.logs.join("\n");
-        const result = JSON.parse(output);
+        const payload = JSON.parse(output);
+        const result = payload.data;
 
         const repoCheck = result.checks.find((c: any) => c.category.includes("Repo"));
         expect(repoCheck).toBeDefined();
@@ -446,7 +450,8 @@ describe("E2E: CLI doctor command", () => {
         }
 
         const output = capture.logs.join("\n");
-        const result = JSON.parse(output);
+        const payload = JSON.parse(output);
+        const result = payload.data;
 
         const repoCheck = result.checks.find((c: any) => c.category.includes("Repo"));
         expect(repoCheck).toBeDefined();
@@ -483,7 +488,8 @@ describe("E2E: CLI doctor command", () => {
         }
 
         const output = capture.logs.join("\n");
-        const result = JSON.parse(output);
+        const payload = JSON.parse(output);
+        const result = payload.data;
 
         const repoCheck = result.checks.find((c: any) => c.category.includes("Repo"));
         expect(repoCheck).toBeDefined();
@@ -505,7 +511,8 @@ describe("E2E: CLI doctor command", () => {
       }
 
       const output = capture.logs.join("\n");
-      const result = JSON.parse(output);
+      const payload = JSON.parse(output);
+      const result = payload.data;
 
       const sanitizationCheck = result.checks.find((c: any) =>
         c.category.includes("Sanitization") && c.category.includes("Pattern")
@@ -541,7 +548,8 @@ describe("E2E: CLI doctor command", () => {
         }
 
         const output = capture.logs.join("\n");
-        const result = JSON.parse(output);
+        const payload = JSON.parse(output);
+        const result = payload.data;
 
         const sanitizationCheck = result.checks.find((c: any) =>
           c.category.includes("Sanitization")
@@ -564,7 +572,8 @@ describe("E2E: CLI doctor command", () => {
       }
 
       const output = capture.logs.join("\n");
-      const result = JSON.parse(output);
+      const payload = JSON.parse(output);
+      const result = payload.data;
 
       const llmCheck = result.checks.find((c: any) => c.category.includes("LLM"));
       expect(llmCheck).toBeDefined();

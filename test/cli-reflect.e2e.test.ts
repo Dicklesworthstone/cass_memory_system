@@ -333,11 +333,12 @@ describe("E2E: CLI reflect command", () => {
 
         // Check JSON structure if output exists
         if (capture.logs.length > 0 && capture.logs[0].startsWith("{")) {
-          const parsed = JSON.parse(capture.logs.join(""));
+          const payload = JSON.parse(capture.logs.join("")) as any;
+          const parsed = payload.data;
 
           // When there are results, should have this structure
           if (parsed.global !== undefined || parsed.repo !== undefined) {
-            expect(parsed).toHaveProperty("errors");
+            expect(Array.isArray(parsed.errors)).toBe(true);
             logger.info("JSON structure verified", {
               hasGlobal: !!parsed.global,
               hasRepo: !!parsed.repo,

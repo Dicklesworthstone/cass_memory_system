@@ -66,15 +66,21 @@ describe("S1 Offline Smoke (no cass, no LLM)", () => {
     expect(ctx.exitCode).toBe(0);
     const ctxOut = ctx.stdout.toString();
     // In degraded mode, historySnippets should be empty; parse json result
-    const parsed = JSON.parse(ctxOut);
-    expect(parsed.task).toBe("hello world");
-    expect(parsed.historySnippets.length).toBe(0);
+    const parsed = JSON.parse(ctxOut) as any;
+    expect(parsed.data.task).toBe("hello world");
+    expect(parsed.data.historySnippets.length).toBe(0);
 
     // 3) add rule
     const add = await runCm(["playbook", "add", "Always write atomically", "--category", "io", "--json"]);
     expect(add.exitCode).toBe(0);
-    const addOut = JSON.parse(add.stdout.toString());
-    const bulletId = addOut?.bullet?.id ?? addOut?.id ?? addOut?.bulletId;
+    const addOut = JSON.parse(add.stdout.toString()) as any;
+    const bulletId =
+      addOut?.data?.bullet?.id ??
+      addOut?.data?.id ??
+      addOut?.data?.bulletId ??
+      addOut?.bullet?.id ??
+      addOut?.id ??
+      addOut?.bulletId;
     expect(typeof bulletId).toBe("string");
 
     // 4) mark helpful
@@ -84,8 +90,8 @@ describe("S1 Offline Smoke (no cass, no LLM)", () => {
     // 5) list and assert helpful count increments
     const list = await runCm(["playbook", "list", "--json"]);
     expect(list.exitCode).toBe(0);
-    const listResponse = JSON.parse(list.stdout.toString());
-    const added = listResponse.bullets.find((b: any) => b.id === bulletId);
+    const listResponse = JSON.parse(list.stdout.toString()) as any;
+    const added = listResponse.data.bullets.find((b: any) => b.id === bulletId);
     expect(added).toBeTruthy();
     expect(added.helpfulCount || added.helpful_count || 0).toBeGreaterThanOrEqual(1);
   }, 20000);

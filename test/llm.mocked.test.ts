@@ -1,36 +1,29 @@
-import { describe, it, expect, afterEach, mock } from "bun:test";
+import { describe, it, expect } from "bun:test";
 import { z } from "zod";
 import { createTestConfig, createTestDiary } from "./helpers/factories.js";
+import { extractDiary, runReflector, runValidator } from "../src/llm.js";
+import type { LLMIO } from "../src/llm.js";
 
-// Helper to load a fresh copy of the LLM module with module-level mocks applied.
-const loadLlmModule = (suffix: string) => import(`../src/llm.js?mock-${suffix}`);
-
-afterEach(() => {
-  mock.restore();
-});
-
-describe("LLM flows with mocked ai.generateObject", () => {
+describe("LLM flows with injected generateObject", () => {
   it("extractDiary returns structured diary using session metadata in the prompt", async () => {
     let lastOptions: any = null;
-    const mockGenerateObject = mock(async (options: any) => {
+    const io: LLMIO = {
+      generateObject: async <T>(options: any) => {
       lastOptions = options;
       return {
         object: {
           status: "success",
           accomplishments: ["wrote tests"],
-          decisions: ["used bun mock.module"],
+          decisions: ["used injected provider"],
           challenges: ["llm offline"],
           preferences: [],
           keyLearnings: ["mocking keeps tests local"],
           tags: ["testing"],
           searchAnchors: ["mocked ai"]
-        }
+        } as T
       };
-    });
-
-    mock.module("ai", () => ({ generateObject: mockGenerateObject }));
-
-    const { extractDiary } = await loadLlmModule("diary");
+      }
+    };
 
     const schema = z.object({
       status: z.string(),
@@ -43,13 +36,14 @@ describe("LLM flows with mocked ai.generateObject", () => {
       searchAnchors: z.array(z.string())
     });
 
-    const config = createTestConfig({ apiKey: "test-key" });
+    const config = createTestConfig({ apiKey: "sk-ant-test-0000000000000000" });
 
     const result = await extractDiary(
       schema,
       "session content body",
       { sessionPath: "/tmp/s1.jsonl", agent: "agent-1", workspace: "ws-1" },
-      config
+      config,
+      io
     );
 
     expect(result.status).toBe("success");
@@ -63,7 +57,8 @@ describe("LLM flows with mocked ai.generateObject", () => {
 
   it("runReflector generates deltas and includes diary/context details in the prompt", async () => {
     let lastOptions: any = null;
-    const mockGenerateObject = mock(async (options: any) => {
+    const io: LLMIO = {
+      generateObject: async <T>(options: any) => {
       lastOptions = options;
       return {
         object: {
@@ -75,13 +70,10 @@ describe("LLM flows with mocked ai.generateObject", () => {
               sourceSession: "/tmp/s1.jsonl"
             }
           ]
-        }
+        } as T
       };
-    });
-
-    mock.module("ai", () => ({ generateObject: mockGenerateObject }));
-
-    const { runReflector } = await loadLlmModule("reflector");
+      }
+    };
 
     const diary = createTestDiary({
       sessionPath: "/tmp/s1.jsonl",
@@ -105,7 +97,7 @@ describe("LLM flows with mocked ai.generateObject", () => {
       )
     });
 
-    const config = createTestConfig({ apiKey: "test-key" });
+    const config = createTestConfig({ apiKey: "sk-ant-test-0000000000000000" });
 
     const result = await runReflector(
       schema,
@@ -113,7 +105,8 @@ describe("LLM flows with mocked ai.generateObject", () => {
       "Existing bullets summary",
       "cass history notes",
       1,
-      config
+      config,
+      io
     );
 
     expect(result.deltas).toHaveLength(1);
@@ -130,7 +123,8 @@ describe("LLM flows with mocked ai.generateObject", () => {
 
   it("runValidator maps evidence and uses proposed rule/evidence in the prompt", async () => {
     let lastOptions: any = null;
-    const mockGenerateObject = mock(async (options: any) => {
+    const io: LLMIO = {
+      generateObject: async <T>(options: any) => {
       lastOptions = options;
       return {
         object: {
@@ -142,19 +136,18 @@ describe("LLM flows with mocked ai.generateObject", () => {
             contradicting: ["session b counterpoint"]
           },
           suggestedRefinement: null
-        }
+        } as T
       };
-    });
+      }
+    };
 
-    mock.module("ai", () => ({ generateObject: mockGenerateObject }));
-
-    const { runValidator } = await loadLlmModule("validator");
-    const config = createTestConfig({ apiKey: "test-key" });
+    const config = createTestConfig({ apiKey: "sk-ant-test-0000000000000000" });
 
     const result = await runValidator(
       "Use transactions for writes",
       "Session: /tmp/s2\nSnippet: committed changes\n---",
-      config
+      config,
+      io
     );
 
     expect(result.valid).toBe(true);
@@ -170,4 +163,3 @@ describe("LLM flows with mocked ai.generateObject", () => {
     expect(prompt).toContain("Session: /tmp/s2");
   });
 });
-

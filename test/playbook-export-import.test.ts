@@ -107,7 +107,9 @@ describe("playbook export command", () => {
       }
 
       const output = capture.logs.join("\n");
-      const parsed = JSON.parse(output);
+      const payload = JSON.parse(output) as any;
+      expect(payload.success).toBe(true);
+      const parsed = payload.data;
       expect(parsed.schema_version).toBe(2);
       expect(parsed.bullets.length).toBe(1);
     });
@@ -135,7 +137,9 @@ describe("playbook export command", () => {
         capture.restore();
       }
 
-      const parsed = JSON.parse(capture.logs.join("\n"));
+      const payload = JSON.parse(capture.logs.join("\n")) as any;
+      expect(payload.success).toBe(true);
+      const parsed = payload.data;
       expect(parsed.bullets.length).toBe(1);
       expect(parsed.bullets[0].id).toBe("b-active");
     });
@@ -163,7 +167,9 @@ describe("playbook export command", () => {
         capture.restore();
       }
 
-      const parsed = JSON.parse(capture.logs.join("\n"));
+      const payload = JSON.parse(capture.logs.join("\n")) as any;
+      expect(payload.success).toBe(true);
+      const parsed = payload.data;
       expect(parsed.bullets.length).toBe(2);
     });
   });
@@ -192,7 +198,9 @@ describe("playbook export command", () => {
         capture.restore();
       }
 
-      const parsed = JSON.parse(capture.logs.join("\n"));
+      const payload = JSON.parse(capture.logs.join("\n")) as any;
+      expect(payload.success).toBe(true);
+      const parsed = payload.data;
       expect(parsed.bullets[0].sourceSessions).toBeUndefined();
     });
   });
@@ -246,10 +254,10 @@ describe("playbook import command", () => {
         capture.restore();
       }
 
-      const result = JSON.parse(capture.logs.join("\n"));
-      expect(result.success).toBe(true);
-      expect(result.added).toBe(2);
-      expect(result.skipped).toBe(0);
+      const payload = JSON.parse(capture.logs.join("\n")) as any;
+      expect(payload.success).toBe(true);
+      expect(payload.data.added).toBe(2);
+      expect(payload.data.skipped).toBe(0);
 
       // Verify playbook was updated
       const updatedPlaybook = yaml.parse(await readFile(playbookPath, "utf-8"));
@@ -284,9 +292,9 @@ describe("playbook import command", () => {
         capture.restore();
       }
 
-      const result = JSON.parse(capture.logs.join("\n"));
-      expect(result.success).toBe(true);
-      expect(result.added).toBe(1);
+      const payload = JSON.parse(capture.logs.join("\n")) as any;
+      expect(payload.success).toBe(true);
+      expect(payload.data.added).toBe(1);
     });
   });
 
@@ -321,10 +329,10 @@ describe("playbook import command", () => {
         capture.restore();
       }
 
-      const result = JSON.parse(capture.logs.join("\n"));
-      expect(result.success).toBe(true);
-      expect(result.added).toBe(1);
-      expect(result.skipped).toBe(1);
+      const payload = JSON.parse(capture.logs.join("\n")) as any;
+      expect(payload.success).toBe(true);
+      expect(payload.data.added).toBe(1);
+      expect(payload.data.skipped).toBe(1);
 
       // Original content should be preserved
       const updatedPlaybook = yaml.parse(await readFile(playbookPath, "utf-8"));
@@ -361,9 +369,9 @@ describe("playbook import command", () => {
         capture.restore();
       }
 
-      const result = JSON.parse(capture.logs.join("\n"));
-      expect(result.success).toBe(true);
-      expect(result.updated).toBe(1);
+      const payload = JSON.parse(capture.logs.join("\n")) as any;
+      expect(payload.success).toBe(true);
+      expect(payload.data.updated).toBe(1);
 
       const updatedPlaybook = yaml.parse(await readFile(playbookPath, "utf-8"));
       const replaced = updatedPlaybook.bullets.find((b: any) => b.id === "b-to-replace");
@@ -393,11 +401,11 @@ describe("playbook import command", () => {
         capture.restore();
       }
 
-      expect(process.exitCode as number | undefined).toBe(1);
+      expect(process.exitCode as number | undefined).toBe(4);
       process.exitCode = 0; // Clean up
-      const result = JSON.parse(capture.logs.join("\n"));
+      const result = JSON.parse(capture.logs.join("\n")) as any;
       expect(result.success).toBe(false);
-      expect(result.error).toContain("not found");
+      expect(result.error.message).toContain("not found");
     });
   });
 
@@ -425,11 +433,11 @@ describe("playbook import command", () => {
         capture.restore();
       }
 
-      expect(process.exitCode as number | undefined).toBe(1);
+      expect(process.exitCode as number | undefined).toBe(2);
       process.exitCode = 0; // Clean up
-      const result = JSON.parse(capture.logs.join("\n"));
+      const result = JSON.parse(capture.logs.join("\n")) as any;
       expect(result.success).toBe(false);
-      expect(result.error).toContain("Parse error");
+      expect(result.error.message).toContain("Parse error");
     });
   });
 });
@@ -505,9 +513,9 @@ describe("playbook export/import roundtrip", () => {
       }
 
       // Verify roundtrip
-      const importResult = JSON.parse(importCapture.logs.join("\n"));
-      expect(importResult.success).toBe(true);
-      expect(importResult.added).toBe(1);
+      const importPayload = JSON.parse(importCapture.logs.join("\n")) as any;
+      expect(importPayload.success).toBe(true);
+      expect(importPayload.data.added).toBe(1);
 
       const targetPlaybookContent = yaml.parse(await readFile(targetPlaybookPath, "utf-8"));
       const imported = targetPlaybookContent.bullets[0];

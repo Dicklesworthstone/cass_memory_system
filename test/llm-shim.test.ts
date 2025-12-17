@@ -4,7 +4,7 @@
  * Verifies that the LLM shim correctly intercepts and mocks LLM API calls
  * for offline testing.
  */
-import { describe, it, expect, afterEach, mock } from "bun:test";
+import { describe, it, expect } from "bun:test";
 import {
   withLlmShim,
   getLlmCallLog,
@@ -20,10 +20,6 @@ import {
 import { extractDiary } from "../src/llm.js";
 import { DiaryEntrySchema } from "../src/types.js";
 import { DEFAULT_CONFIG } from "../src/config.js";
-
-afterEach(() => {
-  mock.restore();
-});
 
 describe("LLM Shim", () => {
   describe("Default Responses", () => {
@@ -46,11 +42,8 @@ describe("LLM Shim", () => {
 
   describe("withLlmShim", () => {
     it("mocks generateObject for diary extraction prompts", async () => {
-      await withLlmShim(createDiarySuccessShim(["Built feature X"]), async () => {
-        // Import after mock is applied
-        const ai = await import("ai");
-
-        const result = await ai.generateObject({
+      await withLlmShim(createDiarySuccessShim(["Built feature X"]), async (io) => {
+        const result = await io.generateObject({
           prompt: "Extract diary from session accomplishments",
           schema: {} as any,
           model: {} as any
@@ -66,10 +59,8 @@ describe("LLM Shim", () => {
         createReflectorAddDeltaShim([
           { content: "Always use TypeScript", category: "typescript" }
         ]),
-        async () => {
-          const ai = await import("ai");
-
-          const result = await ai.generateObject({
+        async (io) => {
+          const result = await io.generateObject({
             prompt: "Reflect on playbook and generate deltas",
             schema: {} as any,
             model: {} as any
@@ -83,10 +74,8 @@ describe("LLM Shim", () => {
     });
 
     it("mocks generateObject for validator prompts", async () => {
-      await withLlmShim(createValidatorRejectShim("Not enough evidence"), async () => {
-        const ai = await import("ai");
-
-        const result = await ai.generateObject({
+      await withLlmShim(createValidatorRejectShim("Not enough evidence"), async (io) => {
+        const result = await io.generateObject({
           prompt: "Validate this rule with evidence",
           schema: {} as any,
           model: {} as any
@@ -98,11 +87,9 @@ describe("LLM Shim", () => {
     });
 
     it("simulates API errors when configured", async () => {
-      await withLlmShim(createErrorShim("Rate limit exceeded"), async () => {
-        const ai = await import("ai");
-
+      await withLlmShim(createErrorShim("Rate limit exceeded"), async (io) => {
         await expect(
-          ai.generateObject({
+          io.generateObject({
             prompt: "Any prompt",
             schema: {} as any,
             model: {} as any
@@ -114,10 +101,8 @@ describe("LLM Shim", () => {
     it("simulates delay when configured", async () => {
       const start = Date.now();
 
-      await withLlmShim({ delay: 100, ...createOfflineShim() }, async () => {
-        const ai = await import("ai");
-
-        await ai.generateObject({
+      await withLlmShim({ delay: 100, ...createOfflineShim() }, async (io) => {
+        await io.generateObject({
           prompt: "Extract diary",
           schema: {} as any,
           model: {} as any
@@ -131,16 +116,14 @@ describe("LLM Shim", () => {
 
   describe("Call Tracking", () => {
     it("tracks calls when trackCalls is enabled", async () => {
-      await withLlmShim({ ...createOfflineShim(), trackCalls: true }, async () => {
-        const ai = await import("ai");
-
-        await ai.generateObject({
+      await withLlmShim({ ...createOfflineShim(), trackCalls: true }, async (io) => {
+        await io.generateObject({
           prompt: "Extract diary from session",
           schema: {} as any,
           model: {} as any
         });
 
-        await ai.generateObject({
+        await io.generateObject({
           prompt: "Reflect on playbook",
           schema: {} as any,
           model: {} as any
@@ -154,10 +137,8 @@ describe("LLM Shim", () => {
     });
 
     it("does not track calls when trackCalls is disabled", async () => {
-      await withLlmShim({ ...createOfflineShim(), trackCalls: false }, async () => {
-        const ai = await import("ai");
-
-        await ai.generateObject({
+      await withLlmShim({ ...createOfflineShim(), trackCalls: false }, async (io) => {
+        await io.generateObject({
           prompt: "Extract diary",
           schema: {} as any,
           model: {} as any
@@ -206,42 +187,36 @@ describe("LLM Shim", () => {
 
   describe("Function Responses", () => {
     it("supports function-based extractDiary responses", async () => {
-      // Set dummy key to pass validation in getModel
-      const originalKey = process.env.ANTHROPIC_API_KEY;
-      process.env.ANTHROPIC_API_KEY = "dummy-key";
+      const config = { ...DEFAULT_CONFIG, apiKey: "sk-ant-test-0000000000000000" };
 
-      try {
-        const result = await withLlmShim(
-          {
-            extractDiary: (prompt) => {
-              if (prompt.includes("Processed:")) return {
-                status: "success",
-                accomplishments: ["Processed: data"],
-                decisions: [],
-                challenges: [],
-                keyLearnings: [],
-                preferences: [],
-                tags: []
-              };
-              return { status: "failure", accomplishments: [], decisions: [], challenges: [], preferences: [], keyLearnings: [], tags: [] };
-            }
-          },
-          async () => {
-            return extractDiary(
-              DiaryEntrySchema.omit({ id: true, sessionPath: true, timestamp: true, relatedSessions: true, searchAnchors: true }),
-              "Processed: something",
-              { agent: "claude", sessionPath: "/s1" },
-              DEFAULT_CONFIG
-            );
+      const result = await withLlmShim(
+        {
+          extractDiary: (prompt) => {
+            if (prompt.includes("Processed:")) return {
+              status: "success",
+              accomplishments: ["Processed: data"],
+              decisions: [],
+              challenges: [],
+              keyLearnings: [],
+              preferences: [],
+              tags: []
+            };
+            return { status: "failure", accomplishments: [], decisions: [], challenges: [], preferences: [], keyLearnings: [], tags: [] };
           }
-        );
+        },
+        async (io) => {
+          return extractDiary(
+            DiaryEntrySchema.omit({ id: true, sessionPath: true, timestamp: true, relatedSessions: true, searchAnchors: true }),
+            "Processed: something",
+            { agent: "claude", sessionPath: "/s1" },
+            config,
+            io
+          );
+        }
+      );
 
-        const obj = result as any;
-        expect(obj.accomplishments[0]).toContain("Processed:");
-      } finally {
-        if (originalKey) process.env.ANTHROPIC_API_KEY = originalKey;
-        else delete process.env.ANTHROPIC_API_KEY;
-      }
+      const obj = result as any;
+      expect(obj.accomplishments[0]).toContain("Processed:");
     });
   });
 });

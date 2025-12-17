@@ -77,7 +77,7 @@ describe("forget command - Unit Tests", () => {
 
       await forgetCommand("b-forget1", { reason: undefined });
 
-      expect(process.exitCode).toBe(1);
+      expect(process.exitCode).toBe(2);
     });
   });
 
@@ -174,7 +174,7 @@ describe("forget command - Unit Tests", () => {
 
       await forgetCommand("b-nonexistent", { reason: "Testing" });
 
-      expect(process.exitCode).toBe(1);
+      expect(process.exitCode).toBe(2);
     });
   });
 
@@ -203,11 +203,12 @@ describe("forget command - Unit Tests", () => {
 
       expect(process.exitCode).toBe(0);
 
-      // Parse JSON output - flat structure with success flag
-      const output = JSON.parse(logs.join(""));
+      // Parse JSON output - standard envelope with data payload
+      const output = JSON.parse(logs.join("")) as { success: boolean; command: string; data: any };
       expect(output.success).toBe(true);
-      expect(output.bulletId).toBe("b-forget-json");
-      expect(output.action).toBe("forgotten");
+      expect(output.command).toBe("forget");
+      expect(output.data.bulletId).toBe("b-forget-json");
+      expect(output.data.action).toBe("forgotten");
     });
   });
 });

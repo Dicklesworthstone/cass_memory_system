@@ -148,7 +148,8 @@ describe("E2E: CLI stats command", () => {
         const output = capture.logs.join("\n");
         expect(() => JSON.parse(output)).not.toThrow();
 
-        const stats = JSON.parse(output);
+        const payload = JSON.parse(output);
+        const stats = payload.data;
         expect(stats.total).toBe(2);
         expect(stats).toHaveProperty("byScope");
         expect(stats).toHaveProperty("byState");
@@ -177,7 +178,8 @@ describe("E2E: CLI stats command", () => {
           capture.restore();
         }
 
-        const stats = JSON.parse(capture.logs.join("\n"));
+        const payload = JSON.parse(capture.logs.join("\n"));
+        const stats = payload.data;
 
         expect(stats).toHaveProperty("total");
         expect(stats).toHaveProperty("byScope");
@@ -216,7 +218,8 @@ describe("E2E: CLI stats command", () => {
           capture.restore();
         }
 
-        const stats = JSON.parse(capture.logs.join("\n"));
+        const payload = JSON.parse(capture.logs.join("\n"));
+        const stats = payload.data;
         expect(stats.byScope.global).toBe(2);
         expect(stats.byScope.language).toBe(1);
         expect(stats.byScope.workspace).toBe(1);
@@ -245,7 +248,8 @@ describe("E2E: CLI stats command", () => {
           capture.restore();
         }
 
-        const stats = JSON.parse(capture.logs.join("\n"));
+        const payload = JSON.parse(capture.logs.join("\n"));
+        const stats = payload.data;
         expect(stats.byState.active).toBe(2);
         expect(stats.byState.draft).toBe(1);
         expect(stats.byState.retired).toBe(1);
@@ -273,7 +277,8 @@ describe("E2E: CLI stats command", () => {
           capture.restore();
         }
 
-        const stats = JSON.parse(capture.logs.join("\n"));
+        const payload = JSON.parse(capture.logs.join("\n"));
+        const stats = payload.data;
         expect(stats.byKind.workflow_rule).toBe(2);
         expect(stats.byKind.stack_pattern).toBe(1);
         expect(stats.byKind.anti_pattern).toBe(1);
@@ -303,7 +308,8 @@ describe("E2E: CLI stats command", () => {
           capture.restore();
         }
 
-        const stats = JSON.parse(capture.logs.join("\n"));
+        const payload = JSON.parse(capture.logs.join("\n"));
+        const stats = payload.data;
         const dist = stats.scoreDistribution;
 
         expect(dist).toHaveProperty("excellent");
@@ -339,7 +345,8 @@ describe("E2E: CLI stats command", () => {
           capture.restore();
         }
 
-        const stats = JSON.parse(capture.logs.join("\n"));
+        const payload = JSON.parse(capture.logs.join("\n"));
+        const stats = payload.data;
         expect(stats.topPerformers.length).toBeGreaterThan(0);
         expect(stats.topPerformers.length).toBeLessThanOrEqual(5);
 
@@ -372,7 +379,8 @@ describe("E2E: CLI stats command", () => {
           capture.restore();
         }
 
-        const stats = JSON.parse(capture.logs.join("\n"));
+        const payload = JSON.parse(capture.logs.join("\n"));
+        const stats = payload.data;
         expect(stats.mostHelpful.length).toBeGreaterThan(0);
         expect(stats.mostHelpful[0].id).toBe("helpful-1");
         expect(stats.mostHelpful[0].helpfulCount).toBe(25);
@@ -401,7 +409,8 @@ describe("E2E: CLI stats command", () => {
           capture.restore();
         }
 
-        const stats = JSON.parse(capture.logs.join("\n"));
+        const payload = JSON.parse(capture.logs.join("\n"));
+        const stats = payload.data;
         // At-risk bullets have negative scores
         expect(stats.atRiskCount).toBeGreaterThanOrEqual(0);
       } finally {
@@ -433,7 +442,8 @@ describe("E2E: CLI stats command", () => {
           capture.restore();
         }
 
-        const stats = JSON.parse(capture.logs.join("\n"));
+        const payload = JSON.parse(capture.logs.join("\n"));
+        const stats = payload.data;
         expect(stats.staleCount).toBe(2);
       } finally {
         process.env.HOME = originalHome;
@@ -469,7 +479,8 @@ describe("E2E: CLI stats command", () => {
           capture.restore();
         }
 
-        const stats = JSON.parse(capture.logs.join("\n"));
+        const payload = JSON.parse(capture.logs.join("\n"));
+        const stats = payload.data;
         // Merge candidates may or may not be found depending on similarity threshold
         expect(Array.isArray(stats.mergeCandidates)).toBe(true);
 
@@ -588,7 +599,8 @@ describe("E2E: CLI stats command", () => {
           capture.restore();
         }
 
-        const stats = JSON.parse(capture.logs.join("\n"));
+        const payload = JSON.parse(capture.logs.join("\n"));
+        const stats = payload.data;
         expect(stats.total).toBe(0);
         expect(stats.topPerformers).toEqual([]);
         expect(stats.mostHelpful).toEqual([]);

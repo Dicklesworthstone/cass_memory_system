@@ -63,15 +63,21 @@ function createTestPlaybook(bullets: PlaybookBullet[] = []): Playbook {
 // Helper to create a diary entry
 function createTestDiary(overrides: Partial<DiaryEntry> = {}): DiaryEntry {
   return {
-    id: overrides.id || "diary-test123",
-    timestamp: overrides.timestamp || "2025-01-01T12:00:00Z",
-    sessionPaths: overrides.sessionPaths || [],
-    keyLearnings: overrides.keyLearnings || ["Test learning"],
-    accomplishments: overrides.accomplishments || ["Test accomplishment"],
-    challenges: overrides.challenges || [],
-    rulesAdded: overrides.rulesAdded || [],
-    rulesReinforced: overrides.rulesReinforced || [],
-    emotionalTone: "neutral"
+    id: overrides.id ?? "diary-test123",
+    sessionPath: overrides.sessionPath ?? "/tmp/session.jsonl",
+    timestamp: overrides.timestamp ?? "2025-01-01T12:00:00Z",
+    agent: overrides.agent ?? "claude",
+    ...(overrides.workspace ? { workspace: overrides.workspace } : {}),
+    ...(typeof overrides.duration === "number" ? { duration: overrides.duration } : {}),
+    status: overrides.status ?? "success",
+    accomplishments: overrides.accomplishments ?? ["Test accomplishment"],
+    decisions: overrides.decisions ?? [],
+    challenges: overrides.challenges ?? [],
+    preferences: overrides.preferences ?? [],
+    keyLearnings: overrides.keyLearnings ?? ["Test learning"],
+    relatedSessions: overrides.relatedSessions ?? [],
+    tags: overrides.tags ?? [],
+    searchAnchors: overrides.searchAnchors ?? []
   };
 }
 
@@ -113,6 +119,18 @@ function captureConsole(): { logs: string[]; errors: string[]; restore: () => vo
   };
 }
 
+function parseJsonSuccessData(stdout: string): any {
+  const payload = JSON.parse(stdout) as any;
+  expect(payload.success).toBe(true);
+  return payload.data;
+}
+
+function parseJsonError(stdout: string): any {
+  const payload = JSON.parse(stdout) as any;
+  expect(payload.success).toBe(false);
+  return payload.error;
+}
+
 describe("why command - Unit Tests", () => {
   describe("bullet lookup", () => {
     test("finds bullet by exact ID", async () => {
@@ -135,8 +153,7 @@ describe("why command - Unit Tests", () => {
         expect(process.exitCode).toBe(0);
 
         // Parse JSON output
-        const output = JSON.parse(capture.logs.join(""));
-        expect(output.success).toBe(true);
+        const output = parseJsonSuccessData(capture.logs.join(""));
         expect(output.bullet.id).toBe("b-exact123");
         expect(output.bullet.content).toBe("Use const for immutable values");
       });
@@ -155,12 +172,11 @@ describe("why command - Unit Tests", () => {
           capture.restore();
         }
 
-        expect(process.exitCode).toBe(1);
+        expect(process.exitCode).toBe(2);
 
         // Parse JSON error
-        const output = JSON.parse(capture.logs.join(""));
-        expect(output.success).toBe(false);
-        expect(output.error).toContain("not found");
+        const err = parseJsonError(capture.logs.join(""));
+        expect(err.message).toContain("not found");
       });
     });
 
@@ -177,7 +193,7 @@ describe("why command - Unit Tests", () => {
           capture.restore();
         }
 
-        expect(process.exitCode).toBe(1);
+        expect(process.exitCode).toBe(2);
         expect(capture.errors.some(e => e.includes("not found"))).toBe(true);
       });
     });
@@ -208,7 +224,7 @@ describe("why command - Unit Tests", () => {
 
         expect(process.exitCode).toBe(0);
 
-        const output = JSON.parse(capture.logs.join(""));
+        const output = parseJsonSuccessData(capture.logs.join(""));
         expect(output.bullet.category).toBe("architecture");
         expect(output.bullet.maturity).toBe("proven");
         expect(output.bullet.createdAt).toBe("2025-06-15T10:30:00Z");
@@ -234,7 +250,7 @@ describe("why command - Unit Tests", () => {
           capture.restore();
         }
 
-        const output = JSON.parse(capture.logs.join(""));
+        const output = parseJsonSuccessData(capture.logs.join(""));
         expect(output.reasoning).toContain("async operations");
       });
     });
@@ -256,7 +272,7 @@ describe("why command - Unit Tests", () => {
           capture.restore();
         }
 
-        const output = JSON.parse(capture.logs.join(""));
+        const output = parseJsonSuccessData(capture.logs.join(""));
         expect(output.evidence).toContain("always validate input");
         expect(output.evidence).toContain("never trust user data");
       });
@@ -290,7 +306,7 @@ describe("why command - Unit Tests", () => {
           capture.restore();
         }
 
-        const output = JSON.parse(capture.logs.join(""));
+        const output = parseJsonSuccessData(capture.logs.join(""));
         expect(output.feedbackHistory).toHaveLength(2);
         expect(output.feedbackHistory[0].type).toBe("harmful"); // Sorted by timestamp desc
         expect(output.feedbackHistory[1].type).toBe("helpful");
@@ -315,7 +331,7 @@ describe("why command - Unit Tests", () => {
           capture.restore();
         }
 
-        const output = JSON.parse(capture.logs.join(""));
+        const output = parseJsonSuccessData(capture.logs.join(""));
         // Effectiveness should be one of the defined levels
         expect(["Very high", "High", "Moderate", "Low", "Negative"]).toContain(
           output.currentStatus.effectiveness
@@ -348,7 +364,7 @@ describe("why command - Unit Tests", () => {
           capture.restore();
         }
 
-        const output = JSON.parse(capture.logs.join(""));
+        const output = parseJsonSuccessData(capture.logs.join(""));
         expect(output.sourceSessions).toHaveLength(2);
         expect(output.sourceSessions[0].path).toBe("/sessions/session1.jsonl");
         expect(output.sourceSessions[1].path).toBe("/sessions/session2.jsonl");
@@ -373,7 +389,7 @@ describe("why command - Unit Tests", () => {
           capture.restore();
         }
 
-        const output = JSON.parse(capture.logs.join(""));
+        const output = parseJsonSuccessData(capture.logs.join(""));
         expect(output.sourceSessions).toHaveLength(5);
       });
     });
@@ -396,7 +412,7 @@ describe("why command - Unit Tests", () => {
           capture.restore();
         }
 
-        const output = JSON.parse(capture.logs.join(""));
+        const output = parseJsonSuccessData(capture.logs.join(""));
         expect(output.sourceSessions).toHaveLength(10);
       });
     });
@@ -423,7 +439,7 @@ describe("why command - Unit Tests", () => {
         }
 
         expect(process.exitCode).toBe(0);
-        const output = JSON.parse(capture.logs.join(""));
+        const output = parseJsonSuccessData(capture.logs.join(""));
         expect(output.sourceSessions).toHaveLength(0);
         expect(output.feedbackHistory).toHaveLength(0);
         expect(output.reasoning).toBeNull();
@@ -450,7 +466,7 @@ describe("why command - Unit Tests", () => {
         }
 
         expect(process.exitCode).toBe(0);
-        const output = JSON.parse(capture.logs.join(""));
+        const output = parseJsonSuccessData(capture.logs.join(""));
         expect(output.bullet.id).toBe("b-deprecated123");
       });
     });
@@ -475,7 +491,7 @@ describe("why command - Unit Tests", () => {
         }
 
         expect(process.exitCode).toBe(0);
-        const output = JSON.parse(capture.logs.join(""));
+        const output = parseJsonSuccessData(capture.logs.join(""));
         expect(output.bullet.content).toContain("AVOID:");
       });
     });
@@ -498,7 +514,7 @@ describe("why command - Unit Tests", () => {
         }
 
         expect(process.exitCode).toBe(0);
-        const output = JSON.parse(capture.logs.join(""));
+        const output = parseJsonSuccessData(capture.logs.join(""));
         expect(output.bullet.content).toContain("double quotes");
         expect(output.bullet.content).toContain("<html>");
       });
@@ -580,7 +596,7 @@ describe("why command - Unit Tests", () => {
         }
 
         expect(process.exitCode).toBe(0);
-        const output = JSON.parse(capture.logs.join(""));
+        const output = parseJsonSuccessData(capture.logs.join(""));
         // diaryEntries should be empty array when no diaries exist
         expect(Array.isArray(output.diaryEntries)).toBe(true);
       });
@@ -602,7 +618,7 @@ describe("why command - Unit Tests", () => {
           capture.restore();
         }
 
-        const output = JSON.parse(capture.logs.join(""));
+        const output = parseJsonSuccessData(capture.logs.join(""));
         expect(output).toHaveProperty("diaryEntries");
         expect(Array.isArray(output.diaryEntries)).toBe(true);
       });

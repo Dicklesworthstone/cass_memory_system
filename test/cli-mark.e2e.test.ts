@@ -379,8 +379,9 @@ describe("E2E: CLI mark command", () => {
         const output = capture.logs.join("\n");
         expect(() => JSON.parse(output)).not.toThrow();
 
-        const result = JSON.parse(output);
-        expect(result.success).toBe(true);
+        const payload = JSON.parse(output);
+        const result = payload.data;
+        expect(payload.success).toBe(true);
         expect(result.bulletId).toBe("json-output");
         expect(result.type).toBe("helpful");
         expect(result).toHaveProperty("newState");

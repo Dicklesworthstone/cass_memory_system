@@ -1,7 +1,22 @@
 import { describe, expect, it } from "bun:test";
 import { evidenceCountGate } from "../src/validate.js";
+import type { CassRunner } from "../src/cass.js";
 import { createTestConfig } from "./helpers/factories.js";
-import { makeCassStub, withTempDir } from "./helpers/temp.js";
+import { withTempDir } from "./helpers/temp.js";
+
+function createCassRunnerForSearch(stdout: string): CassRunner {
+  return {
+    execFile: async (_file, args) => {
+      const cmd = args[0] ?? "";
+      if (cmd !== "search") throw new Error(`Unexpected cass execFile command: ${cmd}`);
+      return { stdout, stderr: "" };
+    },
+    spawnSync: () => ({ status: 0, stdout: "", stderr: "" }),
+    spawn: (() => {
+      throw new Error("spawn not implemented in cass runner stub");
+    }) as any,
+  };
+}
 
 describe("validate.ts evidence gate", () => {
   it("returns draft when no meaningful keywords exist (avoids empty cass query)", async () => {
@@ -25,10 +40,10 @@ describe("validate.ts evidence gate", () => {
         { source_path: "s2.jsonl", line_number: 1, snippet: "nothing relevant", agent: "stub", score: 0.1 },
       ];
 
-      const cassPath = await makeCassStub(dir, { search: JSON.stringify(hits) });
-      const config = createTestConfig({ cassPath });
+      const runner = createCassRunnerForSearch(JSON.stringify(hits));
+      const config = createTestConfig({ cassPath: "cass" });
 
-      const result = await evidenceCountGate("Validate user input before processing requests", config);
+      const result = await evidenceCountGate("Validate user input before processing requests", config, runner);
 
       expect(result.sessionCount).toBe(2);
       expect(result.successCount).toBe(1);
@@ -48,10 +63,10 @@ describe("validate.ts evidence gate", () => {
         { source_path: "s3.jsonl", line_number: 1, snippet: "doesn't work", agent: "stub", score: 0.9 },
       ];
 
-      const cassPath = await makeCassStub(dir, { search: JSON.stringify(hits) });
-      const config = createTestConfig({ cassPath });
+      const runner = createCassRunnerForSearch(JSON.stringify(hits));
+      const config = createTestConfig({ cassPath: "cass" });
 
-      const result = await evidenceCountGate("Always use var for everything in TypeScript code", config);
+      const result = await evidenceCountGate("Always use var for everything in TypeScript code", config, runner);
 
       expect(result.sessionCount).toBe(3);
       expect(result.successCount).toBe(0);

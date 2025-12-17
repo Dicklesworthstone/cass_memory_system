@@ -10,7 +10,7 @@ import path from "node:path";
 import yaml from "yaml";
 import { playbookCommand } from "../src/commands/playbook.js";
 import { withTempCassHome, TestEnv } from "./helpers/temp.js";
-import { createTestLogger } from "./helpers/logger.js";
+import { createE2ELogger } from "./helpers/e2e-logger.js";
 
 // Helper to capture console output
 function captureConsole() {
@@ -94,19 +94,29 @@ function createTestBullet(overrides: Partial<{
 describe("E2E: CLI playbook command", () => {
   describe("list action", () => {
     it("lists empty playbook gracefully", async () => {
-      await withTempCassHome(async (env) => {
-        const playbook = createTestPlaybook([]);
-        await writeFile(env.playbookPath, yaml.stringify(playbook));
+      const log = createE2ELogger("cli-playbook: list empty playbook");
+      log.setRepro("bun test test/cli-playbook.e2e.test.ts");
 
-        const capture = captureConsole();
-        try {
-          await playbookCommand("list", [], {});
-        } finally {
-          capture.restore();
-        }
+      await log.run(async () => {
+        await withTempCassHome(async (env) => {
+          log.step("Write empty playbook", { playbookPath: env.playbookPath });
+          const playbook = createTestPlaybook([]);
+          await writeFile(env.playbookPath, yaml.stringify(playbook));
 
-        const output = capture.logs.join("\n");
-        expect(output).toContain("PLAYBOOK RULES (0)");
+          const capture = captureConsole();
+          try {
+            log.startTimer("playbookCommand:list");
+            await playbookCommand("list", [], {});
+            log.endTimer("playbookCommand:list");
+          } finally {
+            capture.restore();
+          }
+
+          const output = capture.logs.join("\n");
+          log.snapshot("stdout", output);
+          log.snapshot("stderr", capture.errors.join("\n"));
+          expect(output).toContain("PLAYBOOK RULES (0)");
+        });
       });
     });
 
@@ -196,9 +206,10 @@ describe("E2E: CLI playbook command", () => {
         }
 
         const output = capture.logs.join("\n");
-        const parsed = JSON.parse(output);
+        const payload = JSON.parse(output);
+        const parsed = payload.data;
 
-        expect(parsed.success).toBe(true);
+        expect(payload.success).toBe(true);
         expect(Array.isArray(parsed.bullets)).toBe(true);
         expect(parsed.bullets.length).toBe(1);
         expect(parsed.bullets[0].id).toBe("json-bullet");
@@ -230,9 +241,10 @@ describe("E2E: CLI playbook command", () => {
         }
 
         const output = capture.logs.join("\n");
-        const parsed = JSON.parse(output);
+        const payload = JSON.parse(output);
+        const parsed = payload.data;
 
-        expect(parsed.success).toBe(true);
+        expect(payload.success).toBe(true);
         expect(parsed.bullets.length).toBe(1);
         expect(parsed.bullets[0].id).toBe("active-bullet");
       });
@@ -253,9 +265,10 @@ describe("E2E: CLI playbook command", () => {
         }
 
         const output = capture.logs.join("\n");
-        const result = JSON.parse(output);
+        const payload = JSON.parse(output);
+        const result = payload.data;
 
-        expect(result.success).toBe(true);
+        expect(payload.success).toBe(true);
         expect(result.bullet.content).toBe("Always use TypeScript strict mode");
         expect(result.bullet.category).toBe("general");
 
@@ -280,9 +293,10 @@ describe("E2E: CLI playbook command", () => {
         }
 
         const output = capture.logs.join("\n");
-        const result = JSON.parse(output);
+        const payload = JSON.parse(output);
+        const result = payload.data;
 
-        expect(result.success).toBe(true);
+        expect(payload.success).toBe(true);
         expect(result.bullet.category).toBe("tooling");
       });
     });
@@ -353,9 +367,10 @@ describe("E2E: CLI playbook command", () => {
         }
 
         const output = capture.logs.join("\n");
-        const result = JSON.parse(output);
+        const payload = JSON.parse(output) as any;
+        const result = payload.data;
 
-        expect(result.success).toBe(true);
+        expect(payload.success).toBe(true);
         expect(result.action).toBe("deprecated");
 
         // Verify bullet is deprecated but still exists
@@ -385,9 +400,10 @@ describe("E2E: CLI playbook command", () => {
         }
 
         const output = capture.logs.join("\n");
-        const result = JSON.parse(output);
+        const payload = JSON.parse(output) as any;
+        const result = payload.data;
 
-        expect(result.success).toBe(true);
+        expect(payload.success).toBe(true);
         expect(result.action).toBe("deleted");
 
         // Verify bullet is completely removed
@@ -418,7 +434,7 @@ describe("E2E: CLI playbook command", () => {
           capture.restore();
         }
 
-        expect(process.exitCode as number | undefined).toBe(1);
+        expect(process.exitCode as number | undefined).toBe(2);
         process.exitCode = 0; // Clean up
         const output = capture.logs.join("\n");
         const result = JSON.parse(output);
@@ -479,7 +495,7 @@ describe("E2E: CLI playbook command", () => {
           capture.restore();
         }
 
-        expect(process.exitCode as number | undefined).toBe(1);
+        expect(process.exitCode as number | undefined).toBe(2);
         expect(capture.errors.some(e => e.includes("not found"))).toBe(true);
         process.exitCode = 0;
       });
@@ -506,9 +522,10 @@ describe("E2E: CLI playbook command", () => {
         }
 
         const output = capture.logs.join("\n");
-        const result = JSON.parse(output);
+        const payload = JSON.parse(output) as any;
+        const result = payload.data;
 
-        expect(result.success).toBe(true);
+        expect(payload.success).toBe(true);
         expect(result.plan).toBeDefined();
         expect(result.plan.dryRun).toBe(true);
         expect(result.plan.action).toBe("deprecate");
@@ -543,9 +560,10 @@ describe("E2E: CLI playbook command", () => {
         }
 
         const output = capture.logs.join("\n");
-        const result = JSON.parse(output);
+        const payload = JSON.parse(output) as any;
+        const result = payload.data;
 
-        expect(result.success).toBe(true);
+        expect(payload.success).toBe(true);
         expect(result.plan).toBeDefined();
         expect(result.plan.dryRun).toBe(true);
         expect(result.plan.action).toBe("delete");
@@ -616,9 +634,10 @@ describe("E2E: CLI playbook command", () => {
         }
 
         const output = capture.logs.join("\n");
-        const result = JSON.parse(output);
+        const payload = JSON.parse(output) as any;
+        const result = payload.data;
 
-        expect(result.success).toBe(true);
+        expect(payload.success).toBe(true);
         expect(result.bullet.id).toBe("detail-bullet");
         expect(result.bullet.content).toBe("Detailed rule content");
         expect(result.bullet.category).toBe("security");
@@ -678,13 +697,13 @@ describe("E2E: CLI playbook command", () => {
           capture.restore();
         }
 
-        expect(process.exitCode as number | undefined).toBe(1);
+        expect(process.exitCode as number | undefined).toBe(2);
         const output = capture.logs.join("\n");
-        const result = JSON.parse(output);
+        const result = JSON.parse(output) as any;
 
         expect(result.success).toBe(false);
-        expect(result.details?.suggestions).toBeDefined();
-        expect(result.details.suggestions.length).toBeGreaterThan(0);
+        expect(result.error.details?.suggestions).toBeDefined();
+        expect(result.error.details.suggestions.length).toBeGreaterThan(0);
         process.exitCode = 0;
       });
     });
@@ -737,7 +756,8 @@ describe("E2E: CLI playbook command", () => {
         }
 
         const output = capture.logs.join("\n");
-        const parsed = JSON.parse(output);
+        const payload = JSON.parse(output) as any;
+        const parsed = payload.data;
 
         expect(parsed.schema_version).toBe(2);
         expect(parsed.bullets.length).toBe(1);
@@ -769,7 +789,8 @@ describe("E2E: CLI playbook command", () => {
         }
 
         const output = capture.logs.join("\n");
-        const parsed = JSON.parse(output);
+        const payload = JSON.parse(output) as any;
+        const parsed = payload.data;
 
         expect(parsed.bullets.length).toBe(1);
         expect(parsed.bullets[0].id).toBe("active-export");
@@ -801,7 +822,8 @@ describe("E2E: CLI playbook command", () => {
         }
 
         const output = capture.logs.join("\n");
-        const parsed = JSON.parse(output);
+        const payload = JSON.parse(output) as any;
+        const parsed = payload.data;
 
         expect(parsed.bullets.length).toBe(2);
       });
@@ -841,9 +863,10 @@ describe("E2E: CLI playbook command", () => {
         }
 
         const output = capture.logs.join("\n");
-        const result = JSON.parse(output);
+        const payload = JSON.parse(output) as any;
+        const result = payload.data;
 
-        expect(result.success).toBe(true);
+        expect(payload.success).toBe(true);
         expect(result.added).toBe(2);
 
         // Verify bullets were added
@@ -878,9 +901,10 @@ describe("E2E: CLI playbook command", () => {
         }
 
         const output = capture.logs.join("\n");
-        const result = JSON.parse(output);
+        const payload = JSON.parse(output) as any;
+        const result = payload.data;
 
-        expect(result.success).toBe(true);
+        expect(payload.success).toBe(true);
         expect(result.added).toBe(1);
       });
     });
@@ -921,9 +945,10 @@ describe("E2E: CLI playbook command", () => {
         }
 
         const output = capture.logs.join("\n");
-        const result = JSON.parse(output);
+        const payload = JSON.parse(output) as any;
+        const result = payload.data;
 
-        expect(result.success).toBe(true);
+        expect(payload.success).toBe(true);
         expect(result.added).toBe(1);
         expect(result.skipped).toBe(1);
       });
@@ -960,9 +985,10 @@ describe("E2E: CLI playbook command", () => {
         }
 
         const output = capture.logs.join("\n");
-        const result = JSON.parse(output);
+        const payload = JSON.parse(output) as any;
+        const result = payload.data;
 
-        expect(result.success).toBe(true);
+        expect(payload.success).toBe(true);
         expect(result.updated).toBe(1);
 
         // Verify content was updated
@@ -985,11 +1011,11 @@ describe("E2E: CLI playbook command", () => {
           capture.restore();
         }
 
-        expect(process.exitCode as number | undefined).toBe(1);
+        expect(process.exitCode as number | undefined).toBe(4);
         const output = capture.logs.join("\n");
-        const result = JSON.parse(output);
+        const result = JSON.parse(output) as any;
         expect(result.success).toBe(false);
-        expect(result.error).toContain("not found");
+        expect(result.error.message).toContain("not found");
         process.exitCode = 0;
       });
     });

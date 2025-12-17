@@ -24,8 +24,135 @@ jobs:
       - name: Type check
         run: bun run typecheck
 
+      - name: Guardrail (tests must not use bun mocks)
+        run: |
+          set -euo pipefail
+
+          if command -v rg >/dev/null 2>&1; then
+            if rg -n "\\bmock\\(" test; then
+              echo "::error::Forbidden bun:test mock() usage detected in test/**. Use closure-based spies/counters instead (see test/llm-with-retry.test.ts)."
+              exit 1
+            fi
+
+            if rg -n "mock\\.module\\(" test; then
+              echo "::error::Forbidden module mocking detected in test/**. Use dependency injection / injected providers instead (see src/llm.ts LLMIO + test/llm.mocked.test.ts)."
+              exit 1
+            fi
+          else
+            echo "rg not found; falling back to grep"
+
+            if grep -R -n -E '(^|[^A-Za-z0-9_])mock\\(' test; then
+              echo "::error::Forbidden bun:test mock() usage detected in test/**. Use closure-based spies/counters instead."
+              exit 1
+            fi
+
+            if grep -R -n -E 'mock\\.module\\(' test; then
+              echo "::error::Forbidden module mocking detected in test/**. Use dependency injection / injected providers instead."
+              exit 1
+            fi
+          fi
+
       - name: Run tests
         run: bun run test:ci
+
+  coverage:
+    runs-on: ubuntu-latest
+    env:
+      LOG_DIR: ${{ runner.temp }}/cm-coverage
+      # Phase 1 thresholds (raise intentionally via PRs).
+      COVERAGE_MIN_FUNCS: "70"
+      COVERAGE_MIN_LINES: "70"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Run tests with coverage (offline)
+        run: bash scripts/coverage.sh
+
+      - name: Upload coverage artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-artifacts
+          path: ${{ env.LOG_DIR }}
+          if-no-files-found: warn
+
+      - name: Enforce coverage thresholds
+        run: |
+          bun -e '
+            const fs = require("fs");
+            const path = require("path");
+
+            const logDir = process.env.LOG_DIR;
+            const summaryPath = path.join(logDir, "summary.json");
+            const minFuncs = Number(process.env.COVERAGE_MIN_FUNCS || 0);
+            const minLines = Number(process.env.COVERAGE_MIN_LINES || 0);
+
+            const summary = JSON.parse(fs.readFileSync(summaryPath, "utf8"));
+            const funcs = Number(summary?.totals?.funcs ?? 0);
+            const lines = Number(summary?.totals?.lines ?? 0);
+
+            const failures = [];
+            if (funcs < minFuncs) failures.push(`Functions: ${funcs.toFixed(2)} < ${minFuncs}`);
+            if (lines < minLines) failures.push(`Lines: ${lines.toFixed(2)} < ${minLines}`);
+
+            if (failures.length) {
+              console.error("Coverage gate failed:");
+              for (const f of failures) console.error(`- ${f}`);
+              process.exit(1);
+            }
+
+            console.log(`Coverage gate passed: funcs=${funcs.toFixed(2)} lines=${lines.toFixed(2)}`);
+          '
+
+      - name: Show coverage summary on failure
+        if: failure()
+        run: |
+          echo "---- summary.json ----"
+          cat "${LOG_DIR}/summary.json" || true
+          echo "---- coverage.txt (tail) ----"
+          tail -n 60 "${LOG_DIR}/artifacts/coverage.txt" || true
+
+  e2e-scripts:
+    runs-on: ubuntu-latest
+    env:
+      LOG_DIR: ${{ runner.temp }}/cm-e2e
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Run e2e smoke script (offline)
+        run: bash scripts/e2e-smoke.sh
+
+      - name: Upload e2e artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-smoke-artifacts
+          path: ${{ env.LOG_DIR }}
+          if-no-files-found: warn
+
+      - name: Show steps.jsonl on failure
+        if: failure()
+        run: |
+          echo "---- steps.jsonl ----"
+          cat "${LOG_DIR}/steps.jsonl" || true
 
   build:
     runs-on: ubuntu-latest

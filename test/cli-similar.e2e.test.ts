@@ -161,7 +161,9 @@ describe("E2E: CLI similar command", () => {
       expect(consoleCapture.errors.length).toBe(0);
       expect(consoleCapture.logs.length).toBeGreaterThan(0);
 
-      const parsed = JSON.parse(consoleCapture.logs.join("\n"));
+      const payload = JSON.parse(consoleCapture.logs.join("\n")) as any;
+      const parsed = payload.data;
+      expect(payload.success).toBe(true);
       expect(parsed.query).toBe(query);
       expect(parsed.mode).toBe("keyword");
       expect(Array.isArray(parsed.results)).toBe(true);

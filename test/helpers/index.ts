@@ -6,6 +6,7 @@ export * from "./factories.js";
 
 // Test logging
 export * from "./logger.js";
+export * from "./e2e-logger.js";
 
 // Fixture loading
 export * from "./fixtures.js";

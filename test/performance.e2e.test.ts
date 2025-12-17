@@ -182,8 +182,8 @@ describe("E2E: Performance (Large Scale)", () => {
     expect(single.durationMs).toBeLessThan(15000);
 
     const singleJson = JSON.parse(single.stdout) as any;
-    expect(Array.isArray(singleJson.relevantBullets)).toBe(true);
-    expect(singleJson.relevantBullets.length).toBeGreaterThan(0);
+    expect(Array.isArray(singleJson.data.relevantBullets)).toBe(true);
+    expect(singleJson.data.relevantBullets.length).toBeGreaterThan(0);
     logger.endStep("context-single", true);
 
     // Step 3: 10 parallel context queries

@@ -10,7 +10,7 @@ import path from "node:path";
 import yaml from "yaml";
 import { contextCommand, generateContextResult, ContextFlags, scoreBulletsEnhanced } from "../src/commands/context.js";
 import { withTempCassHome, TestEnv, makeCassStub } from "./helpers/temp.js";
-import { createTestLogger } from "./helpers/logger.js";
+import { createE2ELogger } from "./helpers/e2e-logger.js";
 import { createTestConfig } from "./helpers/factories.js";
 
 // Helper to capture console output
@@ -161,16 +161,25 @@ describe("E2E: CLI context command", () => {
 
   describe("Basic Context Generation", () => {
     it("generates empty context when no playbook rules exist", async () => {
-      await withTempCassHome(async (env) => {
-        const playbook = createTestPlaybook([]);
-        await writeFile(env.playbookPath, yaml.stringify(playbook));
+      const log = createE2ELogger("cli-context: empty playbook");
+      log.setRepro("bun test test/cli-context.e2e.test.ts");
 
-        const { result } = await generateContextResult("implement user auth", {});
+      await log.run(async () => {
+        await withTempCassHome(async (env) => {
+          log.step("Write empty playbook", { playbookPath: env.playbookPath });
+          const playbook = createTestPlaybook([]);
+          await writeFile(env.playbookPath, yaml.stringify(playbook));
 
-        expect(result.task).toBe("implement user auth");
-        expect(result.relevantBullets).toEqual([]);
-        expect(result.antiPatterns).toEqual([]);
-        expect(Array.isArray(result.suggestedCassQueries)).toBe(true);
+          log.startTimer("generateContextResult");
+          const { result } = await generateContextResult("implement user auth", {});
+          log.endTimer("generateContextResult");
+          log.snapshot("contextResult", result);
+
+          expect(result.task).toBe("implement user auth");
+          expect(result.relevantBullets).toEqual([]);
+          expect(result.antiPatterns).toEqual([]);
+          expect(Array.isArray(result.suggestedCassQueries)).toBe(true);
+        });
       });
     });
 
@@ -303,7 +312,7 @@ describe("E2E: CLI context command", () => {
         const output = capture.logs.join("\n");
         const parsed = JSON.parse(output);
 
-        expect(parsed.task).toBe("test task");
+        expect(parsed.data.task).toBe("test task");
       });
     });
 
@@ -321,7 +330,7 @@ describe("E2E: CLI context command", () => {
 
         const output = capture.logs.join("\n");
         const parsed = JSON.parse(output);
-        expect(parsed.task).toBe("test task");
+        expect(parsed.data.task).toBe("test task");
       });
     });
 

@@ -129,9 +129,9 @@ describe("E2E: ACE Learning Loop", () => {
       });
       expect(reflectA.exitCode).toBe(0);
       const reflectAJson = JSON.parse(reflectA.stdout) as any;
-      expect(Array.isArray(reflectAJson.errors)).toBe(true);
-      expect(reflectAJson.errors).toHaveLength(0);
-      expect(reflectAJson.global?.applied ?? 0).toBeGreaterThanOrEqual(1);
+      expect(Array.isArray(reflectAJson.data.errors)).toBe(true);
+      expect(reflectAJson.data.errors).toHaveLength(0);
+      expect(reflectAJson.data.global?.applied ?? 0).toBeGreaterThanOrEqual(1);
       logger.endStep("reflect-a", true);
 
       // Verify diary entry saved (imported)
@@ -154,8 +154,8 @@ describe("E2E: ACE Learning Loop", () => {
         stderr: listA.stderr,
       });
       expect(listA.exitCode).toBe(0);
-      const listAResponse = JSON.parse(listA.stdout) as { success: boolean; bullets: any[] };
-      const bulletA = listAResponse.bullets.find((b) => typeof b?.content === "string" && b.content.includes("Promise rejections"));
+      const listAResponse = JSON.parse(listA.stdout) as any;
+      const bulletA = listAResponse.data.bullets.find((b: any) => typeof b?.content === "string" && b.content.includes("Promise rejections"));
       expect(bulletA).toBeDefined();
       const bulletAId = bulletA.id as string;
       expect(bulletAId).toMatch(/^b-/);
@@ -172,8 +172,8 @@ describe("E2E: ACE Learning Loop", () => {
       });
       expect(contextA.exitCode).toBe(0);
       const contextAJson = JSON.parse(contextA.stdout) as any;
-      expect(Array.isArray(contextAJson.relevantBullets)).toBe(true);
-      expect(contextAJson.relevantBullets.some((b: any) => b.id === bulletAId)).toBe(true);
+      expect(Array.isArray(contextAJson.data.relevantBullets)).toBe(true);
+      expect(contextAJson.data.relevantBullets.some((b: any) => b.id === bulletAId)).toBe(true);
       logger.endStep("context-a", true);
 
       // Step 5: mark bullet harmful (but not enough to auto-deprecate via maturity threshold)
@@ -191,7 +191,7 @@ describe("E2E: ACE Learning Loop", () => {
 
       const getAfterMarks = runCm(["playbook", "get", bulletAId, "--json"], testDir);
       expect(getAfterMarks.exitCode).toBe(0);
-      const bulletAfterMarks = JSON.parse(getAfterMarks.stdout).bullet as any;
+      const bulletAfterMarks = (JSON.parse(getAfterMarks.stdout) as any).data.bullet as any;
       expect(bulletAfterMarks.harmfulCount).toBeGreaterThanOrEqual(2);
       expect(bulletAfterMarks.deprecated).toBe(false);
       logger.step("mark-harmful", "info", "Verified harmfulCount after marks", {
@@ -235,8 +235,8 @@ describe("E2E: ACE Learning Loop", () => {
       });
       expect(reflectB.exitCode).toBe(0);
       const reflectBJson = JSON.parse(reflectB.stdout) as any;
-      expect(Array.isArray(reflectBJson.errors)).toBe(true);
-      expect(reflectBJson.errors).toHaveLength(0);
+      expect(Array.isArray(reflectBJson.data.errors)).toBe(true);
+      expect(reflectBJson.data.errors).toHaveLength(0);
       logger.endStep("reflect-b", true);
 
       // Verify bullet A is now deprecated (inverted or auto-pruned)
@@ -248,7 +248,7 @@ describe("E2E: ACE Learning Loop", () => {
         stderr: getAfterCurate.stderr,
       });
       expect(getAfterCurate.exitCode).toBe(0);
-      const bulletAfterCurate = JSON.parse(getAfterCurate.stdout).bullet as any;
+      const bulletAfterCurate = (JSON.parse(getAfterCurate.stdout) as any).data.bullet as any;
       expect(bulletAfterCurate.deprecated).toBe(true);
       expect(typeof bulletAfterCurate.deprecationReason).toBe("string");
       expect(bulletAfterCurate.deprecationReason).toContain("Auto-deprecated");
@@ -267,9 +267,9 @@ describe("E2E: ACE Learning Loop", () => {
       });
       expect(contextAfter.exitCode).toBe(0);
       const contextAfterJson = JSON.parse(contextAfter.stdout) as any;
-      expect(Array.isArray(contextAfterJson.relevantBullets)).toBe(true);
-      expect(contextAfterJson.relevantBullets.some((b: any) => b.id === bulletAId)).toBe(false);
-      expect(Array.isArray(contextAfterJson.antiPatterns)).toBe(true);
+      expect(Array.isArray(contextAfterJson.data.relevantBullets)).toBe(true);
+      expect(contextAfterJson.data.relevantBullets.some((b: any) => b.id === bulletAId)).toBe(false);
+      expect(Array.isArray(contextAfterJson.data.antiPatterns)).toBe(true);
 
       logger.endStep("verify-prune", true);
     },
