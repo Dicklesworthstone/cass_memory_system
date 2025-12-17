@@ -725,6 +725,34 @@ For Claude Code users, add a post-session hook in `.claude/hooks.json`:
 | `cm similar "<query>"` | Find similar rules | Search |
 | `cm stats --json` | Playbook metrics | Analytics |
 
+### Error Output & Exit Codes
+
+When `--json` (or `--format json`) is enabled, errors are printed to stdout as a single JSON object:
+
+```json
+{
+  "success": false,
+  "error": "…",
+  "code": "…",
+  "exitCode": 2,
+  "recovery": ["…", "…"],
+  "cause": "…",
+  "docs": "README.md#-troubleshooting",
+  "hint": "…",
+  "details": {}
+}
+```
+
+Exit codes are categorized for scripting:
+
+- `1` internal (bug / unexpected)
+- `2` user input / usage
+- `3` configuration
+- `4` filesystem
+- `5` network
+- `6` cass
+- `7` LLM/provider
+
 ### Agent Commands (Primary Workflow)
 
 ```bash

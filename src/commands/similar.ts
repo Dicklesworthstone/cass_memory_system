@@ -3,7 +3,7 @@ import { loadConfig } from "../config.js";
 import { loadMergedPlaybook, getActiveBullets } from "../playbook.js";
 import { findSimilarBulletsSemantic, getSemanticStatus, formatSemanticModeMessage } from "../semantic.js";
 import { getEffectiveScore } from "../scoring.js";
-import { error as logError, jaccardSimilarity, truncate, getCliName, printJsonResult, printJsonError } from "../utils.js";
+import { jaccardSimilarity, truncate, getCliName, printJsonResult, reportError } from "../utils.js";
 import { ErrorCode, PlaybookBullet } from "../types.js";
 import { formatRule, formatTipPrefix, getOutputStyle, wrapText } from "../output.js";
 
@@ -41,12 +41,6 @@ function isValidScope(value: string): value is SimilarScope {
   return value === "global" || value === "workspace" || value === "all";
 }
 
-function coerceNumber(value: any, fallback: number): number {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))) return Number(value);
-  return fallback;
-}
-
 export async function generateSimilarResults(
   query: string,
   flags: SimilarFlags = {}
@@ -56,16 +50,33 @@ export async function generateSimilarResults(
     throw new Error("Query is required");
   }
 
-  const limit = Math.max(1, Math.floor(coerceNumber(flags.limit, 5)));
-  const threshold = coerceNumber(flags.threshold, 0.7);
+  const providedLimit = flags.limit;
+  if (providedLimit !== undefined) {
+    if (typeof providedLimit !== "number" || !Number.isFinite(providedLimit) || !Number.isInteger(providedLimit)) {
+      throw new Error("--limit must be an integer >= 1");
+    }
+    if (providedLimit < 1) {
+      throw new Error("--limit must be an integer >= 1");
+    }
+  }
+  const limit = providedLimit ?? 5;
+
+  const providedThreshold = flags.threshold;
+  if (providedThreshold !== undefined) {
+    if (typeof providedThreshold !== "number" || !Number.isFinite(providedThreshold)) {
+      throw new Error("--threshold must be between 0 and 1");
+    }
+  }
+  const threshold = providedThreshold ?? 0.7;
 
   if (threshold < 0 || threshold > 1) {
     throw new Error("--threshold must be between 0 and 1");
   }
 
-  const scope = flags.scope ?? "all";
+  const scopeRaw = typeof flags.scope === "string" ? flags.scope.trim() : "";
+  const scope = (scopeRaw ? scopeRaw.toLowerCase() : "all") as string;
   if (!isValidScope(scope)) {
-    throw new Error(`Invalid --scope "${String(scope)}" (expected: global|workspace|all)`);
+    throw new Error(`Invalid --scope "${String(flags.scope)}" (expected: global|workspace|all)`);
   }
 
   const config = await loadConfig();
@@ -124,11 +135,13 @@ export async function generateSimilarResults(
 }
 
 export async function similarCommand(query: string, flags: SimilarFlags): Promise<void> {
+  const startedAtMs = Date.now();
+  const command = "similar";
   try {
     const result = await generateSimilarResults(query, flags);
 
     if (flags.json) {
-      printJsonResult(result);
+      printJsonResult(command, result, { startedAtMs });
       return;
     }
 
@@ -176,17 +189,13 @@ export async function similarCommand(query: string, flags: SimilarFlags): Promis
     console.log(chalk.gray(`${formatTipPrefix()}Use '${cli} playbook get <id>' to see full details.`));
   } catch (err: any) {
     const message = err?.message || String(err);
-    if (flags.json) {
-      const code =
-        message.includes("Query is required") ||
-        message.includes("--threshold must be between") ||
-        message.includes("Invalid --scope")
-          ? ErrorCode.INVALID_INPUT
-          : ErrorCode.INTERNAL_ERROR;
-      printJsonError(message, { code, details: { query } });
-    } else {
-      logError(message);
-    }
-    process.exitCode = 1;
+    const code =
+      message.includes("Query is required") ||
+      message.includes("--threshold must be between") ||
+      message.includes("--limit must be") ||
+      message.includes("Invalid --scope")
+        ? ErrorCode.INVALID_INPUT
+        : ErrorCode.INTERNAL_ERROR;
+    reportError(err instanceof Error ? err : message, { code, details: { query }, json: flags.json, command, startedAtMs });
   }
 }

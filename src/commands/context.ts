@@ -11,11 +11,15 @@ import {
   generateSuggestedQueries,
   warn,
   isJsonOutput,
+  reportError,
   printJsonResult,
-  truncate,
+  truncateWithIndicator,
   formatLastHelpful,
   extractBulletReasoning,
   getCliName,
+  validateNonEmptyString,
+  validateOneOf,
+  validatePositiveInt,
   ensureDir,
   expandPath,
   resolveRepoDir,
@@ -24,10 +28,11 @@ import {
 } from "../utils.js";
 import { withLock } from "../lock.js";
 import { getEffectiveScore } from "../scoring.js";
-import { ContextResult, ScoredBullet, Config, CassSearchHit, PlaybookBullet } from "../types.js";
+import { ContextResult, ScoredBullet, Config, CassSearchHit, PlaybookBullet, ErrorCode } from "../types.js";
 import { cosineSimilarity, embedText, loadOrComputeEmbeddingsForBullets } from "../semantic.js";
 import chalk from "chalk";
 import { agentIconPrefix, formatRule, formatTipPrefix, getOutputStyle, iconPrefix, wrapText } from "../output.js";
+import { createProgress, type ProgressReporter } from "../progress.js";
 
 /**
  * ReDoS-safe matcher for deprecated patterns.
@@ -101,7 +106,7 @@ export function buildContextResult(
   // Transform history snippets - simplify structure, truncate long snippets
   const historySnippets = history.slice(0, maxHistory).map(h => ({
     ...h,
-    snippet: truncate(h.snippet.trim().replace(/\n/g, " "), 300)
+    snippet: truncateWithIndicator(h.snippet.trim().replace(/\n/g, " "), 300)
   }));
 
   return {
@@ -134,6 +139,19 @@ export interface ContextComputation {
   suggestedQueries: string[];
 }
 
+export type ContextProgressEvent =
+  | {
+    phase: "semantic_embeddings";
+    kind: "start" | "progress" | "done";
+    current: number;
+    total: number;
+    reused: number;
+    computed: number;
+    skipped: number;
+    message: string;
+  }
+  | { phase: "cass_search"; kind: "start" | "done"; message: string };
+
 function clamp01(value: number): number {
   if (!Number.isFinite(value)) return 0;
   if (value < 0) return 0;
@@ -146,7 +164,20 @@ export async function scoreBulletsEnhanced(
   task: string,
   keywords: string[],
   config: Config,
-  options: { json?: boolean; queryEmbedding?: number[]; skipEmbeddingLoad?: boolean } = {}
+  options: {
+    json?: boolean;
+    queryEmbedding?: number[];
+    skipEmbeddingLoad?: boolean;
+    onSemanticProgress?: (event: {
+      phase: "start" | "progress" | "done";
+      current: number;
+      total: number;
+      reused: number;
+      computed: number;
+      skipped: number;
+      message: string;
+    }) => void;
+  } = {}
 ): Promise<ScoredBullet[]> {
   if (bullets.length === 0) return [];
 
@@ -169,9 +200,26 @@ export async function scoreBulletsEnhanced(
           : await embedText(task, { model: embeddingModel });
 
       if (!options.skipEmbeddingLoad) {
-        await loadOrComputeEmbeddingsForBullets(bullets, { model: embeddingModel });
+        await loadOrComputeEmbeddingsForBullets(bullets, {
+          model: embeddingModel,
+          onProgress: options.onSemanticProgress,
+        });
       }
     } catch (err: any) {
+      // Best-effort: ensure any pending progress UI is finalized to avoid stray spinners/logs.
+      try {
+        options.onSemanticProgress?.({
+          phase: "done",
+          current: bullets.length,
+          total: bullets.length,
+          reused: 0,
+          computed: 0,
+          skipped: bullets.length,
+          message: "Semantic embeddings unavailable; using keyword-only scoring",
+        });
+      } catch {
+        // ignore
+      }
       queryEmbedding = null;
       if (!options.json) {
         warn(
@@ -218,7 +266,8 @@ export async function scoreBulletsEnhanced(
  */
 export async function generateContextResult(
   task: string,
-  flags: ContextFlags
+  flags: ContextFlags,
+  options: { onProgress?: (event: ContextProgressEvent) => void } = {}
 ): Promise<ContextComputation> {
   const config = await loadConfig();
   const playbook = await loadMergedPlaybook(config);
@@ -233,11 +282,24 @@ export async function generateContextResult(
 
   const scoredBullets = await scoreBulletsEnhanced(activeBullets, task, keywords, config, {
     json: flags.json,
+    onSemanticProgress: options.onProgress
+      ? (event) =>
+        options.onProgress?.({
+          phase: "semantic_embeddings",
+          kind: event.phase,
+          current: event.current,
+          total: event.total,
+          reused: event.reused,
+          computed: event.computed,
+          skipped: event.skipped,
+          message: event.message,
+        })
+      : undefined,
   });
 
   const topBullets = scoredBullets
     .filter(b => (b.finalScore || 0) > 0)
-    .slice(0, flags.top || config.maxBulletsInContext);
+    .slice(0, flags.top ?? config.maxBulletsInContext);
 
   const rules = topBullets.filter(b => !b.isNegative && b.kind !== "anti_pattern");
   const antiPatterns = topBullets.filter(b => b.isNegative || b.kind === "anti_pattern");
@@ -246,11 +308,13 @@ export async function generateContextResult(
   let degraded: ContextResult["degraded"] | undefined;
 
   const cassQuery = keywords.join(" ");
+  options.onProgress?.({ phase: "cass_search", kind: "start", message: "Searching history..." });
   const cassResult = await safeCassSearchWithDegraded(cassQuery, {
-    limit: flags.history || config.maxHistoryInContext,
-    days: flags.days || config.sessionLookbackDays,
+    limit: flags.history ?? config.maxHistoryInContext,
+    days: flags.days ?? config.sessionLookbackDays,
     workspace: flags.workspace,
   }, config.cassPath, config);
+  options.onProgress?.({ phase: "cass_search", kind: "done", message: "History search complete" });
   cassHits = cassResult.hits;
   if (cassResult.degraded || cassResult.remoteDegraded) {
     degraded = {
@@ -389,7 +453,7 @@ export async function contextWithoutCass(
 
     const topBullets = scoredBullets
       .filter(b => (b.finalScore || 0) > 0)
-      .slice(0, maxBullets || config.maxBulletsInContext);
+      .slice(0, maxBullets ?? config.maxBulletsInContext);
 
     const rules = topBullets.filter(b => !b.isNegative && b.kind !== "anti_pattern");
     const antiPatterns = topBullets.filter(b => b.isNegative || b.kind === "anti_pattern");
@@ -439,21 +503,230 @@ export async function contextCommand(
   task: string, 
   flags: ContextFlags
 ) {
-  const { result, rules, antiPatterns, cassHits, warnings, suggestedQueries } = await generateContextResult(task, flags);
+  const startedAtMs = Date.now();
+  const command = "context";
+  const cli = getCliName();
+  const wantsJsonForErrors = isJsonOutput(flags);
 
-  const wantsJson = isJsonOutput(flags);
+  const taskCheck = validateNonEmptyString(task, "task", { trim: true });
+  if (!taskCheck.ok) {
+    reportError(taskCheck.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: taskCheck.details,
+      hint: `Example: ${cli} context \"fix the login bug\" --json`,
+      json: wantsJsonForErrors,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+  const normalizedTask = taskCheck.value;
 
-  if (wantsJson) {
-    printJsonResult(result);
+  const topCheck = validatePositiveInt(flags.top, "top", { min: 1, allowUndefined: true });
+  if (!topCheck.ok) {
+    reportError(topCheck.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: topCheck.details,
+      hint: `Example: ${cli} context \"<task>\" --top 10 --json`,
+      json: wantsJsonForErrors,
+      command,
+      startedAtMs,
+    });
     return;
   }
 
-  const cli = getCliName();
+  const historyCheck = validatePositiveInt(flags.history, "history", { min: 1, allowUndefined: true });
+  if (!historyCheck.ok) {
+    reportError(historyCheck.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: historyCheck.details,
+      hint: `Example: ${cli} context \"<task>\" --history 3 --json`,
+      json: wantsJsonForErrors,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+
+  const daysCheck = validatePositiveInt(flags.days, "days", { min: 1, allowUndefined: true });
+  if (!daysCheck.ok) {
+    reportError(daysCheck.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: daysCheck.details,
+      hint: `Example: ${cli} context \"<task>\" --days 30 --json`,
+      json: wantsJsonForErrors,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+
+  const formatCheck = validateOneOf(flags.format, "format", ["json", "markdown"] as const, {
+    allowUndefined: true,
+    caseInsensitive: true,
+  });
+  if (!formatCheck.ok) {
+    reportError(formatCheck.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: formatCheck.details,
+      hint: `Valid formats: json, markdown`,
+      json: wantsJsonForErrors,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+
+  const workspaceCheck = validateNonEmptyString(flags.workspace, "workspace", { allowUndefined: true });
+  if (!workspaceCheck.ok) {
+    reportError(workspaceCheck.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: workspaceCheck.details,
+      hint: `Example: ${cli} context \"<task>\" --workspace . --json`,
+      json: wantsJsonForErrors,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+
+  const sessionCheck = validateNonEmptyString(flags.session, "session", { allowUndefined: true });
+  if (!sessionCheck.ok) {
+    reportError(sessionCheck.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: sessionCheck.details,
+      hint: `Example: ${cli} context \"<task>\" --session <id> --log-context --json`,
+      json: wantsJsonForErrors,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+
+  const normalizedFlags: ContextFlags = {
+    ...flags,
+    ...(topCheck.value !== undefined ? { top: topCheck.value } : {}),
+    ...(historyCheck.value !== undefined ? { history: historyCheck.value } : {}),
+    ...(daysCheck.value !== undefined ? { days: daysCheck.value } : {}),
+    ...(formatCheck.value !== undefined ? { format: formatCheck.value } : {}),
+    ...(workspaceCheck.value !== undefined ? { workspace: workspaceCheck.value } : {}),
+    ...(sessionCheck.value !== undefined ? { session: sessionCheck.value } : {}),
+  };
+
+  const wantsJson = isJsonOutput(normalizedFlags);
+  const wantsMarkdown = normalizedFlags.format === "markdown";
+  const progressFormat = wantsJson ? "json" : "text";
+  const embeddingsProgressRef: { current: ProgressReporter | null } = { current: null };
+  const cassProgressRef: { current: ProgressReporter | null } = { current: null };
+
+  try {
+    const { result, rules, antiPatterns, cassHits, warnings, suggestedQueries } = await generateContextResult(normalizedTask, normalizedFlags, {
+      onProgress: (event) => {
+        if (event.phase === "semantic_embeddings") {
+          if (event.total <= 0) return;
+
+          if (!embeddingsProgressRef.current && event.kind === "start") {
+            embeddingsProgressRef.current = createProgress({
+              message: event.message,
+              total: event.total,
+              showEta: true,
+              format: progressFormat,
+              stream: process.stderr,
+            });
+          }
+
+          embeddingsProgressRef.current?.update(event.current, event.message);
+
+          if (event.kind === "done") {
+            const counts = `(${event.computed} computed, ${event.reused} cached, ${event.skipped} skipped)`;
+            embeddingsProgressRef.current?.complete(event.message ? `${event.message} ${counts}` : counts);
+            embeddingsProgressRef.current = null;
+          }
+          return;
+        }
+
+        if (event.phase === "cass_search") {
+          if (event.kind === "start") {
+            cassProgressRef.current = createProgress({
+              message: event.message,
+              format: progressFormat,
+              stream: process.stderr,
+            });
+            cassProgressRef.current.update(0, event.message);
+            return;
+          }
+          cassProgressRef.current?.complete(event.message);
+          cassProgressRef.current = null;
+        }
+      },
+    });
+
+  if (wantsJson) {
+    printJsonResult(command, result, { startedAtMs });
+    return;
+  }
+
   const maxWidth = Math.min(getOutputStyle().width, 84);
   const divider = chalk.dim(formatRule("─", { maxWidth }));
 
+  if (wantsMarkdown) {
+    const snippetWidth = 300;
+    console.log(`# Context for: ${normalizedTask}\n`);
+
+    console.log(`## Playbook rules (${rules.length})\n`);
+    if (rules.length === 0) {
+      console.log(`(No relevant playbook rules found)\n`);
+    } else {
+      for (const b of rules) {
+        const score = Number.isFinite(b.effectiveScore) ? b.effectiveScore.toFixed(1) : "n/a";
+        console.log(`- **${b.id}** (${b.category}/${b.kind}, score ${score}): ${b.content.trim()}`);
+      }
+      console.log("");
+    }
+
+    console.log(`## Pitfalls (${antiPatterns.length})\n`);
+    if (antiPatterns.length === 0) {
+      console.log(`(No pitfalls detected)\n`);
+    } else {
+      for (const b of antiPatterns) {
+        console.log(`- **${b.id}** (${b.category}/${b.kind}): ${b.content.trim()}`);
+      }
+      console.log("");
+    }
+
+    console.log(`## History (${cassHits.length})\n`);
+    if (cassHits.length === 0) {
+      console.log(`(No relevant history found)\n`);
+    } else {
+      const shown = Math.min(cassHits.length, 3);
+      for (const h of cassHits.slice(0, shown)) {
+        const agent = h.agent || "unknown";
+        const host = h.origin?.kind === "remote" && h.origin.host ? ` (${h.origin.host})` : "";
+        const snippet = truncateWithIndicator(h.snippet.trim().replace(/\s+/g, " "), snippetWidth);
+        console.log(`- **${agent}${host}** \`${h.source_path}\`: "${snippet}"`);
+      }
+      if (cassHits.length > shown) {
+        console.log(`- … and ${cassHits.length - shown} more`);
+      }
+      console.log("");
+    }
+
+    if (warnings.length > 0) {
+      console.log(`## Warnings (${warnings.length})\n`);
+      for (const w of warnings) console.log(`- ${w}`);
+      console.log("");
+    }
+
+    if (suggestedQueries.length > 0) {
+      console.log(`## Suggested searches\n`);
+      for (const q of suggestedQueries) console.log(`- ${q}`);
+      console.log("");
+    }
+    return;
+  }
+
   // Human Output (premium, width-aware)
-  console.log(chalk.bold(`CONTEXT FOR: ${task}`));
+  console.log(chalk.bold(`CONTEXT FOR: ${normalizedTask}`));
   console.log(divider);
 
   if (result.degraded?.cass && !result.degraded.cass.available) {
@@ -551,5 +824,11 @@ export async function contextCommand(
     console.log(chalk.bold("SUGGESTED SEARCHES"));
     console.log(divider);
     suggestedQueries.forEach((q) => console.log(`- ${q}`));
+  }
+  } catch (err: any) {
+    const message = err?.message || String(err);
+    embeddingsProgressRef.current?.fail(message);
+    cassProgressRef.current?.fail(message);
+    throw err;
   }
 }

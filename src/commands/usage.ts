@@ -1,7 +1,7 @@
 import { loadConfig } from "../config.js";
 import { getUsageStats } from "../cost.js";
 import chalk from "chalk";
-import { error as logError, printJsonResult, printJsonError } from "../utils.js";
+import { printJsonResult, reportError } from "../utils.js";
 import { iconPrefix, formatTipPrefix } from "../output.js";
 
 export interface UsageOptions {
@@ -9,12 +9,14 @@ export interface UsageOptions {
 }
 
 export async function usageCommand(options: UsageOptions = {}): Promise<void> {
+  const startedAtMs = Date.now();
+  const command = "usage";
   try {
     const config = await loadConfig();
     const stats = await getUsageStats(config);
 
     if (options.json) {
-      printJsonResult(stats);
+      printJsonResult(command, stats, { startedAtMs });
       return;
     }
 
@@ -60,12 +62,7 @@ export async function usageCommand(options: UsageOptions = {}): Promise<void> {
 
     console.log(chalk.gray(`\n${formatTipPrefix()}Configure limits in ~/.cass-memory/config.json under 'budget'`));
   } catch (err) {
-    if (options.json) {
-      printJsonError(err);
-    } else {
-      logError(err instanceof Error ? err.message : String(err));
-    }
-    process.exitCode = 1;
+    reportError(err instanceof Error ? err : String(err), { json: options.json, command, startedAtMs });
   }
 }
 

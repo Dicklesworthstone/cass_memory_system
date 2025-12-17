@@ -170,9 +170,11 @@ function getQuickstartJson(cli: string) {
 }
 
 export async function quickstartCommand(flags: { json?: boolean }) {
+  const startedAtMs = Date.now();
+  const command = "quickstart";
   const cli = getCliName();
   if (flags.json) {
-    printJsonResult(getQuickstartJson(cli));
+    printJsonResult(command, getQuickstartJson(cli), { startedAtMs });
   } else {
     // Colorize headers in terminal output
     const colored = getQuickstartText(cli)

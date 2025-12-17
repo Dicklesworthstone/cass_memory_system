@@ -10,7 +10,15 @@ import {
   OutcomeStatus,
   Sentiment
 } from "../outcome.js";
-import { error as logError, printJsonResult, printJsonError } from "../utils.js";
+import {
+  error as logError,
+  getCliName,
+  printJsonResult,
+  reportError,
+  validateNonEmptyString,
+  validateOneOf,
+  validatePositiveInt,
+} from "../utils.js";
 import { ErrorCode } from "../types.js";
 import { icon } from "../output.js";
 
@@ -30,60 +38,136 @@ export async function outcomeCommand(
     json?: boolean;
   }
 ) {
-  if (!flags.status) {
-    if (flags.json) {
-      printJsonError("Outcome status is required", {
-        code: ErrorCode.MISSING_REQUIRED,
-        details: { missing: "status", usage: "cm outcome <status> <rules>" }
-      });
-    } else {
-      console.error(chalk.red("Outcome status is required (usage: cm outcome <status> <rules>)"));
-    }
-    process.exitCode = 1;
-    return;
-  }
-  if (!flags.rules) {
-    if (flags.json) {
-      printJsonError("At least one rule id is required", {
-        code: ErrorCode.MISSING_REQUIRED,
-        details: { missing: "rules", usage: "cm outcome <status> <rules>" }
-      });
-    } else {
-      console.error(chalk.red("At least one rule id is required (usage: cm outcome <status> <rules>)"));
-    }
-    process.exitCode = 1;
+  const startedAtMs = Date.now();
+  const command = "outcome";
+  const cli = getCliName();
+
+  const statusCheck = validateOneOf(flags.status, "status", ["success", "failure", "mixed", "partial"] as const, {
+    caseInsensitive: true,
+  });
+  if (!statusCheck.ok) {
+    reportError(statusCheck.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: statusCheck.details,
+      hint: `Example: ${cli} outcome success b-abc123 --json`,
+      json: flags.json,
+      command,
+      startedAtMs,
+    });
     return;
   }
 
-  const status = flags.status as OutcomeStatus;
-  const allowedStatuses: OutcomeStatus[] = ["success", "failure", "mixed", "partial"];
-  if (!allowedStatuses.includes(status)) {
-    if (flags.json) {
-      printJsonError(`Status must be one of ${allowedStatuses.join("|")}`, {
-        code: ErrorCode.INVALID_INPUT,
-        details: { field: "status", received: flags.status, valid: allowedStatuses }
-      });
-    } else {
-      console.error(chalk.red(`Status must be one of ${allowedStatuses.join("|")}`));
-    }
-    process.exitCode = 1;
+  const rulesCheck = validateNonEmptyString(flags.rules, "rules", { trim: true });
+  if (!rulesCheck.ok) {
+    reportError(rulesCheck.message, {
+      code: ErrorCode.MISSING_REQUIRED,
+      details: rulesCheck.details,
+      hint: `Example: ${cli} outcome success b-abc123,b-def456 --json`,
+      json: flags.json,
+      command,
+      startedAtMs,
+    });
     return;
   }
 
-  const sentiment = flags.sentiment ? (flags.sentiment as Sentiment) : detectSentiment(flags.text);
-  
+  const sessionCheck = validateNonEmptyString(flags.session, "session", { allowUndefined: true });
+  if (!sessionCheck.ok) {
+    reportError(sessionCheck.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: sessionCheck.details,
+      hint: `Example: ${cli} outcome success b-abc123 --session /path/to/session.jsonl --json`,
+      json: flags.json,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+
+  const durationCheck = validatePositiveInt(flags.duration, "duration", { min: 0, allowUndefined: true });
+  if (!durationCheck.ok) {
+    reportError(durationCheck.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: durationCheck.details,
+      hint: `Example: ${cli} outcome success b-abc123 --duration 600 --json`,
+      json: flags.json,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+
+  const errorsCheck = validatePositiveInt(flags.errors, "errors", { min: 0, allowUndefined: true });
+  if (!errorsCheck.ok) {
+    reportError(errorsCheck.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: errorsCheck.details,
+      hint: `Example: ${cli} outcome failure b-abc123 --errors 3 --json`,
+      json: flags.json,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+
+  const sentimentCheck = validateOneOf(flags.sentiment, "sentiment", ["positive", "negative", "neutral"] as const, {
+    allowUndefined: true,
+    caseInsensitive: true,
+  });
+  if (!sentimentCheck.ok) {
+    reportError(sentimentCheck.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: sentimentCheck.details,
+      hint: `Valid sentiments: positive, negative, neutral`,
+      json: flags.json,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+
+  const textCheck = validateNonEmptyString(flags.text, "text", { allowUndefined: true });
+  if (!textCheck.ok) {
+    reportError(textCheck.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: textCheck.details,
+      hint: `Example: ${cli} outcome mixed b-abc123 --text \"kept timing out\" --json`,
+      json: flags.json,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+
+  const status = statusCheck.value as OutcomeStatus;
+
+  const sentiment =
+    sentimentCheck.value !== undefined
+      ? (sentimentCheck.value as Sentiment)
+      : detectSentiment(textCheck.value);
+
   // 1. Construct OutcomeInput
-  const ruleIds = flags.rules.split(",").map((r) => r.trim()).filter(Boolean);
+  const ruleIds = rulesCheck.value.split(",").map((r) => r.trim()).filter(Boolean);
+  if (ruleIds.length === 0) {
+    reportError("At least one rule id is required.", {
+      code: ErrorCode.MISSING_REQUIRED,
+      details: { field: "rules", received: rulesCheck.value },
+      hint: `Example: ${cli} outcome success b-abc123,b-def456 --json`,
+      json: flags.json,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
   
   const input: OutcomeInput = {
-    sessionId: flags.session || "cli-manual",
+    sessionId: sessionCheck.value ?? "cli-manual",
     outcome: status,
     rulesUsed: ruleIds,
-    durationSec: flags.duration,
-    errorCount: flags.errors,
+    durationSec: durationCheck.value,
+    errorCount: errorsCheck.value,
     hadRetries: flags.retries,
     sentiment,
-    notes: flags.text
+    notes: textCheck.value
   };
 
   // 2. Preview Score (User Feedback)
@@ -91,8 +175,9 @@ export async function outcomeCommand(
   if (!scored) {
     if (flags.json) {
       printJsonResult(
+        command,
         { feedbackRecorded: false, rulesProvided: ruleIds },
-        { effect: false, reason: "No implicit signal strong enough to record feedback" }
+        { effect: false, reason: "No implicit signal strong enough to record feedback", startedAtMs }
       );
       return;
     }
@@ -126,13 +211,17 @@ export async function outcomeCommand(
 
   // 5. Report
   if (flags.json) {
-    printJsonResult({
-      applied: result.applied,
-      missing: result.missing,
-      type: scored.type,
-      weight: scored.decayedValue,
-      sentiment,
-    });
+    printJsonResult(
+      command,
+      {
+        applied: result.applied,
+        missing: result.missing,
+        type: scored.type,
+        weight: scored.decayedValue,
+        sentiment,
+      },
+      { startedAtMs }
+    );
     return;
   }
 
@@ -150,28 +239,59 @@ export async function outcomeCommand(
 }
 
 export async function applyOutcomeLogCommand(flags: { session?: string; limit?: number; json?: boolean }) {
-  const config = await loadConfig();
-  const outcomes = await loadOutcomes(config, flags.limit ?? 50);
+  const startedAtMs = Date.now();
+  const command = "outcome-apply";
+  const cli = getCliName();
 
-  if (flags.session) {
-    const filtered = outcomes.filter((o) => o.sessionId === flags.session);
+  const sessionCheck = validateNonEmptyString(flags.session, "session", { allowUndefined: true });
+  if (!sessionCheck.ok) {
+    reportError(sessionCheck.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: sessionCheck.details,
+      hint: `Example: ${cli} outcome-apply --session my-session-id --json`,
+      json: flags.json,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+
+  const limitCheck = validatePositiveInt(flags.limit, "limit", { min: 1, allowUndefined: true });
+  if (!limitCheck.ok) {
+    reportError(limitCheck.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: limitCheck.details,
+      hint: `Example: ${cli} outcome-apply --limit 100 --json`,
+      json: flags.json,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+
+  const config = await loadConfig();
+  const outcomes = await loadOutcomes(config, limitCheck.value ?? 50);
+
+  if (sessionCheck.value !== undefined) {
+    const filtered = outcomes.filter((o) => o.sessionId === sessionCheck.value);
     if (filtered.length === 0) {
       if (flags.json) {
         printJsonResult(
-          { session: flags.session, outcomesFound: 0, applied: 0, missing: [] },
-          { effect: false, reason: `No outcomes found for session ${flags.session}` }
+          command,
+          { session: sessionCheck.value, outcomesFound: 0, applied: 0, missing: [] },
+          { effect: false, reason: `No outcomes found for session ${sessionCheck.value}`, startedAtMs }
         );
         return;
       }
-      console.error(chalk.yellow(`No outcomes found for session ${flags.session}`));
+      console.error(chalk.yellow(`No outcomes found for session ${sessionCheck.value}`));
       return;
     }
     const result = await applyOutcomeFeedback(filtered, config);
     if (flags.json) {
-      printJsonResult({ ...result, session: flags.session });
+      printJsonResult(command, { ...result, session: sessionCheck.value }, { startedAtMs });
       return;
     }
-    console.log(chalk.green(`Applied outcome feedback for session ${flags.session}: ${result.applied} updates`));
+    console.log(chalk.green(`Applied outcome feedback for session ${sessionCheck.value}: ${result.applied} updates`));
     if (result.missing.length > 0) {
       console.log(chalk.yellow(`Missing rules: ${result.missing.join(", ")}`));
     }
@@ -181,7 +301,7 @@ export async function applyOutcomeLogCommand(flags: { session?: string; limit?: 
   // No session filter: apply latest (limit) outcomes.
   const result = await applyOutcomeFeedback(outcomes, config);
   if (flags.json) {
-    printJsonResult({ ...result, totalOutcomes: outcomes.length });
+    printJsonResult(command, { ...result, totalOutcomes: outcomes.length }, { startedAtMs });
     return;
   }
   console.log(chalk.green(`Applied outcome feedback for ${outcomes.length} outcomes: ${result.applied} updates`));

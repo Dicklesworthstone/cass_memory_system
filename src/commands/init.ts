@@ -1,6 +1,6 @@
 import { getDefaultConfig } from "../config.js";
 import { createEmptyPlaybook, loadPlaybook, savePlaybook } from "../playbook.js";
-import { expandPath, fileExists, warn, log, resolveRepoDir, ensureRepoStructure, ensureGlobalStructure, getCliName, printJsonResult, atomicWrite, printJsonError } from "../utils.js";
+import { expandPath, fileExists, warn, resolveRepoDir, ensureRepoStructure, ensureGlobalStructure, getCliName, printJsonResult, atomicWrite, reportError } from "../utils.js";
 import { ErrorCode } from "../types.js";
 import { cassAvailable } from "../cass.js";
 import { applyStarter, loadStarter } from "../starters.js";
@@ -30,6 +30,8 @@ async function promptYesNo(question: string): Promise<boolean> {
 }
 
 export async function initCommand(options: InitOptions) {
+  const startedAtMs = Date.now();
+  const command = "init";
   const cli = getCliName();
 
   // If --repo flag is provided, initialize repo-level .cass/ structure
@@ -43,23 +45,25 @@ export async function initCommand(options: InitOptions) {
   const playbookPath = expandPath("~/.cass-memory/playbook.yaml");
   const playbook = createEmptyPlaybook();
   
-  const alreadyInitialized = await fileExists(configPath);
+  const hasConfig = await fileExists(configPath);
+  const hasPlaybook = await fileExists(playbookPath);
+  const fullyInitialized = hasConfig && hasPlaybook;
+  const hasAnyState = hasConfig || hasPlaybook;
   const backups: Array<{ file: string; backup: string }> = [];
   const overwritten: string[] = [];
 
-  if (alreadyInitialized && !options.force && !options.starter) {
-    if (options.json) {
-      printJsonError("Already initialized. Use --force to reinitialize.", {
-        code: ErrorCode.ALREADY_EXISTS,
-        details: { hint: "Use --force to reinitialize" }
-      });
-    } else {
-      log(chalk.yellow("Already initialized. Use --force to reinitialize."), true);
-    }
+  if (fullyInitialized && !options.force && !options.starter) {
+    reportError("Already initialized. Use --force to reinitialize.", {
+      code: ErrorCode.ALREADY_EXISTS,
+      hint: "Use --force to reinitialize",
+      json: options.json,
+      command,
+      startedAtMs,
+    });
     return;
   }
 
-  const needsForceConfirmation = alreadyInitialized && Boolean(options.force);
+  const needsForceConfirmation = hasAnyState && Boolean(options.force);
   if (needsForceConfirmation) {
     const canPrompt = Boolean(
       options.interactive !== false &&
@@ -76,18 +80,17 @@ export async function initCommand(options: InitOptions) {
         console.log(chalk.yellow("Cancelled."));
         return;
       }
-    } else if (!options.yes) {
-      if (options.json) {
-        printJsonError("Refusing to overwrite existing files without --yes", {
-          code: ErrorCode.MISSING_REQUIRED,
-          details: { missing: "confirmation", hint: "Use --yes to confirm" }
-        });
-      } else {
-        console.error(chalk.red("Refusing to overwrite existing files without --yes"));
-      }
-      process.exitCode = 1;
-      return;
-    }
+	    } else if (!options.yes) {
+	      reportError("Refusing to overwrite existing files without --yes", {
+	        code: ErrorCode.MISSING_REQUIRED,
+	        hint: "Use --yes to confirm",
+	        details: { missing: "confirmation" },
+	        json: options.json,
+          command,
+          startedAtMs,
+	      });
+	      return;
+	    }
 
     const ts = Date.now();
     const toBackup = [configPath, playbookPath];
@@ -102,7 +105,7 @@ export async function initCommand(options: InitOptions) {
 
   // Privacy-first: cross-agent enrichment requires explicit consent.
   // Only prompt in interactive CLI usage (tests/programmatic calls do not pass `interactive`).
-  if (!alreadyInitialized && options.interactive && !options.json && process.stdin.isTTY && process.stdout.isTTY) {
+  if (!hasConfig && options.interactive && !options.json && process.stdin.isTTY && process.stdout.isTTY) {
     console.log(chalk.bold(`\nWelcome to ${cli}!\n`));
     console.log("Cross-Agent Enrichment (Optional):");
     console.log("cass-memory can enrich your diary entries by searching sessions from other agents (Claude, Cursor, Codex, etc.).");
@@ -145,22 +148,20 @@ export async function initCommand(options: InitOptions) {
   }
 
   let starterOutcome: { added: number; skipped: number; name: string } | null = null;
-  if (options.starter) {
-    try {
-      starterOutcome = await seedStarter(playbookPath, options.starter);
-    } catch (err: any) {
-      if (options.json) {
-        printJsonError(err?.message || "Failed to apply starter", {
-          code: ErrorCode.VALIDATION_FAILED,
-          details: { starter: options.starter }
-        });
-      } else {
-        console.error(chalk.red(err?.message || "Failed to apply starter"));
-      }
-      process.exitCode = 1;
-      return;
-    }
-  }
+	  if (options.starter) {
+	    try {
+	      starterOutcome = await seedStarter(playbookPath, options.starter);
+	    } catch (err: any) {
+	      reportError(err instanceof Error ? err : (err?.message || "Failed to apply starter"), {
+	        code: ErrorCode.VALIDATION_FAILED,
+	        details: { starter: options.starter },
+	        json: options.json,
+          command,
+          startedAtMs,
+	      });
+	      return;
+	    }
+	  }
 
   // 4. Check cass
   const cassOk = cassAvailable(config.cassPath);
@@ -171,7 +172,7 @@ export async function initCommand(options: InitOptions) {
 
   // Output
   if (options.json) {
-    printJsonResult({
+    printJsonResult(command, {
       configPath,
       created: result.created,
       existed: result.existed,
@@ -179,7 +180,7 @@ export async function initCommand(options: InitOptions) {
       backups,
       cassAvailable: cassOk,
       starter: starterOutcome
-    });
+    }, { startedAtMs });
   } else {
     if (result.created.length > 0) {
       for (const file of result.created) {
@@ -265,42 +266,44 @@ async function seedStarter(
  * Creates project-specific playbook and blocked.log for team sharing.
  */
 async function initRepoCommand(options: InitOptions) {
+  const startedAtMs = Date.now();
+  const command = "init:repo";
   const cassDir = await resolveRepoDir();
   const backups: Array<{ file: string; backup: string }> = [];
   const overwritten: string[] = [];
 
-  if (!cassDir) {
-    if (options.json) {
-      printJsonError("Not in a git repository. Run from within a git repo.", {
-        code: ErrorCode.CONFIG_INVALID,
-        details: { hint: "cd into a git repository first" }
-      });
-    } else {
-      console.error(chalk.red("Error: Not in a git repository."));
-      console.error("Run this command from within a git repository.");
-    }
-    process.exitCode = 1;
-    return;
-  }
+	  if (!cassDir) {
+	    reportError("Not in a git repository. Run from within a git repo.", {
+	      code: ErrorCode.CONFIG_INVALID,
+	      hint: "cd into a git repository first",
+	      json: options.json,
+        command,
+        startedAtMs,
+	    });
+	    return;
+	  }
 
   // Check if already initialized
   const playbookPath = `${cassDir}/playbook.yaml`;
   const blockedPath = `${cassDir}/blocked.log`;
-  const alreadyInitialized = (await fileExists(playbookPath)) || (await fileExists(blockedPath));
+  const hasPlaybook = await fileExists(playbookPath);
+  const hasBlocked = await fileExists(blockedPath);
+  const fullyInitialized = hasPlaybook && hasBlocked;
+  const hasAnyState = hasPlaybook || hasBlocked;
 
-  if (alreadyInitialized && !options.force && !options.starter) {
-    if (options.json) {
-      printJsonError("Repo already has .cass/ directory. Use --force to reinitialize.", {
-        code: ErrorCode.ALREADY_EXISTS,
-        details: { cassDir, hint: "Use --force to reinitialize" }
-      });
-    } else {
-      console.log(chalk.yellow("Repo already has .cass/ directory. Use --force to reinitialize."));
-    }
+  if (fullyInitialized && !options.force && !options.starter) {
+    reportError("Repo already has .cass/ directory. Use --force to reinitialize.", {
+      code: ErrorCode.ALREADY_EXISTS,
+      hint: "Use --force to reinitialize",
+      details: { cassDir },
+      json: options.json,
+      command,
+      startedAtMs,
+    });
     return;
   }
 
-  const needsForceConfirmation = alreadyInitialized && Boolean(options.force);
+  const needsForceConfirmation = hasAnyState && Boolean(options.force);
   if (needsForceConfirmation) {
     const canPrompt = Boolean(
       options.interactive !== false &&
@@ -317,18 +320,17 @@ async function initRepoCommand(options: InitOptions) {
         console.log(chalk.yellow("Cancelled."));
         return;
       }
-    } else if (!options.yes) {
-      if (options.json) {
-        printJsonError("Refusing to overwrite existing files without --yes", {
-          code: ErrorCode.MISSING_REQUIRED,
-          details: { missing: "confirmation", hint: "Use --yes to confirm" }
-        });
-      } else {
-        console.error(chalk.red("Refusing to overwrite existing files without --yes"));
-      }
-      process.exitCode = 1;
-      return;
-    }
+	    } else if (!options.yes) {
+	      reportError("Refusing to overwrite existing files without --yes", {
+	        code: ErrorCode.MISSING_REQUIRED,
+	        hint: "Use --yes to confirm",
+	        details: { missing: "confirmation" },
+	        json: options.json,
+          command,
+          startedAtMs,
+	      });
+	      return;
+	    }
 
     const ts = Date.now();
     const toBackup = [playbookPath, blockedPath];
@@ -354,32 +356,30 @@ async function initRepoCommand(options: InitOptions) {
   }
 
   let starterOutcome: { added: number; skipped: number; name: string } | null = null;
-  if (options.starter) {
-    try {
-      starterOutcome = await seedStarter(playbookPath, options.starter);
-    } catch (err: any) {
-      if (options.json) {
-        printJsonError(err?.message || "Failed to apply starter", {
-          code: ErrorCode.VALIDATION_FAILED,
-          details: { starter: options.starter, cassDir }
-        });
-      } else {
-        console.error(chalk.red(err?.message || "Failed to apply starter"));
-      }
-      process.exitCode = 1;
-      return;
-    }
-  }
+	  if (options.starter) {
+	    try {
+	      starterOutcome = await seedStarter(playbookPath, options.starter);
+	    } catch (err: any) {
+	      reportError(err instanceof Error ? err : (err?.message || "Failed to apply starter"), {
+	        code: ErrorCode.VALIDATION_FAILED,
+	        details: { starter: options.starter, cassDir },
+	        json: options.json,
+          command,
+          startedAtMs,
+	      });
+	      return;
+	    }
+	  }
 
   if (options.json) {
-    printJsonResult({
+    printJsonResult(command, {
       cassDir,
       created: result.created,
       existed: result.existed,
       overwritten,
       backups,
       starter: starterOutcome
-    });
+    }, { startedAtMs });
   } else {
     console.log(chalk.bold(`\n${iconPrefix("construction")}Initializing repo-level .cass/ structure\n`));
 

@@ -9,12 +9,11 @@
 import { loadConfig } from "../config.js";
 import { loadPlaybook, savePlaybook, findBullet, removeFromBlockedLog } from "../playbook.js";
 import { ErrorCode, PlaybookBullet, Config, FeedbackEvent } from "../types.js";
-import { now, expandPath, getCliName, truncate, confirmDangerousAction, resolveRepoDir, fileExists, printJsonResult, printJsonError } from "../utils.js";
+import { now, expandPath, getCliName, truncate, confirmDangerousAction, resolveRepoDir, fileExists, printJsonResult, reportError } from "../utils.js";
 import { withLock } from "../lock.js";
 import chalk from "chalk";
 import { icon } from "../output.js";
 import path from "node:path";
-import fs from "node:fs/promises";
 
 export interface UndoFlags {
   feedback?: boolean;
@@ -122,14 +121,10 @@ async function findBulletLocation(
   const repoDir = await resolveRepoDir();
   const repoPath = repoDir ? path.join(repoDir, "playbook.yaml") : null;
   if (repoPath && await fileExists(repoPath)) {
-    try {
-      const repoPlaybook = await loadPlaybook(repoPath);
-      const bullet = findBullet(repoPlaybook, bulletId);
-      if (bullet) {
-        return { playbook: repoPlaybook, path: repoPath, location: "repo" };
-      }
-    } catch {
-      // Ignore repo load errors; fall back to global
+    const repoPlaybook = await loadPlaybook(repoPath);
+    const bullet = findBullet(repoPlaybook, bulletId);
+    if (bullet) {
+      return { playbook: repoPlaybook, path: repoPath, location: "repo" };
     }
   }
 
@@ -148,24 +143,39 @@ export async function undoCommand(
   bulletId: string,
   flags: UndoFlags = {}
 ): Promise<void> {
+  const startedAtMs = Date.now();
+  const command = "undo";
   const config = await loadConfig();
   const cli = getCliName();
   const repoDir = await resolveRepoDir();
 
   // Find which playbook contains this bullet
-  const location = await findBulletLocation(bulletId, config);
+  let location: Awaited<ReturnType<typeof findBulletLocation>>;
+  try {
+    location = await findBulletLocation(bulletId, config);
+  } catch (err: any) {
+    const message = err?.message || String(err);
+    reportError(err instanceof Error ? err : message, {
+      code: ErrorCode.PLAYBOOK_CORRUPT,
+      hint: repoDir
+        ? `Fix or remove the repo playbook at ${path.join(repoDir, "playbook.yaml")} (or run from outside the repo).`
+        : "Fix your playbook file and re-run.",
+      details: { bulletId },
+      json: flags.json,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
 
   if (!location) {
-    if (flags.json) {
-      printJsonError(`Bullet not found: ${bulletId}`, {
-        code: ErrorCode.BULLET_NOT_FOUND,
-        details: { bulletId }
-      });
-    } else {
-      console.error(chalk.red(`Error: Bullet not found: ${bulletId}`));
-      console.log(chalk.gray(`Use '${cli} playbook list' to see available bullets.`));
-    }
-    process.exitCode = 1;
+    reportError(`Bullet not found: ${bulletId}`, {
+      code: ErrorCode.BULLET_NOT_FOUND,
+      details: { bulletId },
+      json: flags.json,
+      command,
+      startedAtMs,
+    });
     return;
   }
 
@@ -200,15 +210,13 @@ export async function undoCommand(
         applyCommand = `${cli} undo ${bulletId} --hard --yes`;
       } else if (flags.feedback) {
         if (!lastEvent) {
-          if (flags.json) {
-            printJsonError(`No feedback events to undo for bullet ${bulletId}`, {
-              code: ErrorCode.VALIDATION_FAILED,
-              details: { bulletId, action: "undo-feedback" }
-            });
-          } else {
-            console.error(chalk.yellow(`No feedback events to undo for bullet ${bulletId}`));
-          }
-          process.exitCode = 1;
+          reportError(`No feedback events to undo for bullet ${bulletId}`, {
+            code: ErrorCode.INVALID_INPUT,
+            details: { bulletId, action: "undo-feedback" },
+            json: flags.json,
+            command,
+            startedAtMs,
+          });
           return;
         }
         actionType = "undo-feedback";
@@ -216,16 +224,14 @@ export async function undoCommand(
         applyCommand = `${cli} undo ${bulletId} --feedback`;
       } else {
         if (!bullet.deprecated) {
-          if (flags.json) {
-            printJsonError(`Bullet ${bulletId} is not deprecated`, {
-              code: ErrorCode.VALIDATION_FAILED,
-              details: { bulletId, hint: "Use --feedback to undo the last feedback event, or --hard to delete" }
-            });
-          } else {
-            console.error(chalk.yellow(`Bullet ${bulletId} is not deprecated.`));
-            console.log(chalk.gray("Use --feedback to undo the last feedback event, or --hard to delete."));
-          }
-          process.exitCode = 1;
+          reportError(`Bullet ${bulletId} is not deprecated`, {
+            code: ErrorCode.INVALID_INPUT,
+            hint: "Use --feedback to undo the last feedback event, or --hard to delete",
+            details: { bulletId, action: "un-deprecate" },
+            json: flags.json,
+            command,
+            startedAtMs,
+          });
           return;
         }
         actionType = "un-deprecate";
@@ -254,7 +260,7 @@ export async function undoCommand(
       };
 
       if (flags.json) {
-        printJsonResult({ plan });
+        printJsonResult(command, { plan }, { startedAtMs });
       } else {
         console.log(chalk.bold.yellow("DRY RUN - No changes will be made"));
         console.log(chalk.gray("─".repeat(50)));
@@ -293,16 +299,14 @@ export async function undoCommand(
       });
 
       if (!confirmed) {
-        if (flags.json) {
-          printJsonError("Confirmation required for --hard deletion", {
-            code: ErrorCode.MISSING_REQUIRED,
-            details: { confirmPhrase: "DELETE", hint: "Re-run with --yes in non-interactive mode" }
-          });
-        } else {
-          console.error(chalk.red("Confirmation required for --hard deletion."));
-          console.log(chalk.gray("Re-run with --yes to confirm in non-interactive mode."));
-        }
-        process.exitCode = 1;
+        reportError("Confirmation required for --hard deletion", {
+          code: ErrorCode.MISSING_REQUIRED,
+          hint: "Re-run with --yes in non-interactive mode",
+          details: { confirmPhrase: "DELETE" },
+          json: flags.json,
+          command,
+          startedAtMs,
+        });
         return;
       }
 
@@ -316,6 +320,9 @@ export async function undoCommand(
       };
 
       const index = currentPlaybook.bullets.findIndex(b => b.id === bulletId);
+      if (index === -1) {
+        throw new Error(`Bullet ${bulletId} not found in ${playbookPath} during deletion.`);
+      }
       currentPlaybook.bullets.splice(index, 1);
       await savePlaybook(currentPlaybook, playbookPath);
 
@@ -333,15 +340,13 @@ export async function undoCommand(
       const { before, removedEvent } = undoLastFeedback(bullet);
 
       if (!removedEvent) {
-        if (flags.json) {
-          printJsonError(`No feedback events to undo for bullet ${bulletId}`, {
-            code: ErrorCode.VALIDATION_FAILED,
-            details: { bulletId, action: "undo-feedback" }
-          });
-        } else {
-          console.error(chalk.yellow(`No feedback events to undo for bullet ${bulletId}`));
-        }
-        process.exitCode = 1;
+        reportError(`No feedback events to undo for bullet ${bulletId}`, {
+          code: ErrorCode.INVALID_INPUT,
+          details: { bulletId, action: "undo-feedback" },
+          json: flags.json,
+          command,
+          startedAtMs,
+        });
         return;
       }
 
@@ -361,16 +366,14 @@ export async function undoCommand(
     } else {
       // Default: un-deprecate
       if (!bullet.deprecated) {
-        if (flags.json) {
-          printJsonError(`Bullet ${bulletId} is not deprecated`, {
-            code: ErrorCode.VALIDATION_FAILED,
-            details: { bulletId, hint: "Use --feedback to undo the last feedback event, or --hard to delete" }
-          });
-        } else {
-          console.error(chalk.yellow(`Bullet ${bulletId} is not deprecated.`));
-          console.log(chalk.gray("Use --feedback to undo the last feedback event, or --hard to delete."));
-        }
-        process.exitCode = 1;
+        reportError(`Bullet ${bulletId} is not deprecated`, {
+          code: ErrorCode.INVALID_INPUT,
+          hint: "Use --feedback to undo the last feedback event, or --hard to delete",
+          details: { bulletId, action: "un-deprecate" },
+          json: flags.json,
+          command,
+          startedAtMs,
+        });
         return;
       }
 
@@ -399,20 +402,15 @@ export async function undoCommand(
     }
 
     if (flags.json) {
-      printJsonResult(result);
+      printJsonResult(command, result, { startedAtMs });
     } else {
       printUndoResult(result, bullet);
     }
     });
   } catch (err: any) {
     const message = err?.message || String(err);
-    if (flags.json) {
-      const code = message.includes("not found") ? ErrorCode.BULLET_NOT_FOUND : ErrorCode.INTERNAL_ERROR;
-      printJsonError(message, { code, details: { bulletId } });
-    } else {
-      console.error(chalk.red(`Error: ${message}`));
-    }
-    process.exitCode = 1;
+    const code = message.includes("not found") ? ErrorCode.BULLET_NOT_FOUND : ErrorCode.INTERNAL_ERROR;
+    reportError(err instanceof Error ? err : message, { code, details: { bulletId }, json: flags.json, command, startedAtMs });
   }
 }
 

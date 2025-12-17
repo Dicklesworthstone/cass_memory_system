@@ -2,9 +2,18 @@ import fs from "node:fs/promises";
 import chalk from "chalk";
 import { icon } from "../output.js";
 import { getDefaultConfig, saveConfig } from "../config.js";
-import { cassAvailable, cassTimeline } from "../cass.js";
-import { Config, ConfigSchema } from "../types.js";
-import { expandPath, ensureGlobalStructure, fileExists, now, getCliName, printJsonResult } from "../utils.js";
+import { cassAvailable, cassTimeline, type CassRunner } from "../cass.js";
+import { Config, ConfigSchema, ErrorCode } from "../types.js";
+import {
+  expandPath,
+  ensureGlobalStructure,
+  fileExists,
+  now,
+  getCliName,
+  printJsonResult,
+  reportError,
+  validatePositiveInt,
+} from "../utils.js";
 
 function normalizeAgentName(agent: string): string {
   return agent.trim().toLowerCase();
@@ -54,10 +63,15 @@ async function loadGlobalConfigEnsuringInit(): Promise<Config> {
   return parsed.data;
 }
 
-async function getCassAgentCounts(days: number, cassPath: string): Promise<Record<string, number> | null> {
-  if (!cassAvailable(cassPath, { quiet: true })) return null;
+async function getCassAgentCounts(
+  days: number,
+  cassPath: string,
+  runner?: CassRunner
+): Promise<Record<string, number> | null> {
+  const available = runner ? cassAvailable(cassPath, { quiet: true }, runner) : cassAvailable(cassPath, { quiet: true });
+  if (!available) return null;
 
-  const timeline = await cassTimeline(days, cassPath);
+  const timeline = runner ? await cassTimeline(days, cassPath, runner) : await cassTimeline(days, cassPath);
   const counts: Record<string, number> = {};
 
   for (const group of timeline.groups) {
@@ -78,19 +92,38 @@ function formatAgentList(list: string[]): string {
 export async function privacyCommand(
   action: "status" | "enable" | "disable" | "allow" | "deny",
   args: string[],
-  flags: { json?: boolean; days?: number } = {}
+  flags: { json?: boolean; days?: number } = {},
+  deps: { cassRunner?: CassRunner } = {}
 ): Promise<void> {
+  const startedAtMs = Date.now();
+  const command = `privacy:${action}`;
   const config = await loadGlobalConfigEnsuringInit();
+  const runner = deps.cassRunner;
   const cli = getCliName();
-  const days = typeof flags.days === "number" && flags.days > 0 ? flags.days : 365;
+  const daysCheck = validatePositiveInt(flags.days, "days", { min: 1, allowUndefined: true });
+  if (!daysCheck.ok) {
+    reportError(daysCheck.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: daysCheck.details,
+      hint: `Example: ${cli} privacy status --days 30 --json`,
+      json: flags.json,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+  const days = daysCheck.value ?? 365;
 
   switch (action) {
     case "status": {
-      const counts = await getCassAgentCounts(days, config.cassPath);
+      const counts = await getCassAgentCounts(days, config.cassPath, runner);
+      const cassIsAvailable = runner
+        ? cassAvailable(config.cassPath, { quiet: true }, runner)
+        : cassAvailable(config.cassPath, { quiet: true });
       const result = {
         crossAgent: config.crossAgent,
         cass: {
-          available: cassAvailable(config.cassPath, { quiet: true }),
+          available: cassIsAvailable,
           timelineDays: days,
           sessionCountsByAgent: counts,
         },
@@ -103,7 +136,7 @@ export async function privacyCommand(
       };
 
       if (flags.json) {
-        printJsonResult(result);
+        printJsonResult(command, result, { startedAtMs });
         return;
       }
 
@@ -138,12 +171,12 @@ export async function privacyCommand(
 
     case "enable": {
       const requested = args.map(normalizeAgentName).filter(Boolean);
-      const discoveredCounts = await getCassAgentCounts(days, config.cassPath);
+      const discoveredCounts = await getCassAgentCounts(days, config.cassPath, runner);
       const discoveredAgents = discoveredCounts ? Object.keys(discoveredCounts) : [];
 
       const allowlist =
         requested.length > 0
-          ? Array.from(new Set(requested))
+          ? Array.from(new Set(requested)).sort()
           : discoveredAgents.length > 0
             ? discoveredAgents.sort()
             : ["claude", "cursor", "codex", "aider", "pi_agent"];
@@ -159,7 +192,7 @@ export async function privacyCommand(
       await saveConfig(config);
 
       if (flags.json) {
-        printJsonResult({ crossAgent: config.crossAgent });
+        printJsonResult(command, { crossAgent: config.crossAgent }, { startedAtMs });
       } else {
         console.log(chalk.green(`${icon("success")} Cross-agent enrichment enabled`));
         console.log(`  Allowlist: ${formatAgentList(allowlist)}`);
@@ -172,7 +205,7 @@ export async function privacyCommand(
       await saveConfig(config);
 
       if (flags.json) {
-        printJsonResult({ crossAgent: config.crossAgent });
+        printJsonResult(command, { crossAgent: config.crossAgent }, { startedAtMs });
       } else {
         console.log(chalk.green(`${icon("success")} Cross-agent enrichment disabled`));
       }
@@ -181,7 +214,17 @@ export async function privacyCommand(
 
     case "allow": {
       const agent = args[0];
-      if (!agent) throw new Error("privacy allow requires <agent>");
+      if (!agent) {
+        reportError("privacy allow requires <agent>", {
+          code: ErrorCode.MISSING_REQUIRED,
+          hint: `Example: ${cli} privacy allow cursor --json`,
+          details: { missing: "agent" },
+          json: flags.json,
+          command,
+          startedAtMs,
+        });
+        return;
+      }
 
       const normalized = normalizeAgentName(agent);
       const next = Array.from(new Set([...(config.crossAgent.agents || []).map(normalizeAgentName), normalized])).sort();
@@ -193,7 +236,7 @@ export async function privacyCommand(
       await saveConfig(config);
 
       if (flags.json) {
-        printJsonResult({ crossAgent: config.crossAgent });
+        printJsonResult(command, { crossAgent: config.crossAgent }, { startedAtMs });
       } else {
         console.log(chalk.green(`${icon("success")} Allowed agent '${normalized}'`));
         console.log(`  Allowlist: ${formatAgentList(next)}`);
@@ -203,7 +246,17 @@ export async function privacyCommand(
 
     case "deny": {
       const agent = args[0];
-      if (!agent) throw new Error("privacy deny requires <agent>");
+      if (!agent) {
+        reportError("privacy deny requires <agent>", {
+          code: ErrorCode.MISSING_REQUIRED,
+          hint: `Example: ${cli} privacy deny cursor --json`,
+          details: { missing: "agent" },
+          json: flags.json,
+          command,
+          startedAtMs,
+        });
+        return;
+      }
 
       const normalized = normalizeAgentName(agent);
       const next = (config.crossAgent.agents || []).map(normalizeAgentName).filter((a) => a !== normalized).sort();
@@ -215,7 +268,7 @@ export async function privacyCommand(
       await saveConfig(config);
 
       if (flags.json) {
-        printJsonResult({ crossAgent: config.crossAgent });
+        printJsonResult(command, { crossAgent: config.crossAgent }, { startedAtMs });
       } else {
         console.log(chalk.green(`${icon("success")} Removed agent '${normalized}' from allowlist`));
         console.log(`  Allowlist: ${formatAgentList(next)}`);

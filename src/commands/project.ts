@@ -1,17 +1,73 @@
 import { loadConfig } from "../config.js";
 import {
   loadMergedPlaybook,
-  exportToMarkdown,
   exportToAgentsMd,
   exportToClaudeMd
 } from "../playbook.js";
-import { error as logError, fileExists, getCliName, atomicWrite } from "../utils.js";
+import {
+  fileExists,
+  getCliName,
+  atomicWrite,
+  reportError,
+  printJsonResult,
+  validateNonEmptyString,
+  validateOneOf,
+  validatePositiveInt,
+} from "../utils.js";
+import { ErrorCode } from "../types.js";
 import chalk from "chalk";
 import { icon } from "../output.js";
 
 export async function projectCommand(
-  flags: { output?: string; force?: boolean; format?: string; top?: number; showCounts?: boolean }
+  flags: { output?: string; force?: boolean; format?: string; top?: number; showCounts?: boolean; json?: boolean }
 ) {
+  const startedAtMs = Date.now();
+  const command = "project";
+  const cli = getCliName();
+
+  const allowedFormats = ["agents.md", "agents", "claude.md", "claude", "raw", "json", "yaml"] as const;
+  const formatCheck = validateOneOf(flags.format, "format", allowedFormats, {
+    allowUndefined: true,
+    caseInsensitive: true,
+  });
+  if (!formatCheck.ok) {
+    reportError(formatCheck.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: formatCheck.details,
+      hint: `Valid formats: ${allowedFormats.join(", ")}`,
+      json: flags.json,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+
+  const topCheck = validatePositiveInt(flags.top, "top", { min: 1, allowUndefined: true });
+  if (!topCheck.ok) {
+    reportError(topCheck.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: topCheck.details,
+      hint: `Example: ${cli} project --top 5 --format agents.md`,
+      json: flags.json,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+
+  const outputCheck = validateNonEmptyString(flags.output, "output", { allowUndefined: true });
+  if (!outputCheck.ok) {
+    reportError(outputCheck.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: outputCheck.details,
+      hint: `Example: ${cli} project --output AGENTS.md`,
+      json: flags.json,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+
   try {
     const config = await loadConfig();
     const playbook = await loadMergedPlaybook(config);
@@ -19,7 +75,8 @@ export async function projectCommand(
 
     let output = "";
 
-    switch (flags.format) {
+    const format = formatCheck.value;
+    switch (format) {
       case "raw":
       case "json":
         output = JSON.stringify(playbook, null, 2);
@@ -32,7 +89,7 @@ export async function projectCommand(
       case "claude.md":
       case "claude":
         output = exportToClaudeMd(playbook, config, {
-          topN: flags.top,
+          topN: topCheck.value,
           showCounts
         });
         break;
@@ -40,32 +97,52 @@ export async function projectCommand(
       case "agents":
       default:
         output = exportToAgentsMd(playbook, config, {
-          topN: flags.top,
+          topN: topCheck.value,
           showCounts
         });
         break;
     }
 
-    if (flags.output) {
-      const outputPath = flags.output;
+    if (outputCheck.value) {
+      const outputPath = outputCheck.value;
 
       if (!flags.force && (await fileExists(outputPath))) {
-        const cli = getCliName();
         const quotedPath = JSON.stringify(outputPath);
-        console.error(chalk.red(`Refusing to overwrite existing file: ${outputPath}`));
-        console.error(chalk.gray(`Re-run with: ${cli} project --output ${quotedPath} --force`));
-        process.exitCode = 1;
+        reportError(`Refusing to overwrite existing file: ${outputPath}`, {
+          code: ErrorCode.ALREADY_EXISTS,
+          hint: `Re-run with: ${cli} project --output ${quotedPath} --force`,
+          details: { outputPath },
+          json: flags.json,
+          command,
+          startedAtMs,
+        });
         return;
       }
 
       await atomicWrite(outputPath, output);
-      console.log(chalk.green(`${icon("success")} Exported to ${outputPath}`));
+      if (flags.json) {
+        printJsonResult(
+          command,
+          { outputPath, format: format ?? "agents.md", bytesWritten: Buffer.byteLength(output, "utf-8") },
+          { startedAtMs }
+        );
+      } else {
+        console.log(chalk.green(`${icon("success")} Exported to ${outputPath}`));
+      }
       return;
     }
 
-    console.log(output);
+    if (flags.json) {
+      printJsonResult(command, { format: format ?? "agents.md", content: output }, { startedAtMs });
+    } else {
+      console.log(output);
+    }
   } catch (err: any) {
-    logError(err?.message || String(err));
-    process.exitCode = 1;
+    reportError(err instanceof Error ? err : String(err), {
+      code: ErrorCode.INTERNAL_ERROR,
+      json: flags.json,
+      command,
+      startedAtMs,
+    });
   }
 }

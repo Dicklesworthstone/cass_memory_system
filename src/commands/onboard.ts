@@ -11,8 +11,18 @@ import chalk from "chalk";
 import { loadConfig } from "../config.js";
 import { loadMergedPlaybook, getActiveBullets } from "../playbook.js";
 import { cassExport, handleCassUnavailable, CassSearchOptions, safeCassSearchWithDegraded } from "../cass.js";
-import { getCliName, expandPath, formatRelativeTime, printJson, printJsonError, printJsonResult } from "../utils.js";
+import {
+  getCliName,
+  expandPath,
+  formatRelativeTime,
+  printJson,
+  printJsonResult,
+  reportError,
+  validateNonEmptyString,
+  validatePositiveInt,
+} from "../utils.js";
 import { agentIconPrefix, formatKv, formatRule, getOutputStyle, icon, iconPrefix } from "../output.js";
+import { createProgress, type ProgressReporter } from "../progress.js";
 import { ErrorCode } from "../types.js";
 import {
   loadOnboardState,
@@ -129,6 +139,7 @@ interface SampleOptions {
   days?: number;
   fillGaps?: boolean;
   gapAnalysis?: PlaybookGapAnalysis;
+  onProgress?: (event: { current: number; total: number; message: string }) => void;
 }
 
 async function sampleDiverseSessions(options: SampleOptions = {}): Promise<{
@@ -171,9 +182,28 @@ async function sampleDiverseSessions(options: SampleOptions = {}): Promise<{
 
   const sessions: Map<string, SessionSample> = new Map();
 
+  const totalQueries = queries.length;
+  let queryIndex = 0;
+  if (typeof options.onProgress === "function") {
+    try {
+      options.onProgress({ current: 0, total: totalQueries, message: "Sampling sessions..." });
+    } catch {
+      // Best-effort
+    }
+  }
+
   for (const query of queries) {
     // Fetch more than needed to account for filtering
     if (sessions.size >= limit * 2) break;
+
+    queryIndex += 1;
+    if (typeof options.onProgress === "function") {
+      try {
+        options.onProgress({ current: queryIndex, total: totalQueries, message: `Searching: ${query}` });
+      } catch {
+        // Best-effort
+      }
+    }
 
     try {
       const searchOpts: CassSearchOptions = {
@@ -441,61 +471,73 @@ export async function onboardCommand(
     template?: boolean;
   } = {}
 ): Promise<void> {
+  const startedAtMs = Date.now();
   const cli = getCliName();
 
   // Handle --reset first (destructive operation)
-  if (options.reset) {
-    const canPrompt = Boolean(!options.json && process.stdin.isTTY && process.stdout.isTTY);
-
-    if (!options.yes) {
-      if (canPrompt) {
-        // Interactive confirmation
-        const readline = await import("node:readline");
-        const rl = readline.createInterface({
-          input: process.stdin,
-          output: process.stdout,
-        });
-        const answer = await new Promise<string>((resolve) => {
-          rl.question(chalk.yellow("Reset onboarding progress? This cannot be undone. [y/N] "), resolve);
-        });
-        rl.close();
-        if (answer.toLowerCase() !== "y") {
-          console.log(chalk.dim("Cancelled."));
-          return;
-        }
-      } else {
-        if (options.json) {
-          printJsonError("Confirmation required to reset onboarding progress", {
-            code: ErrorCode.MISSING_REQUIRED,
-            details: { missing: "confirmation", hint: "Re-run with --yes" }
-          });
-        } else {
-          console.error(chalk.red("Refusing to reset onboarding progress without --yes"));
-        }
-        process.exitCode = 1;
-        return;
-      }
-    }
-    await resetOnboardState();
-    if (options.json) {
-      printJsonResult({ message: "Onboarding progress reset" });
-    } else {
+	  if (options.reset) {
+	    const canPrompt = Boolean(!options.json && process.stdin.isTTY && process.stdout.isTTY);
+	
+	    if (!options.yes) {
+	      if (canPrompt) {
+	        // Interactive confirmation
+	        const readline = await import("node:readline");
+	        const rl = readline.createInterface({
+	          input: process.stdin,
+	          output: process.stdout,
+	        });
+	        const answer = await new Promise<string>((resolve) => {
+	          rl.question(chalk.yellow("Reset onboarding progress? This cannot be undone. [y/N] "), resolve);
+	        });
+	        rl.close();
+	        if (answer.toLowerCase() !== "y") {
+	          console.log(chalk.dim("Cancelled."));
+	          return;
+	        }
+	      } else {
+	        reportError("Confirmation required to reset onboarding progress", {
+	          code: ErrorCode.MISSING_REQUIRED,
+	          hint: "Re-run with --yes",
+	          details: { missing: "confirmation" },
+	          json: options.json,
+            command: "onboard:reset",
+            startedAtMs,
+	        });
+	        return;
+	      }
+	    }
+	    await resetOnboardState();
+	    if (options.json) {
+	      printJsonResult("onboard:reset", { message: "Onboarding progress reset" }, { startedAtMs });
+	    } else {
       console.log(chalk.green(`${icon("success")} Onboarding progress reset`));
     }
     return;
   }
 
   // Handle --mark-done
-  if (options.markDone) {
-    const sessionPath = options.markDone;
+  if (options.markDone !== undefined) {
+    const sessionPathCheck = validateNonEmptyString(options.markDone, "mark-done", { trim: true });
+    if (!sessionPathCheck.ok) {
+      reportError(sessionPathCheck.message, {
+        code: ErrorCode.INVALID_INPUT,
+        details: sessionPathCheck.details,
+        hint: `Example: ${cli} onboard mark-done <path> --json`,
+        json: options.json,
+        command: "onboard:mark-done",
+        startedAtMs,
+      });
+      return;
+    }
+    const sessionPath = sessionPathCheck.value;
     await markSessionProcessed(sessionPath, 0, { skipped: true });
     if (options.json) {
-      printJsonResult({
+      printJsonResult("onboard:mark-done", {
         message: "Session marked as processed",
         sessionPath,
         rulesExtracted: 0,
         skipped: true,
-      });
+      }, { startedAtMs });
     } else {
       console.log(chalk.green(`${icon("success")} Marked as processed: ${sessionPath}`));
       console.log(chalk.dim("  (0 rules extracted - session skipped)"));
@@ -514,7 +556,7 @@ export async function onboardCommand(
   // Gap analysis standalone view
   if (options.gaps) {
     if (options.json) {
-      printJsonResult({ status, progress, gapAnalysis });
+      printJsonResult("onboard:gaps", { status, progress, gapAnalysis }, { startedAtMs });
     } else {
       const maxWidth = Math.min(getOutputStyle().width, 84);
       console.log(chalk.bold("PLAYBOOK GAP ANALYSIS"));
@@ -573,7 +615,7 @@ export async function onboardCommand(
   // Status check
   if (options.status) {
     if (options.json) {
-      printJsonResult({ status, progress, gapAnalysis });
+      printJsonResult("onboard:status", { status, progress, gapAnalysis }, { startedAtMs });
     } else {
       const maxWidth = Math.min(getOutputStyle().width, 84);
       console.log(chalk.bold("ONBOARDING STATUS"));
@@ -622,18 +664,87 @@ export async function onboardCommand(
 
   // Sample sessions
   if (options.sample) {
+    const limitCheck = validatePositiveInt(options.limit, "limit", { min: 1, allowUndefined: true });
+    if (!limitCheck.ok) {
+      reportError(limitCheck.message, {
+        code: ErrorCode.INVALID_INPUT,
+        details: limitCheck.details,
+        hint: `Example: ${cli} onboard sample --limit 5 --json`,
+        json: options.json,
+        command: "onboard:sample",
+        startedAtMs,
+      });
+      return;
+    }
+
+    const daysCheck = validatePositiveInt(options.days, "days", { min: 1, allowUndefined: true });
+    if (!daysCheck.ok) {
+      reportError(daysCheck.message, {
+        code: ErrorCode.INVALID_INPUT,
+        details: daysCheck.details,
+        hint: `Example: ${cli} onboard sample --days 14 --json`,
+        json: options.json,
+        command: "onboard:sample",
+        startedAtMs,
+      });
+      return;
+    }
+
+    const workspaceCheck = validateNonEmptyString(options.workspace, "workspace", { allowUndefined: true });
+    if (!workspaceCheck.ok) {
+      reportError(workspaceCheck.message, {
+        code: ErrorCode.INVALID_INPUT,
+        details: workspaceCheck.details,
+        hint: `Example: ${cli} onboard sample --workspace . --json`,
+        json: options.json,
+        command: "onboard:sample",
+        startedAtMs,
+      });
+      return;
+    }
+
+    const agentCheck = validateNonEmptyString(options.agent, "agent", { allowUndefined: true });
+    if (!agentCheck.ok) {
+      reportError(agentCheck.message, {
+        code: ErrorCode.INVALID_INPUT,
+        details: agentCheck.details,
+        hint: `Example: ${cli} onboard sample --agent claude --json`,
+        json: options.json,
+        command: "onboard:sample",
+        startedAtMs,
+      });
+      return;
+    }
+
+    const progressFormat = options.json ? "json" : "text";
+    const sampleProgressRef: { current: ProgressReporter | null } = { current: null };
     const { sessions, totalFound, filtered } = await sampleDiverseSessions({
-      limit: options.limit,
+      limit: limitCheck.value,
       includeProcessed: options.includeProcessed,
-      workspace: options.workspace,
-      agent: options.agent,
-      days: options.days,
+      workspace: workspaceCheck.value,
+      agent: agentCheck.value,
+      days: daysCheck.value,
       fillGaps: options.fillGaps,
       gapAnalysis: options.fillGaps ? gapAnalysis : undefined,
+      onProgress: (event) => {
+        if (!sampleProgressRef.current) {
+          sampleProgressRef.current = createProgress({
+            message: event.message,
+            total: event.total,
+            showEta: true,
+            format: progressFormat,
+            stream: process.stderr,
+          });
+        }
+        sampleProgressRef.current.update(event.current, event.message);
+      },
     });
 
+    sampleProgressRef.current?.complete("Sampling complete");
+    sampleProgressRef.current = null;
+
     if (options.json) {
-      printJsonResult({
+      printJsonResult("onboard:sample", {
         status,
         progress,
         step: "sample",
@@ -642,7 +753,7 @@ export async function onboardCommand(
         filtered,
         sessionsRemaining: sessions.length,
         gapAnalysis: options.fillGaps ? gapAnalysis : undefined,
-      });
+      }, { startedAtMs });
     } else {
       const title = options.fillGaps
         ? "SAMPLED SESSIONS FOR GAP-FILLING"
@@ -685,21 +796,43 @@ export async function onboardCommand(
   }
 
   // Read session
-  if (options.read) {
-    const content = await exportSessionForAgent(options.read);
+  if (options.read !== undefined) {
+    const readCheck = validateNonEmptyString(options.read, "read", { trim: true });
+    if (!readCheck.ok) {
+      reportError(readCheck.message, {
+        code: ErrorCode.INVALID_INPUT,
+        details: readCheck.details,
+        hint: `Example: ${cli} onboard read <path> --json`,
+        json: options.json,
+        command: options.template ? "onboard:read-template" : "onboard:read",
+        startedAtMs,
+      });
+      return;
+    }
+    const progressFormat = options.json ? "json" : "text";
+    const exportProgress = createProgress({
+      message: "Exporting session...",
+      format: progressFormat,
+      stream: process.stderr,
+    });
+    exportProgress.update(0, "Exporting session...");
+    const content = await exportSessionForAgent(readCheck.value);
+    if (!content) {
+      exportProgress.fail("Failed to export session");
+    } else {
+      exportProgress.complete("Session exported");
+    }
 
     // Template mode: provide rich contextual output for agent extraction
     if (options.template) {
       if (!content) {
-        if (options.json) {
-          printJsonError("Failed to read session", {
-            code: ErrorCode.SESSION_NOT_FOUND,
-            details: { sessionPath: options.read }
-          });
-        } else {
-          console.error(chalk.red(`Failed to read session: ${options.read}`));
-        }
-        process.exitCode = 1;
+        reportError("Failed to read session", {
+          code: ErrorCode.SESSION_NOT_FOUND,
+          details: { sessionPath: readCheck.value },
+          json: options.json,
+          command: options.template ? "onboard:read-template" : "onboard:read",
+          startedAtMs,
+        });
         return;
       }
 
@@ -715,6 +848,12 @@ export async function onboardCommand(
       let relatedRules: Array<{ id: string; content: string; similarity: number }> = [];
       const activeBullets = getActiveBullets(playbook);
       if (config.semanticSearchEnabled && activeBullets.length > 0) {
+        const relatedProgress = createProgress({
+          message: "Searching for related rules...",
+          format: progressFormat,
+          stream: process.stderr,
+        });
+        relatedProgress.update(0, "Searching for related rules...");
         try {
           const matches = await findSimilarBulletsSemantic(
             contentSnippet,
@@ -729,7 +868,9 @@ export async function onboardCommand(
               content: m.bullet.content,
               similarity: Math.round(m.similarity * 100) / 100,
             }));
+          relatedProgress.complete(`Found ${relatedRules.length} related rule(s)`);
         } catch {
+          relatedProgress.complete("Related rules unavailable");
           // Ignore semantic search errors
         }
       }
@@ -738,12 +879,12 @@ export async function onboardCommand(
       const suggestedFocus = generateSuggestedFocus(gapAnalysis, topicHints);
 
       // Parse workspace from session path
-      const sessionDir = path.dirname(options.read);
+      const sessionDir = path.dirname(readCheck.value);
       const workspaceName = path.basename(sessionDir);
 
       const templateOutput = {
         metadata: {
-          path: options.read,
+          path: readCheck.value,
           agent: "unknown", // Would need to parse from content
           workspace: sessionDir,
           workspaceName,
@@ -767,7 +908,7 @@ export async function onboardCommand(
       };
 
       if (options.json) {
-        printJsonResult(templateOutput);
+        printJsonResult("onboard:read-template", templateOutput, { startedAtMs });
       } else {
         console.log(chalk.bold("SESSION ANALYSIS TEMPLATE"));
         console.log(chalk.dim(formatRule("─", { maxWidth: 60 })));
@@ -822,13 +963,13 @@ export async function onboardCommand(
 
     // Standard read (non-template)
     if (options.json) {
-      printJsonResult({
+      printJsonResult("onboard:read", {
         status,
         step: "read",
         sessionPath: options.read,
         sessionContent: content,
         extractionPrompt: getExtractionPrompt(),
-      });
+      }, { startedAtMs });
     } else {
       if (content) {
         console.log(chalk.bold(`SESSION: ${options.read}`));
@@ -851,13 +992,13 @@ export async function onboardCommand(
   // Show extraction prompt
   if (options.prompt) {
     if (options.json) {
-      printJsonResult({
+      printJsonResult("onboard:prompt", {
         status,
         step: "prompt",
         extractionPrompt: getExtractionPrompt(),
         categories: [...RULE_CATEGORIES],
         examples: EXAMPLE_RULES,
-      });
+      }, { startedAtMs });
     } else {
       console.log(getExtractionPrompt());
     }
@@ -866,7 +1007,7 @@ export async function onboardCommand(
 
   // Guided mode (default)
   if (options.json) {
-    printJsonResult({ ...getGuidedOnboardingJson(cli, status) });
+    printJsonResult("onboard:guided", getGuidedOnboardingJson(cli, status), { startedAtMs });
   } else {
     const colored = getGuidedOnboardingText(cli, status)
       .replace(/^# (.+)$/gm, chalk.bold.blue("# $1"))

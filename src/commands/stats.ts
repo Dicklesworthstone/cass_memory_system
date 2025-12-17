@@ -11,6 +11,7 @@ import chalk from "chalk";
 import { iconPrefix } from "../output.js";
 
 export async function statsCommand(options: { json?: boolean }): Promise<void> {
+  const startedAtMs = Date.now();
   const config = await loadConfig();
   const playbook = await loadMergedPlaybook(config);
   const bullets = playbook.bullets;
@@ -85,7 +86,7 @@ export async function statsCommand(options: { json?: boolean }): Promise<void> {
   };
 
   if (options.json) {
-    printJsonResult(stats);
+    printJsonResult("stats", stats, { startedAtMs });
     return;
   }
 

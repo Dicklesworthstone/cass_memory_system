@@ -1,7 +1,7 @@
 import { loadConfig } from "../config.js";
 import { loadPlaybook, savePlaybook, findBullet } from "../playbook.js";
 import { getEffectiveScore, calculateMaturityState } from "../scoring.js";
-import { now, error as logError, expandPath, resolveRepoDir, printJsonResult, printJsonError } from "../utils.js";
+import { now, expandPath, resolveRepoDir, fileExists, printJsonResult, reportError } from "../utils.js";
 import { HarmfulReason, HarmfulReasonEnum, FeedbackEvent, ErrorCode } from "../types.js";
 import { withLock } from "../lock.js";
 import chalk from "chalk";
@@ -27,93 +27,113 @@ export async function recordFeedback(
   
   const repoDir = await resolveRepoDir();
   const repoPath = repoDir ? path.join(repoDir, "playbook.yaml") : null;
+  const repoPlaybookExists = repoPath ? await fileExists(repoPath) : false;
 
-  let saveTarget = globalPath;
-  if (repoPath) {
-    try {
-      const repoPlaybook = await loadPlaybook(repoPath);
-      if (findBullet(repoPlaybook, bulletId)) {
-        saveTarget = repoPath;
+  const type: "helpful" | "harmful" = flags.helpful ? "helpful" : "harmful";
+
+  const tryRecordInPlaybook = async (
+    saveTarget: string
+  ): Promise<{ found: boolean; score?: number; state?: string }> => {
+    return await withLock(saveTarget, async () => {
+      const targetPlaybook = await loadPlaybook(saveTarget);
+
+      const targetBullet = findBullet(targetPlaybook, bulletId);
+      if (!targetBullet) return { found: false };
+
+      let reason: HarmfulReason | undefined = undefined;
+      let context: string | undefined = undefined;
+      const rawReason = typeof flags.reason === "string" ? flags.reason.trim() : "";
+      
+      if (type === "harmful") {
+        if (rawReason) {
+          const parsed = HarmfulReasonEnum.safeParse(rawReason.toLowerCase());
+          if (parsed.success) {
+            reason = parsed.data;
+          } else {
+            reason = "other";
+            context = rawReason;
+          }
+        } else {
+          reason = "other";
+        }
+      } else if (rawReason) {
+        // Optional free-text context even for helpful feedback.
+        context = rawReason;
       }
-    } catch {
-      // Ignore if repo playbook doesn't exist or load fails, stick to global
+
+      const event: FeedbackEvent = { 
+        type, 
+        timestamp: now(), 
+        sessionPath: flags.session, 
+        reason,
+        ...(context ? { context } : {})
+      };
+
+      targetBullet.feedbackEvents = targetBullet.feedbackEvents || [];
+      targetBullet.feedbackEvents.push(event);
+
+      // Keep legacy counters in sync for backwards compatibility
+      if (type === "helpful") {
+        targetBullet.helpfulCount = (targetBullet.helpfulCount || 0) + 1;
+      } else {
+        targetBullet.harmfulCount = (targetBullet.harmfulCount || 0) + 1;
+      }
+
+      targetBullet.updatedAt = now();
+      const newMaturity = calculateMaturityState(targetBullet, config);
+      targetBullet.maturity = newMaturity;
+
+      if (newMaturity === "deprecated" && !targetBullet.deprecated) {
+          targetBullet.deprecated = true;
+          targetBullet.deprecatedAt = now();
+          targetBullet.state = "retired";
+          targetBullet.deprecationReason = targetBullet.deprecationReason || "Automatically deprecated due to harmful feedback ratio";
+      }
+
+      await savePlaybook(targetPlaybook, saveTarget);
+      
+      const score = getEffectiveScore(targetBullet, config);
+      const state = targetBullet.maturity;
+      return { found: true, score, state };
+    });
+  };
+
+  if (repoPath && repoPlaybookExists) {
+    const repoResult = await tryRecordInPlaybook(repoPath);
+    if (repoResult.found) {
+      return { type, score: repoResult.score!, state: repoResult.state! };
     }
   }
 
-  let score = 0;
-  let state = "";
-  const type: "helpful" | "harmful" = flags.helpful ? "helpful" : "harmful";
+  const globalResult = await tryRecordInPlaybook(globalPath);
+  if (globalResult.found) {
+    return { type, score: globalResult.score!, state: globalResult.state! };
+  }
 
-  await withLock(saveTarget, async () => {
-    const targetPlaybook = await loadPlaybook(saveTarget);
-    const targetBullet = findBullet(targetPlaybook, bulletId);
-
-    if (!targetBullet) {
-      throw new Error(`Bullet ${bulletId} not found in ${saveTarget} during write lock.`);
-    }
-
-    let reason: HarmfulReason | undefined = undefined;
-    
-    if (type === "harmful") {
-      if (flags.reason && HarmfulReasonEnum.safeParse(flags.reason).success) {
-        reason = flags.reason as HarmfulReason;
-      } else {
-        reason = "other";
-      }
-    }
-
-    const event: FeedbackEvent = { 
-      type, 
-      timestamp: now(), 
-      sessionPath: flags.session, 
-      reason,
-      context: flags.reason 
-    };
-
-    targetBullet.feedbackEvents = targetBullet.feedbackEvents || [];
-    targetBullet.feedbackEvents.push(event);
-
-    // Keep legacy counters in sync for backwards compatibility
-    if (type === "helpful") {
-      targetBullet.helpfulCount = (targetBullet.helpfulCount || 0) + 1;
-    } else {
-      targetBullet.harmfulCount = (targetBullet.harmfulCount || 0) + 1;
-    }
-
-    targetBullet.updatedAt = now();
-    const newMaturity = calculateMaturityState(targetBullet, config);
-    targetBullet.maturity = newMaturity;
-
-    if (newMaturity === "deprecated" && !targetBullet.deprecated) {
-        targetBullet.deprecated = true;
-        targetBullet.deprecatedAt = now();
-        targetBullet.state = "retired";
-        targetBullet.deprecationReason = targetBullet.deprecationReason || "Automatically deprecated due to harmful feedback ratio";
-    }
-
-    await savePlaybook(targetPlaybook, saveTarget);
-    
-    score = getEffectiveScore(targetBullet, config);
-    state = targetBullet.maturity;
-  });
-
-  return { type, score, state };
+  const locations = repoPath && repoPlaybookExists ? `${repoPath} or ${globalPath}` : globalPath;
+  throw new Error(`Bullet ${bulletId} not found in ${locations}.`);
 }
 
 export async function markCommand(
   bulletId: string,
   flags: MarkFlags
 ): Promise<void> {
+  const startedAtMs = Date.now();
+  const command = "mark";
   try {
     const result = await recordFeedback(bulletId, flags);
 
     if (flags.json) {
-      printJsonResult({
-        bulletId,
-        type: result.type,
-        newState: result.state,
-        effectiveScore: result.score
-      });
+      printJsonResult(
+        command,
+        {
+          bulletId,
+          type: result.type,
+          newState: result.state,
+          effectiveScore: result.score,
+        },
+        { startedAtMs }
+      );
     } else {
       console.log(chalk.green(`${icon("success")} Marked bullet ${bulletId} as ${result.type}`));
       console.log(`  New State: ${result.state}`);
@@ -121,15 +141,11 @@ export async function markCommand(
     }
   } catch (err: any) {
     const message = err?.message || String(err);
-    if (flags.json) {
-      // Determine appropriate error code based on error message
-      const code = message.includes("not found") ? ErrorCode.BULLET_NOT_FOUND
-        : message.includes("Must specify") ? ErrorCode.MISSING_REQUIRED
+    const code = message.includes("not found")
+      ? ErrorCode.BULLET_NOT_FOUND
+      : message.includes("Must specify")
+        ? ErrorCode.MISSING_REQUIRED
         : ErrorCode.VALIDATION_FAILED;
-      printJsonError(message, { code, details: { bulletId } });
-    } else {
-      logError(message);
-    }
-    process.exitCode = 1;
+    reportError(err instanceof Error ? err : message, { code, details: { bulletId }, json: flags.json, command, startedAtMs });
   }
 }

@@ -3,7 +3,7 @@
 
 import { loadConfig } from "../config.js";
 import { generateDiary } from "../diary.js";
-import { expandPath, error as logError, printJsonResult, printJsonError } from "../utils.js";
+import { expandPath, printJsonResult, reportError } from "../utils.js";
 import { ErrorCode } from "../types.js";
 import fs from "node:fs/promises";
 import chalk from "chalk";
@@ -33,18 +33,18 @@ export async function diaryCommand(
   sessionPath: string,
   options: DiaryCommandOptions = {}
 ): Promise<void> {
+  const startedAtMs = Date.now();
+  const command = "diary";
   // Validate session path exists
   const validatedPath = await validateSessionPath(sessionPath);
   if (!validatedPath) {
-    if (options.json) {
-      printJsonError(`Session file not found: ${sessionPath}`, {
-        code: ErrorCode.FILE_NOT_FOUND,
-        details: { path: sessionPath }
-      });
-    } else {
-      logError(`Session file not found: ${sessionPath}`);
-    }
-    process.exitCode = 1;
+    reportError(`Session file not found: ${sessionPath}`, {
+      code: ErrorCode.FILE_NOT_FOUND,
+      details: { path: sessionPath },
+      json: options.json,
+      command,
+      startedAtMs,
+    });
     return;
   }
 
@@ -55,18 +55,17 @@ export async function diaryCommand(
     const diary = await generateDiary(validatedPath, config);
 
     // Handle output
-    await handleDiaryOutput(diary, options, config);
+    await handleDiaryOutput(diary, options, config, { command, startedAtMs });
 
   } catch (err: any) {
-    if (options.json) {
-      printJsonError(`Failed to generate diary: ${err.message}`, {
-        code: ErrorCode.REFLECTION_FAILED,
-        details: { sessionPath }
-      });
-    } else {
-      logError(`Failed to generate diary: ${err.message}`);
-    }
-    process.exitCode = 1;
+    const message = err?.message || String(err);
+    reportError(`Failed to generate diary: ${message}`, {
+      code: ErrorCode.REFLECTION_FAILED,
+      details: { sessionPath },
+      json: options.json,
+      command,
+      startedAtMs,
+    });
   }
 }
 
@@ -105,10 +104,11 @@ export async function validateSessionPath(sessionPath: string): Promise<string |
 export async function handleDiaryOutput(
   diary: import("../types.js").DiaryEntry,
   options: DiaryCommandOptions,
-  config: import("../types.js").Config
+  config: import("../types.js").Config,
+  meta: { command: string; startedAtMs: number }
 ): Promise<void> {
   if (options.json) {
-    printJsonResult({ diary });
+    printJsonResult(meta.command, { diary }, { startedAtMs: meta.startedAtMs });
     return;
   }
 

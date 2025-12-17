@@ -2,9 +2,17 @@ import { loadConfig } from "../config.js";
 import { orchestrateReflection } from "../orchestrator.js";
 import { getUsageStats, formatCostSummary } from "../cost.js";
 import chalk from "chalk";
-import { getCliName, printJson, printJsonResult } from "../utils.js";
+import {
+  getCliName,
+  printJson,
+  printJsonResult,
+  reportError,
+  validateNonEmptyString,
+  validatePositiveInt,
+} from "../utils.js";
 import { formatKv, formatRule, getOutputStyle, iconPrefix, icon, wrapText } from "../output.js";
-import type { PlaybookDelta } from "../types.js";
+import { createProgress, type ProgressReporter } from "../progress.js";
+import { ErrorCode, type PlaybookDelta } from "../types.js";
 
 type DeltaType = PlaybookDelta["type"];
 
@@ -54,52 +62,164 @@ export async function reflectCommand(
     session?: string;
   } = {}
 ): Promise<void> {
+  const startedAtMs = Date.now();
+  const command = "reflect";
+  const cli = getCliName();
+
+  const daysCheck = validatePositiveInt(options.days, "days", { min: 1, allowUndefined: true });
+  if (!daysCheck.ok) {
+    reportError(daysCheck.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: daysCheck.details,
+      hint: `Example: ${cli} reflect --days 7 --json`,
+      json: options.json,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+
+  const maxSessionsCheck = validatePositiveInt(options.maxSessions, "max-sessions", { min: 1, allowUndefined: true });
+  if (!maxSessionsCheck.ok) {
+    reportError(maxSessionsCheck.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: maxSessionsCheck.details,
+      hint: `Example: ${cli} reflect --max-sessions 50 --json`,
+      json: options.json,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+
+  const agentCheck = validateNonEmptyString(options.agent, "agent", { allowUndefined: true });
+  if (!agentCheck.ok) {
+    reportError(agentCheck.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: agentCheck.details,
+      hint: `Example: ${cli} reflect --agent claude --json`,
+      json: options.json,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+
+  const workspaceCheck = validateNonEmptyString(options.workspace, "workspace", { allowUndefined: true });
+  if (!workspaceCheck.ok) {
+    reportError(workspaceCheck.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: workspaceCheck.details,
+      hint: `Example: ${cli} reflect --workspace . --json`,
+      json: options.json,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+
+  const sessionCheck = validateNonEmptyString(options.session, "session", { allowUndefined: true });
+  if (!sessionCheck.ok) {
+    reportError(sessionCheck.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: sessionCheck.details,
+      hint: `Example: ${cli} reflect --session <id> --json`,
+      json: options.json,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+
+  const normalizedOptions = {
+    ...options,
+    ...(daysCheck.value !== undefined ? { days: daysCheck.value } : {}),
+    ...(maxSessionsCheck.value !== undefined ? { maxSessions: maxSessionsCheck.value } : {}),
+    ...(agentCheck.value !== undefined ? { agent: agentCheck.value } : {}),
+    ...(workspaceCheck.value !== undefined ? { workspace: workspaceCheck.value } : {}),
+    ...(sessionCheck.value !== undefined ? { session: sessionCheck.value } : {}),
+  };
+
   const config = await loadConfig();
   const statsBefore = await getUsageStats(config);
 
-  const cli = getCliName();
   const maxWidth = Math.min(getOutputStyle().width, 84);
   const divider = chalk.dim(formatRule("─", { maxWidth }));
 
-  if (!options.json) {
+  if (!normalizedOptions.json) {
     console.log(chalk.bold("REFLECT"));
     console.log(divider);
-    console.log(chalk.dim(`Workspace: ${options.workspace || "global"}`));
-    if (options.session) console.log(chalk.dim(`Session: ${options.session}`));
-    if (options.dryRun) console.log(chalk.dim("Mode: dry-run (no changes will be written)"));
+    console.log(chalk.dim(`Workspace: ${normalizedOptions.workspace || "global"}`));
+    if (normalizedOptions.session) console.log(chalk.dim(`Session: ${normalizedOptions.session}`));
+    if (normalizedOptions.dryRun) console.log(chalk.dim("Mode: dry-run (no changes will be written)"));
     console.log("");
   }
 
+  const progressRef: { current: ProgressReporter | null } = { current: null };
+
   const result = await orchestrateReflection(config, {
-    days: options.days,
-    maxSessions: options.maxSessions,
-    agent: options.agent,
-    workspace: options.workspace,
-    session: options.session,
-    dryRun: options.dryRun,
-    onProgress: options.json
-      ? undefined
-      : (event) => {
+    days: normalizedOptions.days,
+    maxSessions: normalizedOptions.maxSessions,
+    agent: normalizedOptions.agent,
+    workspace: normalizedOptions.workspace,
+    session: normalizedOptions.session,
+    dryRun: normalizedOptions.dryRun,
+    onProgress: (event) => {
+      if (normalizedOptions.json) {
         if (event.phase === "discovery") {
-          console.log(chalk.dim(`Found ${event.totalSessions} new session(s) to process.`));
+          const total = event.totalSessions ?? 0;
+          progressRef.current = createProgress({
+            message: "Processing sessions...",
+            total,
+            showEta: true,
+            format: "json",
+            stream: process.stderr,
+          });
+          progressRef.current.update(0, `Found ${total} new session(s) to process.`);
+          if (total === 0) {
+            progressRef.current.complete("No new sessions to process");
+            progressRef.current = null;
+          }
           return;
         }
+
+        if (!progressRef.current) return;
+
         if (event.phase === "session_skip") {
-          console.log(chalk.dim(`• [${event.index}/${event.totalSessions}] skipped (${event.reason})`));
+          progressRef.current.update(event.index, `Skipped (${event.reason})`);
           return;
         }
         if (event.phase === "session_done") {
           const suffix = event.deltasGenerated > 0 ? ` (${event.deltasGenerated} deltas)` : "";
-          console.log(chalk.dim(`${icon("success")} [${event.index}/${event.totalSessions}] processed${suffix}`));
+          progressRef.current.update(event.index, `Processed${suffix}`);
           return;
         }
         if (event.phase === "session_error") {
-          console.error(chalk.yellow(`${iconPrefix("warning")}[${event.index}/${event.totalSessions}] ${event.error}`));
+          progressRef.current.update(event.index, `Error: ${event.error}`);
         }
-      },
+        return;
+      }
+
+      if (event.phase === "discovery") {
+        console.log(chalk.dim(`Found ${event.totalSessions} new session(s) to process.`));
+        return;
+      }
+      if (event.phase === "session_skip") {
+        console.log(chalk.dim(`• [${event.index}/${event.totalSessions}] skipped (${event.reason})`));
+        return;
+      }
+      if (event.phase === "session_done") {
+        const suffix = event.deltasGenerated > 0 ? ` (${event.deltasGenerated} deltas)` : "";
+        console.log(chalk.dim(`${icon("success")} [${event.index}/${event.totalSessions}] processed${suffix}`));
+        return;
+      }
+      if (event.phase === "session_error") {
+        console.error(chalk.yellow(`${iconPrefix("warning")}[${event.index}/${event.totalSessions}] ${event.error}`));
+      }
+    },
   });
 
-  if (result.errors.length > 0 && !options.json) {
+  if (result.errors.length > 0 && !normalizedOptions.json) {
     console.error(chalk.yellow.bold(`${iconPrefix("warning")}Errors (${result.errors.length})`));
     const shown = Math.min(5, result.errors.length);
     result.errors.slice(0, shown).forEach((e) => console.error(chalk.yellow(`- ${e}`)));
@@ -109,9 +229,14 @@ export async function reflectCommand(
     console.error("");
   }
 
-  if (options.dryRun) {
-    if (options.json) {
-      printJsonResult({ deltas: result.dryRunDeltas });
+  if (normalizedOptions.json && progressRef.current) {
+    progressRef.current.complete("Reflection complete");
+    progressRef.current = null;
+  }
+
+  if (normalizedOptions.dryRun) {
+    if (normalizedOptions.json) {
+      printJsonResult(command, { deltas: result.dryRunDeltas }, { startedAtMs });
     } else {
       const deltas = result.dryRunDeltas || [];
       const byType = summarizeDeltas(deltas);
@@ -170,12 +295,16 @@ export async function reflectCommand(
     return;
   }
 
-  if (options.json) {
-    printJsonResult({
-      global: result.globalResult,
-      repo: result.repoResult,
-      errors: result.errors
-    });
+  if (normalizedOptions.json) {
+    printJsonResult(
+      command,
+      {
+        global: result.globalResult,
+        repo: result.repoResult,
+        errors: result.errors,
+      },
+      { startedAtMs }
+    );
     return;
   }
 

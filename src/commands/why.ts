@@ -8,7 +8,7 @@ import { loadConfig } from "../config.js";
 import { findDiaryBySession, loadDiary, loadAllDiaries } from "../diary.js";
 import { loadMergedPlaybook, findBullet } from "../playbook.js";
 import { getEffectiveScore } from "../scoring.js";
-import { truncate, printJsonResult, printJsonError, expandPath, getCliName } from "../utils.js";
+import { truncate, printJsonResult, reportError, expandPath, getCliName } from "../utils.js";
 import { ErrorCode } from "../types.js";
 import { PlaybookBullet, DiaryEntry, Config } from "../types.js";
 import chalk from "chalk";
@@ -46,6 +46,7 @@ interface WhyResult {
     timestamp: string;
     sessionPath?: string;
     reason?: string;
+    context?: string;
   }>;
   currentStatus: {
     helpfulCount: number;
@@ -72,27 +73,70 @@ export async function whyCommand(
   bulletId: string,
   flags: WhyFlags = {}
 ): Promise<void> {
+  const startedAtMs = Date.now();
+  const command = "why";
   const config = await loadConfig();
   const playbook = await loadMergedPlaybook(config);
 
-  const bullet = findBullet(playbook, bulletId);
-  if (!bullet) {
-    if (flags.json) {
-      printJsonError(`Bullet not found: ${bulletId}`, {
-        code: ErrorCode.BULLET_NOT_FOUND,
-        details: { bulletId }
-      });
-    } else {
-      console.error(chalk.red(`Error: Bullet not found: ${bulletId}`));
-    }
-    process.exitCode = 1;
+  const needle = (bulletId || "").trim();
+  if (!needle) {
+    reportError("Bullet ID is required", {
+      code: ErrorCode.MISSING_REQUIRED,
+      details: { missing: "bulletId", usage: "cm why <bulletId>" },
+      json: flags.json,
+      command,
+      startedAtMs,
+    });
     return;
+  }
+
+  let bullet = findBullet(playbook, needle);
+  if (!bullet) {
+    const lower = needle.toLowerCase();
+    const scored = playbook.bullets
+      .map((b) => {
+        const idLower = b.id.toLowerCase();
+        const score =
+          idLower === lower ? 3 : idLower.startsWith(lower) ? 2 : idLower.includes(lower) ? 1 : 0;
+        return score > 0 ? { bullet: b, score } : null;
+      })
+      .filter((x): x is { bullet: PlaybookBullet; score: number } => x !== null);
+
+    if (scored.length === 0) {
+      reportError(`Bullet not found: ${needle}`, {
+        code: ErrorCode.BULLET_NOT_FOUND,
+        details: { bulletId: needle },
+        json: flags.json,
+        command,
+        startedAtMs,
+      });
+      return;
+    }
+
+    const bestScore = Math.max(...scored.map((c) => c.score));
+    const best = scored.filter((c) => c.score === bestScore).map((c) => c.bullet);
+
+    if (best.length === 1) {
+      bullet = best[0];
+    } else {
+      const ids = best.map((b) => b.id);
+      const sample = ids.slice(0, 8).join(", ");
+      reportError(`Ambiguous bullet id: ${needle}`, {
+        code: ErrorCode.INVALID_INPUT,
+        hint: `Matches: ${sample}${ids.length > 8 ? ` … (+${ids.length - 8} more)` : ""}`,
+        details: { bulletId: needle, matchCount: ids.length, matches: ids.slice(0, 50) },
+        json: flags.json,
+        command,
+        startedAtMs,
+      });
+      return;
+    }
   }
 
   const result = await buildWhyResult(bullet, config, flags.verbose);
 
   if (flags.json) {
-    printJsonResult({ ...result });
+    printJsonResult(command, result, { startedAtMs });
   } else {
     printWhyResult(result, flags.verbose);
   }
@@ -164,7 +208,8 @@ async function buildWhyResult(
       type: e.type,
       timestamp: e.timestamp,
       sessionPath: e.sessionPath,
-      reason: e.reason
+      reason: e.reason,
+      context: e.context
     }));
 
   // Extract evidence from bullet tags/reasoning
@@ -311,8 +356,20 @@ function printWhyResult(result: WhyResult, verbose?: boolean): void {
     for (const f of result.feedbackHistory.slice(0, verbose ? 10 : 5)) {
       const badge = f.type === "helpful" ? chalk.green(icon("success")) : chalk.red(icon("failure"));
       const session = f.sessionPath ? ` • ${path.basename(f.sessionPath)}` : "";
-      const reason = f.type === "harmful" && f.reason ? ` • ${f.reason}` : "";
-      console.log(`  ${f.timestamp.slice(0, 10)} ${badge} ${f.type}${session}${reason}`);
+      const detail =
+        f.type === "harmful"
+          ? f.reason && f.context
+            ? `${f.reason}: ${truncate(f.context, 80)}`
+            : f.reason
+              ? f.reason
+              : f.context
+                ? truncate(f.context, 80)
+                : ""
+          : f.context
+            ? truncate(f.context, 80)
+            : "";
+      const suffix = detail ? ` • ${detail}` : "";
+      console.log(`  ${f.timestamp.slice(0, 10)} ${badge} ${f.type}${session}${suffix}`);
     }
     if (result.feedbackHistory.length > (verbose ? 10 : 5)) {
       console.log(chalk.dim(`  … (${result.feedbackHistory.length - (verbose ? 10 : 5)} more)`));

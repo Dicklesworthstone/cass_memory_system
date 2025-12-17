@@ -7,7 +7,16 @@
 import { loadConfig } from "../config.js";
 import { loadMergedPlaybook, getActiveBullets } from "../playbook.js";
 import { getEffectiveScore } from "../scoring.js";
-import { formatLastHelpful, getCliName, printJsonResult } from "../utils.js";
+import {
+  formatLastHelpful,
+  getCliName,
+  printJsonResult,
+  reportError,
+  validateNonEmptyString,
+  validateOneOf,
+  validatePositiveInt,
+} from "../utils.js";
+import { ErrorCode } from "../types.js";
 import chalk from "chalk";
 import { formatMaturityIcon, formatRule, formatTipPrefix, getOutputStyle, wrapText } from "../output.js";
 
@@ -33,17 +42,70 @@ export async function topCommand(
   count: number = 10,
   flags: TopFlags = {}
 ): Promise<void> {
+  const startedAtMs = Date.now();
+  const command = "top";
+  const cli = getCliName();
+
+  const countCheck = validatePositiveInt(count, "count", { min: 1 });
+  if (!countCheck.ok) {
+    reportError(countCheck.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: countCheck.details,
+      hint: `Usage: ${cli} top [count] [--scope global|workspace|all] [--category <name>] [--json]`,
+      json: flags.json,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+  const validatedCount = countCheck.value;
+
+  const scopeCheck = validateOneOf(flags.scope, "scope", ["global", "workspace", "all"] as const, {
+    allowUndefined: true,
+    caseInsensitive: true,
+  });
+  if (!scopeCheck.ok) {
+    reportError(scopeCheck.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: scopeCheck.details,
+      hint: `Valid scopes: global, workspace, all`,
+      json: flags.json,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+
+  const categoryCheck = validateNonEmptyString(flags.category, "category", { allowUndefined: true });
+  if (!categoryCheck.ok) {
+    reportError(categoryCheck.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: categoryCheck.details,
+      hint: `Example: ${cli} top 10 --category security --json`,
+      json: flags.json,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+
+  const normalizedFlags: TopFlags = {
+    ...flags,
+    ...(scopeCheck.value !== undefined ? { scope: scopeCheck.value } : {}),
+    ...(categoryCheck.value !== undefined ? { category: categoryCheck.value } : {}),
+  };
+
   const config = await loadConfig();
   const playbook = await loadMergedPlaybook(config);
 
   let bullets = getActiveBullets(playbook);
 
   // Apply filters
-  if (flags.scope && flags.scope !== "all") {
-    bullets = bullets.filter(b => b.scope === flags.scope);
+  if (normalizedFlags.scope && normalizedFlags.scope !== "all") {
+    bullets = bullets.filter(b => b.scope === normalizedFlags.scope);
   }
-  if (flags.category) {
-    const cat = flags.category.toLowerCase();
+  if (normalizedFlags.category) {
+    const cat = normalizedFlags.category.toLowerCase();
     bullets = bullets.filter(b => b.category?.toLowerCase() === cat);
   }
 
@@ -57,7 +119,7 @@ export async function topCommand(
   scored.sort((a, b) => b.score - a.score);
 
   // Take top N
-  const topN = scored.slice(0, count);
+  const topN = scored.slice(0, validatedCount);
 
   // Format output
   const ranked: RankedBullet[] = topN.map((s, i) => ({
@@ -76,20 +138,19 @@ export async function topCommand(
   }));
 
   if (flags.json) {
-    printJsonResult({
-      timestamp: new Date().toISOString(),
+    printJsonResult(command, {
       count: ranked.length,
       filters: {
-        scope: flags.scope || "all",
-        category: flags.category || null
+        scope: normalizedFlags.scope || "all",
+        category: normalizedFlags.category || null
       },
       bullets: ranked
-    });
+    }, { startedAtMs });
     return;
   }
 
   // Human-readable output
-  printTopBullets(ranked, flags);
+  printTopBullets(ranked, normalizedFlags);
 }
 
 function printTopBullets(bullets: RankedBullet[], flags: TopFlags): void {

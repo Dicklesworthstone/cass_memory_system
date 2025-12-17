@@ -1,7 +1,7 @@
 import { loadConfig } from "../config.js";
 import { loadPlaybook, savePlaybook, findBullet, addBullet, deprecateBullet, appendBlockedLog } from "../playbook.js";
 import path from "node:path";
-import { fileExists, now, error as logError, resolveRepoDir, expandPath, printJsonResult, printJsonError } from "../utils.js";
+import { fileExists, now, resolveRepoDir, expandPath, printJsonResult, reportError } from "../utils.js";
 import { ErrorCode } from "../types.js";
 import { withLock } from "../lock.js";
 import chalk from "chalk";
@@ -11,16 +11,16 @@ export async function forgetCommand(
   bulletId: string, 
   flags: { reason?: string; invert?: boolean; json?: boolean }
 ) {
+  const startedAtMs = Date.now();
+  const command = "forget";
   if (!flags.reason) {
-    if (flags.json) {
-      printJsonError("Reason required for forget", {
-        code: ErrorCode.MISSING_REQUIRED,
-        details: { missing: "reason", usage: "cm forget <bulletId> --reason <reason>" }
-      });
-    } else {
-      logError("Reason required for forget");
-    }
-    process.exitCode = 1;
+    reportError("Reason required for forget", {
+      code: ErrorCode.MISSING_REQUIRED,
+      details: { missing: "reason", usage: "cm forget <bulletId> --reason <reason>" },
+      json: flags.json,
+      command,
+      startedAtMs,
+    });
     return;
   }
 
@@ -40,8 +40,16 @@ export async function forgetCommand(
       if (findBullet(repoPlaybook, bulletId)) {
         savePath = repoPath;
       }
-    } catch {
-      // Ignore
+    } catch (err: any) {
+      const message = err?.message || String(err);
+      reportError(err instanceof Error ? err : message, {
+        code: ErrorCode.PLAYBOOK_CORRUPT,
+        details: { path: repoPath },
+        json: flags.json,
+        command,
+        startedAtMs,
+      });
+      return;
     }
   }
 
@@ -86,12 +94,16 @@ export async function forgetCommand(
       await savePlaybook(playbook, savePath);
 
       if (flags.json) {
-        printJsonResult({
-          bulletId,
-          action: "forgotten",
-          inverted: !!antiPatternId,
-          antiPatternId
-        });
+        printJsonResult(
+          command,
+          {
+            bulletId,
+            action: "forgotten",
+            inverted: !!antiPatternId,
+            antiPatternId,
+          },
+          { startedAtMs }
+        );
       } else {
         console.log(chalk.green(`${icon("success")} Forgot bullet ${bulletId}`));
         if (antiPatternId) {
@@ -101,12 +113,7 @@ export async function forgetCommand(
     });
   } catch (err: any) {
     const message = err?.message || String(err);
-    if (flags.json) {
-      const code = message.includes("not found") ? ErrorCode.BULLET_NOT_FOUND : ErrorCode.INTERNAL_ERROR;
-      printJsonError(message, { code, details: { bulletId } });
-    } else {
-      logError(message);
-    }
-    process.exitCode = 1;
+    const code = message.includes("not found") ? ErrorCode.BULLET_NOT_FOUND : ErrorCode.INTERNAL_ERROR;
+    reportError(err instanceof Error ? err : message, { code, details: { bulletId }, json: flags.json, command, startedAtMs });
   }
 }

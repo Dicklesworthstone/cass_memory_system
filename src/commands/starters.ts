@@ -7,10 +7,12 @@ export interface StartersOptions {
 }
 
 export async function startersCommand(options: StartersOptions = {}) {
+  const startedAtMs = Date.now();
+  const command = "starters";
   const starters = await listStarters();
 
   if (options.json) {
-    printJsonResult({ starters });
+    printJsonResult(command, { starters }, { startedAtMs });
     return;
   }
 

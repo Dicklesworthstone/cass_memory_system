@@ -23,6 +23,8 @@ export async function validateCommand(
   proposedRule: string,
   options: ValidateOptions = {}
 ): Promise<void> {
+  const startedAtMs = Date.now();
+  const command = "validate";
   if (!proposedRule || proposedRule.trim().length === 0) {
     throw new Error("Proposed rule text is required");
   }
@@ -49,7 +51,7 @@ export async function validateCommand(
       reason: gate.reason,
       evidence: []
     };
-    return printResult(output, options);
+    return printResult(output, options, { command, startedAtMs });
   }
 
   // Strong success -> auto accept
@@ -61,7 +63,7 @@ export async function validateCommand(
       reason: gate.reason,
       evidence: []
     };
-    return printResult(output, options);
+    return printResult(output, options, { command, startedAtMs });
   }
 
   // Step 2: Ambiguous -> gather evidence and run LLM validator
@@ -98,7 +100,7 @@ export async function validateCommand(
     evidence: evidenceFromHits(hits)
   };
 
-  return printResult(output, options);
+  return printResult(output, options, { command, startedAtMs });
 }
 
 function classifyOutcome(snippet: string): string {
@@ -123,9 +125,13 @@ function classifyOutcome(snippet: string): string {
   return "unknown";
 }
 
-function printResult(result: ValidationOutput, options: ValidateOptions) {
+function printResult(
+  result: ValidationOutput,
+  options: ValidateOptions,
+  meta: { command: string; startedAtMs: number }
+) {
   if (options.json) {
-    printJsonResult({ ...result });
+    printJsonResult(meta.command, result, { startedAtMs: meta.startedAtMs });
     return;
   }
 

@@ -4,19 +4,20 @@ import { generateContextResult } from "./context.js";
 import { recordFeedback } from "./mark.js";
 import { recordOutcome, loadOutcomes } from "../outcome.js";
 import { loadConfig } from "../config.js";
-import { log, warn, error as logError } from "../utils.js";
-import { loadMergedPlaybook, loadPlaybook, savePlaybook, getActiveBullets } from "../playbook.js";
-import { loadAllDiaries, generateDiary } from "../diary.js";
-import { safeCassSearch, findUnprocessedSessions } from "../cass.js";
-import { reflectOnSession } from "../reflect.js";
-import { validateDelta } from "../validate.js";
-import { curatePlaybook } from "../curate.js";
-import { ProcessedLog, getProcessedLogPath } from "../tracking.js";
-import { expandPath, now, fileExists } from "../utils.js";
-import { withLock } from "../lock.js";
+import { loadMergedPlaybook, getActiveBullets } from "../playbook.js";
+import { loadAllDiaries } from "../diary.js";
+import { safeCassSearch } from "../cass.js";
+import {
+  log,
+  warn,
+  error as logError,
+  reportError,
+  validateNonEmptyString,
+  validateOneOf,
+  validatePositiveInt,
+} from "../utils.js";
 import { analyzeScoreDistribution, getEffectiveScore, isStale } from "../scoring.js";
-import { jaccardSimilarity } from "../utils.js";
-import type { PlaybookDelta, PlaybookBullet } from "../types.js";
+import { ErrorCode, type PlaybookBullet } from "../types.js";
 
 // Simple per-tool argument validation helper to reduce drift.
 function assertArgs(args: any, required: Record<string, string>) {
@@ -214,11 +215,20 @@ async function handleToolCall(name: string, args: any): Promise<any> {
   switch (name) {
     case "cm_context": {
       assertArgs(args, { task: "string" });
+      const top = validatePositiveInt(args?.top, "top", { min: 1, allowUndefined: true });
+      if (!top.ok) throw new Error(top.message);
+      const history = validatePositiveInt(args?.history, "history", { min: 1, allowUndefined: true });
+      if (!history.ok) throw new Error(history.message);
+      const days = validatePositiveInt(args?.days, "days", { min: 1, allowUndefined: true });
+      if (!days.ok) throw new Error(days.message);
+      const workspace = validateNonEmptyString(args?.workspace, "workspace", { allowUndefined: true });
+      if (!workspace.ok) throw new Error(workspace.message);
+
       const context = await generateContextResult(args.task, {
-        top: args?.top,
-        history: args?.history,
-        days: args?.days,
-        workspace: args?.workspace,
+        top: top.value,
+        history: history.value,
+        days: days.value,
+        workspace: workspace.value,
         json: true
       });
       return context.result;
@@ -230,11 +240,15 @@ async function handleToolCall(name: string, args: any): Promise<any> {
       if (!helpful && !harmful) {
         throw new Error("cm_feedback requires helpful or harmful to be set");
       }
+      const reason = validateNonEmptyString(args?.reason, "reason", { allowUndefined: true, trim: false });
+      if (!reason.ok) throw new Error(reason.message);
+      const session = validateNonEmptyString(args?.session, "session", { allowUndefined: true });
+      if (!session.ok) throw new Error(session.message);
       const result = await recordFeedback(args.bulletId, {
         helpful,
         harmful,
-        reason: args?.reason,
-        session: args?.session
+        reason: reason.value,
+        session: session.value
       });
       return { success: true, ...result };
     }
@@ -243,27 +257,52 @@ async function handleToolCall(name: string, args: any): Promise<any> {
       if (!["success", "failure", "mixed", "partial"].includes(args.outcome)) {
         throw new Error("outcome must be success | failure | mixed | partial");
       }
+      const rulesUsed =
+        Array.isArray(args?.rulesUsed)
+          ? args.rulesUsed
+              .filter((r: unknown): r is string => typeof r === "string" && r.trim().length > 0)
+              .map((r: string) => r.trim())
+          : undefined;
+      const durationSec = validatePositiveInt(args?.durationSec, "durationSec", { min: 0, allowUndefined: true });
+      if (!durationSec.ok) throw new Error(durationSec.message);
       const config = await loadConfig();
       return recordOutcome({
         sessionId: args?.sessionId,
         outcome: args.outcome,
-        rulesUsed: Array.isArray(args?.rulesUsed) ? args.rulesUsed : undefined,
+        rulesUsed,
         notes: typeof args?.notes === "string" ? args.notes : undefined,
         task: typeof args?.task === "string" ? args.task : undefined,
-        durationSec: typeof args?.durationSec === "number" ? args.durationSec : undefined
+        durationSec: durationSec.value
       }, config);
     }
     case "memory_search": {
       assertArgs(args, { query: "string" });
-      const scope: "playbook" | "cass" | "both" = args.scope || "both";
-      const limit = typeof args?.limit === "number" ? args.limit : 10;
-      const days = typeof args?.days === "number" ? args.days : undefined;
-      const agent = typeof args?.agent === "string" ? args.agent : undefined;
-      const workspace = typeof args?.workspace === "string" ? args.workspace : undefined;
+      const scopeCheck = validateOneOf(args.scope, "scope", ["playbook", "cass", "both"] as const, {
+        allowUndefined: true,
+        caseInsensitive: true,
+      });
+      if (!scopeCheck.ok) throw new Error(scopeCheck.message);
+      const scope: "playbook" | "cass" | "both" = scopeCheck.value ?? "both";
+
+      const limitCheck = validatePositiveInt(args?.limit, "limit", { min: 1, max: 100, allowUndefined: true });
+      if (!limitCheck.ok) throw new Error(limitCheck.message);
+      const limit = limitCheck.value ?? 10;
+
+      const daysCheck = validatePositiveInt(args?.days, "days", { min: 1, allowUndefined: true });
+      if (!daysCheck.ok) throw new Error(daysCheck.message);
+      const days = daysCheck.value;
+
+      const agentCheck = validateNonEmptyString(args?.agent, "agent", { allowUndefined: true });
+      if (!agentCheck.ok) throw new Error(agentCheck.message);
+      const agent = agentCheck.value;
+
+      const workspaceCheck = validateNonEmptyString(args?.workspace, "workspace", { allowUndefined: true });
+      if (!workspaceCheck.ok) throw new Error(workspaceCheck.message);
+      const workspace = workspaceCheck.value;
       const config = await loadConfig();
 
       const result: { playbook?: any[]; cass?: any[] } = {};
-      const q = args.query.toLowerCase();
+      const q = args.query.trim().toLowerCase();
 
       if (scope === "playbook" || scope === "both") {
         const t0 = performance.now();
@@ -304,11 +343,19 @@ async function handleToolCall(name: string, args: any): Promise<any> {
       const t0 = performance.now();
       const config = await loadConfig();
 
-      const days = typeof args?.days === "number" ? args.days : 7;
-      const maxSessions = typeof args?.maxSessions === "number" ? args.maxSessions : 20;
+      const daysCheck = validatePositiveInt(args?.days, "days", { min: 1, allowUndefined: true });
+      if (!daysCheck.ok) throw new Error(daysCheck.message);
+      const maxSessionsCheck = validatePositiveInt(args?.maxSessions, "maxSessions", { min: 1, max: 200, allowUndefined: true });
+      if (!maxSessionsCheck.ok) throw new Error(maxSessionsCheck.message);
+      const days = daysCheck.value ?? 7;
+      const maxSessions = maxSessionsCheck.value ?? 20;
       const dryRun = Boolean(args?.dryRun);
-      const workspace = typeof args?.workspace === "string" ? args.workspace : undefined;
-      const session = typeof args?.session === "string" ? args.session : undefined;
+      const workspaceCheck = validateNonEmptyString(args?.workspace, "workspace", { allowUndefined: true });
+      if (!workspaceCheck.ok) throw new Error(workspaceCheck.message);
+      const sessionCheck = validateNonEmptyString(args?.session, "session", { allowUndefined: true });
+      if (!sessionCheck.ok) throw new Error(sessionCheck.message);
+      const workspace = workspaceCheck.value;
+      const session = sessionCheck.value;
 
       // Delegate to orchestrator
       const outcome = await import("../orchestrator.js").then(m => m.orchestrateReflection(config, {
@@ -347,7 +394,7 @@ async function handleToolCall(name: string, args: any): Promise<any> {
 
       const applied = (outcome.globalResult?.applied || 0) + (outcome.repoResult?.applied || 0);
       const skipped = (outcome.globalResult?.skipped || 0) + (outcome.repoResult?.skipped || 0);
-      const inversions = (outcome.globalResult?.inversions.length || 0) + (outcome.repoResult?.inversions.length || 0);
+      const inversions = (outcome.globalResult?.inversions?.length || 0) + (outcome.repoResult?.inversions?.length || 0);
 
       maybeProfile("memory_reflect", t0);
 
@@ -436,9 +483,62 @@ async function routeRequest(body: JsonRpcRequest): Promise<JsonRpcResponse> {
 }
 
 export async function serveCommand(options: { port?: number; host?: string } = {}): Promise<void> {
-  const port = options.port || Number(process.env.MCP_HTTP_PORT) || 8765;
+  const startedAtMs = Date.now();
+  const command = "serve";
+
+  const portFromArgs = validatePositiveInt(options.port, "port", { min: 1, max: 65535, allowUndefined: true });
+  if (!portFromArgs.ok) {
+    reportError(portFromArgs.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: portFromArgs.details,
+      hint: `Example: cm serve --port 8765`,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+
+  const portFromEnv = validatePositiveInt(process.env.MCP_HTTP_PORT, "MCP_HTTP_PORT", {
+    min: 1,
+    max: 65535,
+    allowUndefined: true,
+  });
+  if (!portFromEnv.ok) {
+    reportError(portFromEnv.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: portFromEnv.details,
+      hint: `Unset MCP_HTTP_PORT or set it to an integer 1-65535`,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+
+  const port = portFromArgs.value ?? portFromEnv.value ?? 8765;
   // Default strictly to localhost loopback for security
-  const host = options.host || process.env.MCP_HTTP_HOST || "127.0.0.1";
+  const hostFromArgs = validateNonEmptyString(options.host, "host", { allowUndefined: true });
+  if (!hostFromArgs.ok) {
+    reportError(hostFromArgs.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: hostFromArgs.details,
+      hint: `Example: cm serve --host 127.0.0.1 --port ${port}`,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+  const hostFromEnv = validateNonEmptyString(process.env.MCP_HTTP_HOST, "MCP_HTTP_HOST", { allowUndefined: true });
+  if (!hostFromEnv.ok) {
+    reportError(hostFromEnv.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: hostFromEnv.details,
+      hint: `Unset MCP_HTTP_HOST or set it to a valid hostname/IP`,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+  const host = hostFromArgs.value ?? hostFromEnv.value ?? "127.0.0.1";
 
   if (host === "0.0.0.0" && process.env.NODE_ENV !== "development") {
     warn("Warning: Binding to 0.0.0.0 exposes the server to the network. Ensure this is intended.");
@@ -451,22 +551,28 @@ export async function serveCommand(options: { port?: number; host?: string } = {
       return;
     }
 
-    let raw = "";
+    const chunks: Buffer[] = [];
+    let totalBytes = 0;
     let aborted = false;
     req.on("data", (chunk) => {
       if (aborted) return;
-      raw += chunk.toString();
-      if (raw.length > MAX_BODY_BYTES) {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+      totalBytes += buf.length;
+      if (totalBytes > MAX_BODY_BYTES) {
         aborted = true;
         res.statusCode = 413;
+        res.setHeader("content-type", "application/json");
         res.end(JSON.stringify(buildError(null, "Payload too large", -32600)));
         req.destroy();
+        return;
       }
+      chunks.push(buf);
     });
 
     req.on("end", async () => {
       if (aborted) return;
       try {
+        const raw = Buffer.concat(chunks).toString("utf-8");
         const parsed = JSON.parse(raw) as JsonRpcRequest;
         const response = await routeRequest(parsed);
         res.setHeader("content-type", "application/json");
@@ -475,6 +581,7 @@ export async function serveCommand(options: { port?: number; host?: string } = {
       } catch (err: any) {
         logError(err?.message || "Failed to process request");
         res.statusCode = 400;
+        res.setHeader("content-type", "application/json");
         res.end(JSON.stringify(buildError(null, "Bad request", -32700)));
       }
     });

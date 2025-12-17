@@ -1,6 +1,6 @@
 import { loadConfig, DEFAULT_CONFIG } from "../config.js";
 import { cassAvailable, cassStats, cassSearch, safeCassSearch } from "../cass.js";
-import { error as logError, fileExists, resolveRepoDir, resolveGlobalDir, expandPath, getCliName, getVersion, checkAbort, isPermissionError, handlePermissionError, printJsonResult, printJsonError, atomicWrite } from "../utils.js";
+import { error as logError, fileExists, resolveRepoDir, resolveGlobalDir, expandPath, getCliName, getVersion, checkAbort, isPermissionError, handlePermissionError, printJsonResult, reportError, atomicWrite } from "../utils.js";
 import { isLLMAvailable, getAvailableProviders, validateApiKey } from "../llm.js";
 import { SECRET_PATTERNS, compileExtraPatterns } from "../sanitize.js";
 import { loadPlaybook, savePlaybook, createEmptyPlaybook } from "../playbook.js";
@@ -10,6 +10,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import readline from "node:readline";
 import { formatCheckStatusBadge, formatSafetyBadge, icon, iconPrefix } from "../output.js";
+import { createProgress, type ProgressReporter } from "../progress.js";
 
 type CheckStatus = "pass" | "warn" | "fail";
 type OverallStatus = "healthy" | "degraded" | "unhealthy";
@@ -99,6 +100,17 @@ async function validateJsonFile(filePath: string): Promise<JsonFileValidation> {
     return { valid: true };
   } catch (err: any) {
     return { valid: false, error: err?.message || String(err) };
+  }
+}
+
+async function getPlaybookSchemaVersion(
+  playbookPath: string
+): Promise<{ version: number | null; error?: string }> {
+  try {
+    const playbook = await loadPlaybook(playbookPath);
+    return { version: playbook.schema_version };
+  } catch (err: any) {
+    return { version: null, error: err?.message || String(err) };
   }
 }
 
@@ -319,6 +331,37 @@ async function computeDoctorChecks(
     }
   }
 
+  // 2.6) Global playbook schema version
+  if (globalPlaybookExists) {
+    const globalPlaybookPath = path.join(globalDir, "playbook.yaml");
+    const schema = await getPlaybookSchemaVersion(globalPlaybookPath);
+    if (typeof schema.error === "string") {
+      checks.push({
+        category: "Playbook",
+        item: "Global playbook.yaml",
+        status: "fail",
+        message: `Playbook is invalid: ${schema.error}`,
+        details: { path: globalPlaybookPath },
+      });
+    } else if ((schema.version ?? 2) < 2) {
+      checks.push({
+        category: "Playbook",
+        item: "Global playbook.yaml",
+        status: "warn",
+        message: `Outdated schema_version=${schema.version}. Run \`${getCliName()} doctor --fix\` to migrate.`,
+        details: { path: globalPlaybookPath, schemaVersion: schema.version },
+      });
+    } else {
+      checks.push({
+        category: "Playbook",
+        item: "Global playbook.yaml",
+        status: "pass",
+        message: `Schema version ${schema.version}`,
+        details: { path: globalPlaybookPath, schemaVersion: schema.version },
+      });
+    }
+  }
+
   // 3) LLM config (optional - system works without it via graceful degradation)
   const availableProviders = getAvailableProviders();
   const hasAnyApiKey = availableProviders.length > 0 || !!config.apiKey;
@@ -382,6 +425,36 @@ async function computeDoctorChecks(
         blockedLogExists: repoBlockedExists,
       },
     });
+
+    if (repoPlaybookExists) {
+      const repoPlaybookPath = path.join(cassDir, "playbook.yaml");
+      const schema = await getPlaybookSchemaVersion(repoPlaybookPath);
+      if (typeof schema.error === "string") {
+        checks.push({
+          category: "Playbook",
+          item: "Repo .cass/playbook.yaml",
+          status: "fail",
+          message: `Playbook is invalid: ${schema.error}`,
+          details: { path: repoPlaybookPath },
+        });
+      } else if ((schema.version ?? 2) < 2) {
+        checks.push({
+          category: "Playbook",
+          item: "Repo .cass/playbook.yaml",
+          status: "warn",
+          message: `Outdated schema_version=${schema.version}. Run \`${getCliName()} doctor --fix\` to migrate.`,
+          details: { path: repoPlaybookPath, schemaVersion: schema.version },
+        });
+      } else {
+        checks.push({
+          category: "Playbook",
+          item: "Repo .cass/playbook.yaml",
+          status: "pass",
+          message: `Schema version ${schema.version}`,
+          details: { path: repoPlaybookPath, schemaVersion: schema.version },
+        });
+      }
+    }
   } else {
     checks.push({
       category: "Repo .cass/ Structure",
@@ -471,10 +544,25 @@ function testPatternBreadth(
  * Run end-to-end smoke tests of core functionality.
  * Returns an array of HealthCheck results for integration into doctor command.
  */
-export async function runSelfTest(config: Config): Promise<HealthCheck[]> {
+export async function runSelfTest(
+  config: Config,
+  options: { onProgress?: (event: { current: number; total: number; message: string }) => void } = {}
+): Promise<HealthCheck[]> {
   const checks: HealthCheck[] = [];
+  const totalSteps = 5;
+  let currentStep = 0;
+  const step = (message: string) => {
+    currentStep = Math.min(totalSteps, currentStep + 1);
+    if (typeof options.onProgress !== "function") return;
+    try {
+      options.onProgress({ current: currentStep, total: totalSteps, message });
+    } catch {
+      // Best-effort progress only
+    }
+  };
 
   // 1. PLAYBOOK LOAD PERFORMANCE
+  step("Self-test: Playbook load...");
   const playbookPath = expandPath(config.playbookPath);
   try {
     const start = Date.now();
@@ -510,6 +598,7 @@ export async function runSelfTest(config: Config): Promise<HealthCheck[]> {
   }
 
   // 2. CASS SEARCH LATENCY
+  step("Self-test: Cass search...");
   const cassOk = cassAvailable(config.cassPath);
   if (cassOk) {
     const start = Date.now();
@@ -563,6 +652,7 @@ export async function runSelfTest(config: Config): Promise<HealthCheck[]> {
   }
 
   // 3. SANITIZATION PATTERN BREADTH
+  step("Self-test: Sanitization...");
   const patternCount = SECRET_PATTERNS.length;
   const extraPatterns = config.sanitization?.extraPatterns || [];
   const compiledExtra = compileExtraPatterns(extraPatterns);
@@ -595,6 +685,7 @@ export async function runSelfTest(config: Config): Promise<HealthCheck[]> {
   }
 
   // 4. CONFIG VALIDATION
+  step("Self-test: Config validation...");
   const configIssues: string[] = [];
 
   // Check for deprecated options
@@ -643,6 +734,7 @@ export async function runSelfTest(config: Config): Promise<HealthCheck[]> {
   }
 
   // 5. LLM/EMBEDDING SYSTEM
+  step("Self-test: LLM system...");
   // Check both environment variables AND config.apiKey for consistency with computeDoctorChecks()
   const availableProviders = getAvailableProviders();
   const currentProvider = config.provider;
@@ -768,6 +860,30 @@ function createMissingPlaybookFix(playbookPath: string): FixableIssue {
   };
 }
 
+function createPlaybookSchemaMigrationFix(playbookPath: string, scope: "global" | "repo"): FixableIssue {
+  return {
+    id: `migrate-playbook-schema-${scope}`,
+    description: `Migrate ${scope} playbook schema to v2: ${playbookPath}`,
+    category: "storage",
+    severity: "warn",
+    safety: "safe",
+    fix: async () => {
+      const expanded = expandPath(playbookPath);
+      const backupPath = `${expanded}.backup.${Date.now()}`;
+      try {
+        await fs.copyFile(expanded, backupPath);
+      } catch {
+        // Best-effort backup
+      }
+
+      const playbook = await loadPlaybook(expanded);
+      if ((playbook.schema_version ?? 2) >= 2) return;
+      playbook.schema_version = 2;
+      await savePlaybook(playbook, expanded);
+    },
+  };
+}
+
 /**
  * Create fix for missing diary directory.
  */
@@ -876,6 +992,12 @@ export async function detectFixableIssues(options: { configLoadError?: unknown }
   if (globalDirExists && !globalPlaybookExists) {
     issues.push(createMissingPlaybookFix(globalPlaybookPath));
   }
+  if (globalDirExists && globalPlaybookExists) {
+    const schema = await getPlaybookSchemaVersion(globalPlaybookPath);
+    if ((schema.version ?? 2) < 2) {
+      issues.push(createPlaybookSchemaMigrationFix(globalPlaybookPath, "global"));
+    }
+  }
 
   // Check global diary directory
   const globalDiaryDir = path.join(globalDir, "diary");
@@ -896,6 +1018,11 @@ export async function detectFixableIssues(options: { configLoadError?: unknown }
       const repoPlaybookExists = await fileExists(repoPlaybookPath);
       if (!repoPlaybookExists) {
         issues.push(createMissingPlaybookFix(repoPlaybookPath));
+      } else {
+        const schema = await getPlaybookSchemaVersion(repoPlaybookPath);
+        if ((schema.version ?? 2) < 2) {
+          issues.push(createPlaybookSchemaMigrationFix(repoPlaybookPath, "repo"));
+        }
       }
 
       // Check for blocked.log
@@ -1075,6 +1202,8 @@ export async function doctorCommand(options: {
   interactive?: boolean;
   selfTest?: boolean;
 }): Promise<void> {
+  const startedAtMs = Date.now();
+  const command = "doctor";
   try {
     let config: Config = DEFAULT_CONFIG;
     let configLoadError: unknown | undefined;
@@ -1155,9 +1284,25 @@ export async function doctorCommand(options: {
         payload.fixResults = fixResults;
       }
       if (selfTest) {
-        payload.selfTest = await runSelfTest(config);
+        const selfTestProgressRef: { current: ProgressReporter | null } = { current: null };
+        const selfTests = await runSelfTest(config, {
+          onProgress: (event) => {
+            if (!selfTestProgressRef.current) {
+              selfTestProgressRef.current = createProgress({
+                message: event.message,
+                total: event.total,
+                showEta: true,
+                format: "json",
+                stream: process.stderr,
+              });
+            }
+            selfTestProgressRef.current.update(event.current, event.message);
+          },
+        });
+        selfTestProgressRef.current?.complete("Self-test complete");
+        payload.selfTest = selfTests;
       }
-      printJsonResult(payload);
+      printJsonResult(command, payload, { startedAtMs });
       return;
     }
 
@@ -1224,17 +1369,27 @@ export async function doctorCommand(options: {
     // 6) Run Self-Test (End-to-End Smoke Tests)
     if (selfTest) {
       console.log(chalk.bold(`\n${iconPrefix("test")}Running Self-Test...\n`));
-      const selfTests = await runSelfTest(config);
+      const selfTestProgressRef: { current: ProgressReporter | null } = { current: null };
+      const selfTests = await runSelfTest(config, {
+        onProgress: (event) => {
+          if (!selfTestProgressRef.current) {
+            selfTestProgressRef.current = createProgress({
+              message: event.message,
+              total: event.total,
+              showEta: true,
+              format: "text",
+              stream: process.stderr,
+            });
+          }
+          selfTestProgressRef.current.update(event.current, event.message);
+        },
+      });
+      selfTestProgressRef.current?.complete("Self-test complete");
       for (const test of selfTests) {
         console.log(`${formatCheckStatusBadge(test.status)} ${test.item}: ${test.message}`);
       }
     }
   } catch (err) {
-    if (options.json) {
-      printJsonError(err);
-    } else {
-      logError(err instanceof Error ? err.message : String(err));
-    }
-    process.exitCode = 1;
+    reportError(err instanceof Error ? err : String(err), { json: options.json, command, startedAtMs });
   }
 }

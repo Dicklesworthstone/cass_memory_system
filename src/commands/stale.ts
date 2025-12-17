@@ -7,8 +7,8 @@
 import { loadConfig } from "../config.js";
 import { loadMergedPlaybook, getActiveBullets } from "../playbook.js";
 import { getEffectiveScore } from "../scoring.js";
-import { getCliName, printJsonResult } from "../utils.js";
-import { PlaybookBullet } from "../types.js";
+import { getCliName, printJsonResult, reportError, validateOneOf, validatePositiveInt } from "../utils.js";
+import { ErrorCode, PlaybookBullet } from "../types.js";
 import chalk from "chalk";
 import { formatRule, formatTipPrefix, getOutputStyle, wrapText } from "../output.js";
 
@@ -104,16 +104,53 @@ function getRecommendation(
 export async function staleCommand(
   flags: StaleFlags = {}
 ): Promise<void> {
-  const threshold = flags.days ?? 90;
+  const startedAtMs = Date.now();
+  const command = "stale";
   const cli = getCliName();
+
+  const daysCheck = validatePositiveInt(flags.days, "days", { min: 0, allowUndefined: true });
+  if (!daysCheck.ok) {
+    reportError(daysCheck.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: daysCheck.details,
+      hint: `Example: ${cli} stale --days 90 --json`,
+      json: flags.json,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+
+  const scopeCheck = validateOneOf(flags.scope, "scope", ["global", "workspace", "all"] as const, {
+    allowUndefined: true,
+    caseInsensitive: true,
+  });
+  if (!scopeCheck.ok) {
+    reportError(scopeCheck.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: scopeCheck.details,
+      hint: `Valid scopes: global, workspace, all`,
+      json: flags.json,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+
+  const normalizedFlags: StaleFlags = {
+    ...flags,
+    ...(scopeCheck.value !== undefined ? { scope: scopeCheck.value } : {}),
+  };
+
+  const threshold = daysCheck.value ?? 90;
   const config = await loadConfig();
   const playbook = await loadMergedPlaybook(config);
 
   let bullets = getActiveBullets(playbook);
 
   // Apply scope filter
-  if (flags.scope && flags.scope !== "all") {
-    bullets = bullets.filter(b => b.scope === flags.scope);
+  if (normalizedFlags.scope && normalizedFlags.scope !== "all") {
+    bullets = bullets.filter(b => b.scope === normalizedFlags.scope);
   }
 
   // Calculate staleness for each bullet
@@ -145,21 +182,20 @@ export async function staleCommand(
   staleBullets.sort((a, b) => b.daysSinceLastFeedback - a.daysSinceLastFeedback);
 
   if (flags.json) {
-    printJsonResult({
-      timestamp: new Date().toISOString(),
+    printJsonResult(command, {
       threshold,
       count: staleBullets.length,
       totalActive: bullets.length,
       filters: {
-        scope: flags.scope || "all"
+        scope: normalizedFlags.scope || "all"
       },
       bullets: staleBullets
-    });
+    }, { startedAtMs });
     return;
   }
 
   // Human-readable output
-  printStaleBullets(staleBullets, threshold, bullets.length, flags, cli);
+  printStaleBullets(staleBullets, threshold, bullets.length, normalizedFlags, cli);
 }
 
 function printStaleBullets(
