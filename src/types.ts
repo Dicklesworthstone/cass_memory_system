@@ -179,6 +179,35 @@ export const DeprecatedPatternSchema = z.object({
 export type DeprecatedPattern = z.infer<typeof DeprecatedPatternSchema>;
 
 // ============================================================================
+// TRAUMA (PROJECT HOT STOVE)
+// ============================================================================
+
+export const TraumaSeverityEnum = z.enum(["CRITICAL", "FATAL"]);
+export type TraumaSeverity = z.infer<typeof TraumaSeverityEnum>;
+
+export const TraumaScopeEnum = z.enum(["global", "project"]);
+export type TraumaScope = z.infer<typeof TraumaScopeEnum>;
+
+export const TraumaStatusEnum = z.enum(["active", "healed"]);
+export type TraumaStatus = z.infer<typeof TraumaStatusEnum>;
+
+export const TraumaEntrySchema = z.object({
+  id: z.string(),
+  severity: TraumaSeverityEnum,
+  pattern: z.string(), // Regex string
+  scope: TraumaScopeEnum,
+  projectPath: z.string().optional(), // Required if scope is project
+  status: TraumaStatusEnum,
+  trigger_event: z.object({
+    session_path: z.string(),
+    timestamp: z.string(),
+    human_message: z.string().optional()
+  }),
+  created_at: z.string()
+});
+export type TraumaEntry = z.infer<typeof TraumaEntrySchema>;
+
+// ============================================================================
 // PLAYBOOK METADATA & SCHEMA
 // ============================================================================
 
@@ -471,6 +500,11 @@ export const ContextResultSchema = z.object({
   suggestedCassQueries: z.array(z.string()),
   degraded: DegradedSummarySchema.optional(),
   formattedPrompt: z.string().optional(),
+  traumaWarning: z.object({
+    pattern: z.string(),
+    reason: z.string(),
+    reference: z.string()
+  }).optional()
 });
 export type ContextResult = z.infer<typeof ContextResultSchema>;
 

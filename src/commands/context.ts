@@ -4,6 +4,7 @@ import { loadConfig, getSanitizeConfig } from "../config.js";
 import { sanitize } from "../sanitize.js";
 import { loadMergedPlaybook, getActiveBullets } from "../playbook.js";
 import { safeCassSearchWithDegraded } from "../cass.js";
+import { loadTraumas, findMatchingTrauma } from "../trauma.js";
 import {
   extractKeywords,
   scoreBulletRelevance,
@@ -522,6 +523,34 @@ export async function contextCommand(
   }
   const normalizedTask = taskCheck.value;
 
+  // === TRAUMA CHECK (Pain Injection) ===
+  let traumaWarning: ContextResult["traumaWarning"] | undefined;
+  try {
+    const traumas = await loadTraumas();
+    const traumaMatch = findMatchingTrauma(normalizedTask, traumas);
+    
+    if (traumaMatch) {
+      const msg = traumaMatch.trigger_event.human_message || "You previously caused a catastrophe with this pattern.";
+      const ref = traumaMatch.trigger_event.session_path;
+      
+      // VISCERAL SCREAM TO STDERR (Always visible)
+      console.error(chalk.bgRed.white.bold("\n🚨🚨🚨 CRITICAL WARNING: VISCERAL SAFETY INTERVENTION 🚨🚨🚨"));
+      console.error(chalk.red.bold(`You are inquiring about a pattern that has previously caused TRAUMA.`));
+      console.error(chalk.red(`Pattern: ${traumaMatch.pattern}`));
+      console.error(chalk.red(`Reason:  ${msg}`));
+      console.error(chalk.red(`Ref:     ${ref}`));
+      console.error(chalk.bgRed.white.bold("DO NOT PROCEED WITHOUT EXTREME CAUTION.\n"));
+      
+      traumaWarning = {
+        pattern: traumaMatch.pattern,
+        reason: msg,
+        reference: ref
+      };
+    }
+  } catch (e) {
+    // Non-blocking
+  }
+
   const topCheck = validatePositiveInt(flags.top, "top", { min: 1, allowUndefined: true });
   if (!topCheck.ok) {
     reportError(topCheck.message, {
@@ -660,6 +689,11 @@ export async function contextCommand(
         }
       },
     });
+
+    // Merge trauma warning
+    if (traumaWarning) {
+      result.traumaWarning = traumaWarning;
+    }
 
   if (wantsJson) {
     printJsonResult(command, result, { startedAtMs });

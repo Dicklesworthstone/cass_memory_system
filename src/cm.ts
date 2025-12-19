@@ -25,6 +25,8 @@ import { undoCommand } from "./commands/undo.js";
 import { privacyCommand } from "./commands/privacy.js";
 import { similarCommand } from "./commands/similar.js";
 import { onboardCommand } from "./commands/onboard.js";
+import { guardCommand } from "./commands/guard.js";
+import { traumaCommand } from "./commands/trauma.js";
 
 export function createProgram(argv: string[] = process.argv): Command {
   applyGlobalEnvFromArgv(argv);
@@ -771,6 +773,44 @@ onboard.command("reset")
     ])
   )
   .action(async (opts: any) => await onboardCommand({ ...opts, reset: true }));
+
+// --- Guard (Project Hot Stove Safety) ---
+program.command("guard")
+  .description("Manage mechanical safety guards (Project Hot Stove)")
+  .option("--install", "Install trauma guard hook to .claude/hooks")
+  .option("-j, --json", "Output JSON")
+  .addHelpText("after", () =>
+    formatCommandExamples([
+      "guard --install",
+      "guard --install --json",
+    ])
+  )
+  .action(async (opts: any) => await guardCommand(opts));
+
+// --- Trauma (Scar Management) ---
+const trauma = program.command("trauma")
+  .description("Manage Project Hot Stove traumas (scars)")
+  .addHelpText("after", () =>
+    formatCommandExamples([
+      "trauma list",
+      "trauma add \"^rm -rf\" --severity FATAL",
+    ])
+  );
+
+trauma.command("list")
+  .alias("ls")
+  .description("List active traumas")
+  .option("-j, --json", "Output JSON")
+  .action(async (opts: any) => await traumaCommand("list", [], opts));
+
+trauma.command("add")
+  .description("Manually add a trauma pattern")
+  .argument("<pattern>", "Regex pattern to block")
+  .option("--severity <level>", "CRITICAL or FATAL", "CRITICAL")
+  .option("--scope <scope>", "global or project", "global")
+  .option("--message <msg>", "Human-readable reason")
+  .option("-j, --json", "Output JSON")
+  .action(async (pattern: string, opts: any) => await traumaCommand("add", [pattern], opts));
 
 program.showSuggestionAfterError(true);
 if (!hasJsonFlag(argv)) {

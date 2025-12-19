@@ -5,6 +5,7 @@ import { isLLMAvailable, getAvailableProviders, validateApiKey } from "../llm.js
 import { SECRET_PATTERNS, compileExtraPatterns } from "../sanitize.js";
 import { loadPlaybook, savePlaybook, createEmptyPlaybook } from "../playbook.js";
 import { Config, Playbook } from "../types.js";
+import { loadTraumas } from "../trauma.js";
 import chalk from "chalk";
 import path from "node:path";
 import fs from "node:fs/promises";
@@ -505,6 +506,38 @@ async function computeDoctorChecks(
         extraMatches: extraResult.matches,
         falsePositiveRate,
       },
+    });
+  }
+
+  // 6) Trauma System (Project Hot Stove)
+  try {
+    const traumas = await loadTraumas();
+    checks.push({
+      category: "Trauma System",
+      item: "Database",
+      status: "pass",
+      message: `Loaded ${traumas.length} trauma patterns`,
+      details: { count: traumas.length },
+    });
+  } catch (e) {
+    checks.push({
+      category: "Trauma System",
+      item: "Database",
+      status: "warn",
+      message: `Failed to load trauma database: ${e instanceof Error ? e.message : String(e)}`,
+    });
+  }
+
+  if (await fileExists(".claude")) {
+    const guardPath = ".claude/hooks/trauma_guard.py";
+    const guardExists = await fileExists(guardPath);
+    checks.push({
+      category: "Trauma System",
+      item: "Safety Guard",
+      status: guardExists ? "pass" : "warn",
+      message: guardExists
+        ? "Guard installed in .claude/hooks"
+        : "Guard NOT installed in .claude/hooks (run 'cm guard --install')",
     });
   }
 

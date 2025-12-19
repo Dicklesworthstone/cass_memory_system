@@ -1,13 +1,16 @@
+import { installGuard } from "./guard.js";
 import { getDefaultConfig } from "../config.js";
 import { createEmptyPlaybook, loadPlaybook, savePlaybook } from "../playbook.js";
-import { expandPath, fileExists, warn, resolveRepoDir, ensureRepoStructure, ensureGlobalStructure, getCliName, printJsonResult, atomicWrite, reportError } from "../utils.js";
-import { ErrorCode } from "../types.js";
+import { expandPath, fileExists, warn, resolveRepoDir, ensureRepoStructure, ensureGlobalStructure, getCliName, printJsonResult, atomicWrite, reportError, now } from "../utils.js";
+import { ErrorCode, Config, TraumaEntry } from "../types.js";
+import { scanForTraumas, saveTrauma } from "../trauma.js";
 import { cassAvailable } from "../cass.js";
 import { applyStarter, loadStarter } from "../starters.js";
 import chalk from "chalk";
 import yaml from "yaml";
 import readline from "node:readline";
 import fs from "node:fs/promises";
+import crypto from "node:crypto";
 import { iconPrefix, icon, formatKv } from "../output.js";
 
 type InitOptions = { force?: boolean; yes?: boolean; json?: boolean; repo?: boolean; starter?: string; interactive?: boolean };
@@ -27,6 +30,52 @@ async function promptYesNo(question: string): Promise<boolean> {
       resolve(normalized === "y" || normalized === "yes");
     });
   });
+}
+
+async function runTraumaScan(config: Config) {
+  console.log(chalk.bold("\n🔥 Project Hot Stove: Trauma Scan"));
+  console.log("We can scan your past agent sessions for 'catastrophic' patterns (e.g., apologies followed by destruction).");
+  console.log("This will seed your safety guard so you don't repeat past mistakes.\n");
+
+  const doit = await promptYesNo("Scan past 90 days of history? [y/N]: ");
+  if (!doit) return;
+
+  console.log(chalk.gray("Scanning... (this may take a moment)"));
+  const candidates = await scanForTraumas(config, 90);
+
+  if (candidates.length === 0) {
+    console.log(chalk.green("No obvious traumas found. Great job!"));
+    return;
+  }
+
+  console.log(chalk.yellow(`\nFound ${candidates.length} potential traumas:`));
+  for (const c of candidates) {
+    console.log(`- ${chalk.red(c.matchedPattern)} (${c.description})`);
+    console.log(`  Evidence: "${c.evidence.replace(/\n/g, " ")}"`);
+  }
+
+  const importAll = await promptYesNo("\nAdd these patterns to your permanent safety blocklist? [Y/n]: ");
+  if (importAll) {
+    let count = 0;
+    for (const c of candidates) {
+      const entry: TraumaEntry = {
+        id: `trauma-${crypto.randomBytes(4).toString("hex")}`,
+        severity: "CRITICAL", // Default to CRITICAL
+        pattern: c.matchedPattern,
+        scope: "global",
+        status: "active",
+        trigger_event: {
+          session_path: c.sessionPath,
+          timestamp: now(),
+          human_message: `Auto-detected from history: ${c.description}`
+        },
+        created_at: now()
+      };
+      await saveTrauma(entry);
+      count++;
+    }
+    console.log(chalk.green(`${icon("success")} Imported ${count} trauma patterns. The guard is now active.`));
+  }
 }
 
 export async function initCommand(options: InitOptions) {
@@ -214,6 +263,20 @@ export async function initCommand(options: InitOptions) {
           `${icon("success")} Applied starter "${starterOutcome.name}" (${starterOutcome.added} added, ${starterOutcome.skipped} skipped)`
         )
       );
+    }
+
+    if (await fileExists(".claude")) {
+      try {
+        await installGuard(false, true);
+        console.log(chalk.green(`${icon("success")} Auto-installed Project Hot Stove safety guard`));
+      } catch (e) {
+        // Ignore failures
+      }
+    }
+
+    // Run Trauma Scan if interactive and cass is available
+    if (options.interactive !== false && !options.json && process.stdin.isTTY && cassOk) {
+      await runTraumaScan(config);
     }
 
     console.log("");
