@@ -294,11 +294,44 @@ export function curatePlaybook(
         }
 
         // 1. Exact duplicate check (against reference/merged)
-        if (existingHashes.has(hash)) {
-          logDecision(decisionLog, "dedup", "skipped", "Exact duplicate already exists", {
-            content: content.slice(0, 100),
-            details: { hash }
-          });
+        // Find the bullet in the reference playbook (could be merged context)
+        const exactMatch = referencePlaybook.bullets.find(b => hashContent(b.content) === hash);
+        
+        if (exactMatch) {
+          const isDeprecated = Boolean(exactMatch.deprecated) || exactMatch.maturity === "deprecated" || exactMatch.state === "retired";
+          
+          if (isDeprecated) {
+             logDecision(decisionLog, "dedup", "skipped", "Exact duplicate exists but is deprecated", {
+               content: content.slice(0, 100),
+               bulletId: exactMatch.id
+             });
+             break;
+          }
+
+          // Try to find it in the target playbook (the one we are writing to)
+          const targetBullet = findBullet(targetPlaybook, exactMatch.id);
+          
+          if (targetBullet) {
+            targetBullet.feedbackEvents.push({
+              type: "helpful",
+              timestamp: now(),
+              sessionPath: delta.sourceSession,
+              context: "Reinforced by exact duplicate insight"
+            });
+            targetBullet.helpfulCount++;
+            targetBullet.updatedAt = now();
+            applied = true;
+            logDecision(decisionLog, "dedup", "modified", "Reinforced existing exact duplicate", {
+              bulletId: targetBullet.id,
+              content: content.slice(0, 100)
+            });
+          } else {
+            // It exists in the context (other layer) but not target. Skip to avoid duplication.
+            logDecision(decisionLog, "dedup", "skipped", "Exact duplicate exists in other playbook layer", {
+              content: content.slice(0, 100),
+              bulletId: exactMatch.id
+            });
+          }
           break;
         }
 

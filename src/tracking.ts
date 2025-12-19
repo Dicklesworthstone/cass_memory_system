@@ -465,7 +465,9 @@ export class ProcessedLog {
       lines.push(JSON.stringify(entry));
     }
     
-    await atomicWrite(this.logPath, lines.join("\n"));
+    await withLock(this.logPath, async () => {
+      await atomicWrite(this.logPath, lines.join("\n"));
+    });
   }
 
   async append(entry: ProcessedEntry, options?: { skipLock?: boolean }): Promise<void> {

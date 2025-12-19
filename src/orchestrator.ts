@@ -163,6 +163,10 @@ export async function orchestrateReflection(
         for (const delta of reflectResult.deltas) {
           const validation = await validateDelta(delta, config);
           if (validation.valid) {
+            // Apply LLM refinement if suggested
+            if (validation.result?.refinedRule && delta.type === "add") {
+              delta.bullet.content = validation.result.refinedRule;
+            }
             validatedDeltas.push(delta);
           }
         }
