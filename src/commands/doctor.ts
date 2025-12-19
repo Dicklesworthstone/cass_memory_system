@@ -4,6 +4,7 @@ import { error as logError, fileExists, resolveRepoDir, resolveGlobalDir, expand
 import { isLLMAvailable, getAvailableProviders, validateApiKey } from "../llm.js";
 import { SECRET_PATTERNS, compileExtraPatterns } from "../sanitize.js";
 import { loadPlaybook, savePlaybook, createEmptyPlaybook } from "../playbook.js";
+import { withLock } from "../lock.js";
 import { Config, Playbook } from "../types.js";
 import { loadTraumas } from "../trauma.js";
 import chalk from "chalk";
@@ -887,8 +888,10 @@ function createMissingPlaybookFix(playbookPath: string): FixableIssue {
     severity: "warn",
     safety: "safe",
     fix: async () => {
-      const emptyPlaybook: Playbook = createEmptyPlaybook();
-      await savePlaybook(emptyPlaybook, playbookPath);
+      await withLock(playbookPath, async () => {
+        const emptyPlaybook: Playbook = createEmptyPlaybook();
+        await savePlaybook(emptyPlaybook, playbookPath);
+      });
     },
   };
 }
@@ -909,10 +912,12 @@ function createPlaybookSchemaMigrationFix(playbookPath: string, scope: "global" 
         // Best-effort backup
       }
 
-      const playbook = await loadPlaybook(expanded);
-      if ((playbook.schema_version ?? 2) >= 2) return;
-      playbook.schema_version = 2;
-      await savePlaybook(playbook, expanded);
+      await withLock(expanded, async () => {
+        const playbook = await loadPlaybook(expanded);
+        if ((playbook.schema_version ?? 2) >= 2) return;
+        playbook.schema_version = 2;
+        await savePlaybook(playbook, expanded);
+      });
     },
   };
 }

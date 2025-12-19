@@ -93,9 +93,15 @@ async function addTrauma(args: string[], flags: { severity?: string; message?: s
   }
 
   const severityCheck = validateOneOf(flags.severity, "severity", ["CRITICAL", "FATAL"] as const, { allowUndefined: true });
+  if (!severityCheck.ok) {
+    throw new Error(severityCheck.message);
+  }
   const severity = severityCheck.value || "CRITICAL";
 
   const scopeCheck = validateOneOf(flags.scope, "scope", ["global", "project"] as const, { allowUndefined: true });
+  if (!scopeCheck.ok) {
+    throw new Error(scopeCheck.message);
+  }
   const scope = scopeCheck.value || "global";
 
   const message = flags.message || "Manually added trauma.";

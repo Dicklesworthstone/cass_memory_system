@@ -1,6 +1,7 @@
 import { installGuard } from "./guard.js";
 import { getDefaultConfig } from "../config.js";
 import { createEmptyPlaybook, loadPlaybook, savePlaybook } from "../playbook.js";
+import { withLock } from "../lock.js";
 import { expandPath, fileExists, warn, resolveRepoDir, ensureRepoStructure, ensureGlobalStructure, getCliName, printJsonResult, atomicWrite, reportError, now } from "../utils.js";
 import { ErrorCode, Config, TraumaEntry } from "../types.js";
 import { scanForTraumas, saveTrauma } from "../trauma.js";
@@ -317,11 +318,12 @@ async function seedStarter(
     throw new Error(`Starter "${starterName}" not found. Run "${getCliName()} starters" to list available names.`);
   }
 
-  const playbook = await loadPlaybook(playbookPath);
-  const { added, skipped } = applyStarter(playbook, starter, { preferExisting: true });
-  await savePlaybook(playbook, playbookPath);
-
-  return { added, skipped, name: starterName };
+  return await withLock(playbookPath, async () => {
+    const playbook = await loadPlaybook(playbookPath);
+    const { added, skipped } = applyStarter(playbook, starter, { preferExisting: true });
+    await savePlaybook(playbook, playbookPath);
+    return { added, skipped, name: starterName };
+  });
 }
 
 /**
