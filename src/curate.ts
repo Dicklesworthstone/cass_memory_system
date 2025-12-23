@@ -405,17 +405,28 @@ export function curatePlaybook(
         }
 
         // 3. Add new (to TARGET)
+        // Preserve safe, schema-validated metadata from the delta where possible.
         const newBullet = addBullet(
           targetPlaybook,
           {
             id: delta.bullet.id,
             content,
             category: delta.bullet.category,
-            tags: delta.bullet.tags
+            tags: delta.bullet.tags,
+            kind: delta.bullet.kind,
+            type: delta.bullet.type,
+            isNegative: delta.bullet.isNegative,
+            scope: delta.bullet.scope,
+            workspace: delta.bullet.workspace,
+            searchPointer: delta.bullet.searchPointer,
           },
           delta.sourceSession,
           config.scoring.decayHalfLifeDays
         );
+
+        if (typeof delta.reason === "string" && delta.reason.trim()) {
+          newBullet.reasoning = delta.reason.trim();
+        }
 
         existingHashes.add(hash);
         applied = true;
