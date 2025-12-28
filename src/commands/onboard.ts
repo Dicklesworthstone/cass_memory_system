@@ -20,6 +20,7 @@ import {
   reportError,
   validateNonEmptyString,
   validatePositiveInt,
+  now
 } from "../utils.js";
 import { agentIconPrefix, formatKv, formatRule, getOutputStyle, icon, iconPrefix } from "../output.js";
 import { createProgress, type ProgressReporter } from "../progress.js";
@@ -42,6 +43,7 @@ import {
   type RuleCategory,
 } from "../gap-analysis.js";
 import { findSimilarBulletsSemantic } from "../semantic.js";
+import { ProcessedLog, getProcessedLogPath } from "../tracking.js";
 import path from "node:path";
 import fs from "node:fs/promises";
 
@@ -546,6 +548,17 @@ export async function onboardCommand(
     }
     const sessionPath = sessionPathCheck.value;
     await markSessionProcessed(sessionPath, 0, { skipped: true });
+
+    // Also mark as processed in the reflection log to prevent future auto-reflection
+    const logPath = expandPath(getProcessedLogPath(options.workspace));
+    const processedLog = new ProcessedLog(logPath);
+    await processedLog.load();
+    await processedLog.append({
+      sessionPath,
+      processedAt: now(),
+      deltasGenerated: 0
+    });
+
     if (options.json) {
       printJsonResult("onboard:mark-done", {
         message: "Session marked as processed",
