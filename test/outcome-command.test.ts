@@ -428,7 +428,7 @@ describe("outcomeCommand additional validation", () => {
     });
   });
 
-  test("outputs human-readable success message", async () => {
+  test("outputs human-readable message without --json flag", async () => {
     await withTempCassHome(async (env) => {
       await withTempGitRepo(async (repoDir) => {
         const originalCwd = process.cwd();
@@ -446,8 +446,17 @@ describe("outcomeCommand additional validation", () => {
               rules: "b-human-test"
             });
             const output = capture.getOutput();
-            // Should output human-readable message
-            expect(output.length).toBeGreaterThanOrEqual(0);
+            const errors = capture.getErrors();
+            // Should produce some output - either success message or "no signal" warning
+            const combined = output + errors;
+            expect(combined.length).toBeGreaterThan(0);
+            // Should contain either feedback confirmation or no-signal message
+            expect(
+              combined.includes("Recorded") ||
+              combined.includes("feedback") ||
+              combined.includes("signal") ||
+              combined.includes("No implicit")
+            ).toBe(true);
           } finally {
             capture.restore();
           }
