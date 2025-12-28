@@ -5,13 +5,13 @@
  * repeating dangerous patterns. Uses isolated temp directories.
  */
 import { describe, it, expect, afterEach } from "bun:test";
-import { stat, mkdir, writeFile, rm, readFile } from "node:fs/promises";
+import { mkdir, writeFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { execSync } from "node:child_process";
 import os from "node:os";
 
 import { traumaCommand } from "../src/commands/trauma.js";
-import { loadTraumas, saveTrauma } from "../src/trauma.js";
+import { loadTraumas } from "../src/trauma.js";
 import { TraumaEntry } from "../src/types.js";
 
 // --- Helper Functions ---
@@ -23,15 +23,6 @@ async function createTempDir(): Promise<string> {
   await mkdir(dirPath, { recursive: true });
   tempDirs.push(dirPath);
   return dirPath;
-}
-
-async function exists(filePath: string): Promise<boolean> {
-  try {
-    await stat(filePath);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 afterEach(async () => {
