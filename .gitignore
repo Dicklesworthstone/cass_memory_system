@@ -33,6 +33,7 @@ pnpm-debug.log*
 coverage/
 .nyc_output/
 *.lcov
+test/logs/
 
 # IDE & OS
 .DS_Store
