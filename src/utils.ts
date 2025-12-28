@@ -1364,6 +1364,26 @@ export function jaccardSimilarity(a: string, b: string): number {
   return intersection.size / union.size;
 }
 
+export function jaccardSimilaritySets(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 && b.size === 0) return 1.0;
+  if (a.size === 0 || b.size === 0) return 0.0;
+  
+  let intersectionSize = 0;
+  // Iterate over smaller set for efficiency
+  if (a.size < b.size) {
+    for (const token of a) {
+      if (b.has(token)) intersectionSize++;
+    }
+  } else {
+    for (const token of b) {
+      if (a.has(token)) intersectionSize++;
+    }
+  }
+  
+  const unionSize = a.size + b.size - intersectionSize;
+  return intersectionSize / unionSize;
+}
+
 // --- ID Generation ---
 
 export function generateBulletId(): string {

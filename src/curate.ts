@@ -15,6 +15,7 @@ import {
 import { 
   hashContent, 
   jaccardSimilarity, 
+  jaccardSimilaritySets,
   generateBulletId, 
   now,
   log,
@@ -37,26 +38,41 @@ function buildHashCache(playbook: Playbook): Set<string> {
   return cache;
 }
 
-function findSimilarBullet(
-  content: string, 
-  playbook: Playbook, 
+function findSimilarBulletFromMeta(
+  newTokens: Set<string>,
+  metaList: ConflictMeta[],
   threshold: number
 ): PlaybookBullet | undefined {
-  const isDeprecated = (b: PlaybookBullet): boolean =>
-    Boolean(b.deprecated) || b.maturity === "deprecated" || b.state === "retired";
+  let bestDeprecated: PlaybookBullet | undefined;
 
-  // Prefer active bullets so a deprecated/blocked match doesn't preempt a valid active match.
-  for (const b of playbook.bullets) {
-    if (isDeprecated(b)) continue;
-    if (jaccardSimilarity(content, b.content) >= threshold) return b;
+  for (const meta of metaList) {
+    const b = meta.bullet;
+    const isDeprecated = Boolean(b.deprecated) || b.maturity === "deprecated" || b.state === "retired";
+    
+    // Fast skip based on size difference
+    // Jaccard = intersection / union.
+    // Max intersection = min(A, B). Min union = max(A, B).
+    // Max Jaccard = min(A, B) / max(A, B).
+    const sizeA = newTokens.size;
+    const sizeB = meta.tokens.size;
+    if (sizeA === 0 && sizeB === 0) return b; // Both empty = match
+    if (sizeA === 0 || sizeB === 0) continue; // One empty = 0 similarity
+
+    const maxPossible = Math.min(sizeA, sizeB) / Math.max(sizeA, sizeB);
+    if (maxPossible < threshold) continue;
+
+    const sim = jaccardSimilaritySets(newTokens, meta.tokens);
+    if (sim >= threshold) {
+      if (!isDeprecated) {
+        return b; // Return active match immediately (priority)
+      }
+      if (!bestDeprecated) {
+        bestDeprecated = b; // Save deprecated match as fallback
+      }
+    }
   }
 
-  // Fallback: consider deprecated bullets (to prevent zombie/resurrection).
-  for (const b of playbook.bullets) {
-    if (jaccardSimilarity(content, b.content) >= threshold) return b;
-  }
-
-  return undefined;
+  return bestDeprecated;
 }
 
 // --- Helper: Conflict Detection ---
@@ -254,9 +270,6 @@ export function curatePlaybook(
   // We will append to this array as we add new bullets to ensure conflicts are caught within the batch.
   const conflictMeta = referencePlaybook.bullets.map(computeConflictMeta);
 
-  // Keep track of bullets added in this batch for semantic similarity checks
-  const newlyAddedBullets: PlaybookBullet[] = [];
-
   const decisionLog: DecisionLogEntry[] = [];
 
   const result: CurationResult = {
@@ -287,7 +300,17 @@ export function curatePlaybook(
 
         // Conflict detection (warnings only)
         // Checks against reference AND newly added bullets (via updated conflictMeta)
+        // Use optimized version with pre-computed meta
+        const newTokens = tokenize(content);
+        const newTokenSet = new Set(newTokens);
+        
+        // Note: detectConflictsWithMeta re-tokenizes internally if we pass string.
+        // But we need newTokenSet for dedup anyway.
+        // We can't easily pass Set to detectConflictsWithMeta without changing its signature or logic duplication.
+        // For now, letting it re-tokenize is fine (it's fast), or we can refactor.
+        // To be safe and minimal diff, we'll let it re-tokenize or just pass string.
         const conflicts = detectConflictsWithMeta(content, conflictMeta);
+        
         for (const c of conflicts) {
           result.conflicts.push({
             newBulletContent: content,
@@ -343,24 +366,9 @@ export function curatePlaybook(
           break;
         }
 
-        // 2. Semantic duplicate check
-        // Check against reference playbook
-        let similar = findSimilarBullet(content, referencePlaybook, config.dedupSimilarityThreshold);
-        
-        // Also check against newly added bullets in this batch if not found in reference
-        if (!similar) {
-          // Use the same finding logic but for the local array
-          // We can't reuse findSimilarBullet directly because it expects a Playbook object,
-          // so we construct a temporary one or inline the logic.
-          // Inline logic:
-          const threshold = config.dedupSimilarityThreshold;
-          for (const b of newlyAddedBullets) {
-            if (jaccardSimilarity(content, b.content) >= threshold) {
-              similar = b;
-              break;
-            }
-          }
-        }
+        // 2. Semantic duplicate check (Optimized)
+        // Uses pre-computed tokens from conflictMeta (which includes newly added bullets)
+        const similar = findSimilarBulletFromMeta(newTokenSet, conflictMeta, config.dedupSimilarityThreshold);
 
         if (similar) {
           const similarIsDeprecated =
@@ -455,8 +463,16 @@ export function curatePlaybook(
 
         // Update caches to catch duplicates later in this batch
         bulletContentMap.set(hash, newBullet);
-        conflictMeta.push(computeConflictMeta(newBullet));
-        newlyAddedBullets.push(newBullet);
+        
+        // We reuse the already computed tokens for the new bullet metadata
+        const newMeta: ConflictMeta = {
+          bullet: newBullet,
+          tokens: newTokenSet,
+          neg: hasMarker(content, NEGATIVE_MARKERS),
+          pos: hasMarker(content, POSITIVE_MARKERS),
+          exc: hasMarker(content, EXCEPTION_MARKERS)
+        };
+        conflictMeta.push(newMeta);
 
         applied = true;
         logDecision(decisionLog, "add", "accepted", "New bullet added to playbook", {
