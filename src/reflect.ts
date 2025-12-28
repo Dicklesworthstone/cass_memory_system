@@ -186,7 +186,7 @@ export function shouldExitEarly(
   config: Config
 ): boolean {
   if (deltasThisIteration === 0) return true;
-  if (totalDeltas >= 20) return true;
+  if (totalDeltas >= 50) return true;
   const maxIterations = config.maxReflectorIterations ?? 3;
   if (iteration >= maxIterations - 1) return true;
   return false;

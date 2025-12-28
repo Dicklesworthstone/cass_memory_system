@@ -143,7 +143,7 @@ export function sanitize(
         : compileExtraPatterns(rawExtra);
     for (const pattern of compiled) {
       // Include both tokens to satisfy legacy expectations in tests
-      applyPattern(pattern, "[REDACTED_CUSTOM][REDACTED]", pattern.toString());
+      applyPattern(pattern, "[REDACTED]", pattern.toString());
     }
   }
 
