@@ -82,12 +82,12 @@ function getBunVersion(): { available: boolean; version?: string } {
 /**
  * Count rules in a playbook file.
  */
-async function countPlaybookRules(playbookPath: string): Promise<number> {
+async function countPlaybookRules(playbookPath: string): Promise<number | null> {
   try {
     const playbook = await loadPlaybook(playbookPath);
     return playbook?.bullets?.filter((b: any) => b.status !== "deprecated").length || 0;
   } catch {
-    return 0;
+    return null;
   }
 }
 
@@ -115,10 +115,10 @@ export async function gatherInfo(): Promise<InfoResult> {
 
   // Count rules
   const [globalRuleCount, workspaceRuleCount] = await Promise.all([
-    globalPlaybookExists ? countPlaybookRules(globalPlaybookPath) : Promise.resolve(0),
+    globalPlaybookExists ? countPlaybookRules(globalPlaybookPath) : Promise.resolve(null),
     workspacePlaybookPath && workspacePlaybookExists
       ? countPlaybookRules(workspacePlaybookPath)
-      : Promise.resolve(0),
+      : Promise.resolve(null),
   ]);
 
   // Environment variables
@@ -133,12 +133,12 @@ export async function gatherInfo(): Promise<InfoResult> {
       globalPlaybook: {
         path: globalPlaybookPath,
         exists: globalPlaybookExists,
-        ruleCount: globalPlaybookExists ? globalRuleCount : undefined,
+        ruleCount: globalPlaybookExists && globalRuleCount !== null ? globalRuleCount : undefined,
       },
       workspacePlaybook: {
         path: workspacePlaybookPath,
         exists: workspacePlaybookExists,
-        ruleCount: workspacePlaybookExists ? workspaceRuleCount : undefined,
+        ruleCount: workspacePlaybookExists && workspaceRuleCount !== null ? workspaceRuleCount : undefined,
       },
     },
     environment: {
@@ -183,13 +183,17 @@ function formatInfoHuman(info: InfoResult): string {
   lines.push(`  Global config:    ${fmtPath(config.globalConfig.path)} ${config.globalConfig.exists ? chalk.green("(exists)") : chalk.yellow("(not found)")}`);
 
   const globalPbStatus = config.globalPlaybook.exists
-    ? chalk.green(`(${config.globalPlaybook.ruleCount} rules)`)
+    ? typeof config.globalPlaybook.ruleCount === "number"
+      ? chalk.green(`(${config.globalPlaybook.ruleCount} rules)`)
+      : chalk.red("(invalid/corrupt)")
     : chalk.yellow("(not found)");
   lines.push(`  Global playbook:  ${fmtPath(config.globalPlaybook.path)} ${globalPbStatus}`);
 
   if (config.workspacePlaybook.path) {
     const wsPbStatus = config.workspacePlaybook.exists
-      ? chalk.green(`(${config.workspacePlaybook.ruleCount} rules)`)
+      ? typeof config.workspacePlaybook.ruleCount === "number"
+        ? chalk.green(`(${config.workspacePlaybook.ruleCount} rules)`)
+        : chalk.red("(invalid/corrupt)")
       : chalk.yellow("(not found)");
     lines.push(`  Workspace playbook: ${fmtPath(config.workspacePlaybook.path)} ${wsPbStatus}`);
   } else {

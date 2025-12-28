@@ -238,8 +238,10 @@ export async function withLock<T>(
       try {
         const now = new Date();
         await fs.utimes(lockPath, now, now);
-      } catch {
-        // Best effort
+      } catch (err: any) {
+        if (err?.code === "ENOENT") {
+          warn(`[lock] Heartbeat failed: Lock directory ${lockPath} disappeared (stolen/deleted?)`);
+        }
       }
     }, 10000); // 10 seconds < 30s threshold
     if (typeof (heartbeat as any).unref === "function") {
