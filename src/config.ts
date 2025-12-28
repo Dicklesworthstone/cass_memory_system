@@ -203,6 +203,12 @@ export async function loadConfig(cliOverrides: Partial<Config> = {}): Promise<Co
   // Migrate CLI overrides as well (unlikely but complete)
   const migratedOverrides = migrateLlmConfig(cliOverrides);
 
+  // Environment variable overrides
+  const envOverrides: Partial<Config> = {};
+  if (process.env.CASS_PATH) {
+    envOverrides.cassPath = process.env.CASS_PATH;
+  }
+
   const globalExtra = (globalConfig as any)?.sanitization?.extraPatterns;
   const cliExtra = (cliOverrides as any)?.sanitization?.extraPatterns;
   const canOverrideExtraPatterns =
@@ -236,6 +242,7 @@ export async function loadConfig(cliOverrides: Partial<Config> = {}): Promise<Co
   const merged = {
     ...defaults,
     ...globalConfig,
+    ...envOverrides,
     ...repoConfig,
     ...migratedOverrides,
     sanitization: {

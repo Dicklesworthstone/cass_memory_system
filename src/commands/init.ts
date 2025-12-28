@@ -91,6 +91,9 @@ export async function initCommand(options: InitOptions) {
   }
 
   const config = getDefaultConfig();
+  if (process.env.CASS_PATH) {
+    config.cassPath = process.env.CASS_PATH;
+  }
   const configPath = expandPath("~/.cass-memory/config.json");
   const playbookPath = expandPath("~/.cass-memory/playbook.yaml");
   const playbook = createEmptyPlaybook();
