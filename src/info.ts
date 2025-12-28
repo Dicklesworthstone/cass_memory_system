@@ -2,7 +2,6 @@
  * System info gathering for `cm --info` command.
  * Shows version, configuration paths, environment, and dependencies.
  */
-import fs from "node:fs/promises";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import chalk from "chalk";
@@ -15,7 +14,6 @@ import {
   printJsonResult,
 } from "./utils.js";
 import { loadPlaybook } from "./playbook.js";
-import { loadConfig } from "./config.js";
 
 export interface InfoResult {
   version: string;
@@ -177,7 +175,10 @@ function formatInfoHuman(info: InfoResult): string {
   lines.push(chalk.bold("Configuration:"));
 
   const { configuration: config } = info;
-  const fmtPath = (p: string) => p.replace(process.env.HOME || "", "~");
+  const fmtPath = (p: string) => {
+    const home = process.env.HOME;
+    return home && p.startsWith(home) ? "~" + p.slice(home.length) : p;
+  };
 
   lines.push(`  Global config:    ${fmtPath(config.globalConfig.path)} ${config.globalConfig.exists ? chalk.green("(exists)") : chalk.yellow("(not found)")}`);
 
