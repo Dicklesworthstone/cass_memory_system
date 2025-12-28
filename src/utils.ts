@@ -1429,7 +1429,12 @@ const STOP_WORDS = new Set([
   "for", "on", "with", "at", "by", "from", "as", "into", "through", "during", "before",
   "after", "and", "or", "but", "if", "when", "where", "why", "how", "this", "that",
   "these", "those", "what", "which", "who", "there", "here", "i", "you", "he", "she",
-  "it", "we", "they", "me", "him", "her", "us", "them"
+  "it", "we", "they", "me", "him", "her", "us", "them",
+  // Programming keywords
+  "code", "file", "function", "return", "const", "var", "let", "import", "export",
+  "class", "interface", "type", "string", "number", "boolean", "any", "void",
+  "null", "undefined", "true", "false", "object", "array", "value", "data",
+  "result", "error", "async", "await", "promise", "new"
 ]);
 
 export function extractKeywords(text: string): string[] {

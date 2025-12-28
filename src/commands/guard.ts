@@ -78,7 +78,7 @@ export async function installGuard(json?: boolean, silent?: boolean) {
     try {
       const { exec } = await import("node:child_process");
       const { promisify } = await import("node:util");
-      await promisify(exec)("python3 --version");
+      await promisify(exec)("python3 --version", { timeout: 2000 });
     } catch {
       console.warn(chalk.yellow(`${iconPrefix("warning")} Warning: 'python3' not found in PATH. The trauma guard requires Python 3.`));
     }
@@ -204,7 +204,7 @@ export async function installGitHook(json?: boolean, silent?: boolean): Promise<
     try {
       const { exec } = await import("node:child_process");
       const { promisify } = await import("node:util");
-      await promisify(exec)("python3 --version");
+      await promisify(exec)("python3 --version", { timeout: 2000 });
     } catch {
       console.warn(chalk.yellow(`${iconPrefix("warning")} Warning: 'python3' not found in PATH. The git hook requires Python 3.`));
     }

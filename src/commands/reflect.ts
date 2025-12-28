@@ -296,6 +296,9 @@ export async function reflectCommand(
         }
 
         console.log(chalk.gray(`\n${cli} reflect --dry-run --json  # full delta JSON`));
+      } else {
+        console.log("");
+        console.log(chalk.gray("No changes proposed."));
       }
     }
     return;
