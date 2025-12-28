@@ -345,6 +345,252 @@ describe("E2E: CLI playbook command", () => {
         expect(output).toContain("Added bullet");
       });
     });
+
+    it("reports error when content is missing", async () => {
+      await withTempCassHome(async (env) => {
+        const playbook = createTestPlaybook([]);
+        await writeFile(env.playbookPath, yaml.stringify(playbook));
+
+        process.exitCode = 0;
+        const capture = captureConsole();
+        try {
+          await playbookCommand("add", [], { json: true });
+        } finally {
+          capture.restore();
+        }
+
+        expect(process.exitCode as number | undefined).toBe(2);
+        const output = capture.logs.join("\n");
+        const result = JSON.parse(output) as any;
+        expect(result.success).toBe(false);
+        expect(result.error.code).toBe("MISSING_REQUIRED");
+        process.exitCode = 0;
+      });
+    });
+  });
+
+  describe("add action with --file (batch add)", () => {
+    it("adds multiple rules from JSON file", async () => {
+      await withTempCassHome(async (env) => {
+        const playbook = createTestPlaybook([]);
+        await writeFile(env.playbookPath, yaml.stringify(playbook));
+
+        // Create batch input file
+        const batchRules = [
+          { content: "Always use strict TypeScript" },
+          { content: "Write tests for new features", category: "testing" },
+          { content: "Document public APIs", category: "documentation" }
+        ];
+        const batchPath = path.join(env.cassMemoryDir, "batch.json");
+        await writeFile(batchPath, JSON.stringify(batchRules));
+
+        const capture = captureConsole();
+        try {
+          await playbookCommand("add", [], { file: batchPath, json: true });
+        } finally {
+          capture.restore();
+        }
+
+        const output = capture.logs.join("\n");
+        const payload = JSON.parse(output) as any;
+        const result = payload.data;
+
+        expect(payload.success).toBe(true);
+        expect(result.summary.total).toBe(3);
+        expect(result.summary.succeeded).toBe(3);
+        expect(result.added.length).toBe(3);
+
+        // Verify rules were saved
+        const savedContent = await readFile(env.playbookPath, "utf-8");
+        const savedPlaybook = yaml.parse(savedContent);
+        expect(savedPlaybook.bullets.length).toBe(3);
+      });
+    });
+
+    it("uses --category flag as default for rules without category", async () => {
+      await withTempCassHome(async (env) => {
+        const playbook = createTestPlaybook([]);
+        await writeFile(env.playbookPath, yaml.stringify(playbook));
+
+        const batchRules = [
+          { content: "Rule without category" },
+          { content: "Rule with category", category: "specific" }
+        ];
+        const batchPath = path.join(env.cassMemoryDir, "batch.json");
+        await writeFile(batchPath, JSON.stringify(batchRules));
+
+        const capture = captureConsole();
+        try {
+          await playbookCommand("add", [], { file: batchPath, category: "security", json: true });
+        } finally {
+          capture.restore();
+        }
+
+        const output = capture.logs.join("\n");
+        const payload = JSON.parse(output) as any;
+        const result = payload.data;
+
+        expect(payload.success).toBe(true);
+        // First rule uses default category, second uses its own
+        expect(result.added[0].category).toBe("security");
+        expect(result.added[1].category).toBe("specific");
+      });
+    });
+
+    it("handles invalid JSON gracefully", async () => {
+      await withTempCassHome(async (env) => {
+        const playbook = createTestPlaybook([]);
+        await writeFile(env.playbookPath, yaml.stringify(playbook));
+
+        const batchPath = path.join(env.cassMemoryDir, "invalid.json");
+        await writeFile(batchPath, "{ invalid json }");
+
+        const capture = captureConsole();
+        try {
+          await playbookCommand("add", [], { file: batchPath, json: true });
+        } finally {
+          capture.restore();
+        }
+
+        const output = capture.logs.join("\n");
+        const payload = JSON.parse(output) as any;
+
+        // Outer success is true (command ran), but data.success is false (batch failed)
+        expect(payload.success).toBe(true);
+        expect(payload.data.success).toBe(false);
+        expect(payload.data.summary.failed).toBe(1);
+        expect(payload.data.failed[0].error).toContain("Invalid JSON");
+      });
+    });
+
+    it("handles file not found gracefully", async () => {
+      await withTempCassHome(async (env) => {
+        const playbook = createTestPlaybook([]);
+        await writeFile(env.playbookPath, yaml.stringify(playbook));
+
+        const capture = captureConsole();
+        try {
+          await playbookCommand("add", [], { file: "/nonexistent/batch.json", json: true });
+        } finally {
+          capture.restore();
+        }
+
+        const output = capture.logs.join("\n");
+        const payload = JSON.parse(output) as any;
+
+        // Outer success is true (command ran), but data.success is false (batch failed)
+        expect(payload.success).toBe(true);
+        expect(payload.data.success).toBe(false);
+        expect(payload.data.summary.failed).toBe(1);
+        expect(payload.data.failed[0].error).toContain("Failed to read");
+      });
+    });
+
+    it("validates rule schema and reports failures", async () => {
+      await withTempCassHome(async (env) => {
+        const playbook = createTestPlaybook([]);
+        await writeFile(env.playbookPath, yaml.stringify(playbook));
+
+        const batchRules = [
+          { content: "Valid rule" },
+          { content: "" }, // Empty content - invalid
+          { notContent: "Missing content field" }, // Wrong field
+          { content: "Another valid rule" }
+        ];
+        const batchPath = path.join(env.cassMemoryDir, "batch.json");
+        await writeFile(batchPath, JSON.stringify(batchRules));
+
+        const capture = captureConsole();
+        try {
+          await playbookCommand("add", [], { file: batchPath, json: true });
+        } finally {
+          capture.restore();
+        }
+
+        const output = capture.logs.join("\n");
+        const payload = JSON.parse(output) as any;
+        const result = payload.data;
+
+        // 2 valid, 2 failed (empty content and missing content)
+        expect(result.summary.succeeded).toBe(2);
+        expect(result.summary.failed).toBe(2);
+        expect(result.failed.length).toBe(2);
+      });
+    });
+
+    it("handles non-array JSON input", async () => {
+      await withTempCassHome(async (env) => {
+        const playbook = createTestPlaybook([]);
+        await writeFile(env.playbookPath, yaml.stringify(playbook));
+
+        const batchPath = path.join(env.cassMemoryDir, "batch.json");
+        await writeFile(batchPath, JSON.stringify({ content: "Not an array" }));
+
+        const capture = captureConsole();
+        try {
+          await playbookCommand("add", [], { file: batchPath, json: true });
+        } finally {
+          capture.restore();
+        }
+
+        const output = capture.logs.join("\n");
+        const payload = JSON.parse(output) as any;
+
+        // Outer success is true (command ran), but data.success is false (batch failed)
+        expect(payload.success).toBe(true);
+        expect(payload.data.success).toBe(false);
+        expect(payload.data.failed[0].error).toContain("must be a JSON array");
+      });
+    });
+
+    it("handles empty array input gracefully", async () => {
+      await withTempCassHome(async (env) => {
+        const playbook = createTestPlaybook([]);
+        await writeFile(env.playbookPath, yaml.stringify(playbook));
+
+        const batchPath = path.join(env.cassMemoryDir, "batch.json");
+        await writeFile(batchPath, JSON.stringify([]));
+
+        const capture = captureConsole();
+        try {
+          await playbookCommand("add", [], { file: batchPath, json: true });
+        } finally {
+          capture.restore();
+        }
+
+        const output = capture.logs.join("\n");
+        const payload = JSON.parse(output) as any;
+
+        expect(payload.success).toBe(true);
+        expect(payload.data.summary.total).toBe(0);
+      });
+    });
+
+    it("outputs human-readable batch results without --json", async () => {
+      await withTempCassHome(async (env) => {
+        const playbook = createTestPlaybook([]);
+        await writeFile(env.playbookPath, yaml.stringify(playbook));
+
+        const batchRules = [
+          { content: "First batch rule" },
+          { content: "Second batch rule" }
+        ];
+        const batchPath = path.join(env.cassMemoryDir, "batch.json");
+        await writeFile(batchPath, JSON.stringify(batchRules));
+
+        const capture = captureConsole();
+        try {
+          await playbookCommand("add", [], { file: batchPath });
+        } finally {
+          capture.restore();
+        }
+
+        const output = capture.logs.join("\n");
+        expect(output).toContain("BATCH ADD RESULTS");
+        expect(output).toContain("Added 2 rules");
+        expect(output).toContain("2 added");
+      });
+    });
   });
 
   describe("remove action", () => {
