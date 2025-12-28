@@ -72,6 +72,17 @@ export async function installGuard(json?: boolean, silent?: boolean) {
 
   await ensureDir(hooksDir);
 
+  // Check for python3 availability (warn if missing)
+  if (!silent) {
+    try {
+      const { exec } = await import("node:child_process");
+      const { promisify } = await import("node:util");
+      await promisify(exec)("python3 --version");
+    } catch {
+      console.warn(chalk.yellow(`${iconPrefix("warning")} Warning: 'python3' not found in PATH. The trauma guard requires Python 3.`));
+    }
+  }
+
   // 2. Write Script
   await fs.writeFile(scriptPath, TRAUMA_GUARD_SCRIPT, { encoding: "utf-8", mode: 0o755 });
 
@@ -186,6 +197,17 @@ export async function installGitHook(json?: boolean, silent?: boolean): Promise<
 
   // Ensure hooks directory exists
   await ensureDir(gitHooksDir);
+
+  // Check for python3 availability (warn if missing)
+  if (!silent) {
+    try {
+      const { exec } = await import("node:child_process");
+      const { promisify } = await import("node:util");
+      await promisify(exec)("python3 --version");
+    } catch {
+      console.warn(chalk.yellow(`${iconPrefix("warning")} Warning: 'python3' not found in PATH. The git hook requires Python 3.`));
+    }
+  }
 
   // Check if pre-commit hook exists
   let existingHook = "";
