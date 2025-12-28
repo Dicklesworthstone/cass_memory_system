@@ -579,4 +579,196 @@ describe("E2E: CLI init command", () => {
       });
     });
   });
+
+  describe("Starter Seeds", () => {
+    it.serial("init with invalid --starter reports error", async () => {
+      await withTempCassHome(async (env) => {
+        await rm(env.cassMemoryDir, { recursive: true, force: true });
+
+        process.exitCode = 0;
+        const capture = captureConsole();
+        try {
+          await initCommand({ json: true, starter: "nonexistent-starter-xyz" });
+        } finally {
+          capture.restore();
+        }
+
+        const output = capture.logs.join("\n");
+        const payload = JSON.parse(output);
+        expect(payload.success).toBe(false);
+        expect(payload.error.code).toBe("VALIDATION_FAILED");
+        expect(payload.error.message).toContain("not found");
+      });
+    });
+  });
+
+  describe("Repo Init Starters", () => {
+    it.serial("repo init with invalid --starter reports error", async () => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+
+        try {
+          process.exitCode = 0;
+          const capture = captureConsole();
+          try {
+            await initCommand({ repo: true, json: true, starter: "nonexistent-xyz" });
+          } finally {
+            capture.restore();
+          }
+
+          const output = capture.logs.join("\n");
+          const payload = JSON.parse(output);
+          expect(payload.success).toBe(false);
+          expect(payload.error.code).toBe("VALIDATION_FAILED");
+        } finally {
+          process.chdir(originalCwd);
+        }
+      });
+    });
+  });
+
+  describe("Human Output", () => {
+    it.serial("init shows human-readable success output", async () => {
+      await withTempCassHome(async (env) => {
+        await rm(env.cassMemoryDir, { recursive: true, force: true });
+
+        const capture = captureConsole();
+        try {
+          await initCommand({});
+        } finally {
+          capture.restore();
+        }
+
+        const output = capture.logs.join("\n");
+        expect(output).toContain("Created");
+        expect(output).toContain(".cass-memory");
+        expect(output).toContain("initialized successfully");
+        expect(output).toContain("Next steps");
+      });
+    });
+
+    it.serial("init shows already-exists files in output", async () => {
+      await withTempCassHome(async (env) => {
+        await rm(env.cassMemoryDir, { recursive: true, force: true });
+
+        // First init
+        const capture1 = captureConsole();
+        try {
+          await initCommand({});
+        } finally {
+          capture1.restore();
+        }
+
+        // Reinit with --force --yes (shows "already exists" for diary)
+        const capture2 = captureConsole();
+        try {
+          await initCommand({ force: true, yes: true });
+        } finally {
+          capture2.restore();
+        }
+
+        const output = capture2.logs.join("\n");
+        // Should show backup info
+        expect(output).toContain("Backups created");
+        // Should show overwritten files
+        expect(output).toContain("Overwritten");
+      });
+    });
+
+    it.serial("repo init shows human-readable output", async () => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+
+        try {
+          const capture = captureConsole();
+          try {
+            await initCommand({ repo: true });
+          } finally {
+            capture.restore();
+          }
+
+          const output = capture.logs.join("\n");
+          expect(output).toContain("Initializing repo-level");
+          expect(output).toContain("Created");
+          expect(output).toContain(".cass");
+          expect(output).toContain("playbook.yaml");
+          expect(output).toContain("Commit");
+        } finally {
+          process.chdir(originalCwd);
+        }
+      });
+    });
+
+    it.serial("repo init shows backup info when using --force", async () => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+
+        try {
+          // First init
+          const capture1 = captureConsole();
+          try {
+            await initCommand({ repo: true });
+          } finally {
+            capture1.restore();
+          }
+
+          // Modify the playbook
+          const playbookPath = path.join(repoDir, ".cass", "playbook.yaml");
+          const original = await readFile(playbookPath, "utf-8");
+          const playbook = yaml.parse(original);
+          playbook.description = "modified";
+          await writeFile(playbookPath, yaml.stringify(playbook));
+
+          // Reinit with --force --yes
+          const capture2 = captureConsole();
+          try {
+            await initCommand({ repo: true, force: true, yes: true });
+          } finally {
+            capture2.restore();
+          }
+
+          const output = capture2.logs.join("\n");
+          expect(output).toContain("Backups created");
+          expect(output).toContain("Overwritten");
+        } finally {
+          process.chdir(originalCwd);
+        }
+      });
+    });
+
+  });
+
+  describe("CASS_PATH environment variable", () => {
+    it.serial("respects CASS_PATH when checking cass availability", async () => {
+      await withTempCassHome(async (env) => {
+        await rm(env.cassMemoryDir, { recursive: true, force: true });
+
+        // Set CASS_PATH to a non-existent path
+        const originalCassPath = process.env.CASS_PATH;
+        process.env.CASS_PATH = "/nonexistent/cass/binary";
+
+        const capture = captureConsole();
+        try {
+          await initCommand({ json: true });
+        } finally {
+          capture.restore();
+          // Restore original
+          if (originalCassPath) {
+            process.env.CASS_PATH = originalCassPath;
+          } else {
+            delete process.env.CASS_PATH;
+          }
+        }
+
+        const output = capture.logs.join("\n");
+        const payload = JSON.parse(output);
+        expect(payload.success).toBe(true);
+        // cassAvailable should be false since path doesn't exist
+        expect(payload.data.cassAvailable).toBe(false);
+      });
+    });
+  });
 });
