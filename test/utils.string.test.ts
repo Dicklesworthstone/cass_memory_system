@@ -299,7 +299,6 @@ describe("extractKeywords", () => {
   });
 
   it("ranks by frequency", () => {
-    // Note: "error" is now a stop word, so use other terms
     const keywords = extractKeywords("validation validation validation warning info validation");
     // "validation" appears most, should be first
     expect(keywords[0]).toBe("validation");
