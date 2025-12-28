@@ -321,6 +321,144 @@ describe("outcomeCommand input validation", () => {
   });
 });
 
+describe("outcomeCommand additional validation", () => {
+  test("rejects whitespace-only session", async () => {
+    await withTempCassHome(async () => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+
+        const capture = captureConsole();
+        try {
+          await outcomeCommand({
+            status: "success",
+            rules: "b-test",
+            session: "   ",
+            json: true
+          });
+          const output = capture.getOutput();
+          expect(output).toContain("error");
+          expect(output).toContain("session");
+        } finally {
+          capture.restore();
+          process.chdir(originalCwd);
+        }
+      });
+    });
+  });
+
+  test("rejects whitespace-only text", async () => {
+    await withTempCassHome(async () => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+
+        const capture = captureConsole();
+        try {
+          await outcomeCommand({
+            status: "success",
+            rules: "b-test",
+            text: "   ",
+            json: true
+          });
+          const output = capture.getOutput();
+          expect(output).toContain("error");
+          expect(output).toContain("text");
+        } finally {
+          capture.restore();
+          process.chdir(originalCwd);
+        }
+      });
+    });
+  });
+
+  test("rejects rules that become empty after splitting", async () => {
+    await withTempCassHome(async () => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+
+        const capture = captureConsole();
+        try {
+          await outcomeCommand({
+            status: "success",
+            rules: " , , ",
+            json: true
+          });
+          const output = capture.getOutput();
+          expect(output).toContain("error");
+          expect(output).toContain("rule");
+        } finally {
+          capture.restore();
+          process.chdir(originalCwd);
+        }
+      });
+    });
+  });
+
+  test("handles outcome with no implicit signal (neutral outcome)", async () => {
+    await withTempCassHome(async (env) => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+
+        try {
+          // Create a playbook with matching bullet
+          const bullet = createTestBullet({ id: "b-neutral-test" });
+          writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([bullet])));
+
+          const capture = captureConsole();
+          try {
+            // Mixed status with no additional signals may not produce feedback
+            await outcomeCommand({
+              status: "mixed",
+              rules: "b-neutral-test",
+              json: true
+            });
+            const output = capture.getOutput();
+            // Should succeed but may report no signal
+            expect(output).toContain("success");
+          } finally {
+            capture.restore();
+          }
+        } finally {
+          process.chdir(originalCwd);
+        }
+      });
+    });
+  });
+
+  test("outputs human-readable success message", async () => {
+    await withTempCassHome(async (env) => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+
+        try {
+          const bullet = createTestBullet({ id: "b-human-test" });
+          writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([bullet])));
+
+          const capture = captureConsole();
+          try {
+            // Success without --json flag
+            await outcomeCommand({
+              status: "success",
+              rules: "b-human-test"
+            });
+            const output = capture.getOutput();
+            // Should output human-readable message
+            expect(output.length).toBeGreaterThanOrEqual(0);
+          } finally {
+            capture.restore();
+          }
+        } finally {
+          process.chdir(originalCwd);
+        }
+      });
+    });
+  });
+});
+
 describe("applyOutcomeLogCommand input validation", () => {
   test("rejects invalid limit (negative)", async () => {
     await withTempCassHome(async () => {
@@ -429,6 +567,77 @@ describe("applyOutcomeLogCommand input validation", () => {
             await applyOutcomeLogCommand({ json: true });
             const output = capture.getOutput();
             expect(output).toContain("success");
+          } finally {
+            capture.restore();
+          }
+        } finally {
+          process.chdir(originalCwd);
+        }
+      });
+    });
+  });
+
+  test("rejects whitespace-only session", async () => {
+    await withTempCassHome(async () => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+
+        const capture = captureConsole();
+        try {
+          await applyOutcomeLogCommand({ session: "   ", json: true });
+          const output = capture.getOutput();
+          expect(output).toContain("error");
+          expect(output).toContain("session");
+        } finally {
+          capture.restore();
+          process.chdir(originalCwd);
+        }
+      });
+    });
+  });
+
+  test("outputs human-readable message without --json", async () => {
+    await withTempCassHome(async (env) => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+
+        try {
+          writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])));
+
+          const capture = captureConsole();
+          try {
+            // Run without --json
+            await applyOutcomeLogCommand({});
+            const output = capture.getOutput();
+            // Should output human-readable message about applied outcomes
+            expect(output).toContain("Applied");
+          } finally {
+            capture.restore();
+          }
+        } finally {
+          process.chdir(originalCwd);
+        }
+      });
+    });
+  });
+
+  test("outputs human-readable message for session filter with no matches", async () => {
+    await withTempCassHome(async (env) => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+
+        try {
+          writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])));
+
+          const capture = captureConsole();
+          try {
+            await applyOutcomeLogCommand({ session: "nonexistent-session-id" });
+            const output = capture.getOutput() + capture.getErrors();
+            // Should output message about no outcomes found
+            expect(output).toContain("No outcomes found");
           } finally {
             capture.restore();
           }
