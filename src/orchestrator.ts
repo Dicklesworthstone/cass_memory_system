@@ -1,4 +1,4 @@
-import { Config, CurationResult, Playbook, PlaybookDelta, DecisionLogEntry, PlaybookBullet } from "./types.js";
+import { Config, CurationResult, Playbook, PlaybookDelta, DecisionLogEntry, PlaybookBullet, ProcessedEntry } from "./types.js";
 import { loadMergedPlaybook, loadPlaybook, savePlaybook, findBullet, mergePlaybooks } from "./playbook.js";
 import { ProcessedLog, getProcessedLogPath } from "./tracking.js";
 import { findUnprocessedSessions, cassExport } from "./cass.js";
@@ -120,6 +120,7 @@ export async function orchestrateReflection(
 
     // 4. Reflection Phase (LLM) - Done WITHOUT holding playbook locks
     const allDeltas: PlaybookDelta[] = [];
+    const pendingProcessedEntries: ProcessedEntry[] = [];
     let sessionsProcessed = 0;
 
     for (let i = 0; i < unprocessed.length; i++) {
@@ -145,9 +146,8 @@ export async function orchestrateReflection(
             reason: "Session content too short",
           });
 
-          // Mark as processed so we don't retry
-          // Note: Removing skipLock to ensure atomic writes to the log file via standard file locking
-          await processedLog.append({
+          // Mark as processed so we don't retry (defer via pendingProcessedEntries)
+          pendingProcessedEntries.push({
             sessionPath,
             processedAt: now(),
             diaryId: diary.id,
@@ -175,8 +175,8 @@ export async function orchestrateReflection(
           allDeltas.push(...validatedDeltas);
         }
 
-        // Note: Removing skipLock to ensure atomic writes to the log file via standard file locking
-        await processedLog.append({
+        // Defer marking as processed until merge succeeds to prevent data loss
+        pendingProcessedEntries.push({
           sessionPath,
           processedAt: now(),
           diaryId: diary.id,
@@ -192,9 +192,6 @@ export async function orchestrateReflection(
           deltasGenerated: validatedDeltas.length,
         });
         
-        // Save log incrementally - removed as append handles persistence
-        // await processedLog.save();
-
       } catch (err: any) {
         const message = err?.message || String(err);
         errors.push(`Failed to process ${sessionPath}: ${message}`);
@@ -218,6 +215,11 @@ export async function orchestrateReflection(
     }
 
     if (allDeltas.length === 0) {
+      // Even if no deltas were generated, we should still mark sessions as processed
+      // (e.g., empty sessions or sessions with no insights) to avoid infinite loops.
+      if (pendingProcessedEntries.length > 0) {
+        await processedLog.appendBatch(pendingProcessedEntries);
+      }
       return { sessionsProcessed, deltasGenerated: 0, errors };
     }
 
@@ -352,8 +354,10 @@ export async function orchestrateReflection(
       }
     });
 
-    // Final log save - removed as append handled it
-    // await processedLog.save();
+    // Final log save - only mark processed AFTER rules are persisted
+    if (pendingProcessedEntries.length > 0) {
+      await processedLog.appendBatch(pendingProcessedEntries);
+    }
 
     return {
       sessionsProcessed,
