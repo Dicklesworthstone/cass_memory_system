@@ -675,7 +675,7 @@ describe("E2E: CLI trauma command", () => {
     });
 
     it("applies severity and scope to all imported traumas", async () => {
-      const { home, cassMemoryDir, dir } = await setupTestEnvironment();
+      const { home, repo, dir } = await setupTestEnvironment();
       const originalHome = process.env.HOME;
 
       try {
@@ -689,28 +689,31 @@ describe("E2E: CLI trauma command", () => {
         const importFile = path.join(dir, "patterns.txt");
         await writeFile(importFile, `${pattern1}\n${pattern2}\n`);
 
-        const capture = captureConsole();
-        try {
-          await traumaCommand("import", [importFile], {
-            severity: "FATAL",
-            scope: "project",
-            json: true
-          });
-        } finally {
-          capture.restore();
-        }
+        // Need to chdir to temp repo for project scope to work correctly
+        await withCwd(repo, async () => {
+          const capture = captureConsole();
+          try {
+            await traumaCommand("import", [importFile], {
+              severity: "FATAL",
+              scope: "project",
+              json: true
+            });
+          } finally {
+            capture.restore();
+          }
 
-        const payload = JSON.parse(capture.logs.join("\n"));
-        expect(payload.data.imported).toBe(2);
+          const payload = JSON.parse(capture.logs.join("\n"));
+          expect(payload.data.imported).toBe(2);
 
-        // Verify the newly imported traumas have correct severity and scope
-        const traumas = await loadTraumas();
-        const importedTraumas = traumas.filter(t =>
-          t.pattern.includes(uniqueSuffix)
-        );
-        expect(importedTraumas.length).toBe(2);
-        expect(importedTraumas.every(t => t.severity === "FATAL")).toBe(true);
-        expect(importedTraumas.every(t => t.scope === "project")).toBe(true);
+          // Verify the newly imported traumas have correct severity and scope
+          const traumas = await loadTraumas();
+          const importedTraumas = traumas.filter(t =>
+            t.pattern.includes(uniqueSuffix)
+          );
+          expect(importedTraumas.length).toBe(2);
+          expect(importedTraumas.every(t => t.severity === "FATAL")).toBe(true);
+          expect(importedTraumas.every(t => t.scope === "project")).toBe(true);
+        });
       } finally {
         process.env.HOME = originalHome;
       }
