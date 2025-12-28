@@ -84,7 +84,7 @@ function getBunVersion(): { available: boolean; version?: string } {
  */
 async function countPlaybookRules(playbookPath: string): Promise<number> {
   try {
-    const playbook = await loadPlaybook(playbookPath, { silent: true });
+    const playbook = await loadPlaybook(playbookPath);
     return playbook?.bullets?.filter((b: any) => b.status !== "deprecated").length || 0;
   } catch {
     return 0;

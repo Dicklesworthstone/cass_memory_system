@@ -28,6 +28,7 @@ import { onboardCommand } from "./commands/onboard.js";
 import { guardCommand } from "./commands/guard.js";
 import { traumaCommand } from "./commands/trauma.js";
 import { infoCommand } from "./info.js";
+import { examplesCommand } from "./examples.js";
 
 export function createProgram(argv: string[] = process.argv): Command {
   applyGlobalEnvFromArgv(argv);
@@ -54,7 +55,8 @@ export function createProgram(argv: string[] = process.argv): Command {
     .option("--no-emoji", "Disable emoji/icons (also respects CASS_MEMORY_NO_EMOJI)")
     .option("--width <n>", "Override output width (default: terminal columns)", toInt)
     .option("--verbose", "Enable verbose diagnostics (sets CASS_MEMORY_VERBOSE=1)")
-    .option("--info", "Show version, config paths, environment, and dependencies");
+    .option("--info", "Show version, config paths, environment, and dependencies")
+    .option("--examples", "Show curated workflow examples");
 
 // --- Init ---
 program.command("init")
@@ -1078,13 +1080,21 @@ export function handleCliError(error: unknown, argv: string[] = process.argv, pr
 }
 
 if (import.meta.main) {
-  // Handle --info before commander parses (similar to --version)
+  // Handle --info and --examples before commander parses (similar to --version)
   const args = process.argv.slice(2);
   const hasInfoFlag = args.includes("--info");
+  const hasExamplesFlag = args.includes("--examples");
   const hasJsonFlag = args.includes("--json") || args.includes("-j");
 
   if (hasInfoFlag) {
     infoCommand({ json: hasJsonFlag })
+      .then(() => process.exit(0))
+      .catch((err) => {
+        console.error(err);
+        process.exit(1);
+      });
+  } else if (hasExamplesFlag) {
+    examplesCommand({ json: hasJsonFlag })
       .then(() => process.exit(0))
       .catch((err) => {
         console.error(err);
