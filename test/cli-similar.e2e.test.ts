@@ -64,6 +64,38 @@ function createBullet(overrides: Partial<{ id: string; content: string; category
   };
 }
 
+describe("generateSimilarResults input validation", () => {
+  it("throws error for empty query", async () => {
+    await expect(generateSimilarResults("")).rejects.toThrow("Query is required");
+    await expect(generateSimilarResults("   ")).rejects.toThrow("Query is required");
+  });
+
+  it("throws error for invalid limit (non-integer)", async () => {
+    await expect(generateSimilarResults("test", { limit: 1.5 })).rejects.toThrow("--limit must be an integer >= 1");
+    await expect(generateSimilarResults("test", { limit: NaN })).rejects.toThrow("--limit must be an integer >= 1");
+    await expect(generateSimilarResults("test", { limit: Infinity })).rejects.toThrow("--limit must be an integer >= 1");
+  });
+
+  it("throws error for invalid limit (less than 1)", async () => {
+    await expect(generateSimilarResults("test", { limit: 0 })).rejects.toThrow("--limit must be an integer >= 1");
+    await expect(generateSimilarResults("test", { limit: -1 })).rejects.toThrow("--limit must be an integer >= 1");
+  });
+
+  it("throws error for invalid threshold (non-number)", async () => {
+    await expect(generateSimilarResults("test", { threshold: NaN })).rejects.toThrow("--threshold must be between 0 and 1");
+    await expect(generateSimilarResults("test", { threshold: Infinity })).rejects.toThrow("--threshold must be between 0 and 1");
+  });
+
+  it("throws error for threshold out of range", async () => {
+    await expect(generateSimilarResults("test", { threshold: -0.1 })).rejects.toThrow("--threshold must be between 0 and 1");
+    await expect(generateSimilarResults("test", { threshold: 1.1 })).rejects.toThrow("--threshold must be between 0 and 1");
+  });
+
+  it("throws error for invalid scope", async () => {
+    await expect(generateSimilarResults("test", { scope: "invalid" as any })).rejects.toThrow('Invalid --scope "invalid"');
+  });
+});
+
 describe("E2E: CLI similar command", () => {
   it("returns relevant bullets in keyword mode (semanticSearchEnabled default false)", async () => {
     await withTempCassHome(async (env) => {
@@ -169,5 +201,65 @@ describe("E2E: CLI similar command", () => {
       expect(Array.isArray(parsed.results)).toBe(true);
       expect(parsed.results[0].id).toBe("b-jwt");
     });
+  });
+
+  it("prints human-readable output with matches when --json is not set", async () => {
+    await withTempCassHome(async (env) => {
+      const query = "handle jwt authentication errors";
+      const playbook = createTestPlaybook([
+        createBullet({ id: "b-jwt", content: "Handle jwt authentication errors gracefully", category: "security" }),
+      ]);
+      await writeFile(env.playbookPath, yaml.stringify(playbook));
+
+      const consoleCapture = captureConsole();
+      try {
+        await similarCommand(query, { limit: 5, scope: "all" });
+      } finally {
+        consoleCapture.restore();
+      }
+
+      const output = consoleCapture.logs.join("\n");
+      expect(output).toContain("SIMILAR");
+      expect(output).toContain("Query:");
+      expect(output).toContain("Matches");
+      expect(output).toContain("b-jwt");
+      expect(output).toContain("sim");
+      expect(output).toContain("score");
+    });
+  });
+
+  it("prints 'No matches found' in human-readable mode when no results", async () => {
+    await withTempCassHome(async (env) => {
+      const query = "xyz completely unrelated query";
+      const playbook = createTestPlaybook([
+        createBullet({ id: "b-other", content: "Something entirely different", category: "other" }),
+      ]);
+      await writeFile(env.playbookPath, yaml.stringify(playbook));
+
+      const consoleCapture = captureConsole();
+      try {
+        await similarCommand(query, { limit: 5, threshold: 0.9 });
+      } finally {
+        consoleCapture.restore();
+      }
+
+      const output = consoleCapture.logs.join("\n");
+      expect(output).toContain("No matches found");
+      expect(output).toContain("Try lowering the threshold");
+    });
+  });
+
+  it("handles similarCommand errors gracefully and reports them", async () => {
+    const consoleCapture = captureConsole();
+    try {
+      await similarCommand("", { json: true });
+    } finally {
+      consoleCapture.restore();
+    }
+
+    const output = consoleCapture.logs.join("\n");
+    const parsed = JSON.parse(output) as any;
+    expect(parsed.success).toBe(false);
+    expect(parsed.error.message).toContain("Query is required");
   });
 });

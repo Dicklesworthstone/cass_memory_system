@@ -267,4 +267,210 @@ describe("audit command - Unit Tests", () => {
     expect(payload.error.code).toBe("INVALID_INPUT");
     expect(process.exitCode).toBe(2);
   });
+
+  test("reports missing API key error when no LLM provider available (JSON mode)", async () => {
+    await withEnvAsync(
+      {
+        ANTHROPIC_API_KEY: undefined,
+        OPENAI_API_KEY: undefined,
+        GOOGLE_GENERATIVE_AI_API_KEY: undefined,
+      },
+      async () => {
+        await withTempCassHome(async (env) => {
+          await withCwd(env.home, async () => {
+            writeFileSync(env.configPath, JSON.stringify({ cassPath: "cass" }, null, 2));
+            writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])));
+
+            process.exitCode = 0;
+            const { output } = await captureConsoleLog(() =>
+              auditCommand({ days: 7, json: true })
+            );
+
+            const payload = JSON.parse(output) as any;
+            expect(payload.success).toBe(false);
+            expect(payload.error.code).toBe("MISSING_API_KEY");
+            expect(payload.error.message).toContain("Audit requires LLM access");
+          });
+        });
+      }
+    );
+  });
+
+  test("handles empty/malformed timeline gracefully (JSON mode)", async () => {
+    await withEnvAsync(
+      {
+        ANTHROPIC_API_KEY: undefined,
+        OPENAI_API_KEY: undefined,
+        GOOGLE_GENERATIVE_AI_API_KEY: undefined,
+      },
+      async () => {
+        await withTempCassHome(async (env) => {
+          await withCwd(env.home, async () => {
+            // Return timeline without groups property
+            const cassRunner = createCassRunnerStub({
+              timeline: JSON.stringify({}),
+              exportText: "",
+            });
+
+            writeFileSync(
+              env.configPath,
+              JSON.stringify({ cassPath: "cass", apiKey: "sk-ant-test-0000000000000000" }, null, 2)
+            );
+            writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])));
+
+            process.exitCode = 0;
+            const { output } = await captureConsoleLog(() =>
+              auditCommand({ days: 7, json: true }, { cassRunner })
+            );
+
+            const payload = JSON.parse(output) as any;
+            expect(payload.success).toBe(true);
+            expect(payload.data?.stats.sessionsScanned).toBe(0);
+            expect(payload.data?.stats.violationsFound).toBe(0);
+          });
+        });
+      }
+    );
+  });
+
+  test("handles empty timeline in human-readable mode", async () => {
+    await withEnvAsync(
+      {
+        ANTHROPIC_API_KEY: undefined,
+        OPENAI_API_KEY: undefined,
+        GOOGLE_GENERATIVE_AI_API_KEY: undefined,
+      },
+      async () => {
+        await withTempCassHome(async (env) => {
+          await withCwd(env.home, async () => {
+            const cassRunner = createCassRunnerStub({
+              timeline: JSON.stringify({}),
+              exportText: "",
+            });
+
+            writeFileSync(
+              env.configPath,
+              JSON.stringify({ cassPath: "cass", apiKey: "sk-ant-test-0000000000000000" }, null, 2)
+            );
+            writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])));
+
+            const { output } = await captureConsoleLog(() =>
+              auditCommand({ days: 7, json: false }, { cassRunner })
+            );
+
+            // With empty groups array, it says "No sessions found"
+            expect(output).toContain("No sessions found");
+          });
+        });
+      }
+    );
+  });
+
+  test("trauma scan mode with no candidates (JSON mode)", async () => {
+    await withTempCassHome(async (env) => {
+      await withCwd(env.home, async () => {
+        // Need to stub cass search for trauma scanning
+        const cassRunner: CassRunner = {
+          execFile: async (_file, args) => {
+            const cmd = args[0] ?? "";
+            if (cmd === "timeline") return { stdout: JSON.stringify({ groups: [] }), stderr: "" };
+            if (cmd === "export") return { stdout: "", stderr: "" };
+            if (cmd === "search") return { stdout: "[]", stderr: "" };  // No trauma matches
+            throw new Error(`Unexpected cass execFile command: ${cmd}`);
+          },
+          spawnSync: () => ({ status: 0, stdout: "", stderr: "" }),
+          spawn: (() => { throw new Error("spawn not implemented"); }) as any,
+        };
+
+        writeFileSync(env.configPath, JSON.stringify({ cassPath: "cass" }, null, 2));
+        writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])));
+
+        const { output } = await captureConsoleLog(() =>
+          auditCommand({ days: 7, json: true, trauma: true }, { cassRunner })
+        );
+
+        const payload = JSON.parse(output) as any;
+        expect(payload.success).toBe(true);
+        expect(payload.data.candidates).toEqual([]);
+      });
+    });
+  });
+
+  test("trauma scan mode with no candidates (human-readable mode)", async () => {
+    await withTempCassHome(async (env) => {
+      await withCwd(env.home, async () => {
+        // Need to stub cass search for trauma scanning
+        const cassRunner: CassRunner = {
+          execFile: async (_file, args) => {
+            const cmd = args[0] ?? "";
+            if (cmd === "timeline") return { stdout: JSON.stringify({ groups: [] }), stderr: "" };
+            if (cmd === "export") return { stdout: "", stderr: "" };
+            if (cmd === "search") return { stdout: "[]", stderr: "" };  // No trauma matches
+            throw new Error(`Unexpected cass execFile command: ${cmd}`);
+          },
+          spawnSync: () => ({ status: 0, stdout: "", stderr: "" }),
+          spawn: (() => { throw new Error("spawn not implemented"); }) as any,
+        };
+
+        writeFileSync(env.configPath, JSON.stringify({ cassPath: "cass" }, null, 2));
+        writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])));
+
+        const { output } = await captureConsoleLog(() =>
+          auditCommand({ days: 7, json: false, trauma: true }, { cassRunner })
+        );
+
+        expect(output).toContain("Project Hot Stove");
+        expect(output).toContain("No potential traumas found");
+      });
+    });
+  });
+
+  test("displays human-readable audit results with violations", async () => {
+    await withEnvAsync(
+      {
+        ANTHROPIC_API_KEY: undefined,
+        OPENAI_API_KEY: undefined,
+        GOOGLE_GENERATIVE_AI_API_KEY: undefined,
+      },
+      async () => {
+        await withTempCassHome(async (env) => {
+          await withCwd(env.home, async () => {
+            const sessionPath = "/sessions/audit-hr.jsonl";
+            const timelineJson = JSON.stringify({
+              groups: [{ date: "2025-01-01", sessions: [{ path: sessionPath, agent: "stub", messageCount: 1, startTime: "10:00", endTime: "10:01" }] }],
+            });
+
+            const cassRunner = createCassRunnerStub({ timeline: timelineJson, exportText: "test content" });
+
+            writeFileSync(
+              env.configPath,
+              JSON.stringify({ cassPath: "cass", apiKey: "sk-ant-test-0000000000000000" }, null, 2)
+            );
+
+            const bullet = createTestBullet({ id: "b-hr-test", content: "Test rule", category: "testing", maturity: "proven" });
+            writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([bullet])));
+
+            const io: LLMIO = {
+              generateObject: async <T>() => ({
+                object: {
+                  results: [{ ruleId: "b-hr-test", status: "violated", evidence: "Found violation" }],
+                  summary: "1 violation",
+                } as any as T,
+              }),
+            };
+
+            const { output } = await captureConsoleLog(() =>
+              auditCommand({ days: 7, json: false }, { io, cassRunner })
+            );
+
+            expect(output).toContain("AUDIT RESULTS");
+            expect(output).toContain("Sessions scanned:");
+            expect(output).toContain("Violations found:");
+            expect(output).toContain("HIGH");
+            expect(output).toContain("b-hr-test");
+          });
+        });
+      }
+    );
+  });
 });
