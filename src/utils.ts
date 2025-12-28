@@ -677,6 +677,7 @@ const ERROR_CODE_CATEGORIES: Record<string, ErrorCategory> = {
   ENOTFOUND: "network",
   EAI_AGAIN: "network",
   EHOSTUNREACH: "network",
+  EADDRINUSE: "network",
 };
 
 /**

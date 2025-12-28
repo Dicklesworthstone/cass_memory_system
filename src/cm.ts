@@ -30,6 +30,17 @@ import { traumaCommand } from "./commands/trauma.js";
 import { infoCommand } from "./info.js";
 import { examplesCommand } from "./examples.js";
 
+import { releaseAllLocks } from "./lock.js";
+
+// Global signal handlers for cleanup
+async function gracefulExit(signal: string) {
+  await releaseAllLocks();
+  process.exit(128 + (signal === "SIGINT" ? 2 : 15));
+}
+
+process.on("SIGINT", () => gracefulExit("SIGINT"));
+process.on("SIGTERM", () => gracefulExit("SIGTERM"));
+
 export function createProgram(argv: string[] = process.argv): Command {
   applyGlobalEnvFromArgv(argv);
 

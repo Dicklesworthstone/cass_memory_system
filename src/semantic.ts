@@ -69,53 +69,60 @@ async function loadEmbedder(
   options: { showProgress?: boolean; progressCallback?: ProgressCallback } = {}
 ): Promise<any> {
   const { pipeline } = await import("@xenova/transformers");
+  const { withLock } = await import("./lock.js");
+  const { resolveGlobalDir } = await import("./utils.js");
 
   const showProgress = options.showProgress ?? shouldShowProgress();
   const progressCallback = options.progressCallback ?? (showProgress ? createStderrProgressCallback() : undefined);
+  
+  // Lock to prevent concurrent model downloads from corrupting the cache
+  const lockPath = path.join(resolveGlobalDir(), "embeddings", "model_loading");
 
-  try {
-    const result = await pipeline("feature-extraction", model, {
-      progress_callback: progressCallback,
-    });
+  return withLock(lockPath, async () => {
+    try {
+      const result = await pipeline("feature-extraction", model, {
+        progress_callback: progressCallback,
+      });
 
-    // Signal that model is ready
-    if (progressCallback) {
-      progressCallback({ status: "ready" });
-    }
-
-    return result;
-  } catch (error: any) {
-    // Check if this is a network error and we might have a cached model
-    const isNetworkError =
-      error?.message?.includes("fetch") ||
-      error?.message?.includes("network") ||
-      error?.message?.includes("ENOTFOUND") ||
-      error?.message?.includes("ECONNREFUSED");
-
-    if (isNetworkError) {
-      // Try loading from local cache only
-      try {
-        warn("[semantic] Network unavailable; attempting to use cached model...");
-        const result = await pipeline("feature-extraction", model, {
-          local_files_only: true,
-          progress_callback: progressCallback,
-        });
-        if (progressCallback) {
-          progressCallback({ status: "ready" });
-        }
-        return result;
-      } catch (cacheError: any) {
-        throw new Error(
-          `Embedding model not available offline. To enable offline use:\n` +
-          `  1. Run any 'cm' command with semantic search while online to download the model\n` +
-          `  2. The model will be cached in ~/.cache/huggingface/\n` +
-          `Original error: ${error.message}`
-        );
+      // Signal that model is ready
+      if (progressCallback) {
+        progressCallback({ status: "ready" });
       }
-    }
 
-    throw error;
-  }
+      return result;
+    } catch (error: any) {
+      // Check if this is a network error and we might have a cached model
+      const isNetworkError =
+        error?.message?.includes("fetch") ||
+        error?.message?.includes("network") ||
+        error?.message?.includes("ENOTFOUND") ||
+        error?.message?.includes("ECONNREFUSED");
+
+      if (isNetworkError) {
+        // Try loading from local cache only
+        try {
+          warn("[semantic] Network unavailable; attempting to use cached model...");
+          const result = await pipeline("feature-extraction", model, {
+            local_files_only: true,
+            progress_callback: progressCallback,
+          });
+          if (progressCallback) {
+            progressCallback({ status: "ready" });
+          }
+          return result;
+        } catch (cacheError: any) {
+          throw new Error(
+            `Embedding model not available offline. To enable offline use:\n` +
+            `  1. Run any 'cm' command with semantic search while online to download the model\n` +
+            `  2. The model will be cached in ~/.cache/huggingface/\n` +
+            `Original error: ${error.message}`
+          );
+        }
+      }
+
+      throw error;
+    }
+  }, { staleLockThresholdMs: 600_000 }); // 10 minute timeout for downloads
 }
 
 export interface GetEmbedderOptions {
