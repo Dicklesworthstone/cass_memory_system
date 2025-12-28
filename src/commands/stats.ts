@@ -53,7 +53,8 @@ export async function statsCommand(options: { json?: boolean }): Promise<void> {
   const stale = activeBullets.filter((b) => isStale(b, staleThresholdDays));
 
   // Only check active bullets for merge candidates to improve performance and relevance
-  const mergeCandidates = findMergeCandidates(activeBullets, 0.8, 5);
+  // Prioritize recent bullets (reverse order) for merge checks
+  const mergeCandidates = findMergeCandidates([...activeBullets].reverse(), 0.8, 10);
 
   let semanticMergeCandidates: Array<{ a: string; b: string; similarity: number }> = [];
   if (config.semanticSearchEnabled && config.embeddingModel !== "none") {
@@ -115,8 +116,8 @@ function findMergeCandidates(
   const pairs: Array<{ a: string; b: string; similarity: number }> = [];
   
   // Cap comparisons to prevent hanging on huge playbooks
-  // Comparing top 1000 bullets = 500k checks, manageable with pre-tokenization
-  const maxScan = Math.min(tokenized.length, 1000); 
+  // Comparing top 2000 bullets = 2M checks, manageable with pre-tokenization
+  const maxScan = Math.min(tokenized.length, 2000); 
 
   for (let i = 0; i < maxScan; i++) {
     for (let j = i + 1; j < maxScan; j++) {
