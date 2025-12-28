@@ -9,7 +9,20 @@
 import { loadConfig } from "../config.js";
 import { loadPlaybook, savePlaybook, findBullet, removeFromBlockedLog } from "../playbook.js";
 import { ErrorCode, PlaybookBullet, Config, FeedbackEvent } from "../types.js";
-import { now, expandPath, getCliName, truncate, confirmDangerousAction, resolveRepoDir, fileExists, printJsonResult, reportError } from "../utils.js";
+import { getEffectiveScore, calculateMaturityState } from "../scoring.js";
+import {
+  getCliName,
+  printJsonResult,
+  reportError,
+  validateOneOf,
+  validatePositiveInt,
+  resolveRepoDir,
+  expandPath,
+  fileExists,
+  now,
+  truncate,
+  confirmDangerousAction
+} from "../utils.js";
 import { withLock } from "../lock.js";
 import chalk from "chalk";
 import { icon } from "../output.js";
@@ -348,6 +361,17 @@ export async function undoCommand(
           startedAtMs,
         });
         return;
+      }
+
+      // Recalculate maturity state
+      bullet.maturity = calculateMaturityState(bullet, config);
+      
+      // If it was auto-deprecated and now looks healthy, restore it
+      if (bullet.deprecated && bullet.deprecationReason?.includes("Automatically deprecated") && bullet.maturity !== "deprecated") {
+        bullet.deprecated = false;
+        bullet.deprecatedAt = undefined;
+        bullet.state = "active";
+        bullet.deprecationReason = undefined;
       }
 
       await savePlaybook(currentPlaybook, playbookPath);
