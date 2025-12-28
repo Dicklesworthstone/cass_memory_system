@@ -1,13 +1,13 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect } from "bun:test";
 import { Writable } from "node:stream";
 
-import { createProgress, type ProgressOptions, type ProgressReporter } from "../src/progress.js";
+import { createProgress } from "../src/progress.js";
 
 /**
  * Helper to capture stream output for assertions.
  * Creates a writable stream that collects all written data.
  */
-function createCaptureStream(): { stream: Writable; getOutput: () => string; isTTY: boolean } {
+function createCaptureStream(): { stream: Writable; getOutput: () => string } {
   const chunks: Buffer[] = [];
   const stream = new Writable({
     write(chunk: Buffer, _encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
@@ -18,7 +18,6 @@ function createCaptureStream(): { stream: Writable; getOutput: () => string; isT
   return {
     stream,
     getOutput: () => Buffer.concat(chunks).toString("utf8"),
-    isTTY: false,
   };
 }
 
