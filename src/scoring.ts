@@ -112,6 +112,9 @@ export function calculateMaturityState(
   config: Config
 ): BulletMaturity {
   if (bullet.maturity === "deprecated" || bullet.deprecated) return "deprecated";
+  
+  // Pinned bullets should not be auto-deprecated or demoted by feedback
+  if (bullet.pinned) return bullet.maturity;
 
   const { decayedHelpful, decayedHarmful } = getDecayedCounts(bullet, config);
   

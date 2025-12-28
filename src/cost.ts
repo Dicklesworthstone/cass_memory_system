@@ -77,8 +77,9 @@ interface TotalCostData {
 async function updateTotalCost(costDir: string, amount: number): Promise<void> {
   const totalPath = path.join(costDir, "total.json");
   const nowIso = now();
-  const today = nowIso.slice(0, 10); // YYYY-MM-DD
-  const month = nowIso.slice(0, 7);  // YYYY-MM
+  const date = new Date();
+  const today = date.toLocaleDateString("en-CA");
+  const month = today.slice(0, 7);  // YYYY-MM
   
   await withLock(totalPath, async () => {
     let total: TotalCostData = { allTime: 0, lastUpdated: nowIso };
@@ -123,8 +124,9 @@ export async function checkBudget(config: Config): Promise<{ allowed: boolean; r
 
   try {
     const total: TotalCostData = JSON.parse(await fs.readFile(totalPath, "utf-8"));
-    const today = new Date().toISOString().slice(0, 10);
-    const month = new Date().toISOString().slice(0, 7);
+    const date = new Date();
+    const today = date.toLocaleDateString("en-CA");
+    const month = today.slice(0, 7);
 
     // Verify dates match current time to avoid using stale stats
     const dailyCost = (total.currentDay?.day === today) ? (total.currentDay.cost || 0) : 0;
@@ -163,8 +165,9 @@ export async function getUsageStats(config: Config): Promise<{
   if (await fileExists(totalPath)) {
     try {
         const total: TotalCostData = JSON.parse(await fs.readFile(totalPath, "utf-8"));
-        const today = new Date().toISOString().slice(0, 10);
-        const month = new Date().toISOString().slice(0, 7);
+        const date = new Date();
+        const today = date.toLocaleDateString("en-CA");
+        const month = today.slice(0, 7);
 
         allTimeTotal = total.allTime || 0;
         
