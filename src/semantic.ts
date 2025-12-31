@@ -69,8 +69,6 @@ async function loadEmbedder(
   options: { showProgress?: boolean; progressCallback?: ProgressCallback } = {}
 ): Promise<any> {
   const { pipeline } = await import("@xenova/transformers");
-  const { withLock } = await import("./lock.js");
-  const { resolveGlobalDir } = await import("./utils.js");
 
   const showProgress = options.showProgress ?? shouldShowProgress();
   const progressCallback = options.progressCallback ?? (showProgress ? createStderrProgressCallback() : undefined);

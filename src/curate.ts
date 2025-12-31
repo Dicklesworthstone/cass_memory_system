@@ -27,17 +27,6 @@ import {
   getDecayedCounts 
 } from "./scoring.js";
 
-// --- Helper: Build Hash Cache ---
-
-function buildHashCache(playbook: Playbook): Set<string> {
-  const cache = new Set<string>();
-  for (const b of playbook.bullets) {
-    // Include deprecated bullets to prevent re-adding them (zombie rules or blocked content)
-    cache.add(hashContent(b.content));
-  }
-  return cache;
-}
-
 function findSimilarBulletFromMeta(
   newTokens: Set<string>,
   metaList: ConflictMeta[],
