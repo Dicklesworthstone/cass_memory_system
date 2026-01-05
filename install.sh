@@ -17,7 +17,10 @@ ARTIFACT_URL="${ARTIFACT_URL:-}"
 LOCK_FILE="/tmp/cass-memory-install.$$.lock"
 SYSTEM=0
 
-log() { [ "$QUIET" -eq 1 ] && return 0; echo -e "$@"; }
+log() {
+  [ "$QUIET" -eq 1 ] && return 0
+  echo -e "$@"
+}
 info() { log "\033[0;34m→\033[0m $*"; }
 ok() { log "\033[0;32m✓\033[0m $*"; }
 warn() { log "\033[1;33m⚠\033[0m $*"; }
@@ -27,45 +30,46 @@ resolve_version() {
   if [ -n "$VERSION" ]; then return 0; fi
 
   info "Resolving latest version..."
-  local latest_url="https://api.github.com/repos/${OWNER}/${REPO}/releases/latest"
-  local tag
-  if ! tag=$(curl -fsSL -H "Accept: application/vnd.github.v3+json" "$latest_url" 2>/dev/null | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/'); then
-    tag=""
-  fi
+  # Use redirect-based resolution instead of GitHub API to avoid rate limits
+  # and eliminate JSON parsing dependencies (grep/sed/jq)
+  local latest_url="https://github.com/${OWNER}/${REPO}/releases/latest"
+  local final_url
+  final_url="$(curl -fsSL -o /dev/null -w '%{url_effective}' "$latest_url" 2>/dev/null || true)"
+  local tag="${final_url##*/}"
 
-  if [ -n "$tag" ]; then
+  if [ -n "$tag" ] && [ "$tag" != "latest" ]; then
     VERSION="$tag"
     info "Resolved latest version: $VERSION"
   else
     VERSION="v0.1.0"
-    warn "Could not resolve latest version from GitHub API; defaulting to $VERSION"
+    warn "Could not resolve latest version; defaulting to $VERSION"
   fi
 }
 
 maybe_add_path() {
   case ":$PATH:" in
-    *:"$DEST":*)
-      return 0
-      ;;
-    *)
-      if [ "$EASY" -eq 1 ]; then
-        UPDATED=0
-        for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
-          if [ -e "$rc" ] && [ -w "$rc" ]; then
-            if ! grep -F "$DEST" "$rc" >/dev/null 2>&1; then
-              echo "export PATH=\"$DEST:\$PATH\"" >> "$rc"
-            fi
-            UPDATED=1
+  *:"$DEST":*)
+    return 0
+    ;;
+  *)
+    if [ "$EASY" -eq 1 ]; then
+      UPDATED=0
+      for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
+        if [ -e "$rc" ] && [ -w "$rc" ]; then
+          if ! grep -F "$DEST" "$rc" >/dev/null 2>&1; then
+            echo "export PATH=\"$DEST:\$PATH\"" >>"$rc"
           fi
-        done
-        if [ "$UPDATED" -eq 1 ]; then
-          warn "PATH updated in ~/.zshrc/.bashrc; restart shell to use cm"
-        else
-          warn "Add $DEST to PATH to use cm"
+          UPDATED=1
         fi
+      done
+      if [ "$UPDATED" -eq 1 ]; then
+        warn "PATH updated in ~/.zshrc/.bashrc; restart shell to use cm"
       else
         warn "Add $DEST to PATH to use cm"
       fi
+    else
+      warn "Add $DEST to PATH to use cm"
+    fi
     ;;
   esac
 }
@@ -76,7 +80,11 @@ ensure_bun() {
     if [ -t 0 ]; then
       echo -n "Install Bun? (y/N): "
       read -r ans
-      case "$ans" in y|Y) :;; *) warn "Skipping bun install"; return 1;; esac
+      case "$ans" in y | Y) : ;; *)
+        warn "Skipping bun install"
+        return 1
+        ;;
+      esac
     else
       # Non-interactive mode without --easy-mode: auto-install with warning
       warn "Non-interactive mode: auto-installing Bun (use --easy-mode to suppress this warning)"
@@ -115,18 +123,52 @@ EOFU
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --version) VERSION="$2"; shift 2;;
-    --dest) DEST="$2"; shift 2;;
-    --system) SYSTEM=1; DEST="/usr/local/bin"; shift;;
-    --easy-mode) EASY=1; shift;;
-    --verify) VERIFY=1; shift;;
-    --artifact-url) ARTIFACT_URL="$2"; shift 2;;
-    --checksum) CHECKSUM="$2"; shift 2;;
-    --checksum-url) CHECKSUM_URL="$2"; shift 2;;
-    --from-source) FROM_SOURCE=1; shift;;
-    --quiet|-q) QUIET=1; shift;;
-    -h|--help) usage; exit 0;;
-    *) shift;;
+  --version)
+    VERSION="$2"
+    shift 2
+    ;;
+  --dest)
+    DEST="$2"
+    shift 2
+    ;;
+  --system)
+    SYSTEM=1
+    DEST="/usr/local/bin"
+    shift
+    ;;
+  --easy-mode)
+    EASY=1
+    shift
+    ;;
+  --verify)
+    VERIFY=1
+    shift
+    ;;
+  --artifact-url)
+    ARTIFACT_URL="$2"
+    shift 2
+    ;;
+  --checksum)
+    CHECKSUM="$2"
+    shift 2
+    ;;
+  --checksum-url)
+    CHECKSUM_URL="$2"
+    shift 2
+    ;;
+  --from-source)
+    FROM_SOURCE=1
+    shift
+    ;;
+  --quiet | -q)
+    QUIET=1
+    shift
+    ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  *) shift ;;
   esac
 done
 
@@ -134,26 +176,32 @@ resolve_version
 
 # Create destination directory (use sudo for system installs)
 if [ "$SYSTEM" -eq 1 ]; then
-  sudo mkdir -p "$DEST" || { err "Failed to create $DEST"; exit 1; }
+  sudo mkdir -p "$DEST" || {
+    err "Failed to create $DEST"
+    exit 1
+  }
 else
-  mkdir -p "$DEST" || { err "Failed to create $DEST"; exit 1; }
+  mkdir -p "$DEST" || {
+    err "Failed to create $DEST"
+    exit 1
+  }
 fi
 
 OS=$(uname -s | tr 'A-Z' 'a-z')
 ARCH=$(uname -m)
 case "$ARCH" in
-  x86_64|amd64) ARCH="x64" ;;
-  arm64|aarch64) ARCH="arm64" ;;
-  *) warn "Unknown arch $ARCH, using as-is" ;;
+x86_64 | amd64) ARCH="x64" ;;
+arm64 | aarch64) ARCH="arm64" ;;
+*) warn "Unknown arch $ARCH, using as-is" ;;
 esac
 
 # Map to Bun target naming (only platforms we actually build)
 ARTIFACT=""
 case "${OS}-${ARCH}" in
-  linux-x64) ARTIFACT="cass-memory-linux-x64" ;;
-  darwin-x64) ARTIFACT="cass-memory-macos-x64" ;;
-  darwin-arm64) ARTIFACT="cass-memory-macos-arm64" ;;
-  *) :;;
+linux-x64) ARTIFACT="cass-memory-linux-x64" ;;
+darwin-x64) ARTIFACT="cass-memory-macos-x64" ;;
+darwin-arm64) ARTIFACT="cass-memory-macos-arm64" ;;
+*) : ;;
 esac
 
 URL=""
@@ -199,11 +247,17 @@ fi
 
 if [ "$FROM_SOURCE" -eq 1 ]; then
   info "Building from source (requires git, bun)"
-  ensure_bun || { err "Bun required for source build"; exit 1; }
+  ensure_bun || {
+    err "Bun required for source build"
+    exit 1
+  }
   git clone --depth 1 "https://github.com/${OWNER}/${REPO}.git" "$TMP/src"
   (cd "$TMP/src" && bun install && bun run build)
   BIN="$TMP/src/dist/cass-memory"
-  [ -x "$BIN" ] || { err "Build failed"; exit 1; }
+  [ -x "$BIN" ] || {
+    err "Build failed"
+    exit 1
+  }
   if [ "$SYSTEM" -eq 1 ]; then
     sudo install -m 0755 "$BIN" "$DEST/cm"
   else
@@ -235,10 +289,16 @@ fi
 if [ -n "$CHECKSUM" ]; then
   # Use shasum on macOS, sha256sum on Linux
   if command -v sha256sum >/dev/null 2>&1; then
-    echo "$CHECKSUM  $TMP/$ARTIFACT" | sha256sum -c - || { err "Checksum mismatch"; exit 1; }
+    echo "$CHECKSUM  $TMP/$ARTIFACT" | sha256sum -c - || {
+      err "Checksum mismatch"
+      exit 1
+    }
     ok "Checksum verified"
   elif command -v shasum >/dev/null 2>&1; then
-    echo "$CHECKSUM  $TMP/$ARTIFACT" | shasum -a 256 -c - || { err "Checksum mismatch"; exit 1; }
+    echo "$CHECKSUM  $TMP/$ARTIFACT" | shasum -a 256 -c - || {
+      err "Checksum mismatch"
+      exit 1
+    }
     ok "Checksum verified"
   else
     warn "No sha256 tool found; skipping checksum verification"
@@ -248,7 +308,10 @@ else
 fi
 
 BIN="$TMP/$ARTIFACT"
-[ -f "$BIN" ] || { err "Binary not found"; exit 1; }
+[ -f "$BIN" ] || {
+  err "Binary not found"
+  exit 1
+}
 chmod +x "$BIN"
 
 if [ "$SYSTEM" -eq 1 ]; then
