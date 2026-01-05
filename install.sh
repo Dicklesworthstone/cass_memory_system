@@ -27,18 +27,46 @@ resolve_version() {
   if [ -n "$VERSION" ]; then return 0; fi
 
   info "Resolving latest version..."
-  local latest_url="https://api.github.com/repos/${OWNER}/${REPO}/releases/latest"
-  local tag
-  if ! tag=$(curl -fsSL -H "Accept: application/vnd.github.v3+json" "$latest_url" 2>/dev/null | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/'); then
-    tag=""
-  fi
 
-  if [ -n "$tag" ]; then
+  # =========================================================================
+  # Redirect-Based Version Resolution (GitHub Issue #11)
+  # =========================================================================
+  # We use GitHub's redirect behavior instead of the API:
+  # - NO RATE LIMITING: API limits to 60/hr; redirects have no limit
+  # - NO JSON PARSING: API requires grep+sed which varies GNU/BSD
+  # - SIMPLER FAILURES: Only fails if GitHub is completely down
+  #
+  # How it works: GitHub redirects /releases/latest → /releases/tag/{version}
+  # We capture the final URL and extract the tag with shell parameter expansion
+  # =========================================================================
+
+  local releases_url="https://github.com/${OWNER}/${REPO}/releases/latest"
+  local final_url
+
+  # Timeouts: 10s connect, 30s total (handles slow/flaky networks)
+  # User-Agent: Identifies installer (GitHub may block empty UA)
+  # -o /dev/null: Discard body, we only want the URL
+  # -w '%{url_effective}': Capture final URL after redirects
+  final_url="$(curl -fsSL \
+    --connect-timeout 10 \
+    --max-time 30 \
+    -A "cass-memory-installer/1.0" \
+    -o /dev/null \
+    -w '%{url_effective}' \
+    "$releases_url" 2>/dev/null || true)"
+
+  # Extract tag: .../releases/tag/v0.2.1 → v0.2.1
+  local tag="${final_url##*/}"
+
+  # Validate: URL must contain /releases/tag/ (proves redirect worked)
+  # This catches: network errors, no releases, unexpected redirects
+  if [ -n "$tag" ] && [[ "$final_url" == *"/releases/tag/"* ]]; then
     VERSION="$tag"
     info "Resolved latest version: $VERSION"
   else
-    VERSION="v0.1.0"
-    warn "Could not resolve latest version from GitHub API; defaulting to $VERSION"
+    # Fallback to known-good version (update when releasing major versions)
+    VERSION="v0.2.1"
+    warn "Could not resolve latest version; defaulting to $VERSION"
   fi
 }
 
