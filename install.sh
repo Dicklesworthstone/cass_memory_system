@@ -14,7 +14,7 @@ FROM_SOURCE=0
 CHECKSUM="${CHECKSUM:-}"
 CHECKSUM_URL="${CHECKSUM_URL:-}"
 ARTIFACT_URL="${ARTIFACT_URL:-}"
-LOCK_FILE="/tmp/cass-memory-install.$$.lock"
+LOCK_FILE="/tmp/cass-memory-install.lock"
 SYSTEM=0
 
 log() { [ "$QUIET" -eq 1 ] && return 0; echo -e "$@"; }
