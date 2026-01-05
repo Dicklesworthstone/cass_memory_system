@@ -37,7 +37,9 @@ curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/cass_memory_syste
 - [Architecture & Engineering](#-architecture--engineering)
 - [Deep Dive: Core Algorithms](#-deep-dive-core-algorithms)
 - [Privacy & Security](#-privacy--security)
+- [Trauma Guard: Safety System](#-trauma-guard-safety-system)
 - [Performance Characteristics](#-performance-characteristics)
+- [Starter Playbooks](#-starter-playbooks)
 - [Extensibility](#-extensibility-adding-new-components)
 - [Troubleshooting](#-troubleshooting)
 - [Design Philosophy](#-design-philosophy)
@@ -684,6 +686,39 @@ curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/cass_memory_syste
 - [macOS Intel](https://github.com/Dicklesworthstone/cass_memory_system/releases/latest/download/cass-memory-macos-x64)
 - [Windows x64](https://github.com/Dicklesworthstone/cass_memory_system/releases/latest/download/cass-memory-windows-x64.exe)
 
+### Installer Options
+
+```bash
+# Full options
+install.sh [--version vX.Y.Z] [--dest DIR] [--system] [--easy-mode] [--verify]
+           [--from-source] [--quiet]
+
+# Examples
+install.sh --version v0.2.2 --verify    # Specific version
+install.sh --system --verify             # Install to /usr/local/bin (requires sudo)
+install.sh --from-source                 # Build from source (requires bun)
+```
+
+| Flag | Effect |
+|------|--------|
+| `--version` | Install specific version (default: latest) |
+| `--dest DIR` | Install to custom directory (default: ~/.local/bin) |
+| `--system` | Install to /usr/local/bin (requires sudo) |
+| `--easy-mode` | Non-interactive, auto-configure PATH |
+| `--verify` | Run self-test after install |
+| `--from-source` | Build from source instead of downloading binary |
+| `--quiet` | Suppress output |
+
+### Installer Robustness
+
+The installer is designed for reliability:
+
+- **No API rate limits**: Uses GitHub redirect detection instead of API calls, avoiding the 60 requests/hour unauthenticated limit
+- **Checksum verification**: Downloads `.sha256` files and verifies binary integrity before installation
+- **Concurrent install protection**: Lock file prevents multiple installers from running simultaneously
+- **Graceful fallbacks**: If binary download fails, automatically falls back to building from source
+- **Cross-platform checksums**: Uses `sha256sum` on Linux, `shasum -a 256` on macOS
+
 ### From Source
 
 ```bash
@@ -750,6 +785,8 @@ For Claude Code users, add a post-session hook in `.claude/hooks.json`:
 | `cm playbook list` | Show all rules | Inspection |
 | `cm similar "<query>"` | Find similar rules | Search |
 | `cm stats --json` | Playbook metrics | Analytics |
+| `cm trauma list` | Show dangerous patterns | Safety |
+| `cm guard --status` | Check safety hook status | Safety |
 
 ### Error Output & Exit Codes
 
@@ -881,6 +918,34 @@ cm serve --port 3001
 cm privacy status
 cm privacy enable   # Enable cross-agent enrichment
 cm privacy disable  # Disable cross-agent enrichment
+```
+
+### Safety Commands (Trauma Guard)
+
+```bash
+# View active trauma patterns
+cm trauma list
+
+# Add a dangerous pattern
+cm trauma add "DROP TABLE" --description "Database table deletion" --severity critical
+
+# Temporarily disable a pattern
+cm trauma heal t-abc123 --reason "Intentional migration cleanup"
+
+# Permanently remove a pattern
+cm trauma remove t-abc123
+
+# Scan sessions for potential traumas
+cm trauma scan --days 30
+
+# Import patterns from file
+cm trauma import shared-traumas.yaml
+
+# Install safety hooks
+cm guard --install           # Claude Code pre-tool hook
+cm guard --git               # Git pre-commit hook
+cm guard --install --git     # Both
+cm guard --status            # Check installation status
 ```
 
 ### Command Output Modes
@@ -1600,6 +1665,31 @@ This is the most important architectural decision:
 
 The LLM's job is to **propose** patterns. The curator's job is to **manage** them according to explicit rules.
 
+### Concurrency Safety
+
+Multiple processes may access shared files (playbook, trauma registry, diary entries) simultaneously. `cass-memory` uses atomic file locking to prevent corruption:
+
+```
+Process A                    Lock Directory              Process B
+┌─────────────┐             ┌─────────────┐             ┌─────────────┐
+│ mkdir lock/ │──────────▶  │ .lock.d/    │  ◀──────────│ mkdir lock/ │
+│ (succeeds)  │             │  ├── pid    │             │ (EEXIST!)   │
+│             │             │  └── owner  │             │ retry...    │
+│ write file  │             │             │             │             │
+│ rmdir lock/ │──────────▶  │ (deleted)   │  ◀──────────│ mkdir lock/ │
+│             │             │ .lock.d/    │             │ (succeeds)  │
+└─────────────┘             └─────────────┘             └─────────────┘
+```
+
+**Key features:**
+- **Atomic acquisition**: Uses `mkdir()` which is atomic across all operating systems
+- **Heartbeat**: Long operations refresh the lock timestamp every 10 seconds
+- **Stale detection**: Locks older than 30 seconds without an active heartbeat are automatically cleaned up
+- **Orphan cleanup**: Detects dead PIDs and removes abandoned locks
+- **Ownership verification**: Stores random UUID to prevent accidental lock theft
+
+This ensures that even with multiple agents or background jobs running concurrently, data files remain consistent.
+
 ---
 
 ## 🔬 Deep Dive: Core Algorithms
@@ -1926,6 +2016,161 @@ When cross-agent enrichment is enabled:
 
 ---
 
+## 🛡️ Trauma Guard: Safety System
+
+### The "Hot Stove" Principle
+
+AI coding agents are powerful, but that power comes with risk. A mistyped `rm -rf`, an accidental `git push --force`, or a database `DROP TABLE` can cause catastrophic damage. The **Trauma Guard** system learns from past incidents and prevents them from recurring—like how touching a hot stove once teaches you not to do it again.
+
+### How It Works
+
+```
+Session History              Trauma Registry              Runtime Guard
+┌─────────────────┐         ┌─────────────────┐         ┌─────────────────┐
+│ rm -rf /* (oops)│ ──────▶ │ Pattern: rm -rf │ ──────▶ │ BLOCKED: This   │
+│ "sorry, I made  │  scan   │ Severity: FATAL │  hook   │ command matches │
+│  a mistake..."  │         │ Session: abc123 │         │ a trauma pattern│
+└─────────────────┘         └─────────────────┘         └─────────────────┘
+```
+
+1. **Detection**: Scans session history for dangerous commands combined with "apology" signals (errors, "oops", "sorry", rollbacks)
+2. **Registration**: Stores dangerous patterns in a registry with severity and provenance
+3. **Prevention**: Hooks into Claude Code and Git to block matching commands before execution
+
+### Built-in Doom Patterns
+
+The system ships with 20+ predefined patterns covering common catastrophic operations:
+
+| Category | Examples |
+|----------|----------|
+| **Filesystem** | `rm -rf /`, `rm -rf ~`, recursive deletes without confirmation |
+| **Database** | `DROP DATABASE`, `TRUNCATE`, `DELETE FROM` without WHERE |
+| **Git** | `git push --force` to main/master, `git reset --hard` |
+| **Infrastructure** | `terraform destroy -auto-approve`, `kubectl delete namespace` |
+| **Cloud** | `aws s3 rm --recursive`, destructive CloudFormation operations |
+
+### CLI Commands
+
+```bash
+# View all active trauma patterns
+cm trauma list
+
+# Add a custom dangerous pattern
+cm trauma add "DELETE FROM users" --description "Mass user deletion" --severity critical
+
+# Temporarily disable a pattern (when you really need to run it)
+cm trauma heal t-abc123 --reason "Intentional cleanup"
+
+# Permanently remove a pattern
+cm trauma remove t-abc123
+
+# Import patterns from a file
+cm trauma import team-traumas.yaml
+
+# Scan recent sessions for potential traumas
+cm trauma scan --days 30
+```
+
+### Installing the Guard Hooks
+
+The trauma guard requires hooks to intercept commands before execution:
+
+```bash
+# Install Claude Code hook (intercepts Bash commands)
+cm guard --install
+
+# Install Git pre-commit hook (scans commits)
+cm guard --git
+
+# Install both
+cm guard --install --git
+
+# Check installation status
+cm guard --status
+```
+
+**What happens when a pattern matches:**
+
+```
+🔥 HOT STOVE: Command blocked by trauma guard
+
+  Pattern: rm -rf /*
+  Severity: FATAL
+  Reason: Recursive delete of root filesystem
+
+  This pattern was marked dangerous after session:
+    ~/.claude/sessions/session-abc123.jsonl
+
+  To proceed anyway (use extreme caution):
+    cm trauma heal t-abc123 --reason "your justification"
+```
+
+### Trauma Storage
+
+Patterns are stored at two levels:
+
+| Scope | Location | Purpose |
+|-------|----------|---------|
+| **Global** | `~/.cass-memory/traumas.jsonl` | Personal patterns across all projects |
+| **Project** | `.cass/traumas.jsonl` | Project-specific patterns (commit to repo) |
+
+Project patterns can be committed to your repository, creating shared team knowledge about dangerous operations specific to that codebase.
+
+### Pattern Lifecycle
+
+```
+┌────────────┐     heal      ┌────────────┐     activate    ┌────────────┐
+│   ACTIVE   │ ───────────▶  │   HEALED   │ ────────────▶   │   ACTIVE   │
+│  (blocking)│               │(temp bypass)│                │  (blocking)│
+└────────────┘               └────────────┘                 └────────────┘
+      │                                                           ▲
+      │ remove                                                    │
+      ▼                                                           │
+┌────────────┐                                                    │
+│  DELETED   │ ───────────────────────────────────────────────────┘
+│ (can re-add)│           manual add
+└────────────┘
+```
+
+- **Active**: Pattern blocks matching commands
+- **Healed**: Temporarily bypassed (with reason and timestamp)
+- **Deleted**: Removed from registry (can be re-added later)
+
+### Integration with Claude Code
+
+When installed via `cm guard --install`, the trauma guard integrates as a Claude Code pre-tool hook:
+
+```json
+// .claude/settings.json (auto-configured)
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [".claude/hooks/trauma_guard.py"]
+      }
+    ]
+  }
+}
+```
+
+The hook runs before every Bash command, checking against active patterns. If a match is found, the command is blocked with an explanation—the agent never executes the dangerous operation.
+
+### Why This Matters
+
+Traditional safety approaches rely on:
+- **Allowlists**: Too restrictive, break legitimate workflows
+- **Manual review**: Doesn't scale, humans miss things
+- **Hope**: Eventually fails catastrophically
+
+Trauma Guard is different:
+- **Learning**: Patterns come from actual incidents, not theoretical risks
+- **Contextual**: Project-specific patterns for project-specific risks
+- **Recoverable**: Healing allows intentional operations with audit trail
+- **Shared**: Team patterns create collective institutional memory
+
+---
+
 ## 📊 Performance Characteristics
 
 ### Benchmarked Operations
@@ -1970,6 +2215,110 @@ When cross-agent enrichment is enabled:
 With default budget limits ($0.10/day, $2.00/month), you can typically:
 - Reflect on 5-10 sessions per day
 - Validate 10-20 new rules per day
+
+---
+
+## 📚 Starter Playbooks
+
+Starting with an empty playbook is daunting. **Starter playbooks** provide curated collections of best practices for specific tech stacks, giving you a solid foundation to build upon.
+
+### Built-in Starters
+
+```bash
+# List all available starters
+cm starters
+
+# Initialize with a starter
+cm init --starter typescript
+
+# Apply a starter to an existing playbook
+cm playbook bootstrap react
+```
+
+| Starter | Focus | Rules |
+|---------|-------|-------|
+| **general** | Universal best practices | 5 |
+| **typescript** | TypeScript/Node.js patterns | 4 |
+| **react** | React/Next.js development | 4 |
+| **python** | Python/FastAPI/Django | 4 |
+| **node** | Node.js/Express services | 4 |
+| **rust** | Rust service patterns | 4 |
+
+### What's In a Starter
+
+Each starter contains battle-tested rules with proper metadata:
+
+**General Starter** (universal):
+- Keep functions small and focused (single responsibility)
+- Validate inputs at system boundaries
+- Implement graceful shutdown for services
+- Add observability from the start
+- Set timeouts on all external calls
+
+**React Starter**:
+- Always specify dependency arrays in useEffect
+- Use unique, stable keys for list items
+- Check `typeof window` before browser-only code
+- Include ARIA attributes for accessibility
+
+**Python Starter**:
+- Use type hints for function signatures
+- Prefer dependency injection over global state
+- Set explicit timeouts on HTTP clients
+- Use structured logging (JSON format)
+
+**Node Starter**:
+- Wrap async route handlers in try/catch
+- Set timeouts on HTTP requests and DB queries
+- Validate environment variables at startup
+- Handle SIGTERM gracefully for container orchestration
+
+**Rust Starter**:
+- Use `?` operator and thiserror for error handling
+- Run clippy and rustfmt before commits
+- Avoid blocking in async context
+- Use structured tracing for observability
+
+### Creating Custom Starters
+
+Create YAML files in `~/.cass-memory/starters/`:
+
+```yaml
+# ~/.cass-memory/starters/django.yaml
+name: django
+description: Django web framework best practices
+bullets:
+  - content: "Always use Django's ORM for database operations"
+    category: database
+    maturity: established
+    tags: [django, orm, database]
+
+  - content: "Run migrations before deploying"
+    category: deployment
+    maturity: proven
+    tags: [django, migrations, deploy]
+
+  - content: "Use Django's CSRF protection on all POST forms"
+    category: security
+    maturity: proven
+    tags: [django, security, csrf]
+
+  - content: "Configure ALLOWED_HOSTS in production settings"
+    category: security
+    maturity: established
+    tags: [django, security, config]
+```
+
+Custom starters are discovered automatically and appear in `cm starters`.
+
+### Starter vs Reflection
+
+| Source | When to Use | Trust Level |
+|--------|-------------|-------------|
+| **Starters** | Bootstrap new projects | Pre-validated, established |
+| **Reflection** | Learn from your sessions | Candidate until proven |
+
+Starters give you a head start. Reflection adds project-specific learning. Use both for a comprehensive playbook.
 
 ---
 
