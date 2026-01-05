@@ -10,8 +10,9 @@ Transforms scattered agent sessions into persistent, cross-agent memory—so eve
 
 <div align="center">
 
+**One-liner install (Linux/macOS):**
+
 ```bash
-# One-liner install (Linux/macOS)
 curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/cass_memory_system/main/install.sh \
   | bash -s -- --easy-mode --verify
 ```
