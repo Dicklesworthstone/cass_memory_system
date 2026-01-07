@@ -101,7 +101,7 @@ export async function validateSessionPath(sessionPath: string): Promise<string |
     return null;
   }
 
-  const expanded = expandPath(sessionPath);
+  const expanded = path.resolve(expandPath(sessionPath));
 
   try {
     const stat = await fs.stat(expanded);

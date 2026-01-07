@@ -86,10 +86,13 @@ describe("validateCommand", () => {
           process.chdir(repoDir);
 
           try {
-            // This will fail at LLM step, but should not fail at input validation
-            await expect(
-              validateCommand("Always use TypeScript", { json: true })
-            ).rejects.toThrow(/API/); // Expects API key error, not input error
+            // With no historical evidence, validateCommand now accepts with caution
+            // instead of calling the LLM (optimization to avoid unnecessary API calls)
+            const capture = captureConsole();
+            await validateCommand("Always use TypeScript", { json: true });
+            capture.restore();
+            const output = JSON.parse(capture.logs.join(""));
+            expect(output.data.verdict).toBe("ACCEPT_WITH_CAUTION");
           } finally {
             process.chdir(originalCwd);
           }
@@ -99,7 +102,10 @@ describe("validateCommand", () => {
   });
 
   describe("error handling", () => {
-    it("throws API key error when LLM is required but not configured", async () => {
+    it("accepts with caution when no evidence exists (skips LLM call)", async () => {
+      // Note: With the optimization that skips LLM when no evidence exists,
+      // this test verifies that missing API key doesn't cause errors when
+      // LLM isn't actually needed (no evidence scenario).
       await withTempCassHome(async () => {
         await withTempGitRepo(async (repoDir) => {
           const originalCwd = process.cwd();
@@ -108,9 +114,12 @@ describe("validateCommand", () => {
           delete process.env.ANTHROPIC_API_KEY;
 
           try {
-            await expect(
-              validateCommand("Test rule for validation", { json: true })
-            ).rejects.toThrow(/ANTHROPIC_API_KEY|API/);
+            const capture = captureConsole();
+            await validateCommand("Test rule for validation", { json: true });
+            capture.restore();
+            const output = JSON.parse(capture.logs.join(""));
+            // When no evidence exists, accepts with caution without LLM
+            expect(output.data.verdict).toBe("ACCEPT_WITH_CAUTION");
           } finally {
             if (originalApiKey) {
               process.env.ANTHROPIC_API_KEY = originalApiKey;

@@ -72,6 +72,18 @@ export async function validateCommand(
     return printResult(output, options, { command, startedAtMs });
   }
 
+  // No evidence -> accept as draft without LLM (avoid unnecessary calls/rejections)
+  if (gate.suggestedState === "draft" && gate.sessionCount === 0) {
+    const output: ValidationOutput = {
+      proposedRule,
+      verdict: "ACCEPT_WITH_CAUTION",
+      confidence: 0.6,
+      reason: gate.reason,
+      evidence: []
+    };
+    return printResult(output, options, { command, startedAtMs });
+  }
+
   // Step 2: Ambiguous -> gather evidence and run LLM validator
   const hits = await safeCassSearch(extractKeywords(proposedRule).join(" "), {
     limit: 10,

@@ -251,6 +251,49 @@ describe("E2E: CLI validate command", () => {
         });
       });
     });
+
+    it("skips LLM and accepts with caution when no historical evidence exists", async () => {
+      const log = createE2ELogger("validate: no evidence draft");
+      await log.run(async () => {
+        await withTempCassHome(async (env) => {
+          log.step("Setup: Create config and mock cass with zero hits");
+
+          const config = createTestConfig({
+            validationLookbackDays: 90,
+            apiKey: "test-api-key"
+          });
+          await writeFile(env.configPath, JSON.stringify(config));
+
+          const cassRunner = createMockCassRunner([]);
+
+          const io: LLMIO = {
+            generateObject: async () => {
+              throw new Error("LLM should not be called when no evidence exists");
+            }
+          };
+
+          log.step("Execute: Run validate with meaningful keywords");
+          const capture = captureConsole();
+          try {
+            await validateCommand(
+              "Always annotate TODOs with ticket IDs",
+              { json: true },
+              { cassRunner, io }
+            );
+          } finally {
+            capture.restore();
+          }
+
+          log.step("Verify: Should accept with caution without LLM");
+          const output = capture.all();
+          log.snapshot("output", output);
+
+          const parsed = JSON.parse(output);
+          expect(parsed.data.verdict).toBe("ACCEPT_WITH_CAUTION");
+          expect(parsed.data.reason.toLowerCase()).toContain("no historical evidence");
+        });
+      });
+    });
   });
 
   describe("LLM validation fallback", () => {
