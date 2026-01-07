@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { sanitize, compileExtraPatterns, SECRET_PATTERNS } from "../src/security.js";
+import { sanitize, compileExtraPatterns, SECRET_PATTERNS } from "../src/sanitize.js";
 
 // =============================================================================
 // SECRET_PATTERNS

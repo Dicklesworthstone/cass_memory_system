@@ -13,7 +13,7 @@ import {
   getCliName,
   printJsonResult,
 } from "./utils.js";
-import { loadPlaybook } from "./playbook.js";
+import { loadPlaybook, getActiveBullets } from "./playbook.js";
 
 export interface InfoResult {
   version: string;
@@ -85,7 +85,7 @@ function getBunVersion(): { available: boolean; version?: string } {
 async function countPlaybookRules(playbookPath: string): Promise<number | null> {
   try {
     const playbook = await loadPlaybook(playbookPath);
-    return playbook?.bullets?.filter((b: any) => b.status !== "deprecated").length || 0;
+    return getActiveBullets(playbook).length;
   } catch {
     return null;
   }

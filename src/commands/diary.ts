@@ -1,10 +1,12 @@
 // src/commands/diary.ts
 // Diary generation command - Generate a structured diary from a coding session
 
-import { loadConfig } from "../config.js";
-import { generateDiary } from "../diary.js";
+import { loadConfig, getSanitizeConfig } from "../config.js";
+import { generateDiary, generateDiaryFromContent, formatRawSession } from "../diary.js";
+import { sanitize, compileExtraPatterns } from "../sanitize.js";
 import { expandPath, printJsonResult, reportError } from "../utils.js";
 import { ErrorCode } from "../types.js";
+import path from "node:path";
 import fs from "node:fs/promises";
 import chalk from "chalk";
 import { iconPrefix } from "../output.js";
@@ -52,7 +54,25 @@ export async function diaryCommand(
 
   try {
     // Generate the diary
-    const diary = await generateDiary(validatedPath, config);
+    let diary: import("../types.js").DiaryEntry;
+    if (options.raw) {
+      const rawContent = await fs.readFile(validatedPath, "utf-8");
+      const ext = path.extname(validatedPath).toLowerCase();
+      const shouldFormat =
+        ext === ".jsonl" || ext === ".json" || ext === ".md" || ext === ".markdown";
+      const formatted = shouldFormat ? formatRawSession(rawContent, ext) : rawContent;
+
+      const sanitizeConfig = getSanitizeConfig(config);
+      const compiledConfig = {
+        ...sanitizeConfig,
+        extraPatterns: compileExtraPatterns(sanitizeConfig.extraPatterns)
+      };
+      const sanitized = sanitize(formatted, compiledConfig);
+
+      diary = await generateDiaryFromContent(validatedPath, sanitized, config);
+    } else {
+      diary = await generateDiary(validatedPath, config);
+    }
 
     // Handle output
     await handleDiaryOutput(diary, options, config, { command, startedAtMs });
@@ -107,8 +127,18 @@ export async function handleDiaryOutput(
   config: import("../types.js").Config,
   meta: { command: string; startedAtMs: number }
 ): Promise<void> {
+  const savedPath = config.diaryDir
+    ? path.join(expandPath(config.diaryDir), `${diary.id}.json`)
+    : null;
+
   if (options.json) {
-    printJsonResult(meta.command, { diary }, { startedAtMs: meta.startedAtMs });
+    printJsonResult(meta.command, { diary, savedTo: savedPath }, { startedAtMs: meta.startedAtMs });
+    return;
+  }
+
+  if (options.save) {
+    const location = savedPath || "(unknown path)";
+    console.log(chalk.dim(`${iconPrefix("folder")}Saved diary ${diary.id} to: ${location}`));
     return;
   }
 
@@ -165,7 +195,7 @@ export async function handleDiaryOutput(
   }
 
   // Note about saving
-  if (!options.save && config.diaryDir) {
-    console.log(chalk.dim(`\n${iconPrefix("folder")}Saved to: ${config.diaryDir}/${diary.id}.json`));
+  if (savedPath) {
+    console.log(chalk.dim(`\n${iconPrefix("folder")}Saved to: ${savedPath}`));
   }
 }

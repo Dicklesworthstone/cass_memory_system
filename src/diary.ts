@@ -320,24 +320,34 @@ export async function generateDiaryFast(
   sessionPath: string,
   config: Config
 ): Promise<DiaryEntry> {
-  log(`Generating diary (fast mode) for ${sessionPath}...`);
-
   // 1. Export Session (Sanitized via cassExport)
   const sanitizedContent = await cassExport(sessionPath, "markdown", config.cassPath, config);
   if (!sanitizedContent) {
     throw new Error(`Failed to export session: ${sessionPath}`);
   }
 
-  // 2. Extract Metadata
+  return generateDiaryFastFromContent(sessionPath, sanitizedContent, config);
+}
+
+// --- Main Generator ---
+
+async function generateDiaryFastFromContent(
+  sessionPath: string,
+  sanitizedContent: string,
+  config: Config
+): Promise<DiaryEntry> {
+  log(`Generating diary (fast mode) for ${sessionPath}...`);
+
+  // 1. Extract Metadata
   const metadata = extractSessionMetadata(sessionPath);
 
-  // 3. Fast Extraction (no LLM)
+  // 2. Fast Extraction (no LLM)
   const task = extractFirstUserMessage(sanitizedContent);
   const outcome = inferOutcome(sanitizedContent);
   const filesChanged = extractFilePaths(sanitizedContent);
   const summary = generateQuickSummary(sanitizedContent, task);
 
-  // 4. Assemble Entry
+  // 3. Assemble Entry
   const diary: DiaryEntry = {
     id: generateDiaryId(sessionPath, sanitizedContent), // Use content for deterministic ID
     sessionPath,
@@ -355,41 +365,38 @@ export async function generateDiaryFast(
     relatedSessions: []
   };
 
-  // 5. Save
+  // 4. Save
   await saveDiary(diary, config);
   log(`Saved fast diary to ${expandPath(config.diaryDir)}/${diary.id}.json`);
 
   return diary;
 }
 
-// --- Main Generator ---
-
-export async function generateDiary(
+export async function generateDiaryFromContent(
   sessionPath: string,
+  sanitizedContent: string,
   config: Config
 ): Promise<DiaryEntry> {
-  log(`Generating diary for ${sessionPath}...`);
+  if (!sanitizedContent || sanitizedContent.trim().length === 0) {
+    throw new Error(`Session content is empty after sanitization: ${sessionPath}`);
+  }
 
   // Fast path when LLMs are disabled or unavailable
   if (process.env.CASS_MEMORY_LLM === "none") {
-    return generateDiaryFast(sessionPath, config);
+    return generateDiaryFastFromContent(sessionPath, sanitizedContent, config);
   }
 
-  // 1. Export Session (Sanitized via cassExport)
-  const sanitizedContent = await cassExport(sessionPath, "markdown", config.cassPath, config);
-  if (!sanitizedContent) {
-    throw new Error(`Failed to export session: ${sessionPath}`);
-  }
-  
+  log(`Generating diary for ${sessionPath}...`);
+
   const verification = verifySanitization(sanitizedContent);
   if (verification.containsPotentialSecrets) {
     warn(`[Diary] Potential secrets detected after sanitization in ${sessionPath}: ${verification.warnings.join(", ")}`);
   }
 
-  // 2. Extract Metadata
+  // 1. Extract Metadata
   const metadata = extractSessionMetadata(sessionPath);
 
-  // 3. LLM Extraction
+  // 2. LLM Extraction
   const ExtractionSchema = DiaryEntrySchema.omit({ 
     id: true, 
     sessionPath: true, 
@@ -405,7 +412,7 @@ export async function generateDiary(
     config
   );
 
-  // 4. Assemble Entry
+  // 3. Assemble Entry
   const diary: DiaryEntry = {
     id: generateDiaryId(sessionPath, sanitizedContent), // Use content for deterministic ID
     sessionPath,
@@ -429,13 +436,31 @@ export async function generateDiary(
   ].join(" ");
   diary.searchAnchors = extractKeywords(anchorText);
 
-  // 5. Enrich (Cross-Agent)
+  // 4. Enrich (Cross-Agent)
   const enrichedDiary = await enrichWithRelatedSessions(diary, config);
 
-  // 6. Save
+  // 5. Save
   await saveDiary(enrichedDiary, config);
 
   return enrichedDiary;
+}
+
+export async function generateDiary(
+  sessionPath: string,
+  config: Config
+): Promise<DiaryEntry> {
+  // Fast path when LLMs are disabled or unavailable
+  if (process.env.CASS_MEMORY_LLM === "none") {
+    return generateDiaryFast(sessionPath, config);
+  }
+
+  // 1. Export Session (Sanitized via cassExport)
+  const sanitizedContent = await cassExport(sessionPath, "markdown", config.cassPath, config);
+  if (!sanitizedContent) {
+    throw new Error(`Failed to export session: ${sessionPath}`);
+  }
+  
+  return generateDiaryFromContent(sessionPath, sanitizedContent, config);
 }
 
 // --- Persistence ---

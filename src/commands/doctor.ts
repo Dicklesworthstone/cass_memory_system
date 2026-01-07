@@ -1,6 +1,6 @@
 import { loadConfig, DEFAULT_CONFIG } from "../config.js";
 import { cassAvailable, cassStats, cassSearch, safeCassSearch } from "../cass.js";
-import { error as logError, fileExists, resolveRepoDir, resolveGlobalDir, expandPath, getCliName, getVersion, checkAbort, isPermissionError, handlePermissionError, printJsonResult, reportError, atomicWrite } from "../utils.js";
+import { error as logError, fileExists, resolveRepoDir, resolveGlobalDir, expandPath, getCliName, getVersion, checkAbort, isPermissionError, handlePermissionError, printJsonResult, reportError, atomicWrite, ensureRepoStructure } from "../utils.js";
 import { isLLMAvailable, getAvailableProviders, validateApiKey } from "../llm.js";
 import { SECRET_PATTERNS, compileExtraPatterns } from "../sanitize.js";
 import { loadPlaybook, savePlaybook, createEmptyPlaybook } from "../playbook.js";
@@ -949,14 +949,17 @@ function createMissingRepoCassDirFix(cassDir: string): FixableIssue {
     severity: "warn",
     safety: "safe",
     fix: async () => {
-      await fs.mkdir(cassDir, { recursive: true });
+      await ensureRepoStructure(cassDir);
       // Create .gitignore to ignore diary but track playbook
-      const gitignore = `# Ignore diary (session-specific data)
+      const gitignorePath = path.join(cassDir, ".gitignore");
+      if (!(await fileExists(gitignorePath))) {
+        const gitignore = `# Ignore diary (session-specific data)
 diary/
 # Ignore temporary files
 *.tmp
 `;
-      await atomicWrite(path.join(cassDir, ".gitignore"), gitignore);
+        await atomicWrite(gitignorePath, gitignore);
+      }
     },
   };
 }
