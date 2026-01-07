@@ -10,8 +10,7 @@
  * Uses isolated temp directories and mocked dependencies.
  */
 import { describe, it, expect } from "bun:test";
-import { writeFile, mkdir } from "node:fs/promises";
-import path from "node:path";
+import { writeFile } from "node:fs/promises";
 
 import { auditCommand } from "../src/commands/audit.js";
 import { withTempCassHome } from "./helpers/temp.js";
