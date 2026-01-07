@@ -58,7 +58,6 @@ jobs:
   coverage:
     runs-on: ubuntu-latest
     env:
-      LOG_DIR: ${{ runner.temp }}/cm-coverage
       # Phase 1 thresholds (raise intentionally via PRs).
       COVERAGE_MIN_FUNCS: "70"
       COVERAGE_MIN_LINES: "70"
@@ -76,13 +75,15 @@ jobs:
 
       - name: Run tests with coverage (offline)
         run: bash scripts/coverage.sh
+        env:
+          LOG_DIR: ${{ runner.temp }}/cm-coverage
 
       - name: Upload coverage artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: coverage-artifacts
-          path: ${{ env.LOG_DIR }}
+          path: ${{ runner.temp }}/cm-coverage
           if-no-files-found: warn
 
       - name: Enforce coverage thresholds
@@ -112,6 +113,8 @@ jobs:
 
             console.log(`Coverage gate passed: funcs=${funcs.toFixed(2)} lines=${lines.toFixed(2)}`);
           '
+        env:
+          LOG_DIR: ${{ runner.temp }}/cm-coverage
 
       - name: Show coverage summary on failure
         if: failure()
@@ -120,11 +123,11 @@ jobs:
           cat "${LOG_DIR}/summary.json" || true
           echo "---- coverage.txt (tail) ----"
           tail -n 60 "${LOG_DIR}/artifacts/coverage.txt" || true
+        env:
+          LOG_DIR: ${{ runner.temp }}/cm-coverage
 
   e2e-scripts:
     runs-on: ubuntu-latest
-    env:
-      LOG_DIR: ${{ runner.temp }}/cm-e2e
 
     steps:
       - uses: actions/checkout@v4
@@ -139,13 +142,15 @@ jobs:
 
       - name: Run e2e smoke script (offline)
         run: bash scripts/e2e-smoke.sh
+        env:
+          LOG_DIR: ${{ runner.temp }}/cm-e2e
 
       - name: Upload e2e artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-smoke-artifacts
-          path: ${{ env.LOG_DIR }}
+          path: ${{ runner.temp }}/cm-e2e
           if-no-files-found: warn
 
       - name: Show steps.jsonl on failure
@@ -153,6 +158,8 @@ jobs:
         run: |
           echo "---- steps.jsonl ----"
           cat "${LOG_DIR}/steps.jsonl" || true
+        env:
+          LOG_DIR: ${{ runner.temp }}/cm-e2e
 
   build:
     runs-on: ubuntu-latest
