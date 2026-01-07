@@ -147,6 +147,18 @@ describe("Fast Diary Extraction", () => {
       expect(formatted).toContain("**user**: Hello");
     });
 
+    test("handles nested content property with array value", () => {
+      // Test the recursion fix: when an object has content as an array
+      const lines = [
+        JSON.stringify({
+          role: "assistant",
+          content: { content: [{ text: "Nested" }, { text: "Content" }] }
+        })
+      ].join("\n");
+      const formatted = formatRawSession(lines, ".jsonl");
+      expect(formatted).toContain("**assistant**: Nested\nContent");
+    });
+
     test("formats json messages from supported containers", () => {
       const payload = JSON.stringify({
         messages: [

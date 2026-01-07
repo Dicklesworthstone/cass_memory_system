@@ -259,7 +259,12 @@ export async function scoreBulletsEnhanced(
     };
   });
 
-  scored.sort((a, b) => (b.finalScore || 0) - (a.finalScore || 0));
+  // Sort by finalScore descending, with relevanceScore as tie-breaker for deterministic ordering
+  scored.sort((a, b) => {
+    const scoreDiff = (b.finalScore ?? 0) - (a.finalScore ?? 0);
+    if (scoreDiff !== 0) return scoreDiff;
+    return (b.relevanceScore ?? 0) - (a.relevanceScore ?? 0);
+  });
   return scored;
 }
 
@@ -300,12 +305,8 @@ export async function generateContextResult(
   });
 
   const maxBullets = flags.limit ?? flags.top ?? config.maxBulletsInContext;
-  const rankedBullets = [...scoredBullets].sort((a, b) => {
-    const scoreDiff = (b.finalScore ?? 0) - (a.finalScore ?? 0);
-    if (scoreDiff !== 0) return scoreDiff;
-    return (b.relevanceScore ?? 0) - (a.relevanceScore ?? 0);
-  });
-  const topBullets = rankedBullets
+  // scoredBullets is already sorted by finalScore with relevanceScore tie-breaker
+  const topBullets = scoredBullets
     .filter(b => (b.finalScore || 0) > 0)
     .slice(0, maxBullets);
 

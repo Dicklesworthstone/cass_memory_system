@@ -251,6 +251,8 @@ async function handleToolCall(name: string, args: any): Promise<any> {
   switch (name) {
     case "cm_context": {
       assertArgs(args, { task: "string" });
+      const taskCheck = validateNonEmptyString(args?.task, "task", { trim: true });
+      if (!taskCheck.ok) throw new Error(taskCheck.message);
       const limit = validatePositiveInt(args?.limit, "limit", { min: 1, allowUndefined: true });
       if (!limit.ok) throw new Error(limit.message);
       const top = validatePositiveInt(args?.top, "top", { min: 1, allowUndefined: true });
@@ -262,7 +264,7 @@ async function handleToolCall(name: string, args: any): Promise<any> {
       const workspace = validateNonEmptyString(args?.workspace, "workspace", { allowUndefined: true });
       if (!workspace.ok) throw new Error(workspace.message);
 
-      const context = await generateContextResult(args.task, {
+      const context = await generateContextResult(taskCheck.value, {
         limit: limit.value ?? top.value,
         history: history.value,
         days: days.value,
@@ -315,6 +317,8 @@ async function handleToolCall(name: string, args: any): Promise<any> {
     }
     case "memory_search": {
       assertArgs(args, { query: "string" });
+      const queryCheck = validateNonEmptyString(args?.query, "query", { trim: true });
+      if (!queryCheck.ok) throw new Error(queryCheck.message);
       const scopeCheck = validateOneOf(args.scope, "scope", ["playbook", "cass", "both"] as const, {
         allowUndefined: true,
         caseInsensitive: true,
@@ -340,7 +344,7 @@ async function handleToolCall(name: string, args: any): Promise<any> {
       const config = await loadConfig();
 
       const result: { playbook?: any[]; cass?: any[] } = {};
-      const q = args.query.trim().toLowerCase();
+      const q = queryCheck.value.toLowerCase();
 
       if (scope === "playbook" || scope === "both") {
         const t0 = performance.now();
@@ -364,7 +368,7 @@ async function handleToolCall(name: string, args: any): Promise<any> {
 
       if (scope === "cass" || scope === "both") {
         const t0 = performance.now();
-        const hits = await safeCassSearch(args.query, { limit, days, agent, workspace }, config.cassPath, config);
+        const hits = await safeCassSearch(queryCheck.value, { limit, days, agent, workspace }, config.cassPath, config);
         maybeProfile("memory_search cass search", t0);
         result.cass = hits.map((h) => ({
           path: h.source_path,

@@ -254,6 +254,31 @@ describe("serve module tool calls", () => {
     });
   });
 
+  test("cm_context rejects empty task", async () => {
+    await withTempCassHome(async () => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+
+        try {
+          const response = await serveTest.routeRequest({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: { name: "cm_context", arguments: { task: "   " } }
+          });
+
+          expect("error" in response).toBe(true);
+          if ("error" in response) {
+            expect(response.error.message).toContain("non-empty");
+          }
+        } finally {
+          process.chdir(originalCwd);
+        }
+      });
+    });
+  });
+
   test("cm_context succeeds with valid task", async () => {
     await withTempCassHome(async () => {
       await withTempGitRepo(async (repoDir) => {
@@ -346,6 +371,20 @@ describe("serve module tool calls", () => {
     expect("error" in response).toBe(true);
     if ("error" in response) {
       expect(response.error.message).toContain("query");
+    }
+  });
+
+  test("memory_search rejects empty query", async () => {
+    const response = await serveTest.routeRequest({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "memory_search", arguments: { query: "  " } }
+    });
+
+    expect("error" in response).toBe(true);
+    if ("error" in response) {
+      expect(response.error.message).toContain("non-empty");
     }
   });
 

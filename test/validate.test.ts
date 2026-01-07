@@ -3,7 +3,7 @@ import { evidenceCountGate, normalizeValidatorVerdict, validateDelta } from "../
 import type { CassRunner } from "../src/cass.js";
 import { createTestConfig } from "./helpers/factories.js";
 import { withTempDir } from "./helpers/temp.js";
-import type { PlaybookDelta, Bullet } from "../src/types.js";
+import type { PlaybookDelta, NewBulletData } from "../src/types.js";
 
 function createCassRunnerForSearch(stdout: string): CassRunner {
   return {
@@ -138,22 +138,39 @@ describe("validate.ts evidence gate", () => {
 });
 
 describe("validateDelta", () => {
-  function createDelta(content: string, type: "add" | "remove" | "update" = "add"): PlaybookDelta {
-    const bullet: Bullet = {
-      id: "test-bullet-1",
+  function createAddDelta(content: string): PlaybookDelta {
+    const bullet: NewBulletData = {
       content,
-      created: new Date().toISOString(),
-      score: 0.5,
-      categories: [],
-      relatedSessions: [],
-      active: true,
+      category: "testing"
     };
-    return { type, bullet };
+    return {
+      type: "add",
+      bullet,
+      reason: "test",
+      sourceSession: "/tmp/session.jsonl"
+    };
+  }
+
+  function createHelpfulDelta(): PlaybookDelta {
+    return {
+      type: "helpful",
+      bulletId: "b-test-1",
+      sourceSession: "/tmp/session.jsonl"
+    };
+  }
+
+  function createReplaceDelta(newContent: string): PlaybookDelta {
+    return {
+      type: "replace",
+      bulletId: "b-test-1",
+      newContent,
+      reason: "test"
+    };
   }
 
   it("skips validation for non-add delta types", async () => {
     const config = createTestConfig({ validationEnabled: true });
-    const delta = createDelta("Any content", "remove");
+    const delta = createHelpfulDelta();
 
     const result = await validateDelta(delta, config);
 
@@ -165,7 +182,7 @@ describe("validateDelta", () => {
 
   it("skips validation when validation is disabled in config", async () => {
     const config = createTestConfig({ validationEnabled: false });
-    const delta = createDelta("Always validate user input before processing");
+    const delta = createAddDelta("Always validate user input before processing");
 
     const result = await validateDelta(delta, config);
 
@@ -177,7 +194,7 @@ describe("validateDelta", () => {
 
   it("skips validation for content shorter than 15 characters", async () => {
     const config = createTestConfig({ validationEnabled: true });
-    const delta = createDelta("short");
+    const delta = createAddDelta("short");
 
     const result = await validateDelta(delta, config);
 
@@ -189,7 +206,7 @@ describe("validateDelta", () => {
 
   it("skips validation when bullet content is empty", async () => {
     const config = createTestConfig({ validationEnabled: true });
-    const delta = createDelta("");
+    const delta = createAddDelta("");
 
     const result = await validateDelta(delta, config);
 
@@ -201,25 +218,27 @@ describe("validateDelta", () => {
 
   it("logs content preview in decision log for disabled validation", async () => {
     const config = createTestConfig({ validationEnabled: false });
-    const delta = createDelta("Always validate user input before processing requests");
+    const delta = createAddDelta("Always validate user input before processing requests");
 
     const result = await validateDelta(delta, config);
 
     expect(result.valid).toBe(true);
     expect(result.decisionLog).toBeDefined();
-    expect(result.decisionLog![0].content).toBe("Always validate user input before processing requests");
+    const decisionLog = result.decisionLog ?? [];
+    expect(decisionLog[0]?.content).toBe("Always validate user input before processing requests");
   });
 
-  it("includes decision log for update delta type", async () => {
+  it("includes decision log for replace delta type", async () => {
     const config = createTestConfig({ validationEnabled: true });
-    const delta = createDelta("Update this content", "update");
+    const delta = createReplaceDelta("Update this content");
 
     const result = await validateDelta(delta, config);
 
     expect(result.valid).toBe(true);
     expect(result.decisionLog).toBeArray();
-    expect(result.decisionLog!.length).toBeGreaterThan(0);
-    expect(result.decisionLog![0].phase).toBe("add");
-    expect(result.decisionLog![0].timestamp).toBeString();
+    const decisionLog = result.decisionLog ?? [];
+    expect(decisionLog.length).toBeGreaterThan(0);
+    expect(decisionLog[0]?.phase).toBe("add");
+    expect(decisionLog[0]?.timestamp).toBeString();
   });
 });

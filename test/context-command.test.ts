@@ -863,6 +863,36 @@ describe("generateContextResult", () => {
       }
     });
   });
+
+  test("orders relevant bullets by relevance score", async () => {
+    await withTempCassHome(async (env) => {
+      const bullets = [
+        createTestBullet({
+          id: "b-low",
+          content: "Document API usage guidelines",
+          tags: ["documentation"]
+        }),
+        createTestBullet({
+          id: "b-high",
+          content: "Optimize API performance with caching",
+          tags: ["performance", "api"]
+        }),
+      ];
+      writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook(bullets)));
+
+      const capture = captureConsole();
+      try {
+        const { result } = await generateContextResult("optimize API performance", { limit: 5, json: true });
+        const ids = result.relevantBullets.map((b) => b.id);
+
+        expect(ids.length).toBeGreaterThanOrEqual(2);
+        expect(ids[0]).toBe("b-high");
+        expect(ids).toContain("b-low");
+      } finally {
+        capture.restore();
+      }
+    });
+  });
 });
 
 describe("contextCommand markdown output", () => {

@@ -109,6 +109,8 @@ function coerceContent(raw: any): string | null {
 
   if (typeof raw === "object") {
     if (typeof raw.text === "string") return raw.text;
+    // Recurse into content if it's an array (e.g., Claude multi-block format)
+    if (Array.isArray(raw.content)) return coerceContent(raw.content);
     if (typeof raw.content === "string") return raw.content;
     if (typeof raw.message === "string") return raw.message;
     // Codex CLI: content blocks have type: "input_text" or "output_text" with text field

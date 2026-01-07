@@ -102,11 +102,35 @@ export function formatRawSession(content: string, ext: string): string {
     if (typeof value === "object") {
       const maybeText = (value as { text?: unknown; content?: unknown; message?: unknown; value?: unknown });
       if (typeof maybeText.text === "string") return maybeText.text;
+      // Recurse into content if it's an array (e.g., Claude multi-block format)
+      if (Array.isArray(maybeText.content)) return coerceRawContent(maybeText.content);
       if (typeof maybeText.content === "string") return maybeText.content;
       if (typeof maybeText.message === "string") return maybeText.message;
       if (typeof maybeText.value === "string") return maybeText.value;
     }
     return null;
+  };
+
+  const formatEntry = (entry: any): string | null => {
+    if (!entry) return null;
+
+    // Codex CLI: skip metadata entries
+    if (entry.type === "session_meta") return null;
+
+    // Codex CLI: response_item with message payload
+    if (entry.type === "response_item" && entry.payload) {
+      const payload = entry.payload;
+      if (payload?.type === "message") {
+        const role = payload.role || "[unknown]";
+        const payloadContent = coerceRawContent(payload.content);
+        return `**${role}**: ${payloadContent ?? "[empty]"}`;
+      }
+      return null;
+    }
+
+    const role = entry.role || entry.type || entry.agent || "[unknown]";
+    const msgContent = coerceRawContent(entry.content ?? entry.text ?? entry.message ?? entry.value);
+    return `**${role}**: ${msgContent ?? "[empty]"}`;
   };
 
   if (normalizedExt === ".md" || normalizedExt === ".markdown") {
@@ -121,13 +145,12 @@ export function formatRawSession(content: string, ext: string): string {
       .map((line) => {
         try {
           const json = JSON.parse(line);
-          const role = json.role || "[unknown]";
-          const msgContent = coerceRawContent(json.content ?? json.text ?? json.message);
-          return `**${role}**: ${msgContent ?? "[empty]"}`;
+          return formatEntry(json);
         } catch {
           return `[PARSE ERROR] ${line}`;
         }
       })
+      .filter((line): line is string => Boolean(line))
       .join("\n\n");
   }
 
@@ -152,11 +175,8 @@ export function formatRawSession(content: string, ext: string): string {
       if (messages.length === 0) return "";
 
       return messages
-        .map((msg) => {
-          const role = msg.role || "[unknown]";
-          const msgContent = coerceRawContent(msg.content ?? msg.text ?? msg.message);
-          return `**${role}**: ${msgContent ?? "[empty]"}`;
-        })
+        .map((msg) => formatEntry(msg))
+        .filter((line): line is string => Boolean(line))
         .join("\n\n");
     } catch {
       return `[PARSE ERROR: Invalid JSON] ${content}`;

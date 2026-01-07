@@ -213,6 +213,43 @@ describe("E2E: CLI context command", () => {
       });
     });
 
+    it("orders relevant bullets by relevance in JSON output", async () => {
+      await withTempCassHome(async (env) => {
+        const playbook = createTestPlaybook([
+          createTestBullet({
+            id: "rule-low",
+            content: "Document API usage guidelines",
+            kind: "workflow_rule",
+            category: "documentation",
+            tags: ["api"],
+          }),
+          createTestBullet({
+            id: "rule-high",
+            content: "Optimize API performance with caching",
+            kind: "workflow_rule",
+            category: "performance",
+            tags: ["performance", "api"],
+          })
+        ]);
+        await writeFile(env.playbookPath, yaml.stringify(playbook));
+
+        const capture = captureConsole();
+        try {
+          await contextCommand("optimize API performance", { json: true, limit: 5 });
+        } finally {
+          capture.restore();
+        }
+
+        const output = capture.logs.join("\n");
+        const parsed = JSON.parse(output);
+        const ids = parsed.data.relevantBullets.map((b: any) => b.id);
+
+        expect(ids.length).toBeGreaterThanOrEqual(2);
+        expect(ids[0]).toBe("rule-high");
+        expect(ids).toContain("rule-low");
+      });
+    });
+
     it("separates anti-patterns from regular rules", async () => {
       await withTempCassHome(async (env) => {
         const playbook = createTestPlaybook([
