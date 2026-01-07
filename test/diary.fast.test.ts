@@ -104,6 +104,49 @@ describe("Fast Diary Extraction", () => {
       expect(formatted).toContain("**assistant**: Ack");
     });
 
+    test("skips Codex CLI session_meta entries", () => {
+      const lines = [
+        JSON.stringify({ type: "session_meta", session_id: "abc123", timestamp: 1234567890 }),
+        JSON.stringify({ role: "user", content: "Hello" }),
+        JSON.stringify({ role: "assistant", content: "Hi" })
+      ].join("\n");
+      const formatted = formatRawSession(lines, ".jsonl");
+      expect(formatted).not.toContain("session_meta");
+      expect(formatted).not.toContain("abc123");
+      expect(formatted).toContain("**user**: Hello");
+      expect(formatted).toContain("**assistant**: Hi");
+    });
+
+    test("formats Codex CLI response_item with payload.message", () => {
+      const lines = [
+        JSON.stringify({
+          type: "response_item",
+          payload: { type: "message", role: "assistant", content: "I'll help with that" }
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: { type: "message", role: "user", content: [{ text: "Thanks" }] }
+        })
+      ].join("\n");
+      const formatted = formatRawSession(lines, ".jsonl");
+      expect(formatted).toContain("**assistant**: I'll help with that");
+      expect(formatted).toContain("**user**: Thanks");
+    });
+
+    test("skips response_item entries without message payload", () => {
+      const lines = [
+        JSON.stringify({
+          type: "response_item",
+          payload: { type: "function_call", name: "read_file" }
+        }),
+        JSON.stringify({ role: "user", content: "Hello" })
+      ].join("\n");
+      const formatted = formatRawSession(lines, ".jsonl");
+      expect(formatted).not.toContain("function_call");
+      expect(formatted).not.toContain("read_file");
+      expect(formatted).toContain("**user**: Hello");
+    });
+
     test("formats json messages from supported containers", () => {
       const payload = JSON.stringify({
         messages: [
