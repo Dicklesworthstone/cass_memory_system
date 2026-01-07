@@ -484,7 +484,7 @@ Parse: `file:line:col` → location | 💡 → how to fix | Exit 0/1 → pass/fa
 
 ## Contribution Policy
 
-Remove any mention of contributing/contributors from README and don't reinsert it.
+The README must include the "About Contributions" disclaimer at the end explaining that outside contributions are not accepted directly. Do not remove this policy text.
 
 <!-- bv-agent-instructions-v1 -->
 
