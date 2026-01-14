@@ -17,6 +17,17 @@ curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/cass_memory_syste
   | bash -s -- --easy-mode --verify
 ```
 
+**Or via package managers:**
+
+```bash
+# macOS/Linux (Homebrew)
+brew install dicklesworthstone/tap/cm
+
+# Windows (Scoop)
+scoop bucket add dicklesworthstone https://github.com/Dicklesworthstone/scoop-bucket
+scoop install dicklesworthstone/cm
+```
+
 </div>
 
 ---
