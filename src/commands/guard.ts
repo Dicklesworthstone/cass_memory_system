@@ -236,10 +236,12 @@ export async function installGitHook(json?: boolean, silent?: boolean): Promise<
   await fs.writeFile(guardScriptPath, GIT_PRECOMMIT_HOOK, { encoding: "utf-8", mode: 0o755 });
 
   // Create or update pre-commit hook to call our script
+  // Escape quotes in path to prevent injection
+  const safeGuardPath = guardScriptPath.replace(/"/g, '\\"');
   let newHookContent: string;
   if (hookExists && existingHook.trim()) {
     // Append to existing hook
-    const callLine = `\n# Project Hot Stove: Trauma Guard\n"${guardScriptPath}" || exit 1\n`;
+    const callLine = `\n# Project Hot Stove: Trauma Guard\n"${safeGuardPath}" || exit 1\n`;
     newHookContent = existingHook.trimEnd() + callLine;
   } else {
     // Create new hook
@@ -247,7 +249,7 @@ export async function installGitHook(json?: boolean, silent?: boolean): Promise<
 # Git pre-commit hook with Project Hot Stove trauma guard
 
 # Trauma Guard: Block commits matching dangerous patterns
-"${guardScriptPath}" || exit 1
+"${safeGuardPath}" || exit 1
 `;
   }
 
