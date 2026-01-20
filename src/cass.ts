@@ -408,18 +408,7 @@ export async function cassSearch(
   runner: CassRunner = DEFAULT_CASS_RUNNER
 ): Promise<CassHit[]> {
   const resolved = expandPath(cassPath);
-  const args = ["search", query, "--robot"];
-
-  if (options.limit) args.push("--limit", options.limit.toString());
-  if (options.days) args.push("--days", options.days.toString());
-
-  if (options.agent) {
-    const agents = Array.isArray(options.agent) ? options.agent : [options.agent];
-    agents.forEach(a => args.push("--agent", a));
-  }
-
-  if (options.workspace) args.push("--workspace", options.workspace);
-  if (options.fields) args.push("--fields", options.fields.join(","));
+  const args = buildCassSearchArgs(query, options);
 
   try {
     const { stdout } = await runner.execFile(resolved, args, {
@@ -467,7 +456,7 @@ function shellEscapeForUserCommand(arg: string): string {
 }
 
 function buildCassSearchArgs(query: string, options: CassSearchOptions = {}): string[] {
-  const args = ["search", query, "--robot"];
+  const args = ["search"];
 
   if (options.limit) args.push("--limit", options.limit.toString());
   if (options.days) args.push("--days", options.days.toString());
@@ -479,6 +468,10 @@ function buildCassSearchArgs(query: string, options: CassSearchOptions = {}): st
 
   if (options.workspace) args.push("--workspace", options.workspace);
   if (options.fields) args.push("--fields", options.fields.join(","));
+
+  args.push("--robot");
+  args.push("--");
+  args.push(query);
 
   return args;
 }
@@ -891,7 +884,7 @@ export async function cassExport(
   config?: Config,
   runner: CassRunner = DEFAULT_CASS_RUNNER
 ): Promise<string | null> {
-  const args = ["export", sessionPath, "--format", format];
+  const args = ["export", "--format", format, "--", sessionPath];
   const resolvedCassPath = expandPath(cassPath);
 
   try {
@@ -1013,7 +1006,7 @@ export async function cassExpand(
   config?: Config,
   runner: CassRunner = DEFAULT_CASS_RUNNER
 ): Promise<string | null> {
-  const args = ["expand", sessionPath, "-n", lineNumber.toString(), "-C", contextLines.toString(), "--robot"];
+  const args = ["expand", "-n", lineNumber.toString(), "-C", contextLines.toString(), "--robot", "--", sessionPath];
   const resolvedCassPath = expandPath(cassPath);
 
   try {
