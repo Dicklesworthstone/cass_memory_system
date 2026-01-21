@@ -225,7 +225,12 @@ def get_staged_diff():
         return ""
 
 def check_content(content, traumas):
-    """Check content against trauma patterns."""
+    """Check content against trauma patterns (only added lines)."""
+    lines = content.splitlines()
+    # Filter for added lines: start with '+' but not '+++' (header)
+    # Strip the '+' prefix so regexes matching start-of-string work.
+    added_lines = [line[1:] for line in lines if line.startswith('+') and not line.startswith('+++')]
+
     for trauma in traumas:
         if not isinstance(trauma, dict):
             continue
@@ -235,8 +240,10 @@ def check_content(content, traumas):
             continue
 
         try:
-            if re.search(pattern, content, re.IGNORECASE):
-                return trauma
+            regex = re.compile(pattern, re.IGNORECASE)
+            for line in added_lines:
+                if regex.search(line):
+                    return trauma
         except re.error:
             continue
     return None
