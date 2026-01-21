@@ -227,9 +227,21 @@ def get_staged_diff():
 def check_content(content, traumas):
     """Check content against trauma patterns (only added lines)."""
     lines = content.splitlines()
-    # Filter for added lines: start with '+' but not '+++' (header)
-    # Strip the '+' prefix so regexes matching start-of-string work.
-    added_lines = [line[1:] for line in lines if line.startswith('+') and not line.startswith('+++')]
+    added_lines = []
+    in_hunk = False
+
+    for line in lines:
+        if line.startswith('diff --git'):
+            in_hunk = False
+            continue
+        
+        if line.startswith('@@'):
+            in_hunk = True
+            continue
+
+        if in_hunk and line.startswith('+'):
+            # Strip the '+' prefix
+            added_lines.append(line[1:])
 
     for trauma in traumas:
         if not isinstance(trauma, dict):

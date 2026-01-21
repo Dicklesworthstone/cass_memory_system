@@ -109,7 +109,23 @@ index ...
       const result = await setupAndRunHook(dir, diff, traumas);
       expect(result.exitCode).toBe(1);
       expect(result.stdout).toContain("BLOCKED");
-      expect(result.stdout).toContain("rm -rf");
+      expect(result.stdout).toContain("rm\\s+-rf");
+    });
+  });
+
+  it("blocks dangerous content starting with ++", async () => {
+    await withTempDir("git-cpp-increment", async (dir) => {
+      const traumas = [createTrauma("t1", "dangerous")];
+      const diff = `diff --git a/test.cpp b/test.cpp
+index ...
+--- a/test.cpp
++++ b/test.cpp
+@@ -0,0 +1 @@
++++i; // dangerous`;
+
+      const result = await setupAndRunHook(dir, diff, traumas);
+      expect(result.exitCode).toBe(1);
+      expect(result.stdout).toContain("BLOCKED");
     });
   });
 
@@ -150,6 +166,7 @@ index ...
   });
 });
 
+describe("TRAUMA_GUARD_SCRIPT Content", () => {
   it("starts with Python shebang", () => {
     expect(TRAUMA_GUARD_SCRIPT.startsWith("#!/usr/bin/env python3")).toBe(true);
   });
