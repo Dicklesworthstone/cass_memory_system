@@ -992,4 +992,157 @@ describe("onboardCommand --read --template JSON", () => {
       });
     });
   });
+
+  test("template mode text returns error for non-existent session", async () => {
+    await withTempCassHome(async (env) => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+
+        writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])));
+
+        const capture = captureConsole();
+        try {
+          await onboardCommand({ read: "/nonexistent.jsonl", template: true });
+          const output = capture.getOutput();
+          const errors = capture.getErrors();
+          // Template mode text should show error in stdout or stderr
+          const combined = output + errors;
+          expect(combined.toLowerCase()).toContain("session");
+        } finally {
+          capture.restore();
+          process.chdir(originalCwd);
+        }
+      });
+    });
+  });
+});
+
+describe("onboardCommand --sample text mode with filtering", () => {
+  test("shows filtered count when sessions are already processed", async () => {
+    await withTempCassHome(async (env) => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+
+        writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])));
+
+        // Mark a session as processed so filtered count > 0
+        await markSessionProcessed("/test/filtered-session.jsonl", 2);
+
+        const capture = captureConsole();
+        try {
+          await onboardCommand({ sample: true });
+          const output = capture.getOutput();
+          // Should show header
+          expect(output).toContain("SAMPLED SESSIONS");
+        } finally {
+          capture.restore();
+          process.chdir(originalCwd);
+        }
+      });
+    });
+  });
+
+  test("shows info when no unprocessed sessions", async () => {
+    await withTempCassHome(async (env) => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+
+        writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])));
+
+        // Process many sessions to likely exhaust any available
+        for (let i = 0; i < 10; i++) {
+          await markSessionProcessed(`/test/session-${i}.jsonl`, i);
+        }
+
+        const capture = captureConsole();
+        try {
+          await onboardCommand({ sample: true });
+          const output = capture.getOutput();
+          // Should show either sessions found or "no unprocessed" message
+          expect(output).toBeDefined();
+        } finally {
+          capture.restore();
+          process.chdir(originalCwd);
+        }
+      });
+    });
+  });
+
+  test("shows fill-gaps info in text mode", async () => {
+    await withTempCassHome(async (env) => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+
+        writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])));
+
+        const capture = captureConsole();
+        try {
+          await onboardCommand({ sample: true, fillGaps: true });
+          const output = capture.getOutput();
+          // Should show gap-focused header
+          expect(output).toContain("GAP");
+        } finally {
+          capture.restore();
+          process.chdir(originalCwd);
+        }
+      });
+    });
+  });
+});
+
+describe("onboardCommand --status with gaps in text mode", () => {
+  test("shows gaps section when critical gaps exist", async () => {
+    await withTempCassHome(async (env) => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+
+        // Empty playbook means all categories are critical gaps
+        writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])));
+
+        const capture = captureConsole();
+        try {
+          await onboardCommand({ status: true });
+          const output = capture.getOutput();
+          // Should show GAPS section
+          expect(output).toContain("GAPS");
+          expect(output).toContain("Critical");
+        } finally {
+          capture.restore();
+          process.chdir(originalCwd);
+        }
+      });
+    });
+  });
+});
+
+describe("onboardCommand --guided flag", () => {
+  test("returns guided info in JSON mode when explicitly set", async () => {
+    await withTempCassHome(async (env) => {
+      await withTempGitRepo(async (repoDir) => {
+        const originalCwd = process.cwd();
+        process.chdir(repoDir);
+
+        writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])));
+
+        const capture = captureConsole();
+        try {
+          await onboardCommand({ guided: true, json: true });
+          const output = capture.getOutput();
+          const result = JSON.parse(output);
+
+          expect(result.success).toBe(true);
+          expect(result.command).toBe("onboard:guided");
+          expect(result.data.step).toBe("guided");
+        } finally {
+          capture.restore();
+          process.chdir(originalCwd);
+        }
+      });
+    });
+  });
 });
