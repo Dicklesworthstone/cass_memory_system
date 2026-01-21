@@ -282,8 +282,11 @@ export async function generateContextResult(
   const keywords = extractKeywords(task);
 
   const activeBullets = getActiveBullets(playbook).filter((b) => {
-    if (!flags.workspace) return true;
+    // Always include global rules
     if (b.scope !== "workspace") return true;
+    
+    // For workspace rules, only include if a workspace is specified AND matches
+    if (!flags.workspace) return false;
     return b.workspace === flags.workspace;
   });
 
