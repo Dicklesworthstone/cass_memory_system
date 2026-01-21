@@ -460,6 +460,429 @@ describe("E2E: CLI guard command", () => {
     });
   });
 
+  describe("installGitHook function", () => {
+    it("installs git pre-commit hook successfully", async () => {
+      const log = createE2ELogger("guard: git hook install");
+      log.setRepro("bun test test/cli-guard.e2e.test.ts");
+
+      await log.run(async () => {
+        await withTempDir("guard-git-hook", async (tempDir) => {
+          const originalCwd = process.cwd();
+
+          try {
+            process.chdir(tempDir);
+
+            // Initialize git repo
+            const { exec } = await import("node:child_process");
+            const { promisify } = await import("node:util");
+            await promisify(exec)("git init", { cwd: tempDir });
+            log.step("Initialized git repo", { tempDir });
+
+            const { installGitHook } = await import("../src/commands/guard.js");
+
+            const capture = captureConsole();
+            let result: boolean;
+            try {
+              log.startTimer("installGitHook");
+              result = await installGitHook(false);
+              log.endTimer("installGitHook");
+            } finally {
+              capture.restore();
+            }
+
+            log.snapshot("output", { logs: capture.logs, errors: capture.errors, result });
+
+            // Should succeed
+            expect(result).toBe(true);
+
+            // Verify guard script was created
+            const gitHooksDir = path.join(tempDir, ".git", "hooks");
+            const guardScriptPath = path.join(gitHooksDir, "trauma-guard-precommit.py");
+            const guardScriptExists = await exists(guardScriptPath);
+            log.step("Guard script created", { guardScriptPath, guardScriptExists });
+            expect(guardScriptExists).toBe(true);
+
+            // Verify pre-commit hook was created
+            const preCommitPath = path.join(gitHooksDir, "pre-commit");
+            const preCommitExists = await exists(preCommitPath);
+            log.step("Pre-commit hook created", { preCommitPath, preCommitExists });
+            expect(preCommitExists).toBe(true);
+
+            // Verify pre-commit hook calls the guard script
+            const preCommitContent = await readFile(preCommitPath, "utf-8");
+            expect(preCommitContent).toContain("trauma-guard-precommit.py");
+            expect(preCommitContent).toContain("#!/bin/sh");
+
+            // Verify guard script content
+            const guardScriptContent = await readFile(guardScriptPath, "utf-8");
+            expect(guardScriptContent).toContain("#!/usr/bin/env python3");
+            expect(guardScriptContent).toContain("HOT STOVE");
+
+            // Verify console output
+            const allLogs = capture.logs.join("\n");
+            expect(allLogs).toContain("Installed");
+          } finally {
+            process.chdir(originalCwd);
+          }
+        });
+      });
+    });
+
+    it("git hook installation is idempotent", async () => {
+      const log = createE2ELogger("guard: git hook idempotent");
+      log.setRepro("bun test test/cli-guard.e2e.test.ts");
+
+      await log.run(async () => {
+        await withTempDir("guard-git-idempotent", async (tempDir) => {
+          const originalCwd = process.cwd();
+
+          try {
+            process.chdir(tempDir);
+
+            // Initialize git repo
+            const { exec } = await import("node:child_process");
+            const { promisify } = await import("node:util");
+            await promisify(exec)("git init", { cwd: tempDir });
+
+            const { installGitHook } = await import("../src/commands/guard.js");
+
+            // First install
+            const capture1 = captureConsole();
+            let result1: boolean;
+            try {
+              result1 = await installGitHook(false);
+            } finally {
+              capture1.restore();
+            }
+            log.step("First install completed", { result: result1, logs: capture1.logs });
+
+            // Second install
+            const capture2 = captureConsole();
+            let result2: boolean;
+            try {
+              result2 = await installGitHook(false);
+            } finally {
+              capture2.restore();
+            }
+            log.step("Second install completed", { result: result2, logs: capture2.logs });
+
+            // Both should succeed
+            expect(result1).toBe(true);
+            expect(result2).toBe(true);
+
+            // Second install should say "already installed"
+            const secondOutput = capture2.logs.join("\n");
+            expect(secondOutput).toContain("already installed");
+
+            // Verify only one guard script invocation in pre-commit hook
+            const preCommitPath = path.join(tempDir, ".git", "hooks", "pre-commit");
+            const preCommitContent = await readFile(preCommitPath, "utf-8");
+            const matches = preCommitContent.match(/trauma-guard-precommit\.py/g) || [];
+            expect(matches.length).toBe(1);
+          } finally {
+            process.chdir(originalCwd);
+          }
+        });
+      });
+    });
+
+    it("returns false when not in git repo", async () => {
+      const log = createE2ELogger("guard: git hook no repo");
+      log.setRepro("bun test test/cli-guard.e2e.test.ts");
+
+      await log.run(async () => {
+        await withTempDir("guard-git-no-repo", async (tempDir) => {
+          const originalCwd = process.cwd();
+
+          try {
+            process.chdir(tempDir);
+            log.step("Changed to temp dir WITHOUT git repo", { tempDir });
+
+            const { installGitHook } = await import("../src/commands/guard.js");
+
+            const capture = captureConsole();
+            let result: boolean;
+            try {
+              result = await installGitHook(false);
+            } finally {
+              capture.restore();
+            }
+
+            log.snapshot("output", { logs: capture.logs, errors: capture.errors, result });
+
+            // Should return false
+            expect(result).toBe(false);
+
+            // Should report error about not being in git repo
+            const allOutput = [...capture.logs, ...capture.errors].join("\n");
+            expect(allOutput.toLowerCase()).toMatch(/git|repository/);
+          } finally {
+            process.chdir(originalCwd);
+          }
+        });
+      });
+    });
+
+    it("outputs valid JSON in JSON mode", async () => {
+      const log = createE2ELogger("guard: git hook JSON output");
+      log.setRepro("bun test test/cli-guard.e2e.test.ts");
+
+      await log.run(async () => {
+        await withTempDir("guard-git-json", async (tempDir) => {
+          const originalCwd = process.cwd();
+
+          try {
+            process.chdir(tempDir);
+
+            // Initialize git repo
+            const { exec } = await import("node:child_process");
+            const { promisify } = await import("node:util");
+            await promisify(exec)("git init", { cwd: tempDir });
+
+            const { installGitHook } = await import("../src/commands/guard.js");
+
+            const capture = captureConsole();
+            let result: boolean;
+            try {
+              result = await installGitHook(true); // json=true
+            } finally {
+              capture.restore();
+            }
+
+            log.snapshot("output", { logs: capture.logs, errors: capture.errors, result });
+
+            // Should output valid JSON
+            const jsonOutput = capture.logs.find(l => l.startsWith("{"));
+            expect(jsonOutput).toBeDefined();
+
+            const parsed = JSON.parse(jsonOutput!);
+            log.snapshot("parsed JSON", parsed);
+
+            expect(parsed.command).toBe("guard");
+            expect(parsed.data).toBeDefined();
+            expect(parsed.data.message).toContain("installed");
+            expect(parsed.data.hookPath).toContain("pre-commit");
+          } finally {
+            process.chdir(originalCwd);
+          }
+        });
+      });
+    });
+
+    it("silent mode produces no console output", async () => {
+      const log = createE2ELogger("guard: git hook silent mode");
+      log.setRepro("bun test test/cli-guard.e2e.test.ts");
+
+      await log.run(async () => {
+        await withTempDir("guard-git-silent", async (tempDir) => {
+          const originalCwd = process.cwd();
+
+          try {
+            process.chdir(tempDir);
+
+            // Initialize git repo
+            const { exec } = await import("node:child_process");
+            const { promisify } = await import("node:util");
+            await promisify(exec)("git init", { cwd: tempDir });
+
+            const { installGitHook } = await import("../src/commands/guard.js");
+
+            const capture = captureConsole();
+            let result: boolean;
+            try {
+              result = await installGitHook(false, true); // json=false, silent=true
+            } finally {
+              capture.restore();
+            }
+
+            log.snapshot("output", { logs: capture.logs, errors: capture.errors, result });
+
+            // Silent mode should produce no output
+            expect(capture.logs.length).toBe(0);
+            expect(capture.errors.length).toBe(0);
+
+            // But the hook should still be installed
+            expect(result).toBe(true);
+            const preCommitPath = path.join(tempDir, ".git", "hooks", "pre-commit");
+            expect(await exists(preCommitPath)).toBe(true);
+          } finally {
+            process.chdir(originalCwd);
+          }
+        });
+      });
+    });
+
+    it("silent mode returns false when not in git repo (no error)", async () => {
+      const log = createE2ELogger("guard: git hook silent no repo");
+      log.setRepro("bun test test/cli-guard.e2e.test.ts");
+
+      await log.run(async () => {
+        await withTempDir("guard-git-silent-no-repo", async (tempDir) => {
+          const originalCwd = process.cwd();
+
+          try {
+            process.chdir(tempDir);
+            log.step("No git repo present");
+
+            const { installGitHook } = await import("../src/commands/guard.js");
+
+            const capture = captureConsole();
+            let result: boolean;
+            try {
+              result = await installGitHook(false, true); // json=false, silent=true
+            } finally {
+              capture.restore();
+            }
+
+            log.snapshot("output", { logs: capture.logs, errors: capture.errors, result });
+
+            // Silent mode should produce no output even on error
+            expect(capture.logs.length).toBe(0);
+            expect(capture.errors.length).toBe(0);
+            expect(result).toBe(false);
+          } finally {
+            process.chdir(originalCwd);
+          }
+        });
+      });
+    });
+
+    it("appends to existing pre-commit hook", async () => {
+      const log = createE2ELogger("guard: append to existing hook");
+      log.setRepro("bun test test/cli-guard.e2e.test.ts");
+
+      await log.run(async () => {
+        await withTempDir("guard-git-append", async (tempDir) => {
+          const originalCwd = process.cwd();
+
+          try {
+            process.chdir(tempDir);
+
+            // Initialize git repo
+            const { exec } = await import("node:child_process");
+            const { promisify } = await import("node:util");
+            await promisify(exec)("git init", { cwd: tempDir });
+
+            // Create existing pre-commit hook
+            const gitHooksDir = path.join(tempDir, ".git", "hooks");
+            const preCommitPath = path.join(gitHooksDir, "pre-commit");
+            const existingHook = `#!/bin/sh
+# Existing pre-commit hook
+echo "Running existing hook"
+npm test
+`;
+            await writeFile(preCommitPath, existingHook, { mode: 0o755 });
+            log.step("Created existing pre-commit hook");
+
+            const { installGitHook } = await import("../src/commands/guard.js");
+
+            const capture = captureConsole();
+            let result: boolean;
+            try {
+              result = await installGitHook(false);
+            } finally {
+              capture.restore();
+            }
+
+            log.snapshot("output", { logs: capture.logs, result });
+
+            expect(result).toBe(true);
+
+            // Verify existing content preserved and hook appended
+            const updatedHook = await readFile(preCommitPath, "utf-8");
+            log.snapshot("updated hook content", updatedHook);
+
+            expect(updatedHook).toContain("Existing pre-commit hook");
+            expect(updatedHook).toContain("npm test");
+            expect(updatedHook).toContain("trauma-guard-precommit.py");
+            expect(updatedHook).toContain("Hot Stove");
+          } finally {
+            process.chdir(originalCwd);
+          }
+        });
+      });
+    });
+  });
+
+  describe("guardCommand with --git flag", () => {
+    it("calls installGitHook when --git flag is provided", async () => {
+      const log = createE2ELogger("guard: --git flag");
+      log.setRepro("bun test test/cli-guard.e2e.test.ts");
+
+      await log.run(async () => {
+        await withTempDir("guard-git-flag", async (tempDir) => {
+          const originalCwd = process.cwd();
+
+          try {
+            process.chdir(tempDir);
+
+            // Initialize git repo
+            const { exec } = await import("node:child_process");
+            const { promisify } = await import("node:util");
+            await promisify(exec)("git init", { cwd: tempDir });
+
+            const capture = captureConsole();
+            try {
+              await guardCommand({ git: true });
+            } finally {
+              capture.restore();
+            }
+
+            log.snapshot("output", { logs: capture.logs, errors: capture.errors });
+
+            // Verify hook was installed
+            const preCommitPath = path.join(tempDir, ".git", "hooks", "pre-commit");
+            expect(await exists(preCommitPath)).toBe(true);
+
+            const allLogs = capture.logs.join("\n");
+            expect(allLogs).toContain("Installed");
+          } finally {
+            process.chdir(originalCwd);
+          }
+        });
+      });
+    });
+
+    it("cm guard --git --json works end-to-end", async () => {
+      const log = createE2ELogger("guard: --git --json e2e");
+      log.setRepro("bun test test/cli-guard.e2e.test.ts");
+
+      await log.run(async () => {
+        await withTempDir("guard-git-json-e2e", async (tempDir) => {
+          const originalCwd = process.cwd();
+
+          try {
+            process.chdir(tempDir);
+
+            // Initialize git repo
+            const { exec } = await import("node:child_process");
+            const { promisify } = await import("node:util");
+            await promisify(exec)("git init", { cwd: tempDir });
+
+            const capture = captureConsole();
+            try {
+              await guardCommand({ git: true, json: true });
+            } finally {
+              capture.restore();
+            }
+
+            log.snapshot("output", { logs: capture.logs, errors: capture.errors });
+
+            // Should output valid JSON
+            const jsonOutput = capture.logs.find(l => l.startsWith("{"));
+            expect(jsonOutput).toBeDefined();
+
+            const parsed = JSON.parse(jsonOutput!);
+            expect(parsed.success).toBe(true);
+            expect(parsed.data.message).toContain("installed");
+          } finally {
+            process.chdir(originalCwd);
+          }
+        });
+      });
+    });
+  });
+
   describe("integration with full CLI", () => {
     it("cm guard --install --json works end-to-end", async () => {
       const log = createE2ELogger("guard: full CLI e2e");
