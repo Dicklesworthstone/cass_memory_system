@@ -284,4 +284,340 @@ describe("E2E: CLI stale command", () => {
       });
     });
   });
+
+  it.serial("rejects invalid days parameter", async () => {
+    const log = createE2ELogger("cli-stale: invalid days");
+    log.setRepro("bun test test/cli-stale.e2e.test.ts");
+
+    await log.run(async () => {
+      await withTempCassHome(async (env) => {
+        await writeTestConfig(env);
+
+        const bullet = createBullet({
+          id: "b-stale-valid",
+          content: "Test bullet",
+          category: "testing",
+          maturity: "established",
+          createdAt: daysAgo(100),
+          updatedAt: daysAgo(100),
+          feedbackEvents: [],
+        });
+
+        const playbook = createTestPlaybook([bullet]);
+        await writeFile(env.playbookPath, yaml.stringify(playbook));
+
+        // Test with negative number
+        const capture = captureConsole();
+        try {
+          await withNoColor(async () => {
+            await withCwd(env.home, async () => {
+              log.step("Run command with invalid days", { days: -5 });
+              await staleCommand({ days: -5, json: true });
+            });
+          });
+        } finally {
+          capture.restore();
+        }
+
+        const stdout = capture.logs.join("\n");
+        log.snapshot("stdout", stdout);
+        const payload = JSON.parse(stdout);
+        expect(payload.success).toBe(false);
+        expect(payload.error.code).toBe("INVALID_INPUT");
+        expect(payload.error.message).toContain("days");
+      });
+    });
+  });
+
+  it.serial("rejects invalid scope parameter", async () => {
+    const log = createE2ELogger("cli-stale: invalid scope");
+    log.setRepro("bun test test/cli-stale.e2e.test.ts");
+
+    await log.run(async () => {
+      await withTempCassHome(async (env) => {
+        await writeTestConfig(env);
+
+        const bullet = createBullet({
+          id: "b-stale-valid",
+          content: "Test bullet",
+          category: "testing",
+          maturity: "established",
+          createdAt: daysAgo(100),
+          updatedAt: daysAgo(100),
+          feedbackEvents: [],
+        });
+
+        const playbook = createTestPlaybook([bullet]);
+        await writeFile(env.playbookPath, yaml.stringify(playbook));
+
+        const capture = captureConsole();
+        try {
+          await withNoColor(async () => {
+            await withCwd(env.home, async () => {
+              log.step("Run command with invalid scope", { scope: "invalid" as any });
+              await staleCommand({ scope: "invalid" as any, json: true });
+            });
+          });
+        } finally {
+          capture.restore();
+        }
+
+        const stdout = capture.logs.join("\n");
+        log.snapshot("stdout", stdout);
+        const payload = JSON.parse(stdout);
+        expect(payload.success).toBe(false);
+        expect(payload.error.code).toBe("INVALID_INPUT");
+        expect(payload.error.message).toContain("scope");
+      });
+    });
+  });
+
+  it.serial("human-readable output shows stale bullets with recommendations", async () => {
+    const log = createE2ELogger("cli-stale: human readable output");
+    log.setRepro("bun test test/cli-stale.e2e.test.ts");
+
+    await log.run(async () => {
+      await withTempCassHome(async (env) => {
+        await writeTestConfig(env);
+
+        // Create a stale bullet with negative score (for "consider forget" recommendation)
+        const bulletNegativeScore = createBullet({
+          id: "b-stale-negative",
+          content: "Bullet with negative score",
+          category: "testing",
+          maturity: "established",
+          createdAt: daysAgo(120),
+          updatedAt: daysAgo(120),
+          feedbackEvents: [
+            createFeedbackEvent("harmful", { timestamp: daysAgo(100) }),
+            createFeedbackEvent("harmful", { timestamp: daysAgo(100) }),
+          ],
+          harmfulCount: 2,
+          helpfulCount: 0,
+        });
+
+        // Create a very stale candidate (>180 days)
+        const bulletVeryStale = createBullet({
+          id: "b-stale-verystale",
+          content: "Very stale candidate bullet",
+          category: "testing",
+          maturity: "candidate",
+          createdAt: daysAgo(200),
+          updatedAt: daysAgo(200),
+          feedbackEvents: [],
+        });
+
+        // Create a high-score stale bullet (score > 5)
+        const bulletHighScore = createBullet({
+          id: "b-stale-highscore",
+          content: "High score stale bullet",
+          category: "testing",
+          maturity: "proven",
+          createdAt: daysAgo(150),
+          updatedAt: daysAgo(150),
+          feedbackEvents: [
+            createFeedbackEvent("helpful", { timestamp: daysAgo(95) }),
+            createFeedbackEvent("helpful", { timestamp: daysAgo(95) }),
+            createFeedbackEvent("helpful", { timestamp: daysAgo(95) }),
+            createFeedbackEvent("helpful", { timestamp: daysAgo(95) }),
+            createFeedbackEvent("helpful", { timestamp: daysAgo(95) }),
+            createFeedbackEvent("helpful", { timestamp: daysAgo(95) }),
+            createFeedbackEvent("helpful", { timestamp: daysAgo(95) }),
+            createFeedbackEvent("helpful", { timestamp: daysAgo(95) }),
+          ],
+          helpfulCount: 8,
+        });
+
+        const playbook = createTestPlaybook([bulletNegativeScore, bulletVeryStale, bulletHighScore]);
+        await writeFile(env.playbookPath, yaml.stringify(playbook));
+
+        const capture = captureConsole();
+        try {
+          await withNoColor(async () => {
+            await withCwd(env.home, async () => {
+              log.step("Run command", { command: "cm stale --days 90" });
+              await staleCommand({ days: 90 }); // No --json for human output
+            });
+          });
+        } finally {
+          capture.restore();
+        }
+
+        const stdout = capture.logs.join("\n");
+        log.snapshot("stdout", stdout);
+
+        // Verify human-readable output contains expected elements
+        expect(stdout).toContain("STALE");
+        expect(stdout).toContain("Threshold: 90+ days");
+        expect(stdout).toContain("b-stale-negative");
+        expect(stdout).toContain("b-stale-verystale");
+        expect(stdout).toContain("b-stale-highscore");
+        expect(stdout).toContain("Next actions");
+        // Should contain recommendation text
+        expect(stdout).toMatch(/negative scores|consider|review/i);
+      });
+    });
+  });
+
+  it.serial("human-readable output shows empty result message", async () => {
+    const log = createE2ELogger("cli-stale: human readable empty");
+    log.setRepro("bun test test/cli-stale.e2e.test.ts");
+
+    await log.run(async () => {
+      await withTempCassHome(async (env) => {
+        await writeTestConfig(env);
+
+        // Create a bullet with recent feedback (won't be stale at 90 days threshold)
+        const bulletRecent = createBullet({
+          id: "b-stale-recent",
+          content: "Recent feedback bullet",
+          category: "testing",
+          maturity: "established",
+          createdAt: daysAgo(10),
+          updatedAt: daysAgo(5),
+          feedbackEvents: [createFeedbackEvent("helpful", { timestamp: daysAgo(5) })],
+          helpfulCount: 1,
+        });
+
+        const playbook = createTestPlaybook([bulletRecent]);
+        await writeFile(env.playbookPath, yaml.stringify(playbook));
+
+        const capture = captureConsole();
+        try {
+          await withNoColor(async () => {
+            await withCwd(env.home, async () => {
+              log.step("Run command", { command: "cm stale --days 90" });
+              await staleCommand({ days: 90 }); // No --json for human output
+            });
+          });
+        } finally {
+          capture.restore();
+        }
+
+        const stdout = capture.logs.join("\n");
+        log.snapshot("stdout", stdout);
+
+        // Verify no stale bullets message
+        expect(stdout).toContain("No stale bullets found");
+        expect(stdout).toContain("All");
+        expect(stdout).toContain("active bullets have recent feedback");
+      });
+    });
+  });
+
+  it.serial("filters by scope parameter", async () => {
+    const log = createE2ELogger("cli-stale: scope filter");
+    log.setRepro("bun test test/cli-stale.e2e.test.ts");
+
+    await log.run(async () => {
+      await withTempCassHome(async (env) => {
+        await writeTestConfig(env);
+
+        const bulletGlobal = createBullet({
+          id: "b-stale-global",
+          content: "Global scope bullet",
+          category: "testing",
+          maturity: "established",
+          scope: "global",
+          createdAt: daysAgo(100),
+          updatedAt: daysAgo(100),
+          feedbackEvents: [],
+        });
+
+        const bulletWorkspace = createBullet({
+          id: "b-stale-workspace",
+          content: "Workspace scope bullet",
+          category: "testing",
+          maturity: "established",
+          scope: "workspace",
+          createdAt: daysAgo(100),
+          updatedAt: daysAgo(100),
+          feedbackEvents: [],
+        });
+
+        const playbook = createTestPlaybook([bulletGlobal, bulletWorkspace]);
+        await writeFile(env.playbookPath, yaml.stringify(playbook));
+
+        const capture = captureConsole();
+        try {
+          await withNoColor(async () => {
+            await withCwd(env.home, async () => {
+              log.step("Run command with scope=global", { scope: "global" });
+              await staleCommand({ days: 90, scope: "global", json: true });
+            });
+          });
+        } finally {
+          capture.restore();
+        }
+
+        const stdout = capture.logs.join("\n");
+        log.snapshot("stdout", stdout);
+        const payload = JSON.parse(stdout);
+
+        expect(payload.success).toBe(true);
+        expect(payload.data.count).toBe(1);
+        expect(payload.data.bullets[0].id).toBe("b-stale-global");
+        expect(payload.data.filters.scope).toBe("global");
+      });
+    });
+  });
+
+  it.serial("covers high score recommendation case", async () => {
+    const log = createE2ELogger("cli-stale: high score recommendation");
+    log.setRepro("bun test test/cli-stale.e2e.test.ts");
+
+    await log.run(async () => {
+      await withTempCassHome(async (env) => {
+        await writeTestConfig(env);
+
+        // Create a bullet with score > 5 to trigger the "Good score despite being stale" case
+        // Score = helpful - 4*harmful, with decay. We need many helpful events.
+        const bulletHighScore = createBullet({
+          id: "b-stale-high",
+          content: "High score but stale",
+          category: "testing",
+          maturity: "proven",
+          createdAt: daysAgo(100),
+          updatedAt: daysAgo(100),
+          feedbackEvents: [
+            // Many recent-ish helpful events to get score > 5
+            createFeedbackEvent("helpful", { timestamp: daysAgo(92) }),
+            createFeedbackEvent("helpful", { timestamp: daysAgo(92) }),
+            createFeedbackEvent("helpful", { timestamp: daysAgo(92) }),
+            createFeedbackEvent("helpful", { timestamp: daysAgo(92) }),
+            createFeedbackEvent("helpful", { timestamp: daysAgo(92) }),
+            createFeedbackEvent("helpful", { timestamp: daysAgo(92) }),
+            createFeedbackEvent("helpful", { timestamp: daysAgo(92) }),
+          ],
+          helpfulCount: 7,
+        });
+
+        const playbook = createTestPlaybook([bulletHighScore]);
+        await writeFile(env.playbookPath, yaml.stringify(playbook));
+
+        const capture = captureConsole();
+        try {
+          await withNoColor(async () => {
+            await withCwd(env.home, async () => {
+              log.step("Run command", { command: "cm stale --days 90 --json" });
+              await staleCommand({ days: 90, json: true });
+            });
+          });
+        } finally {
+          capture.restore();
+        }
+
+        const stdout = capture.logs.join("\n");
+        log.snapshot("stdout", stdout);
+        const payload = JSON.parse(stdout);
+
+        expect(payload.success).toBe(true);
+        expect(payload.data.count).toBe(1);
+        const bullet = payload.data.bullets[0];
+        expect(bullet.id).toBe("b-stale-high");
+        // The recommendation for high score bullets should mention "Good score"
+        expect(bullet.recommendation).toContain("Good score despite being stale");
+      });
+    });
+  });
 });

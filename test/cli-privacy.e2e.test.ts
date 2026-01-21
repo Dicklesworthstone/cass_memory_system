@@ -176,4 +176,324 @@ describe("E2E: CLI privacy command", () => {
       });
     });
   });
+
+  it.serial("rejects invalid days parameter", async () => {
+    const log = createE2ELogger("cli-privacy: invalid days");
+    log.setRepro("bun test test/cli-privacy.e2e.test.ts");
+
+    await log.run(async () => {
+      await withTempCassHome(async (env) => {
+        await writeTestConfig(env);
+
+        const capture = captureConsole();
+        try {
+          await withNoColor(async () => {
+            await withCwd(env.home, async () => {
+              log.step("Run command with invalid days", { days: -5 });
+              await privacyCommand("status", [], { json: true, days: -5 });
+            });
+          });
+        } finally {
+          capture.restore();
+        }
+
+        const stdout = capture.logs.join("\n");
+        log.snapshot("stdout", stdout);
+        const payload = JSON.parse(stdout);
+
+        expect(payload.success).toBe(false);
+        expect(payload.error.code).toBe("INVALID_INPUT");
+        expect(payload.error.message).toContain("days");
+      });
+    });
+  });
+
+  it.serial("allow without agent reports error", async () => {
+    const log = createE2ELogger("cli-privacy: allow no agent");
+    log.setRepro("bun test test/cli-privacy.e2e.test.ts");
+
+    await log.run(async () => {
+      await withTempCassHome(async (env) => {
+        await writeTestConfig(env);
+
+        const capture = captureConsole();
+        try {
+          await withNoColor(async () => {
+            await withCwd(env.home, async () => {
+              log.step("Run allow without agent");
+              await privacyCommand("allow", [], { json: true });
+            });
+          });
+        } finally {
+          capture.restore();
+        }
+
+        const stdout = capture.logs.join("\n");
+        log.snapshot("stdout", stdout);
+        const payload = JSON.parse(stdout);
+
+        expect(payload.success).toBe(false);
+        expect(payload.error.code).toBe("MISSING_REQUIRED");
+        expect(payload.error.message).toContain("requires");
+      });
+    });
+  });
+
+  it.serial("deny without agent reports error", async () => {
+    const log = createE2ELogger("cli-privacy: deny no agent");
+    log.setRepro("bun test test/cli-privacy.e2e.test.ts");
+
+    await log.run(async () => {
+      await withTempCassHome(async (env) => {
+        await writeTestConfig(env);
+
+        const capture = captureConsole();
+        try {
+          await withNoColor(async () => {
+            await withCwd(env.home, async () => {
+              log.step("Run deny without agent");
+              await privacyCommand("deny", [], { json: true });
+            });
+          });
+        } finally {
+          capture.restore();
+        }
+
+        const stdout = capture.logs.join("\n");
+        log.snapshot("stdout", stdout);
+        const payload = JSON.parse(stdout);
+
+        expect(payload.success).toBe(false);
+        expect(payload.error.code).toBe("MISSING_REQUIRED");
+        expect(payload.error.message).toContain("requires");
+      });
+    });
+  });
+
+  it.serial("human-readable status output", async () => {
+    const log = createE2ELogger("cli-privacy: human status");
+    log.setRepro("bun test test/cli-privacy.e2e.test.ts");
+
+    await log.run(async () => {
+      await withTempCassHome(async (env) => {
+        await writeTestConfig(env);
+
+        const capture = captureConsole();
+        try {
+          await withNoColor(async () => {
+            await withCwd(env.home, async () => {
+              log.step("Run status without --json");
+              await privacyCommand("status", [], { days: 7 });
+            });
+          });
+        } finally {
+          capture.restore();
+        }
+
+        const stdout = capture.logs.join("\n");
+        log.snapshot("stdout", stdout);
+
+        // Verify human-readable output elements
+        expect(stdout).toContain("Privacy Status");
+        expect(stdout).toContain("Cross-agent enrichment:");
+        expect(stdout).toContain("Consent given:");
+        expect(stdout).toContain("Allowlist:");
+        expect(stdout).toContain("privacy enable");
+        expect(stdout).toContain("privacy disable");
+      });
+    });
+  });
+
+  it.serial("human-readable enable output", async () => {
+    const log = createE2ELogger("cli-privacy: human enable");
+    log.setRepro("bun test test/cli-privacy.e2e.test.ts");
+
+    await log.run(async () => {
+      await withTempCassHome(async (env) => {
+        await writeTestConfig(env);
+
+        const capture = captureConsole();
+        try {
+          await withNoColor(async () => {
+            await withCwd(env.home, async () => {
+              log.step("Run enable without --json");
+              await privacyCommand("enable", ["claude", "cursor"], {});
+            });
+          });
+        } finally {
+          capture.restore();
+        }
+
+        const stdout = capture.logs.join("\n");
+        log.snapshot("stdout", stdout);
+
+        expect(stdout).toContain("Cross-agent enrichment enabled");
+        expect(stdout).toContain("Allowlist:");
+      });
+    });
+  });
+
+  it.serial("human-readable disable output", async () => {
+    const log = createE2ELogger("cli-privacy: human disable");
+    log.setRepro("bun test test/cli-privacy.e2e.test.ts");
+
+    await log.run(async () => {
+      await withTempCassHome(async (env) => {
+        await writeTestConfig(env);
+
+        // First enable
+        const capture1 = captureConsole();
+        try {
+          await withNoColor(async () => {
+            await withCwd(env.home, async () => {
+              await privacyCommand("enable", ["claude"], { json: true });
+            });
+          });
+        } finally {
+          capture1.restore();
+        }
+
+        // Then disable with human output
+        const capture2 = captureConsole();
+        try {
+          await withNoColor(async () => {
+            await withCwd(env.home, async () => {
+              log.step("Run disable without --json");
+              await privacyCommand("disable", [], {});
+            });
+          });
+        } finally {
+          capture2.restore();
+        }
+
+        const stdout = capture2.logs.join("\n");
+        log.snapshot("stdout", stdout);
+
+        expect(stdout).toContain("Cross-agent enrichment disabled");
+      });
+    });
+  });
+
+  it.serial("human-readable allow output", async () => {
+    const log = createE2ELogger("cli-privacy: human allow");
+    log.setRepro("bun test test/cli-privacy.e2e.test.ts");
+
+    await log.run(async () => {
+      await withTempCassHome(async (env) => {
+        await writeTestConfig(env);
+
+        const capture = captureConsole();
+        try {
+          await withNoColor(async () => {
+            await withCwd(env.home, async () => {
+              log.step("Run allow without --json");
+              await privacyCommand("allow", ["gemini"], {});
+            });
+          });
+        } finally {
+          capture.restore();
+        }
+
+        const stdout = capture.logs.join("\n");
+        log.snapshot("stdout", stdout);
+
+        expect(stdout).toContain("Allowed agent");
+        expect(stdout).toContain("gemini");
+        expect(stdout).toContain("Allowlist:");
+      });
+    });
+  });
+
+  it.serial("human-readable deny output", async () => {
+    const log = createE2ELogger("cli-privacy: human deny");
+    log.setRepro("bun test test/cli-privacy.e2e.test.ts");
+
+    await log.run(async () => {
+      await withTempCassHome(async (env) => {
+        await writeTestConfig(env);
+
+        // First add an agent
+        const capture1 = captureConsole();
+        try {
+          await withNoColor(async () => {
+            await withCwd(env.home, async () => {
+              await privacyCommand("allow", ["cursor"], { json: true });
+            });
+          });
+        } finally {
+          capture1.restore();
+        }
+
+        // Then deny with human output
+        const capture2 = captureConsole();
+        try {
+          await withNoColor(async () => {
+            await withCwd(env.home, async () => {
+              log.step("Run deny without --json");
+              await privacyCommand("deny", ["cursor"], {});
+            });
+          });
+        } finally {
+          capture2.restore();
+        }
+
+        const stdout = capture2.logs.join("\n");
+        log.snapshot("stdout", stdout);
+
+        expect(stdout).toContain("Removed agent");
+        expect(stdout).toContain("cursor");
+        expect(stdout).toContain("Allowlist:");
+      });
+    });
+  });
+
+  it.serial("handles deprecated llm config migration", async () => {
+    const log = createE2ELogger("cli-privacy: llm migration");
+    log.setRepro("bun test test/cli-privacy.e2e.test.ts");
+
+    await log.run(async () => {
+      await withTempCassHome(async (env) => {
+        // Write a config with deprecated llm block
+        const deprecatedConfig = {
+          schema_version: 1,
+          llm: {
+            provider: "openai",
+            model: "gpt-4"
+          },
+          cassPath: "__cass_not_installed__",
+          playbookPath: env.playbookPath,
+          diaryDir: env.diaryDir,
+          crossAgent: {
+            enabled: false,
+            consentGiven: false,
+            consentDate: null,
+            agents: [],
+            auditLog: true,
+          },
+        };
+        await writeFile(env.configPath, JSON.stringify(deprecatedConfig, null, 2), "utf-8");
+        log.snapshot("config.before", JSON.stringify(deprecatedConfig, null, 2));
+
+        const capture = captureConsole();
+        try {
+          await withNoColor(async () => {
+            await withCwd(env.home, async () => {
+              log.step("Run status with deprecated config");
+              await privacyCommand("status", [], { json: true, days: 7 });
+            });
+          });
+        } finally {
+          capture.restore();
+        }
+
+        const stdout = capture.logs.join("\n");
+        log.snapshot("stdout", stdout);
+        const payload = JSON.parse(stdout);
+
+        // Should still work despite deprecated config format
+        expect(payload.success).toBe(true);
+        expect(payload.command).toBe("privacy:status");
+      });
+    });
+  });
 });
