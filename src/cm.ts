@@ -887,7 +887,7 @@ return program;
 }
 
 /**
- * Detect if JSON output is requested in argv (before commander parses).
+ * Detect if structured output is requested in argv (before commander parses).
  * Used for error formatting when async action handlers throw.
  */
 export function hasJsonFlag(argv: string[] = process.argv): boolean {
@@ -896,6 +896,8 @@ export function hasJsonFlag(argv: string[] = process.argv): boolean {
     const idx = args.indexOf("--");
     return idx === -1 ? args : args.slice(0, idx);
   })();
+  const jsonFlag =
+    argsBeforeTerminator.includes("--json") || argsBeforeTerminator.includes("-j");
 
   const commands = new Set([
     "init",
@@ -951,8 +953,16 @@ export function hasJsonFlag(argv: string[] = process.argv): boolean {
   // `context --format markdown` explicitly disables JSON, even if `--json` is present.
   if ((command === "context" || command === "ctx") && format === "markdown") return false;
 
-  if (format === "json") return true;
-  if (argsBeforeTerminator.includes("--json") || argsBeforeTerminator.includes("-j")) return true;
+  // Explicit --format takes precedence over env defaults.
+  if (format === "json" || format === "toon") return true;
+  if (jsonFlag) return true;
+  if (format) return false;
+
+  // Env defaults (lowest precedence; mirrors isToonOutput()).
+  const cmFormat = (process.env.CM_OUTPUT_FORMAT || "").trim().toLowerCase();
+  if (cmFormat === "toon") return true;
+  const toonDefault = (process.env.TOON_DEFAULT_FORMAT || "").trim().toLowerCase();
+  if (toonDefault === "toon") return true;
 
   return false;
 }
@@ -1097,9 +1107,59 @@ export function handleCliError(error: unknown, argv: string[] = process.argv, pr
   const inferredCommand =
     program instanceof Command ? inferCommandFromArgv(program, argv) : undefined;
 
+  // Best-effort: honor `--format toon` and env TOON defaults for top-level errors,
+  // without accidentally treating other command-specific `--format` values (e.g. `project --format agents.md`)
+  // as output-mode selectors.
+  const errorFormat = (() => {
+    const args = argv.slice(2);
+    const argsBeforeTerminator = (() => {
+      const idx = args.indexOf("--");
+      return idx === -1 ? args : args.slice(0, idx);
+    })();
+
+    const jsonFlag = argsBeforeTerminator.includes("--json") || argsBeforeTerminator.includes("-j");
+
+    let format: string | undefined;
+    for (let i = 0; i < argsBeforeTerminator.length; i++) {
+      const token = argsBeforeTerminator[i];
+      if (token === "--format") {
+        const next = argsBeforeTerminator[i + 1];
+        if (typeof next === "string" && next.trim()) {
+          format = next.trim().toLowerCase();
+        }
+        break;
+      }
+      if (token.startsWith("--format=")) {
+        const value = token.slice("--format=".length).trim();
+        if (value) format = value.toLowerCase();
+        break;
+      }
+    }
+
+    // `context --format markdown` explicitly disables structured output.
+    if ((inferredCommand === "context" || inferredCommand === "ctx") && format === "markdown") {
+      return undefined;
+    }
+
+    // Explicit `--format toon` should always apply (it overrides `--json` too).
+    if (format === "toon") return "toon";
+
+    // Env default: only apply if user did not explicitly request JSON output and did not
+    // provide an explicit (non-toon) format.
+    if (!format && !jsonFlag) {
+      const cmFormat = (process.env.CM_OUTPUT_FORMAT || "").trim().toLowerCase();
+      if (cmFormat === "toon") return "toon";
+      const toonDefault = (process.env.TOON_DEFAULT_FORMAT || "").trim().toLowerCase();
+      if (toonDefault === "toon") return "toon";
+    }
+
+    return undefined;
+  })();
+
   return reportError(error instanceof Error ? error : String(error), {
     code,
     json: hasJsonFlag(argv),
+    ...(errorFormat ? { format: errorFormat } : {}),
     ...(inferredCommand ? { command: inferredCommand } : {}),
   });
 }
