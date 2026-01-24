@@ -2067,6 +2067,138 @@ export function printJson(value: unknown): void {
 }
 
 // ============================================================================
+// TOON OUTPUT HELPERS
+// ============================================================================
+
+/**
+ * Check if output format should be TOON.
+ * Checks format option and CM_OUTPUT_FORMAT / TOON_DEFAULT_FORMAT env vars.
+ *
+ * @param options - Command options with optional json/format fields
+ * @returns true if TOON output is requested
+ */
+export function isToonOutput(options?: { json?: boolean; format?: string }): boolean {
+  const format = typeof options?.format === "string" ? options.format.trim().toLowerCase() : "";
+  if (format === "toon") return true;
+
+  // Check environment variables
+  const cmFormat = process.env.CM_OUTPUT_FORMAT?.toLowerCase();
+  if (cmFormat === "toon") return true;
+
+  const toonDefault = process.env.TOON_DEFAULT_FORMAT?.toLowerCase();
+  if (toonDefault === "toon") return true;
+
+  return false;
+}
+
+/**
+ * Find the tru binary for TOON encoding.
+ * Checks TOON_TRU_BIN, TOON_BIN env vars, then PATH.
+ *
+ * @returns Path to tru binary, or null if not found
+ */
+function findTruBinary(): string | null {
+  const { execSync } = require("child_process");
+  const fs = require("fs");
+
+  // Check environment variables first
+  const envBin = process.env.TOON_TRU_BIN || process.env.TOON_BIN;
+  if (envBin && fs.existsSync(envBin)) {
+    return envBin;
+  }
+
+  // Check PATH
+  try {
+    const result = execSync("which tru", { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
+    const path = result.trim();
+    if (path && fs.existsSync(path)) {
+      return path;
+    }
+  } catch {
+    // Not in PATH
+  }
+
+  // Check common locations
+  const commonPaths = [
+    "/usr/local/bin/tru",
+    "/usr/bin/tru",
+    "/data/tmp/cargo-target/release/tru",
+    "/data/tmp/cargo-target/debug/tru",
+  ];
+  for (const p of commonPaths) {
+    if (fs.existsSync(p)) {
+      return p;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Check if TOON encoding is available (tru binary found).
+ *
+ * @returns true if tru binary is available
+ */
+export function isToonAvailable(): boolean {
+  return findTruBinary() !== null;
+}
+
+/**
+ * Print value as TOON format, with graceful fallback to JSON if tru is unavailable.
+ *
+ * @param value - Value to encode and print
+ * @param options - Optional settings
+ */
+export function printToon(value: unknown, options?: { fallbackToJson?: boolean }): void {
+  const truBin = findTruBinary();
+
+  if (!truBin) {
+    if (options?.fallbackToJson !== false) {
+      // Graceful fallback to JSON
+      console.error("[cm] Warning: tru binary not found, falling back to JSON output");
+      printJson(value);
+      return;
+    }
+    throw new Error("TOON encoding unavailable: tru binary not found. Install via: brew install dicklesworthstone/tap/tru");
+  }
+
+  const { spawnSync } = require("child_process");
+  const jsonStr = JSON.stringify(value);
+
+  const result = spawnSync(truBin, ["--encode"], {
+    input: jsonStr,
+    encoding: "utf8",
+    maxBuffer: 50 * 1024 * 1024, // 50MB buffer
+  });
+
+  if (result.status !== 0) {
+    if (options?.fallbackToJson !== false) {
+      console.error(`[cm] Warning: tru encode failed (${result.stderr?.trim() || "unknown error"}), falling back to JSON`);
+      printJson(value);
+      return;
+    }
+    throw new Error(`TOON encoding failed: ${result.stderr?.trim() || "unknown error"}`);
+  }
+
+  console.log(result.stdout);
+}
+
+/**
+ * Print result in the appropriate format (JSON or TOON) based on options.
+ * Automatically selects format based on --format flag or environment variables.
+ *
+ * @param value - Value to output
+ * @param options - Command options with format configuration
+ */
+export function printStructuredOutput(value: unknown, options?: { json?: boolean; format?: string }): void {
+  if (isToonOutput(options)) {
+    printToon(value);
+  } else {
+    printJson(value);
+  }
+}
+
+// ============================================================================
 // INPUT VALIDATION HELPERS (CLI/Command Layer)
 // ============================================================================
 

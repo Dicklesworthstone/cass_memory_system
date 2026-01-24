@@ -12,8 +12,10 @@ import {
   generateSuggestedQueries,
   warn,
   isJsonOutput,
+  isToonOutput,
   reportError,
   printJsonResult,
+  printStructuredOutput,
   truncateWithIndicator,
   formatLastHelpful,
   extractBulletReasoning,
@@ -127,7 +129,7 @@ export interface ContextFlags {
   history?: number;
   days?: number;
   workspace?: string;
-  format?: "json" | "markdown";
+  format?: "json" | "markdown" | "toon";
   logContext?: boolean;
   session?: string;
 }
@@ -630,7 +632,7 @@ export async function contextCommand(
     return;
   }
 
-  const formatCheck = validateOneOf(flags.format, "format", ["json", "markdown"] as const, {
+  const formatCheck = validateOneOf(flags.format, "format", ["json", "markdown", "toon"] as const, {
     allowUndefined: true,
     caseInsensitive: true,
   });
@@ -638,7 +640,7 @@ export async function contextCommand(
     reportError(formatCheck.message, {
       code: ErrorCode.INVALID_INPUT,
       details: formatCheck.details,
-      hint: `Valid formats: json, markdown`,
+      hint: `Valid formats: json, markdown, toon`,
       json: wantsJsonForErrors,
       command,
       startedAtMs,
@@ -683,8 +685,9 @@ export async function contextCommand(
   };
 
   const wantsJson = isJsonOutput(normalizedFlags);
+  const wantsToon = isToonOutput(normalizedFlags);
   const wantsMarkdown = normalizedFlags.format === "markdown";
-  const progressFormat = wantsJson ? "json" : "text";
+  const progressFormat = (wantsJson || wantsToon) ? "json" : "text";
   const embeddingsProgressRef: { current: ProgressReporter | null } = { current: null };
   const cassProgressRef: { current: ProgressReporter | null } = { current: null };
 
@@ -735,8 +738,17 @@ export async function contextCommand(
       result.traumaWarning = traumaWarning;
     }
 
-  if (wantsJson) {
-    printJsonResult(command, result, { startedAtMs });
+  if (wantsJson || isToonOutput(normalizedFlags)) {
+    const payload = {
+      success: true,
+      command,
+      timestamp: new Date().toISOString(),
+      data: result,
+      metadata: {
+        executionMs: Math.max(0, Date.now() - startedAtMs),
+      },
+    };
+    printStructuredOutput(payload, normalizedFlags);
     return;
   }
 

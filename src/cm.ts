@@ -99,7 +99,7 @@ program.command("context")
   .option("--top <n>", "DEPRECATED: use --limit", toInt)
   .option("--history <n>", "Number of history snippets", toInt)
   .option("--days <n>", "Lookback days for history", toInt)
-  .option("--format <markdown|json>", "Force output format (overrides --json)")
+  .option("--format <markdown|json|toon>", "Force output format (overrides --json). TOON provides token-efficient output.")
   .option("--log-context", "Log context usage for implicit feedback")
   .option("--session <id>", "Optional session id to log with context")
   .addHelpText("after", () =>
