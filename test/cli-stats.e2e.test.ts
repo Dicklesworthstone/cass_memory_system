@@ -162,6 +162,38 @@ describe("E2E: CLI stats command", () => {
       }
     });
 
+    it("outputs valid JSON when --format json is set (even without --json)", async () => {
+      const { home } = await setupTestEnvironment([
+        createTestBullet({ id: "stat-1", content: "Rule 1" }),
+        createTestBullet({ id: "stat-2", content: "Rule 2" })
+      ]);
+      const originalHome = process.env.HOME;
+
+      try {
+        process.env.HOME = home;
+
+        const capture = captureConsole();
+        try {
+          await statsCommand({ format: "json" });
+        } finally {
+          capture.restore();
+        }
+
+        const output = capture.logs.join("\n");
+        expect(() => JSON.parse(output)).not.toThrow();
+
+        const payload = JSON.parse(output);
+        const stats = payload.data;
+        expect(stats.total).toBe(2);
+        expect(stats).toHaveProperty("byScope");
+        expect(stats).toHaveProperty("byState");
+        expect(stats).toHaveProperty("byKind");
+        expect(stats).toHaveProperty("scoreDistribution");
+      } finally {
+        process.env.HOME = originalHome;
+      }
+    });
+
     it("includes all expected JSON fields", async () => {
       const { home } = await setupTestEnvironment([
         createTestBullet({ id: "field-test", content: "Test rule", helpfulCount: 3 })

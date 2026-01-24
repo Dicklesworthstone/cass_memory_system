@@ -1,6 +1,6 @@
 import { loadConfig } from "../config.js";
 import { loadMergedPlaybook, addBullet, deprecateBullet, savePlaybook, findBullet, getActiveBullets, loadPlaybook } from "../playbook.js";
-import { fileExists, now, resolveRepoDir, truncate, confirmDangerousAction, getCliName, isToonOutput, printStructuredResult, printJsonResult, reportError, validateOneOf, expandPath } from "../utils.js";
+import { fileExists, now, resolveRepoDir, truncate, confirmDangerousAction, getCliName, isJsonOutput, isToonOutput, printStructuredResult, printJsonResult, reportError, validateOneOf, expandPath } from "../utils.js";
 import { withLock } from "../lock.js";
 import { getEffectiveScore, getDecayedCounts } from "../scoring.js";
 import { PlaybookBullet, Playbook, PlaybookSchema, PlaybookBulletSchema, ErrorCode } from "../types.js";
@@ -717,7 +717,9 @@ export async function playbookCommand(
       bullets = bullets.filter((b: any) => b.category === flags.category);
     }
 
-    if (normalizedFlags.json || isToonOutput(normalizedFlags)) {
+    const wantsJson = isJsonOutput(normalizedFlags);
+    const wantsToon = isToonOutput(normalizedFlags);
+    if (wantsJson || wantsToon) {
       printStructuredResult(command, { bullets }, normalizedFlags, { startedAtMs });
     } else {
       const style = getOutputStyle();

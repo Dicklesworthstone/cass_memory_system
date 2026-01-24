@@ -158,6 +158,38 @@ describe("E2E: CLI playbook command", () => {
       });
     });
 
+    it("prints JSON when --format json is set (even without --json)", async () => {
+      await withTempCassHome(async (env) => {
+        const playbook = createTestPlaybook([
+          createTestBullet({
+            id: "bullet-1",
+            content: "First rule content",
+            category: "security"
+          }),
+          createTestBullet({
+            id: "bullet-2",
+            content: "Second rule content",
+            category: "testing"
+          })
+        ]);
+        await writeFile(env.playbookPath, yaml.stringify(playbook));
+
+        const capture = captureConsole();
+        try {
+          await playbookCommand("list", [], { format: "json" });
+        } finally {
+          capture.restore();
+        }
+
+        expect(capture.errors.length).toBe(0);
+        const payload = JSON.parse(capture.logs.join("\n")) as any;
+        expect(payload.success).toBe(true);
+        expect(Array.isArray(payload.data.bullets)).toBe(true);
+        expect(payload.data.bullets.length).toBe(2);
+        expect(payload.data.bullets.map((b: any) => b.id)).toEqual(["bullet-1", "bullet-2"]);
+      });
+    });
+
     it("filters by category", async () => {
       await withTempCassHome(async (env) => {
         const playbook = createTestPlaybook([

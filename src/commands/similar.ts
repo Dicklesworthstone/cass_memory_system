@@ -3,7 +3,7 @@ import { loadConfig } from "../config.js";
 import { loadMergedPlaybook, getActiveBullets } from "../playbook.js";
 import { findSimilarBulletsSemantic, getSemanticStatus, formatSemanticModeMessage } from "../semantic.js";
 import { getEffectiveScore } from "../scoring.js";
-import { isToonOutput, jaccardSimilarity, truncate, getCliName, printStructuredResult, reportError, validateOneOf, warn } from "../utils.js";
+import { isJsonOutput, isToonOutput, jaccardSimilarity, truncate, getCliName, printStructuredResult, reportError, validateOneOf, warn } from "../utils.js";
 import { ErrorCode, PlaybookBullet } from "../types.js";
 import { formatRule, formatTipPrefix, getOutputStyle, wrapText } from "../output.js";
 
@@ -165,7 +165,9 @@ export async function similarCommand(query: string, flags: SimilarFlags): Promis
 
     const result = await generateSimilarResults(query, normalizedFlags);
 
-    if (normalizedFlags.json || isToonOutput(normalizedFlags)) {
+    const wantsJson = isJsonOutput(normalizedFlags);
+    const wantsToon = isToonOutput(normalizedFlags);
+    if (wantsJson || wantsToon) {
       printStructuredResult(command, result, normalizedFlags, { startedAtMs });
       return;
     }

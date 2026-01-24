@@ -6,7 +6,7 @@ import {
   isStale
 } from "../scoring.js";
 import { findSemanticDuplicates } from "../semantic.js";
-import { isToonOutput, tokenize, printStructuredResult, reportError, validateOneOf } from "../utils.js";
+import { isJsonOutput, isToonOutput, tokenize, printStructuredResult, reportError, validateOneOf } from "../utils.js";
 import chalk from "chalk";
 import { iconPrefix } from "../output.js";
 import { ErrorCode } from "../types.js";
@@ -107,7 +107,9 @@ export async function statsCommand(options: { json?: boolean; format?: "json" | 
     semanticMergeCandidates
   };
 
-  if (normalizedOptions.json || isToonOutput(normalizedOptions)) {
+  const wantsJson = isJsonOutput(normalizedOptions);
+  const wantsToon = isToonOutput(normalizedOptions);
+  if (wantsJson || wantsToon) {
     printStructuredResult("stats", stats, normalizedOptions, { startedAtMs });
     return;
   }

@@ -203,6 +203,34 @@ describe("E2E: CLI similar command", () => {
     });
   });
 
+  it("prints JSON when --format json is set (even without --json)", async () => {
+    await withTempCassHome(async (env) => {
+      const query = "handle jwt authentication errors";
+      const playbook = createTestPlaybook([
+        createBullet({ id: "b-jwt", content: "Handle jwt authentication errors gracefully", category: "security" }),
+      ]);
+      await writeFile(env.playbookPath, yaml.stringify(playbook));
+
+      const consoleCapture = captureConsole();
+      try {
+        await similarCommand(query, { format: "json", limit: 5, scope: "all" });
+      } finally {
+        consoleCapture.restore();
+      }
+
+      expect(consoleCapture.errors.length).toBe(0);
+      expect(consoleCapture.logs.length).toBeGreaterThan(0);
+
+      const payload = JSON.parse(consoleCapture.logs.join("\n")) as any;
+      const parsed = payload.data;
+      expect(payload.success).toBe(true);
+      expect(parsed.query).toBe(query);
+      expect(parsed.mode).toBe("keyword");
+      expect(Array.isArray(parsed.results)).toBe(true);
+      expect(parsed.results[0].id).toBe("b-jwt");
+    });
+  });
+
   it("prints human-readable output with matches when --json is not set", async () => {
     await withTempCassHome(async (env) => {
       const query = "handle jwt authentication errors";
