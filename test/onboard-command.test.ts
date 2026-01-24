@@ -10,7 +10,7 @@ import { describe, test, expect } from "bun:test";
 import { writeFileSync } from "node:fs";
 import yaml from "yaml";
 import { onboardCommand } from "../src/commands/onboard.js";
-import { withTempCassHome } from "./helpers/temp.js";
+import { withTempCassHome, makeCassStub } from "./helpers/temp.js";
 import { withTempGitRepo } from "./helpers/git.js";
 import { createTestPlaybook, createTestBullet } from "./helpers/factories.js";
 import { markSessionProcessed, loadOnboardState } from "../src/onboard-state.js";
@@ -41,6 +41,17 @@ function captureConsole() {
     getOutput: () => logs.join("\n"),
     getErrors: () => errors.join("\n"),
   };
+}
+
+async function withCassAvailable<T>(env: { home: string }, fn: () => Promise<T>): Promise<T> {
+  const originalCassPath = process.env.CASS_PATH;
+  const cassStubPath = await makeCassStub(env.home, { exitCode: 0 });
+  process.env.CASS_PATH = cassStubPath;
+  try {
+    return await fn();
+  } finally {
+    process.env.CASS_PATH = originalCassPath;
+  }
 }
 
 describe("onboardCommand input validation", () => {
@@ -781,109 +792,117 @@ describe("onboardCommand default (guided mode)", () => {
 describe("onboardCommand recommendation paths", () => {
   test("recommends guided for playbook with 0 rules", async () => {
     await withTempCassHome(async (env) => {
-      await withTempGitRepo(async (repoDir) => {
-        const originalCwd = process.cwd();
-        process.chdir(repoDir);
+      await withCassAvailable(env, async () => {
+        await withTempGitRepo(async (repoDir) => {
+          const originalCwd = process.cwd();
+          process.chdir(repoDir);
 
-        // Empty playbook = 0 rules
-        writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])));
+          // Empty playbook = 0 rules
+          writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])));
 
-        const capture = captureConsole();
-        try {
-          await onboardCommand({ status: true, json: true });
-          const output = capture.getOutput();
-          const result = JSON.parse(output);
+          const capture = captureConsole();
+          try {
+            await onboardCommand({ status: true, json: true });
+            const output = capture.getOutput();
+            const result = JSON.parse(output);
 
-          expect(result.success).toBe(true);
-          expect(result.data.status.recommendation).toContain("empty");
-        } finally {
-          capture.restore();
-          process.chdir(originalCwd);
-        }
+            expect(result.success).toBe(true);
+            expect(result.data.status.recommendation).toContain("empty");
+          } finally {
+            capture.restore();
+            process.chdir(originalCwd);
+          }
+        });
       });
     });
   });
 
   test("recommends guided for playbook with few rules (<10)", async () => {
     await withTempCassHome(async (env) => {
-      await withTempGitRepo(async (repoDir) => {
-        const originalCwd = process.cwd();
-        process.chdir(repoDir);
+      await withCassAvailable(env, async () => {
+        await withTempGitRepo(async (repoDir) => {
+          const originalCwd = process.cwd();
+          process.chdir(repoDir);
 
-        // Create 5 bullets (state: "active" to count)
-        const bullets = Array.from({ length: 5 }, (_, i) =>
-          createTestBullet({ id: `b-${i}`, state: "active" })
-        );
-        writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook(bullets)));
+          // Create 5 bullets (state: "active" to count)
+          const bullets = Array.from({ length: 5 }, (_, i) =>
+            createTestBullet({ id: `b-${i}`, state: "active" })
+          );
+          writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook(bullets)));
 
-        const capture = captureConsole();
-        try {
-          await onboardCommand({ status: true, json: true });
-          const output = capture.getOutput();
-          const result = JSON.parse(output);
+          const capture = captureConsole();
+          try {
+            await onboardCommand({ status: true, json: true });
+            const output = capture.getOutput();
+            const result = JSON.parse(output);
 
-          expect(result.success).toBe(true);
-          expect(result.data.status.recommendation).toContain("few rules");
-        } finally {
-          capture.restore();
-          process.chdir(originalCwd);
-        }
+            expect(result.success).toBe(true);
+            expect(result.data.status.recommendation).toContain("few rules");
+          } finally {
+            capture.restore();
+            process.chdir(originalCwd);
+          }
+        });
       });
     });
   });
 
   test("recommends sample for playbook with moderate rules (10-49)", async () => {
     await withTempCassHome(async (env) => {
-      await withTempGitRepo(async (repoDir) => {
-        const originalCwd = process.cwd();
-        process.chdir(repoDir);
+      await withCassAvailable(env, async () => {
+        await withTempGitRepo(async (repoDir) => {
+          const originalCwd = process.cwd();
+          process.chdir(repoDir);
 
-        // Create 25 active bullets
-        const bullets = Array.from({ length: 25 }, (_, i) =>
-          createTestBullet({ id: `b-${i}`, state: "active" })
-        );
-        writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook(bullets)));
+          // Create 25 active bullets
+          const bullets = Array.from({ length: 25 }, (_, i) =>
+            createTestBullet({ id: `b-${i}`, state: "active" })
+          );
+          writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook(bullets)));
 
-        const capture = captureConsole();
-        try {
-          await onboardCommand({ status: true, json: true });
-          const output = capture.getOutput();
-          const result = JSON.parse(output);
+          const capture = captureConsole();
+          try {
+            await onboardCommand({ status: true, json: true });
+            const output = capture.getOutput();
+            const result = JSON.parse(output);
 
-          expect(result.success).toBe(true);
-          expect(result.data.status.recommendation).toContain("sample");
-        } finally {
-          capture.restore();
-          process.chdir(originalCwd);
-        }
+            expect(result.success).toBe(true);
+            expect(result.data.status.recommendation).toContain("sample");
+          } finally {
+            capture.restore();
+            process.chdir(originalCwd);
+          }
+        });
       });
     });
   });
 
   test("says playbook is healthy for 50+ rules", async () => {
     await withTempCassHome(async (env) => {
-      await withTempGitRepo(async (repoDir) => {
-        const originalCwd = process.cwd();
-        process.chdir(repoDir);
+      await withCassAvailable(env, async () => {
+        await withTempGitRepo(async (repoDir) => {
+          const originalCwd = process.cwd();
+          process.chdir(repoDir);
 
-        // Create 55 active bullets
-        const bullets = Array.from({ length: 55 }, (_, i) =>
-          createTestBullet({ id: `b-${i}`, state: "active" })
-        );
-        writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook(bullets)));
+          // Create 55 active bullets
+          const bullets = Array.from({ length: 55 }, (_, i) =>
+            createTestBullet({ id: `b-${i}`, state: "active" })
+          );
+          writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook(bullets)));
 
-        const capture = captureConsole();
-        try {
-          await onboardCommand({ status: true, json: true });
-          const output = capture.getOutput();
-          const result = JSON.parse(output);
+          const capture = captureConsole();
+          try {
+            await onboardCommand({ status: true, json: true });
+            const output = capture.getOutput();
+            const result = JSON.parse(output);
 
-          expect(result.success).toBe(true);
-          expect(result.data.status.recommendation).toContain("healthy");
-        } finally {
-          capture.restore();
-          process.chdir(originalCwd);
-        }
+            expect(result.success).toBe(true);
+            expect(result.data.status.recommendation).toContain("healthy");
+          } finally {
+            capture.restore();
+            process.chdir(originalCwd);
+          }
+        });
       });
     });
   });
