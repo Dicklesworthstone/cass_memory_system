@@ -532,6 +532,7 @@ export async function contextCommand(
       details: taskCheck.details,
       hint: `Example: ${cli} context \"fix the login bug\" --json`,
       json: wantsJsonForErrors,
+      format: flags.format,
       command,
       startedAtMs,
     });
@@ -579,6 +580,7 @@ export async function contextCommand(
       details: limitCheck.details,
       hint: `Example: ${cli} context \"<task>\" --limit 10 --json`,
       json: wantsJsonForErrors,
+      format: flags.format,
       command,
       startedAtMs,
     });
@@ -592,6 +594,7 @@ export async function contextCommand(
       details: topCheck.details,
       hint: `Example: ${cli} context \"<task>\" --limit 10 --json`,
       json: wantsJsonForErrors,
+      format: flags.format,
       command,
       startedAtMs,
     });
@@ -613,6 +616,7 @@ export async function contextCommand(
       details: historyCheck.details,
       hint: `Example: ${cli} context \"<task>\" --history 3 --json`,
       json: wantsJsonForErrors,
+      format: flags.format,
       command,
       startedAtMs,
     });
@@ -626,6 +630,7 @@ export async function contextCommand(
       details: daysCheck.details,
       hint: `Example: ${cli} context \"<task>\" --days 30 --json`,
       json: wantsJsonForErrors,
+      format: flags.format,
       command,
       startedAtMs,
     });
@@ -642,6 +647,7 @@ export async function contextCommand(
       details: formatCheck.details,
       hint: `Valid formats: json, markdown, toon`,
       json: wantsJsonForErrors,
+      format: flags.format,
       command,
       startedAtMs,
     });
@@ -655,6 +661,7 @@ export async function contextCommand(
       details: workspaceCheck.details,
       hint: `Example: ${cli} context \"<task>\" --workspace . --json`,
       json: wantsJsonForErrors,
+      format: flags.format,
       command,
       startedAtMs,
     });
@@ -668,6 +675,7 @@ export async function contextCommand(
       details: sessionCheck.details,
       hint: `Example: ${cli} context \"<task>\" --session <id> --log-context --json`,
       json: wantsJsonForErrors,
+      format: flags.format,
       command,
       startedAtMs,
     });
