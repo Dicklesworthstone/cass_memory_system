@@ -32,6 +32,24 @@ scoop install dicklesworthstone/cm
 
 ---
 
+## 🤖 Agent Quickstart (JSON)
+
+**Always use `--json` in agent contexts.** stdout = data, stderr = diagnostics, exit 0 = success.
+
+```bash
+# 1) Get task-specific memory before you start
+cm context "implement auth rate limiting" --json
+
+# 2) See the minimum viable workflow
+cm quickstart --json
+
+# 3) Build the playbook (memory onboarding)
+cm onboard status --json
+cm onboard sample --fill-gaps --json
+cm onboard read /path/to/session.jsonl --template --json
+cm onboard mark-done /path/to/session.jsonl
+```
+
 ## Table of Contents
 
 - [Why This Exists](#-why-this-exists)
