@@ -1,6 +1,24 @@
 import { loadConfig, DEFAULT_CONFIG } from "../config.js";
 import { cassAvailable, cassStats, cassSearch, safeCassSearch } from "../cass.js";
-import { error as logError, fileExists, resolveRepoDir, resolveGlobalDir, expandPath, getCliName, getVersion, checkAbort, isPermissionError, handlePermissionError, printJsonResult, reportError, atomicWrite, ensureRepoStructure } from "../utils.js";
+import {
+  error as logError,
+  fileExists,
+  resolveRepoDir,
+  resolveGlobalDir,
+  expandPath,
+  getCliName,
+  getVersion,
+  checkAbort,
+  isPermissionError,
+  handlePermissionError,
+  printStructuredResult,
+  reportError,
+  atomicWrite,
+  ensureRepoStructure,
+  isJsonOutput,
+  isToonOutput,
+  validateOneOf
+} from "../utils.js";
 import { isLLMAvailable, getAvailableProviders, validateApiKey } from "../llm.js";
 import { SECRET_PATTERNS, compileExtraPatterns } from "../sanitize.js";
 import { loadPlaybook, savePlaybook, createEmptyPlaybook } from "../playbook.js";
@@ -1237,6 +1255,7 @@ export async function applyFixes(
 
 export async function doctorCommand(options: {
   json?: boolean;
+  format?: "json" | "toon";
   fix?: boolean;
   dryRun?: boolean;
   force?: boolean;
@@ -1245,6 +1264,26 @@ export async function doctorCommand(options: {
 }): Promise<void> {
   const startedAtMs = Date.now();
   const command = "doctor";
+  const formatCheck = validateOneOf(options.format, "format", ["json", "toon"] as const, {
+    allowUndefined: true,
+    caseInsensitive: true,
+  });
+  if (!formatCheck.ok) {
+    reportError(formatCheck.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: formatCheck.details,
+      hint: "Valid formats: json, toon",
+      json: options.json,
+      format: options.format,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+  const normalizedOptions = {
+    ...options,
+    ...(formatCheck.value !== undefined ? { format: formatCheck.value } : {}),
+  };
   try {
     let config: Config = DEFAULT_CONFIG;
     let configLoadError: unknown | undefined;
@@ -1254,9 +1293,13 @@ export async function doctorCommand(options: {
       configLoadError = err;
       config = DEFAULT_CONFIG;
     }
-    const wantsJson = Boolean(options.json);
+    const wantsJson = isJsonOutput(normalizedOptions);
+    const wantsToon = isToonOutput(normalizedOptions);
+    const wantsStructured = wantsJson || wantsToon;
     const interactive =
-      !wantsJson && options.interactive !== false && Boolean(process.stdin.isTTY && process.stdout.isTTY);
+      !wantsStructured &&
+      options.interactive !== false &&
+      Boolean(process.stdin.isTTY && process.stdout.isTTY);
     const force = Boolean(options.force);
     const dryRun = Boolean(options.dryRun);
     const selfTest = Boolean(options.selfTest);
@@ -1269,7 +1312,7 @@ export async function doctorCommand(options: {
     let overallStatus = computeOverallStatus(checks);
 
     let fixableIssues: FixableIssue[] = [];
-    if (wantsJson || fix || dryRun) {
+    if (wantsStructured || fix || dryRun) {
       fixableIssues = await detectFixableIssues({ configLoadError });
     }
     let fixableIssueSummaries = fixableIssues.map(summarizeFixableIssue);
@@ -1281,7 +1324,7 @@ export async function doctorCommand(options: {
         interactive,
         dryRun: false,
         force,
-        quiet: wantsJson,
+        quiet: wantsStructured,
       });
 
       // Re-load config after fixes (especially important if config was invalid)
@@ -1296,7 +1339,7 @@ export async function doctorCommand(options: {
       // Recompute status after fixes.
       checks = await computeDoctorChecks(config, { configLoadError });
       overallStatus = computeOverallStatus(checks);
-      if (wantsJson) {
+      if (wantsStructured) {
         fixableIssues = await detectFixableIssues({ configLoadError });
         fixableIssueSummaries = fixableIssues.map(summarizeFixableIssue);
       }
@@ -1309,7 +1352,7 @@ export async function doctorCommand(options: {
       options: { fix, dryRun, force },
     });
 
-    if (wantsJson) {
+    if (wantsStructured) {
       const payload: any = {
         version,
         generatedAt,
@@ -1343,7 +1386,7 @@ export async function doctorCommand(options: {
         selfTestProgressRef.current?.complete("Self-test complete");
         payload.selfTest = selfTests;
       }
-      printJsonResult(command, payload, { startedAtMs });
+      printStructuredResult(command, payload, normalizedOptions, { startedAtMs });
       return;
     }
 
@@ -1431,6 +1474,11 @@ export async function doctorCommand(options: {
       }
     }
   } catch (err) {
-    reportError(err instanceof Error ? err : String(err), { json: options.json, command, startedAtMs });
+    reportError(err instanceof Error ? err : String(err), {
+      json: normalizedOptions.json,
+      format: normalizedOptions.format,
+      command,
+      startedAtMs,
+    });
   }
 }
