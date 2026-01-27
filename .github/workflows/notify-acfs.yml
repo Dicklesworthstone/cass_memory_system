@@ -1,16 +1,13 @@
-# .github/workflows/notify-acfs.yml
-#
-# Notifies ACFS when installer scripts change or releases are published,
-# triggering checksum updates.
+# installer-notify.yml
+# Copy this to .github/workflows/ in your project
+# Notifies ACFS when install.sh changes
 #
 # Setup:
-#   1. Create a PAT with 'contents:read' on agentic_coding_flywheel_setup
-#   2. Add it as a secret named ACFS_REPO_DISPATCH_TOKEN in this repo
-#   3. Copy this file to .github/workflows/notify-acfs.yml
-#
-# Related: agentic_coding_flywheel_setup-b04c
-#
-name: Notify ACFS of Installer Changes
+# 1. Create a GitHub PAT with `repo` scope
+# 2. Add it as ACFS_DISPATCH_TOKEN secret in your repo
+# 3. Copy this file to .github/workflows/
+
+name: Notify ACFS of Installer Change
 
 on:
   push:
@@ -18,51 +15,85 @@ on:
     paths:
       - 'install.sh'
       - 'scripts/install.sh'
-  release:
-    types: [published]
-  workflow_dispatch:  # Manual trigger for testing
+      - '**/install.sh'
+  pull_request:
+    branches: [main, master]
+    paths:
+      - 'install.sh'
+      - 'scripts/install.sh'
+      - '**/install.sh'
 
-# Prevent duplicate dispatches
 concurrency:
-  group: notify-acfs-${{ github.ref }}
+  group: installer-notify-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   notify-acfs:
+    # Only notify on push to main, not PRs
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-    env:
-      ACFS_TOKEN: ${{ secrets.ACFS_REPO_DISPATCH_TOKEN }}
-
     steps:
-      - name: Skip dispatch when token missing
-        if: ${{ env.ACFS_TOKEN == '' }}
-        run: |
-          echo "ACFS_REPO_DISPATCH_TOKEN not set; skipping ACFS dispatch."
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-      - name: Trigger ACFS checksum update
-        if: ${{ env.ACFS_TOKEN != '' }}
+      - name: Compute installer SHA256
+        id: checksum
+        run: |
+          # Find the installer file
+          if [ -f install.sh ]; then
+            INSTALLER_PATH="install.sh"
+          elif [ -f scripts/install.sh ]; then
+            INSTALLER_PATH="scripts/install.sh"
+          else
+            echo "No installer found"
+            exit 1
+          fi
+
+          SHA256=$(sha256sum "$INSTALLER_PATH" | cut -d' ' -f1)
+          echo "sha256=$SHA256" >> $GITHUB_OUTPUT
+          echo "Computed SHA256: $SHA256"
+
+      - name: Notify ACFS
         uses: peter-evans/repository-dispatch@v3
         with:
-          token: ${{ env.ACFS_TOKEN }}
+          token: ${{ secrets.ACFS_DISPATCH_TOKEN }}
           repository: Dicklesworthstone/agentic_coding_flywheel_setup
-          event-type: upstream-changed
+          event-type: installer-updated
           client-payload: |
             {
-              "repo": "${{ github.repository }}",
               "tool": "${{ github.event.repository.name }}",
+              "repo": "${{ github.repository }}",
+              "commit": "${{ github.sha }}",
+              "new_sha256": "${{ steps.checksum.outputs.sha256 }}",
               "ref": "${{ github.ref }}",
-              "sha": "${{ github.sha }}",
-              "event": "${{ github.event_name }}",
-              "actor": "${{ github.actor }}",
-              "timestamp": "${{ github.event.head_commit.timestamp || github.event.release.published_at }}"
+              "actor": "${{ github.actor }}"
             }
 
-      - name: Log dispatch
+      - name: Log notification
         run: |
-          echo "Dispatched upstream-changed event to ACFS"
-          echo "   Repository: ${{ github.repository }}"
-          echo "   Tool: ${{ github.event.repository.name }}"
-          echo "   SHA: ${{ github.sha }}"
-          echo "   Event: ${{ github.event_name }}"
-          echo "   Triggered by: ${{ github.actor }}"
+          echo "::notice::Notified ACFS about installer change"
+          echo "Repository: ${{ github.repository }}"
+          echo "Commit: ${{ github.sha }}"
+          echo "SHA256: ${{ steps.checksum.outputs.sha256 }}"
+
+  # Validate installer syntax on PRs
+  validate-installer:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Shellcheck installer
+        run: |
+          EXIT_CODE=0
+          for script in install.sh scripts/install.sh; do
+            if [ -f "$script" ]; then
+              echo "Checking $script..."
+              shellcheck "$script" || EXIT_CODE=1
+            fi
+          done
+          exit $EXIT_CODE
