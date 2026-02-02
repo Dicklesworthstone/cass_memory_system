@@ -92,18 +92,26 @@ export function buildContextResult(
   const maxHistory = Number.isFinite(limits.maxHistory) && limits.maxHistory > 0 ? limits.maxHistory : 10;
 
   // Transform rules with additional metadata for LLM consumption
-  const relevantBullets = rules.slice(0, maxBullets).map(b => ({
-    ...b,
-    lastHelpful: formatLastHelpful(b),
-    reasoning: extractBulletReasoning(b)
-  }));
+  // Exclude embedding vectors from output - they bloat JSON and are internal implementation detail
+  const relevantBullets = rules.slice(0, maxBullets).map(b => {
+    const { embedding, ...withoutEmbedding } = b;
+    return {
+      ...withoutEmbedding,
+      lastHelpful: formatLastHelpful(b),
+      reasoning: extractBulletReasoning(b)
+    };
+  });
 
   // Transform anti-patterns with additional metadata
-  const transformedAntiPatterns = antiPatterns.slice(0, maxBullets).map(b => ({
-    ...b,
-    lastHelpful: formatLastHelpful(b),
-    reasoning: extractBulletReasoning(b)
-  }));
+  // Exclude embedding vectors from output
+  const transformedAntiPatterns = antiPatterns.slice(0, maxBullets).map(b => {
+    const { embedding, ...withoutEmbedding } = b;
+    return {
+      ...withoutEmbedding,
+      lastHelpful: formatLastHelpful(b),
+      reasoning: extractBulletReasoning(b)
+    };
+  });
 
   // Transform history snippets - simplify structure, truncate long snippets
   const historySnippets = history.slice(0, maxHistory).map(h => ({
