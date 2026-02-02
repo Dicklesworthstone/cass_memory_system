@@ -94,7 +94,7 @@ export function buildContextResult(
   // Transform rules with additional metadata for LLM consumption
   // Exclude embedding vectors from output - they bloat JSON and are internal implementation detail
   const relevantBullets = rules.slice(0, maxBullets).map(b => {
-    const { embedding, ...withoutEmbedding } = b;
+    const { embedding: _embedding, ...withoutEmbedding } = b;
     return {
       ...withoutEmbedding,
       lastHelpful: formatLastHelpful(b),
@@ -105,7 +105,7 @@ export function buildContextResult(
   // Transform anti-patterns with additional metadata
   // Exclude embedding vectors from output
   const transformedAntiPatterns = antiPatterns.slice(0, maxBullets).map(b => {
-    const { embedding, ...withoutEmbedding } = b;
+    const { embedding: _embedding, ...withoutEmbedding } = b;
     return {
       ...withoutEmbedding,
       lastHelpful: formatLastHelpful(b),
