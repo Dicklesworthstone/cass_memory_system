@@ -189,7 +189,9 @@ interface BatchAddResult {
  */
 async function handleBatchAdd(
   config: Awaited<ReturnType<typeof loadConfig>>,
-  flags: { file?: string; category?: string; check?: boolean; strict?: boolean }
+  flags: { file?: string; category?: string; check?: boolean; strict?: boolean; repo?: boolean },
+  targetPath: string,
+  scope: "global" | "workspace"
 ): Promise<BatchAddResult> {
   const result: BatchAddResult = {
     success: false,
@@ -249,9 +251,9 @@ async function handleBatchAdd(
   result.summary.total = rules.length;
 
   // Process rules within a single lock
-  await withLock(config.playbookPath, async () => {
+  await withLock(targetPath, async () => {
     const { loadPlaybook } = await import("../playbook.js");
-    const playbook = await loadPlaybook(config.playbookPath);
+    const playbook = await loadPlaybook(targetPath);
 
     for (let i = 0; i < rules.length; i++) {
       const raw = rules[i];
@@ -297,7 +299,7 @@ async function handleBatchAdd(
           {
             content: rule.content,
             category,
-            scope: "global",
+            scope,
             kind: "workflow_rule",
           },
           "manual-cli",
@@ -321,7 +323,7 @@ async function handleBatchAdd(
 
     // Save if any were added
     if (result.added.length > 0) {
-      await savePlaybook(playbook, config.playbookPath);
+      await savePlaybook(playbook, targetPath);
     }
   });
 
@@ -765,7 +767,29 @@ export async function playbookCommand(
   if (action === "add") {
     // Handle batch add via --file
     if (flags.file) {
-      const result = await handleBatchAdd(config, flags);
+      // Determine target path and scope based on --repo flag
+      let batchTargetPath = config.playbookPath;
+      const batchScope: "global" | "workspace" = flags.repo ? "workspace" : "global";
+      if (flags.repo) {
+        const repoDir = await resolveRepoDir();
+        if (!repoDir) {
+          reportError("Not in a git repository. Cannot add to repo playbook.", {
+            code: ErrorCode.CONFIG_INVALID,
+            hint: "Run inside a git repo or omit --repo",
+            json: flags.json,
+            command,
+            startedAtMs,
+          });
+          return;
+        }
+        batchTargetPath = path.join(repoDir, "playbook.yaml");
+        // Ensure .cass/ directory exists
+        if (!(await fileExists(repoDir))) {
+          await mkdir(repoDir, { recursive: true });
+        }
+      }
+
+      const result = await handleBatchAdd(config, flags, batchTargetPath, batchScope);
 
       // If --session was provided, update onboarding state
       if (flags.session && result.summary.succeeded > 0) {
@@ -820,9 +844,31 @@ export async function playbookCommand(
       return;
     }
 
-    await withLock(config.playbookPath, async () => {
+    // Determine target path and scope based on --repo flag
+    let targetPath = config.playbookPath;
+    const scope: "global" | "workspace" = flags.repo ? "workspace" : "global";
+    if (flags.repo) {
+      const repoDir = await resolveRepoDir();
+      if (!repoDir) {
+        reportError("Not in a git repository. Cannot add to repo playbook.", {
+          code: ErrorCode.CONFIG_INVALID,
+          hint: "Run inside a git repo or omit --repo",
+          json: flags.json,
+          command,
+          startedAtMs,
+        });
+        return;
+      }
+      targetPath = path.join(repoDir, "playbook.yaml");
+      // Ensure .cass/ directory exists
+      if (!(await fileExists(repoDir))) {
+        await mkdir(repoDir, { recursive: true });
+      }
+    }
+
+    await withLock(targetPath, async () => {
       const { loadPlaybook } = await import("../playbook.js");
-      const playbook = await loadPlaybook(config.playbookPath);
+      const playbook = await loadPlaybook(targetPath);
       const category = flags.category || "general";
 
       // Validate if --check flag is set
@@ -853,14 +899,14 @@ export async function playbookCommand(
         {
           content,
           category,
-          scope: "global",
+          scope,
           kind: "workflow_rule",
         },
         "manual-cli",
         config.scoring.decayHalfLifeDays
       );
 
-      await savePlaybook(playbook, config.playbookPath);
+      await savePlaybook(playbook, targetPath);
 
       // Track session for provenance if --session was provided
       if (flags.session) {
