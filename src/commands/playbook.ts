@@ -798,9 +798,12 @@ export async function playbookCommand(
       }
 
       if (flags.json) {
-        printJsonResult(command, result, { startedAtMs });
+        // Include target info in JSON output
+        const jsonResult = { ...result, target: flags.repo ? "repo" : "global", targetPath: batchTargetPath };
+        printJsonResult(command, jsonResult, { startedAtMs });
       } else {
-        console.log(chalk.bold("BATCH ADD RESULTS"));
+        const targetLabel = flags.repo ? chalk.cyan("(repo playbook)") : chalk.dim("(global playbook)");
+        console.log(chalk.bold(`BATCH ADD RESULTS ${targetLabel}`));
         console.log("");
         if (result.added.length > 0) {
           console.log(chalk.green(`${icon("success")} Added ${result.added.length} rules:`));
@@ -915,7 +918,7 @@ export async function playbookCommand(
       }
 
       if (flags.json) {
-        const result: Record<string, unknown> = { bullet };
+        const result: Record<string, unknown> = { bullet, target: flags.repo ? "repo" : "global", targetPath };
         if (validation) result.validation = validation;
         printJsonResult(command, result, { startedAtMs });
       } else {
@@ -924,7 +927,8 @@ export async function playbookCommand(
           console.log(formatValidationResult(validation));
           console.log("");
         }
-        console.log(chalk.green(`${icon("success")} Added bullet ${bullet.id}`));
+        const targetLabel = flags.repo ? chalk.cyan(" to repo playbook") : "";
+        console.log(chalk.green(`${icon("success")} Added bullet ${bullet.id}${targetLabel}`));
       }
     });
     return;
