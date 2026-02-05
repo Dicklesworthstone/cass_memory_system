@@ -73,7 +73,7 @@ export interface CassAvailabilityResult {
   resolvedCassPath?: string;
 }
 
-export type CassDegradedReason = "NOT_FOUND" | "INDEX_MISSING" | "TIMEOUT" | "OTHER";
+export type CassDegradedReason = "NOT_FOUND" | "INDEX_MISSING" | "FTS_TABLE_MISSING" | "TIMEOUT" | "OTHER";
 
 export interface CassDegradedInfo {
   /** Whether cass-powered history is available for this operation. */
@@ -1099,7 +1099,13 @@ export async function cassTimeline(
 
 export async function findUnprocessedSessions(
   processed: Set<string>,
-  options: { days?: number; maxSessions?: number; agent?: string },
+  options: {
+    days?: number;
+    maxSessions?: number;
+    agent?: string;
+    excludePatterns?: string[];
+    includeAll?: boolean;
+  },
   cassPath = "cass",
   runner: CassRunner = DEFAULT_CASS_RUNNER
 ): Promise<string[]> {
@@ -1114,6 +1120,10 @@ export async function findUnprocessedSessions(
 
   const agentFilter = typeof options.agent === "string" ? options.agent.trim().toLowerCase() : undefined;
   const agentNormalized = agentFilter ? agentFilter : undefined;
+
+  // Session type exclusion filtering
+  const excludePatterns = options.excludePatterns ?? [];
+  const includeAll = options.includeAll ?? false;
 
   // Try timeline first
   const timeline = await cassTimeline(days, cassPath, runner);
@@ -1149,9 +1159,17 @@ export async function findUnprocessedSessions(
     }
   }
 
+  // Helper to check if a session path matches any exclusion pattern
+  const matchesExcludePattern = (sessionPath: string): boolean => {
+    if (includeAll || excludePatterns.length === 0) return false;
+    const pathLower = sessionPath.toLowerCase();
+    return excludePatterns.some((pattern) => pathLower.includes(pattern.toLowerCase()));
+  };
+
   return allSessions
     .filter((s) => !processed.has(s.path))
     .filter((s) => !agentNormalized || (s.agent || "").trim().toLowerCase() === agentNormalized)
+    .filter((s) => !matchesExcludePattern(s.path))
     .map((s) => s.path)
     .slice(0, maxSessions);
 }

@@ -108,7 +108,9 @@ export async function orchestrateReflection(
           {
             days: options.days || config.sessionLookbackDays,
             maxSessions: options.maxSessions || 5,
-            agent: options.agent
+            agent: options.agent,
+            excludePatterns: config.sessionExcludePatterns,
+            includeAll: config.sessionIncludeAll
           },
           config.cassPath
         );

@@ -376,6 +376,19 @@ export const ConfigSchema = z.object({
   scoring: ScoringConfigSectionSchema.default({}),
   maxReflectorIterations: z.number().default(3),
   autoReflect: z.boolean().default(false),
+  // Session type filtering: exclude internal/auto-generated sessions from reflection
+  // Patterns are matched against session paths (case-insensitive substring match)
+  sessionExcludePatterns: z.array(z.string()).default([
+    "prompt_suggestion",      // Claude Code internal prompt suggestions
+    "prompt-suggestion",      // Alternative naming
+    "auto_complete",          // Autocomplete sessions
+    "auto-complete",
+    "inline_completion",      // Inline completion sessions
+    "inline-completion",
+    "/subagents/agent-a",     // Claude Code subagent internal sessions (agent-a* pattern)
+  ]),
+  // Set to true to include all sessions (ignore exclusion patterns)
+  sessionIncludeAll: z.boolean().default(false),
   dedupSimilarityThreshold: z.number().default(0.85),
   pruneHarmfulThreshold: z.number().default(3),
   defaultDecayHalfLife: z.number().default(90),
@@ -472,7 +485,7 @@ export const ScoredBulletSchema = PlaybookBulletSchema.extend({
 });
 export type ScoredBullet = z.infer<typeof ScoredBulletSchema>;
 
-export const DegradedCassReasonSchema = z.enum(["NOT_FOUND", "INDEX_MISSING", "TIMEOUT", "OTHER"]);
+export const DegradedCassReasonSchema = z.enum(["NOT_FOUND", "INDEX_MISSING", "FTS_TABLE_MISSING", "TIMEOUT", "OTHER"]);
 export type DegradedCassReason = z.infer<typeof DegradedCassReasonSchema>;
 
 export const DegradedCassSchema = z.object({
