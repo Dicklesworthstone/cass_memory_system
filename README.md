@@ -960,8 +960,8 @@ cm project --format agents.md
 # Show LLM cost and usage statistics
 cm usage
 
-# Run MCP server for agent integration
-cm serve --port 3001
+# Run MCP HTTP server for agent integration (default: 127.0.0.1:8765)
+cm serve
 
 # Privacy controls
 cm privacy status
@@ -1551,14 +1551,18 @@ Remote cass is **opt-in** and queries other machines via SSH (using your existin
 
 ## 🔌 MCP Server
 
-Run cass-memory as an MCP (Model Context Protocol) server for programmatic agent integration:
+Run cass-memory as an MCP (Model Context Protocol) HTTP server for programmatic agent integration.
+The transport is HTTP-only (no stdio or SSE):
 
 ```bash
-# Local-only by default (recommended)
-cm serve --port 3001
+# Local-only by default (recommended) — listens on 127.0.0.1:8765
+cm serve
+
+# Explicit port
+cm serve --port 9000
 
 # If binding to a non-loopback host, set an auth token
-MCP_HTTP_TOKEN="<random>" cm serve --host 0.0.0.0 --port 3001
+MCP_HTTP_TOKEN="<random>" cm serve --host 0.0.0.0 --port 8765
 ```
 
 When `MCP_HTTP_TOKEN` is set, clients must send either `Authorization: Bearer <token>` or `X-MCP-Token: <token>`.
@@ -1584,13 +1588,16 @@ When `MCP_HTTP_TOKEN` is set, clients must send either `Authorization: Bearer <t
 
 ### MCP Client Configuration
 
+`cm serve` is an **HTTP transport** server (not stdio). Start it first, then
+point your MCP client at the URL.
+
 For Claude Code (`~/.config/claude/mcp.json`):
 ```json
 {
   "mcpServers": {
     "cm": {
-      "command": "cm",
-      "args": ["serve"]
+      "type": "url",
+      "url": "http://127.0.0.1:8765/"
     }
   }
 }
@@ -1602,8 +1609,8 @@ For VS Code (Cline/Continue):
   "mcp": {
     "servers": {
       "cass-memory": {
-        "command": "cm",
-        "args": ["serve", "--port", "3001"]
+        "type": "url",
+        "url": "http://127.0.0.1:8765/"
       }
     }
   }
