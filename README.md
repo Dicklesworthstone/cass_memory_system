@@ -1,5 +1,9 @@
 # cass-memory
 
+<div align="center">
+  <img src="cm_illustration.webp" alt="cass-memory - Procedural memory for AI coding agents">
+</div>
+
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue.svg)
 ![Runtime](https://img.shields.io/badge/runtime-Bun-f472b6.svg)
 ![Status](https://img.shields.io/badge/status-alpha-purple.svg)
