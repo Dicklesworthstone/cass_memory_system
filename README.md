@@ -2789,7 +2789,7 @@ Coverage targets: ~80% lines, 80% functions, 70% branches.
 
 ## 📜 License
 
-MIT. See [LICENSE](LICENSE) for details.
+MIT License (with OpenAI/Anthropic Rider). See [LICENSE](LICENSE) for details.
 
 ---
 
