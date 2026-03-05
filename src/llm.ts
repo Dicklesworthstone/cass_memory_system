@@ -152,9 +152,9 @@ export function getModel(config: { provider: string; model: string; apiKey?: str
 }
 
 export function isLLMAvailable(provider: LLMProvider): boolean {
-  // Ollama is "available" when configured via env var OR when it's the
-  // default provider (assumes localhost:11434). We cannot do a network check
-  // here since this function is synchronous.
+  // Ollama is "available" when either OLLAMA_BASE_URL or OLLAMA_HOST is set.
+  // We cannot auto-detect a running local server because this function is
+  // synchronous and a network probe would block.
   if (provider === "ollama") {
     return !!process.env.OLLAMA_BASE_URL || !!process.env.OLLAMA_HOST;
   }
