@@ -41,6 +41,7 @@ export interface LLMConfig {
   model: string;
   apiKey?: string;
   ollamaBaseUrl?: string;
+  baseURL?: string;
 }
 
 /**
@@ -144,7 +145,7 @@ export function resolveOllamaBaseUrl(ollamaBaseUrl?: string): string {
   return ollamaBaseUrl || "http://localhost:11434";
 }
 
-export function getModel(config: { provider: string; model: string; apiKey?: string; ollamaBaseUrl?: string }): LanguageModel {
+export function getModel(config: { provider: string; model: string; apiKey?: string; ollamaBaseUrl?: string; baseURL?: string }): LanguageModel {
   const provider = config.provider as LLMProvider;
 
   if (provider === "ollama") {
@@ -156,10 +157,11 @@ export function getModel(config: { provider: string; model: string; apiKey?: str
   }
 
   const apiKey = config.apiKey || getApiKey(provider);
+  const baseURL = config.baseURL || process.env[`${provider.toUpperCase()}_BASE_URL` as keyof typeof process.env];
 
   switch (provider) {
-    case "openai": return createOpenAI({ apiKey })(config.model);
-    case "anthropic": return createAnthropic({ apiKey })(config.model);
+    case "openai": return createOpenAI({ apiKey, baseURL })(config.model);
+    case "anthropic": return createAnthropic({ apiKey, baseURL })(config.model);
     case "google": return createGoogleGenerativeAI({ apiKey })(config.model);
     default: throw new Error(`Unsupported provider: ${config.provider}`);
   }
@@ -477,7 +479,8 @@ export async function generateObjectSafe<T>(
       provider: config.provider as LLMProvider,
       model: config.model,
       apiKey: config.apiKey,
-      ollamaBaseUrl: config.ollamaBaseUrl
+      ollamaBaseUrl: config.ollamaBaseUrl,
+      baseURL: config.baseURL,
     };
     model = getModel(llmConfig);
   }

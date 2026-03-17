@@ -365,10 +365,12 @@ export const ConfigSchema = z.object({
   schema_version: z.number().default(1),
   llm: z.object({
     provider: z.string().default("anthropic"),
-    model: z.string().default("claude-sonnet-4-20250514")
+    model: z.string().default("claude-sonnet-4-20250514"),
+    baseURL: z.string().optional()
   }).optional(),
   provider: LLMProviderEnum.default("anthropic"),
   model: z.string().default("claude-sonnet-4-20250514"),
+  baseURL: z.string().optional(),
   cassPath: z.string().default("cass"),
   remoteCass: RemoteCassConfigSchema.default({}),
   playbookPath: z.string().default("~/.cass-memory/playbook.yaml"),
