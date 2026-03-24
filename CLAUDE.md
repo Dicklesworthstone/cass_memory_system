@@ -86,6 +86,28 @@ bun run src/cm.ts doctor    # Health checks
 - `src/commands/serve.ts` — MCP server tools and resources.
 - `src/cm.ts` — CLI entry point. Update when adding/removing commands.
 
+## Memory System — MANDATORY
+
+IMPORTANT: You MUST call the `cm_snapshot` MCP tool at these points:
+1. When you notice your context is getting large (before compaction happens)
+2. At the end of any major task, feature, or debugging session
+3. Before making a commit or opening a PR
+4. If the user says they're done or wrapping up
+
+This is how session knowledge is preserved across context boundaries. If you skip this,
+the work done in this session will be lost.
+
+When calling `cm_snapshot`, provide ALL of these fields:
+- `abstract`: 1-2 sentence summary of what was accomplished this session
+- `topics`: array of topic slugs in kebab-case (e.g. ["auth-setup", "billing-api"])
+- `content`: markdown body capturing the essential knowledge from this session:
+  - What was built or changed (with specific file paths)
+  - Key decisions made and why
+  - Problems encountered and how they were resolved
+  - Any unfinished work or open questions
+
+Do NOT wait to be asked. Do NOT skip this step. This is as important as committing code.
+
 ## Rules for the Agent
 
 ### CASS Codebase Knowledge

@@ -809,7 +809,21 @@ cm starters  # list available starters
 
 Session notes are captured through two mechanisms that work together:
 
-**1. MCP tool (high quality, agent-generated):** When the MCP server is configured, Claude Code can call `cm_snapshot` with a structured summary. Add this to your project's `CLAUDE.md`:
+**1. MCP tool (high quality, agent-generated):** When the MCP server is configured, Claude Code can call `cm_snapshot` with a structured summary.
+
+**Setup:** Add a `.mcp.json` to your project root (or `~/.claude/.mcp.json` for global access):
+
+```json
+{
+  "mcpServers": {
+    "cass-memory": {
+      "command": "/path/to/cass_memory_system/scripts/mcp-stdio.sh"
+    }
+  }
+}
+```
+
+Then add this to your project's `CLAUDE.md`:
 
 ```markdown
 ## Memory System — MANDATORY

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "cass-memory": {
+      "command": "/Users/dylangnatz/Coding/cass_memory_system/scripts/mcp-stdio.sh",
+      "args": []
+    }
+  }
+}

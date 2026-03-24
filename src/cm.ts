@@ -483,6 +483,14 @@ program.command("snapshot")
     await snapshotCommand(opts);
   });
 
+// --- MCP stdio ---
+program.command("mcp-stdio")
+  .description("Run MCP server over stdin/stdout (for Claude Code integration)")
+  .action(async () => {
+    const { mcpStdioCommand } = await import("./commands/mcp-stdio.js");
+    await mcpStdioCommand();
+  });
+
 // --- Reflect ---
 program.command("reflect")
   .alias("ref")
