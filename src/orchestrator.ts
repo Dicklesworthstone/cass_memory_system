@@ -10,12 +10,13 @@ import { validateDelta } from "./validate.js";
 import { validateKnowledgeDelta, detectContradiction } from "./validate.js";
 import { reportContradiction } from "./review-queue.js";
 import type { LLMIO } from "./llm.js";
+import { generateDailyDigest, projectFromSourcePath } from "./llm.js";
 import { curatePlaybook, curateKnowledge, type KnowledgeCurationResult } from "./curate.js";
 import { expandPath, log, warn, error, now, fileExists, resolveRepoDir, generateBulletId, hashContent, jaccardSimilarity, ensureDir, parseInlineFeedback } from "./utils.js";
 import { withLock } from "./lock.js";
 import { extractRuleIdsFromTranscript, classifySessionOutcome, recordOutcome, applyOutcomeFeedback, type OutcomeInput } from "./outcome.js";
 import { findUnprocessedSessionNotes, markSessionNoteProcessed, loadProcessingState, saveProcessingState, type ParsedSessionNote } from "./session-notes.js";
-import { loadTopics, loadKnowledgePage } from "./knowledge-page.js";
+import { loadTopics, loadKnowledgePage, writeDigest } from "./knowledge-page.js";
 import { openSearchIndex } from "./search.js";
 import path from "node:path";
 import fs from "node:fs/promises";
@@ -280,6 +281,8 @@ export async function orchestrateReflection(
 
     let knowledgeResult: KnowledgeCurationResult | undefined;
     let sessionNotesProcessed = 0;
+    const digestSessions: import("./llm.js").DigestSessionInput[] = [];
+    const knowledgePagesUpdated = new Set<string>();
 
     try {
       const unprocessedNotes = await findUnprocessedSessionNotes(config, options.maxSessions || 5);
@@ -307,6 +310,18 @@ export async function orchestrateReflection(
               note.frontmatter.topics_touched,
               config
             );
+
+            // 1b. Collect session info for daily digest synthesis
+            digestSessions.push({
+              sessionId: noteId,
+              title: note.frontmatter.title || "Untitled session",
+              abstract: note.frontmatter.abstract,
+              project: projectFromSourcePath(note.frontmatter.source_session || ""),
+              topics: note.frontmatter.topics_touched,
+              decisions: diary.decisions.slice(0, 3),
+              challenges: diary.challenges.slice(0, 3),
+              openQuestions: [], // TODO: extract from session note body if needed
+            });
 
             // 2. Load relevant knowledge pages for Call 2 context
             const relevantTopicSlugs = new Set([
@@ -395,6 +410,13 @@ export async function orchestrateReflection(
           // Reload topics in case Call 1 suggested new ones in an earlier session
           const latestTopics = await loadTopics(config);
           knowledgeResult = await curateKnowledge(allKnowledgeDeltas, latestTopics, config);
+        }
+
+        // Track which knowledge pages were updated for digest
+        for (const delta of allKnowledgeDeltas) {
+          if ("topic_slug" in delta && delta.topic_slug) {
+            knowledgePagesUpdated.add(delta.topic_slug);
+          }
         }
 
         // 7. Re-index knowledge pages, session notes, and digests in SQLite
@@ -664,6 +686,53 @@ export async function orchestrateReflection(
         missingRules: [],
         inlineFeedbackDeltas: inlineFeedbackDeltaCount,
       };
+    }
+
+    // ========================================================================
+    // DAILY DIGEST SYNTHESIS (Haiku)
+    // Single call after all sessions are processed — synthesizes a coherent
+    // daily summary with dedup, project grouping, and pipeline results.
+    // ========================================================================
+
+    if (!options.dryRun && digestSessions.length > 0) {
+      try {
+        // Collect bullet text for digest context
+        const bulletsAdded: string[] = [];
+        const bulletsHelpful: string[] = [];
+        const bulletsHarmful: string[] = [];
+        for (const delta of allDeltas) {
+          if (delta.type === "add" && delta.bullet?.content) {
+            bulletsAdded.push(delta.bullet.content);
+          } else if (delta.type === "helpful" && delta.bulletId) {
+            bulletsHelpful.push(delta.bulletId);
+          } else if (delta.type === "harmful" && delta.bulletId) {
+            bulletsHarmful.push(delta.bulletId);
+          }
+        }
+
+        const digestResult = await generateDailyDigest(
+          digestSessions,
+          {
+            bulletsAdded,
+            bulletsHelpful,
+            bulletsHarmful,
+            knowledgePagesUpdated: [...knowledgePagesUpdated],
+            errors: errors.slice(0, 3),
+          },
+          config,
+          options.io
+        );
+
+        // Write digest to file
+        const today = new Date().toISOString().split("T")[0];
+        const allTopics = digestResult.topics_touched.length > 0
+          ? digestResult.topics_touched
+          : [...new Set(digestSessions.flatMap(s => s.topics))];
+        await writeDigest(today, digestResult.summary, digestSessions.length, allTopics, config);
+        log(`Generated daily digest for ${today} (${digestSessions.length} sessions)`);
+      } catch (err: any) {
+        errors.push(`Digest generation failed: ${err?.message || String(err)}`);
+      }
     }
 
     return {

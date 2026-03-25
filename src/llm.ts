@@ -8,10 +8,11 @@ import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createOllama } from "ollama-ai-provider";
 import { generateObject, type LanguageModel } from "ai";
 import { z } from "zod";
-import type { Config, DiaryEntry, LLMProvider, ReflectorCall1Output, ReflectorCall2Output, DiaryFromNoteOutput } from "./types.js";
-import { ReflectorCall1OutputSchema, ReflectorCall2OutputSchema, DiaryFromNoteOutputSchema } from "./types.js";
+import type { Config, DiaryEntry, LLMProvider, ReflectorCall1Output, ReflectorCall2Output, DiaryFromNoteOutput, DigestSynthesisOutput } from "./types.js";
+import { ReflectorCall1OutputSchema, ReflectorCall2OutputSchema, DiaryFromNoteOutputSchema, DigestSynthesisOutputSchema } from "./types.js";
 import { checkBudget, recordCost } from "./cost.js";
 import { truncateForContext, warn } from "./utils.js";
+import path from "node:path";
 
 // Re-export LLMProvider from types.ts (single source of truth)
 export type { LLMProvider } from "./types.js";
@@ -21,7 +22,7 @@ export type { LLMProvider } from "./types.js";
  * If the step has a model override configured, returns config with that model.
  * Empty string means "use default config.model".
  */
-export type PipelineStep = "sessionNoteCreate" | "sessionNoteExtend" | "diaryFromNote" | "reflectorCall1" | "reflectorCall2" | "knowledgeGen";
+export type PipelineStep = "sessionNoteCreate" | "sessionNoteExtend" | "diaryFromNote" | "reflectorCall1" | "reflectorCall2" | "knowledgeGen" | "digestSynthesis";
 
 export function configForStep(config: Config, step: PipelineStep): Config {
   const override = config.pipelineModels?.[step];
@@ -557,8 +558,33 @@ For each update, provide:
 - revised_content: The FULL revised markdown content for this sub-page
 - contradictions: Array of conflicts you couldn't resolve (each with description, existing_claim, new_claim)
 
-DIGEST:
-Write a single paragraph (2-4 sentences) summarizing this session for the daily digest. Focus on outcomes and decisions.`,
+NOTE: The digest_content field is optional. Leave it empty — daily digests are generated separately.`,
+
+  digestSynthesis: `You are writing a daily digest summarizing a developer's coding sessions.
+
+<sessions>
+{sessionSummaries}
+</sessions>
+
+<pipeline_results>
+{pipelineResults}
+</pipeline_results>
+
+Write a concise, well-structured daily digest. Group related work by project. Highlight:
+- Key accomplishments and outcomes
+- Important decisions made and their rationale
+- Problems encountered and how they were resolved
+- Open questions or unfinished work carrying forward
+
+Rules:
+- Skip sessions that failed to capture content or have no accomplishments
+- Deduplicate — if the same work appears in multiple sessions, mention it once
+- Use project names as section headers when sessions span multiple projects
+- Include specific details (file names, error messages, tool names) — not vague summaries
+- End with a brief "Open items" list if any sessions have unresolved questions
+- Keep the total length to 3-8 paragraphs depending on how much happened
+
+Also return a topics_touched array with all unique topic slugs from the sessions.`,
 } as const;
 
 export function fillPrompt(
@@ -1108,6 +1134,101 @@ Tags: ${diary.tags.join(", ") || "(none)"}`;
   return llmWithRetry(async () => {
     return generateObjectSafe(ReflectorCall2OutputSchema, prompt, configForStep(config, "reflectorCall2"), 3, io);
   }, "runReflectorCall2");
+}
+
+// --- Daily Digest Synthesis (Haiku) ---
+
+export interface DigestSessionInput {
+  sessionId: string;
+  title: string;
+  abstract: string;
+  project: string;
+  topics: string[];
+  decisions: string[];
+  challenges: string[];
+  openQuestions: string[];
+}
+
+export interface DigestPipelineResults {
+  bulletsAdded: string[]; // full bullet text
+  bulletsHelpful: string[]; // bullet IDs marked helpful
+  bulletsHarmful: string[]; // bullet IDs marked harmful
+  knowledgePagesUpdated: string[]; // topic slugs
+  errors: string[];
+}
+
+/**
+ * Extract a project name from a session's source_session path.
+ * e.g., "~/.claude/projects/-Users-dev-Coding-my-project/uuid.jsonl" → "my-project"
+ */
+export function projectFromSourcePath(sourcePath: string): string {
+  if (!sourcePath) return "unknown";
+  try {
+    const dirName = path.basename(path.dirname(sourcePath));
+    const segments = dirName.split("-").filter(Boolean);
+    const codingIdx = segments.findIndex(s => s.toLowerCase() === "coding");
+    if (codingIdx >= 0 && codingIdx < segments.length - 1) {
+      return segments.slice(codingIdx + 1).join("-");
+    }
+    return segments.slice(-2).join("-");
+  } catch {
+    return "unknown";
+  }
+}
+
+export async function generateDailyDigest(
+  sessions: DigestSessionInput[],
+  pipelineResults: DigestPipelineResults,
+  config: Config,
+  io: LLMIO = DEFAULT_LLM_IO
+): Promise<DigestSynthesisOutput> {
+  if (sessions.length === 0) {
+    return { summary: "No sessions processed today.", topics_touched: [] };
+  }
+
+  const sessionSummaries = sessions.map(s => {
+    const lines = [`[${s.project}] "${s.title}" — ${s.abstract}`];
+    lines.push(`  Topics: ${s.topics.join(", ") || "(none)"}`);
+    if (s.decisions.length > 0) {
+      lines.push(`  Decisions: ${s.decisions.slice(0, 3).join("; ")}`);
+    }
+    if (s.challenges.length > 0) {
+      lines.push(`  Challenges: ${s.challenges.slice(0, 3).join("; ")}`);
+    }
+    if (s.openQuestions.length > 0) {
+      lines.push(`  Open: ${s.openQuestions.slice(0, 2).join("; ")}`);
+    }
+    return lines.join("\n");
+  }).join("\n\n");
+
+  const pipelineLines: string[] = [];
+  if (pipelineResults.bulletsAdded.length > 0) {
+    pipelineLines.push(`Playbook bullets added (${pipelineResults.bulletsAdded.length}):`);
+    for (const b of pipelineResults.bulletsAdded.slice(0, 10)) {
+      pipelineLines.push(`  - ${b}`);
+    }
+  }
+  if (pipelineResults.bulletsHelpful.length > 0) {
+    pipelineLines.push(`Bullets reinforced: ${pipelineResults.bulletsHelpful.join(", ")}`);
+  }
+  if (pipelineResults.bulletsHarmful.length > 0) {
+    pipelineLines.push(`Bullets flagged harmful: ${pipelineResults.bulletsHarmful.join(", ")}`);
+  }
+  if (pipelineResults.knowledgePagesUpdated.length > 0) {
+    pipelineLines.push(`Knowledge pages updated: ${pipelineResults.knowledgePagesUpdated.join(", ")}`);
+  }
+  if (pipelineResults.errors.length > 0) {
+    pipelineLines.push(`Errors: ${pipelineResults.errors.slice(0, 3).join("; ")}`);
+  }
+
+  const prompt = fillPrompt(PROMPTS.digestSynthesis, {
+    sessionSummaries,
+    pipelineResults: pipelineLines.join("\n") || "No pipeline changes.",
+  });
+
+  return llmWithRetry(async () => {
+    return generateObjectSafe(DigestSynthesisOutputSchema, prompt, configForStep(config, "digestSynthesis"), 3, io);
+  }, "generateDailyDigest");
 }
 
 // --- Multi-Provider Fallback ---

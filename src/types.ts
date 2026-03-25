@@ -436,6 +436,7 @@ export const ConfigSchema = z.object({
     reflectorCall1: z.string().default("claude-haiku-4-5-20251001"),
     reflectorCall2: z.string().default(""), // empty = use config.model (Sonnet)
     knowledgeGen: z.string().default(""),   // empty = use config.model (Sonnet)
+    digestSynthesis: z.string().default("claude-haiku-4-5-20251001"), // cheap synthesis call
   }).default({}),
 });
 export type Config = z.infer<typeof ConfigSchema>;
@@ -1252,9 +1253,16 @@ export const ReflectorCall2OutputSchema = z.object({
       new_claim: z.string(),
     })).default([]), // cases where the LLM couldn't determine which claim is correct
   })).default([]),
-  digest_content: z.string(), // chronological narrative summary for the day
+  digest_content: z.string().default(""), // deprecated: digest now generated separately via Haiku
 });
 export type ReflectorCall2Output = z.infer<typeof ReflectorCall2OutputSchema>;
+
+// Daily digest synthesis output (Haiku call)
+export const DigestSynthesisOutputSchema = z.object({
+  summary: z.string(), // synthesized daily narrative
+  topics_touched: z.array(z.string()).default([]), // aggregated topic slugs
+});
+export type DigestSynthesisOutput = z.infer<typeof DigestSynthesisOutputSchema>;
 
 // Diary-from-note LLM output (structured scaffold for Reflector)
 export const DiaryFromNoteOutputSchema = z.object({

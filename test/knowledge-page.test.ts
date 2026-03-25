@@ -12,6 +12,7 @@ import {
   saveTopics,
   addTopicSuggestion,
   appendToDigest,
+  writeDigest,
 } from "../src/knowledge-page.js";
 import type { Config, KnowledgePageAppendDelta, ParsedKnowledgePage, Topic } from "../src/types.js";
 
@@ -327,13 +328,16 @@ describe("digest I/O", () => {
     expect(content).toContain("Built Phase 3");
   });
 
-  it("appends to existing digest", async () => {
-    await appendToDigest("2026-03-23", "First session.", ["session-1"], config);
-    await appendToDigest("2026-03-23", "Second session.", ["session-2"], config);
+  it("writeDigest replaces content with synthesized digest", async () => {
+    await writeDigest("2026-03-23", "First version.", 1, ["topic-a"], config);
+    await writeDigest("2026-03-23", "Synthesized summary of 3 sessions.", 3, ["topic-a", "topic-b"], config);
 
     const content = await readFile(path.join(tmpDir, "digests", "2026-03-23.md"), "utf-8");
-    expect(content).toContain("sessions: 2");
-    expect(content).toContain("First session.");
-    expect(content).toContain("Second session.");
+    expect(content).toContain("sessions: 3");
+    expect(content).toContain("Synthesized summary");
+    expect(content).toContain('"topic-a"');
+    expect(content).toContain('"topic-b"');
+    // First version should be replaced, not appended
+    expect(content).not.toContain("First version.");
   });
 });

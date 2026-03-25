@@ -164,7 +164,7 @@ describe("reflectOnSessionTwoCalls", () => {
     }
   });
 
-  it("produces digest delta from Call 2", async () => {
+  it("does not produce digest deltas from Call 2 (digests are now generated separately)", async () => {
     const io = makeMockIO();
     const result = await reflectOnSessionTwoCalls(
       makeDiary(), "Session note body here.", makePlaybook(), makeTopics(),
@@ -172,11 +172,7 @@ describe("reflectOnSessionTwoCalls", () => {
     );
 
     const digestDeltas = result.knowledgeDeltas.filter(d => d.type === "digest_update");
-    expect(digestDeltas).toHaveLength(1);
-    if (digestDeltas[0].type === "digest_update") {
-      expect(digestDeltas[0].content).toContain("billing webhook");
-      expect(digestDeltas[0].sessions_covered).toEqual(["test-001"]);
-    }
+    expect(digestDeltas).toHaveLength(0);
   });
 
   it("produces topic suggestion deltas from Call 1", async () => {
@@ -237,10 +233,10 @@ describe("reflectOnSessionTwoCalls", () => {
         if (callCount <= 3) throw new Error("Call 1 failed");
         return {
           object: {
-            knowledge_sections: [
-              { topic_slug: "billing-service", section_title: "Test", content: "Content", confidence: "inferred", related_bullet_indices: [] },
+            page_updates: [
+              { topic_slug: "billing-service", sub_page: "_index", revised_content: "# Billing\nUpdated content.", contradictions: [] },
             ],
-            digest_content: "Digest.",
+            digest_content: "",
           },
         };
       },

@@ -629,3 +629,30 @@ Updated both `cm_snapshot` MCP handler (serve.ts) and CLI `snapshotCommand` (sna
 
 **Test results:** 2462 pass, 52 fail (pre-existing + README sync), 3 skip. Zero new failures.
 - The reflector path (`processAllTranscripts`) was also correct — each transcript maps to its own session ID. The reflector amplified the bug by appending correct content to already-contaminated session notes.
+
+---
+
+### [Feature] Daily digest synthesis via Haiku — replaces per-session concatenation
+**Date:** 2026-03-25
+**Files changed:** `src/orchestrator.ts`, `src/llm.ts`, `src/types.ts`, `src/reflect.ts`, `src/knowledge-page.ts`, `test/phase3-reflect.test.ts`, `test/knowledge-page.test.ts`
+**Differs from plan:** Yes — original design had Call 2 producing a `digest_content` paragraph per session, concatenated into a daily file. New approach: separate Haiku synthesis call after all sessions are processed.
+
+**Problem:** Daily digests were concatenated per-session paragraphs with no deduplication, no synthesis, no project grouping, empty `topics_touched`, and failed sessions producing noise entries.
+
+**Fix — Separate digest synthesis step:**
+- Removed `digest_content` generation from Reflector Call 2 prompt (field kept in schema with `.default("")` for backwards compatibility)
+- Removed digest delta creation from `reflectOnSessionTwoCalls()` in reflect.ts
+- Added `DigestSynthesisOutputSchema` to types.ts (`{ summary, topics_touched }`)
+- Added `generateDailyDigest()` function in llm.ts with `digestSynthesis` prompt — receives session summaries (title, abstract, project, decisions, challenges, open questions) + pipeline results (bullets added, pages updated, feedback, errors)
+- Added `projectFromSourcePath()` to llm.ts — extracts project name from transcript path (reused from Electron file-reader.ts)
+- Added `digestSynthesis` as a pipeline step routed to Haiku by default in `pipelineModels` config
+- Orchestrator collects `DigestSessionInput[]` during Phase 3 loop, calls `generateDailyDigest()` after playbook curation
+- Replaced `appendToDigest()` with `writeDigest()` in knowledge-page.ts — writes full synthesized content (replace, not append). Old function kept as deprecated wrapper.
+
+**Digest input includes:**
+- Per session: title, abstract, project name, topics, top 3 decisions (from diary), top 3 challenges (from diary)
+- Pipeline results: full bullet text of added bullets, IDs of helpful/harmful feedback, knowledge pages updated, errors
+
+**E2E test result:** Digest for 2026-03-25 — properly structured with project headers, decisions section, problems resolved, open items. Topics populated. Cost: $0.08 total for diary + Call 1 + Call 2 + digest synthesis. Dramatically better than old wall of concatenated paragraphs.
+
+**Test results:** 2463 pass, 51 fail (pre-existing), 3 skip. Zero new failures.

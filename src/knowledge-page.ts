@@ -789,53 +789,46 @@ export async function coldStartTopic(
 // ============================================================================
 
 /** Append a session paragraph to a daily digest. Creates the file if needed. */
+/**
+ * Write a synthesized daily digest (replaces the old append-based approach).
+ * Each reflection run produces one Haiku-synthesized digest that replaces the file.
+ */
+export async function writeDigest(
+  date: string,
+  content: string,
+  sessionCount: number,
+  topicsTouched: string[],
+  config: Config
+): Promise<void> {
+  const filePath = digestPath(date, config);
+  await ensureDir(path.dirname(filePath));
+
+  const topicsYaml = topicsTouched.length > 0
+    ? `[${topicsTouched.map(t => `"${t}"`).join(", ")}]`
+    : "[]";
+
+  const frontmatter = [
+    "---",
+    `date: ${date}`,
+    `sessions: ${sessionCount}`,
+    `topics_touched: ${topicsYaml}`,
+    "---",
+  ].join("\n");
+
+  const fullContent = `${frontmatter}\n\n${content.trim()}\n`;
+
+  await withLock(filePath, async () => {
+    await atomicWrite(filePath, fullContent);
+  });
+  log(`Written digest for ${date} (${sessionCount} sessions)`);
+}
+
+/** @deprecated Use writeDigest instead. Kept for backwards compatibility with curate.ts. */
 export async function appendToDigest(
   date: string,
   content: string,
   sessionsCovered: string[],
   config: Config
 ): Promise<void> {
-  const filePath = digestPath(date, config);
-  await ensureDir(path.dirname(filePath));
-
-  let existing = "";
-  let existingFm: { sessions: number; topics_touched: string[] } = { sessions: 0, topics_touched: [] };
-
-  try {
-    existing = await fs.readFile(filePath, "utf-8");
-    // Parse existing frontmatter
-    const fmMatch = existing.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
-    if (fmMatch) {
-      for (const line of fmMatch[1].split("\n")) {
-        const colonIdx = line.indexOf(":");
-        if (colonIdx === -1) continue;
-        const key = line.slice(0, colonIdx).trim();
-        const value = line.slice(colonIdx + 1).trim();
-        if (key === "sessions") existingFm.sessions = parseInt(value, 10) || 0;
-      }
-      existing = fmMatch[2];
-    }
-  } catch {
-    // File doesn't exist yet
-  }
-
-  const newSessions = existingFm.sessions + sessionsCovered.length;
-  const frontmatter = [
-    "---",
-    `date: ${date}`,
-    `sessions: ${newSessions}`,
-    `topics_touched: []`,
-    "---",
-  ].join("\n");
-
-  const body = existing.trim()
-    ? `${existing.trim()}\n\n${content.trim()}`
-    : content.trim();
-
-  const fullContent = `${frontmatter}\n\n${body}\n`;
-
-  await withLock(filePath, async () => {
-    await atomicWrite(filePath, fullContent);
-  });
-  log(`Updated digest for ${date}`);
+  await writeDigest(date, content, sessionsCovered.length, [], config);
 }
