@@ -587,8 +587,8 @@ export const LLM_RETRY_CONFIG = {
   maxRetries: 3,
   baseDelayMs: 1000,
   maxDelayMs: 30000,
-  totalTimeoutMs: 60000, 
-  perOperationTimeoutMs: 30000,
+  totalTimeoutMs: 300000, // 5 min total — Call 2 generates full page revisions
+  perOperationTimeoutMs: 120000, // 2 min per attempt — Sonnet needs time for long prose output
   retryableErrors: [
     "rate_limit_exceeded",
     "server_error",
