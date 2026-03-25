@@ -13,6 +13,7 @@ import yaml from "yaml";
 import {
   contextCommand,
   buildContextResult,
+  buildCassHistoryQuery,
   contextWithoutCass,
   generateContextResult,
 } from "../src/commands/context.js";
@@ -393,6 +394,25 @@ describe("buildContextResult", () => {
 
     // Should use default of 10
     expect(result.relevantBullets).toHaveLength(10);
+  });
+});
+
+describe("buildCassHistoryQuery", () => {
+  test("builds a bounded OR query for cass history", () => {
+    const query = buildCassHistoryQuery("implement auth timeout retry handling for API gateway");
+
+    expect(query).toContain(" OR ");
+    expect(query.split(" OR ").length).toBeLessThanOrEqual(8);
+  });
+
+  test("filters bead-style identifiers and path-like tokens from cass history queries", () => {
+    const query = buildCassHistoryQuery(
+      "Manual operator loop for ntm swarm completion; verify bd-j9jo3.3.5 redaction/disclosure adapter slice"
+    );
+
+    expect(query).not.toContain("bd-j9jo3.3.5");
+    expect(query).not.toContain("/");
+    expect(query).toContain(" OR ");
   });
 });
 

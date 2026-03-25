@@ -40,6 +40,10 @@ import chalk from "chalk";
 import { agentIconPrefix, formatRule, formatTipPrefix, getOutputStyle, iconPrefix, wrapText } from "../output.js";
 import { createProgress, type ProgressReporter } from "../progress.js";
 
+const MAX_CASS_HISTORY_QUERY_TERMS = 8;
+const CASS_HISTORY_TIMEOUT_SECONDS = 8;
+const PATHOLOGICAL_CASS_QUERY_TOKEN = /^(?:bd|br)-[a-z0-9]+(?:[.-][a-z0-9]+)+$/i;
+
 /**
  * ReDoS-safe matcher for deprecated patterns.
  * Supports both literal substring patterns and regex-like patterns.
@@ -172,6 +176,39 @@ export function buildContextResult(
   }
 
   return result;
+}
+
+function isSafeCassHistoryKeyword(token: string): boolean {
+  const normalized = token.trim().toLowerCase();
+  if (!normalized || normalized.length < 2) {
+    return false;
+  }
+  if (/^\d+$/.test(normalized)) {
+    return false;
+  }
+  if (PATHOLOGICAL_CASS_QUERY_TOKEN.test(normalized)) {
+    return false;
+  }
+  if (/[./\\]/.test(normalized)) {
+    return false;
+  }
+  return true;
+}
+
+export function buildCassHistoryQuery(task: string, maxTerms = MAX_CASS_HISTORY_QUERY_TERMS): string {
+  const keywords = extractKeywords(task)
+    .filter(isSafeCassHistoryKeyword)
+    .slice(0, Math.max(1, maxTerms));
+
+  if (keywords.length === 0) {
+    return "";
+  }
+
+  if (keywords.length === 1) {
+    return keywords[0];
+  }
+
+  return keywords.join(" OR ");
 }
 
 export interface ContextFlags {
@@ -700,6 +737,7 @@ export async function generateContextResult(
   const playbook = await loadMergedPlaybook(config);
 
   const keywords = extractKeywords(task);
+  const cassQuery = buildCassHistoryQuery(task);
 
   const activeBullets = getActiveBullets(playbook).filter((b) => {
     // Always include global rules
