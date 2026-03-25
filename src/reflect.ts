@@ -417,6 +417,26 @@ export async function reflectOnSessionTwoCalls(
       });
     }
 
+    // Convert Call 1 feedback → PlaybookDelta "helpful"/"harmful" deltas
+    for (const fb of call1Output.feedback || []) {
+      if (fb.type === "helpful") {
+        playbookDeltas.push({
+          type: "helpful" as const,
+          bulletId: fb.bulletId,
+          sourceSession: diary.sessionPath,
+          context: fb.reasoning,
+        });
+      } else {
+        playbookDeltas.push({
+          type: "harmful" as const,
+          bulletId: fb.bulletId,
+          sourceSession: diary.sessionPath,
+          reason: "other" as const,
+          context: fb.reasoning,
+        });
+      }
+    }
+
     // Convert Call 1 topic suggestions → TopicSuggestionDelta
     for (const ts of call1Output.topic_suggestions || []) {
       knowledgeDeltas.push({
@@ -438,9 +458,10 @@ export async function reflectOnSessionTwoCalls(
       timestamp: now(),
       phase: "add",
       action: "accepted",
-      reason: `Call 1: ${(call1Output.bullets || []).length} bullets proposed (${dupsRemoved} deduped), ${(call1Output.topic_suggestions || []).length} topic suggestions`,
+      reason: `Call 1: ${(call1Output.bullets || []).length} bullets proposed (${dupsRemoved} deduped), ${(call1Output.feedback || []).length} feedback, ${(call1Output.topic_suggestions || []).length} topic suggestions`,
       details: {
         bulletsProposed: (call1Output.bullets || []).length,
+        feedbackProposed: (call1Output.feedback || []).length,
         topicSuggestionsProposed: (call1Output.topic_suggestions || []).length,
         duplicatesRemoved: dupsRemoved,
       },

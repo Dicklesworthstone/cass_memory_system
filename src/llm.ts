@@ -488,6 +488,18 @@ Bullet fields:
 
 Maximum 10 bullets. Prefer fewer, higher-quality bullets over many weak ones.
 
+INSTRUCTIONS — FEEDBACK ON EXISTING BULLETS:
+Review the existing_playbook. If this session provides evidence that an existing bullet is correct and useful, mark it "helpful". If the session shows an existing bullet is wrong, misleading, or caused problems, mark it "harmful".
+
+Only emit feedback when the session provides CLEAR evidence. Don't mark bullets helpful just because they're tangentially related. Don't mark bullets harmful based on a single edge case.
+
+Feedback fields:
+- bulletId: The ID of the existing bullet (e.g. "b-1a2b3c4d")
+- type: "helpful" or "harmful"
+- reasoning: One sentence explaining what evidence this session provides
+
+Maximum 5 feedback items per session.
+
 INSTRUCTIONS — TOPIC SUGGESTIONS:
 If the session covered a subject area NOT covered by any existing topic, suggest a new topic. The user will review and approve/dismiss suggestions — so err on the side of suggesting rather than dropping knowledge silently.
 

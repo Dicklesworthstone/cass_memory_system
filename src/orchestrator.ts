@@ -267,193 +267,10 @@ export async function orchestrateReflection(
 
     let dryRunDeltas: PlaybookDelta[] | undefined;
 
-    if (options.dryRun) {
-      dryRunDeltas = allDeltas;
-      // Don't return — Phase 3 knowledge pipeline still needs to run below
-    } else if (allDeltas.length === 0) {
-      // Even if no deltas were generated, we should still mark sessions as processed
-      // (e.g., empty sessions or sessions with no insights) to avoid infinite loops.
-      if (pendingProcessedEntries.length > 0) {
-        await processedLog.appendBatch(pendingProcessedEntries);
-      }
-      // Don't return — Phase 3 knowledge pipeline still needs to run below
-    }
-
-    // 5. Merge Phase: Lock Playbooks, Reload, Curate, Save
-    // We lock Global first, then Repo (if exists) to prevent deadlocks.
-    let globalResult: CurationResult | undefined;
-    let repoResult: CurationResult | undefined;
-    let autoOutcome: ReflectionOutcome["autoOutcome"] | undefined;
-
-   if (!options.dryRun && allDeltas.length > 0) {
-
-    const performMerge = async () => {
-      // Reload fresh playbooks under lock
-      const globalPlaybook = await loadPlaybook(globalPath);
-      let repoPlaybook: Playbook | null = null;
-      if (hasRepo) {
-        repoPlaybook = await loadPlaybook(repoPath!);
-      }
-      
-      // Create fresh merged context to ensure deduplication uses up-to-date data
-      const freshMerged = mergePlaybooks(globalPlaybook, repoPlaybook);
-
-      // Pre-process deltas to decompose 'merge' operations into atomic add/deprecate actions.
-      // This allows us to route deprecations to their specific playbooks (Repo vs Global)
-      // while adding the new merged rule to the default location (Global).
-      const processedDeltas: PlaybookDelta[] = [];
-      
-      for (const delta of allDeltas) {
-        if (delta.type !== "merge") {
-          processedDeltas.push(delta);
-          continue;
-        }
-
-        const mergedContent = delta.mergedContent;
-        const threshold = typeof config.dedupSimilarityThreshold === "number" ? config.dedupSimilarityThreshold : 0.85;
-
-        // If the merged content already exists (or is very similar), prefer deprecating into it
-        // rather than creating a duplicate replacement that curation might skip.
-        const exactMatch = findFirstHashMatch(freshMerged, mergedContent);
-        if (exactMatch && !isActiveBullet(exactMatch)) {
-          warn(
-            `[orchestrator] Skipping merge delta: merged content matches deprecated/blocked bullet ${exactMatch.id}`
-          );
-          continue;
-        }
-
-        const replacement =
-          exactMatch && isActiveBullet(exactMatch)
-            ? exactMatch
-            : findBestActiveSimilarBullet(freshMerged, mergedContent, threshold);
-
-        if (replacement) {
-          for (const id of delta.bulletIds) {
-            // If one of the merged bullets is already the best replacement, keep it active and only deprecate the others.
-            if (id === replacement.id) continue;
-            processedDeltas.push({
-              type: "deprecate",
-              bulletId: id,
-              reason: `Merged into existing ${replacement.id}`,
-              replacedBy: replacement.id
-            });
-          }
-          continue;
-        }
-
-        const newBulletId = generateBulletId();
-
-        // 1. Create the new merged rule
-        processedDeltas.push({
-          type: "add",
-          bullet: {
-            id: newBulletId, // Pre-assign ID so deprecate deltas can reference it
-            content: mergedContent,
-            category: "merged",
-            tags: []
-          },
-          // Merge deltas don't carry sourceSession, so we use a placeholder
-          sourceSession: "merged-operation",
-          reason: delta.reason || "Merged from existing rules"
-        });
-
-        // 2. Deprecate the old rules
-        for (const id of delta.bulletIds) {
-          processedDeltas.push({
-            type: "deprecate",
-            bulletId: id,
-            reason: `Merged into ${newBulletId}`,
-            replacedBy: newBulletId
-          });
-        }
-      }
-
-      // Partition deltas (Routing Logic)
-      const globalDeltas: PlaybookDelta[] = [];
-      const repoDeltas: PlaybookDelta[] = [];
-
-      for (const delta of processedDeltas) {
-        let routed = false;
-        
-        // Feedback/Replace/Delete: Must target existing ID
-        if ('bulletId' in delta && delta.bulletId) {
-          if (repoPlaybook && findBullet(repoPlaybook, delta.bulletId)) {
-            repoDeltas.push(delta);
-            routed = true;
-          } else if (findBullet(globalPlaybook, delta.bulletId)) {
-            globalDeltas.push(delta);
-            routed = true;
-          }
-        }
-
-        // New rules or orphans default to Global
-        if (!routed) {
-           globalDeltas.push(delta);
-        }
-      }
-
-      // Apply Curation
-      if (globalDeltas.length > 0) {
-        globalResult = curatePlaybook(globalPlaybook, globalDeltas, config, freshMerged);
-        await savePlaybook(globalResult.playbook, globalPath, { updateLastReflection: true });
-      }
-
-      if (repoDeltas.length > 0 && repoPlaybook && repoPath) {
-        repoResult = curatePlaybook(repoPlaybook, repoDeltas, config, freshMerged);
-        await savePlaybook(repoResult.playbook, repoPath, { updateLastReflection: true });
-      }
-    };
-
-    // Execute Merge with Locking
-    await withLock(globalPath, async () => {
-      if (hasRepo && repoPath) {
-        await withLock(repoPath, performMerge);
-      } else {
-        await performMerge();
-      }
-    });
-
-    // Final log save - only mark processed AFTER rules are persisted
-    if (pendingProcessedEntries.length > 0) {
+    // Mark CASS Phase 1 sessions as processed even if no deltas generated
+    if (!options.dryRun && pendingProcessedEntries.length > 0) {
       await processedLog.appendBatch(pendingProcessedEntries);
     }
-
-    // 6. Auto-record rule outcomes (post-merge, best-effort)
-    if (pendingOutcomes.length > 0) {
-      try {
-        const records = [];
-        for (const input of pendingOutcomes) {
-          const record = await recordOutcome(input, config);
-          records.push(record);
-        }
-        const feedbackResult = await applyOutcomeFeedback(records, config);
-        autoOutcome = {
-          outcomesRecorded: records.length,
-          feedbackApplied: feedbackResult.applied,
-          missingRules: feedbackResult.missing,
-          inlineFeedbackDeltas: inlineFeedbackDeltaCount,
-        };
-        log(`Auto-recorded ${records.length} outcome(s): ${feedbackResult.applied} feedback event(s) applied`);
-      } catch (err: any) {
-        const msg = err?.message || String(err);
-        errors.push(`Auto-outcome recording failed: ${msg}`);
-        autoOutcome = {
-          outcomesRecorded: 0,
-          feedbackApplied: 0,
-          missingRules: [],
-          inlineFeedbackDeltas: inlineFeedbackDeltaCount,
-        };
-      }
-    } else if (inlineFeedbackDeltaCount > 0) {
-      autoOutcome = {
-        outcomesRecorded: 0,
-        feedbackApplied: 0,
-        missingRules: [],
-        inlineFeedbackDeltas: inlineFeedbackDeltaCount,
-      };
-    }
-
-    } // end if (!options.dryRun && allDeltas.length > 0)
 
     // ========================================================================
     // PHASE 3: KNOWLEDGE REFLECTION PIPELINE
@@ -536,6 +353,34 @@ export async function orchestrateReflection(
                   (delta as any).confidence = validation.confidence;
                 }
                 allKnowledgeDeltas.push(delta);
+              }
+            }
+
+            // 5b. Inline feedback + auto-outcome from session note body.
+            // Same logic as CASS Phase 1 but using session note text instead of cass export.
+            const noteContent = note.body;
+            if (noteContent) {
+              // Parse inline feedback comments (// [cass: helpful b-xyz] - reason)
+              const inlineFeedback = parseInlineFeedback(noteContent);
+              if (inlineFeedback.length > 0) {
+                for (const fb of inlineFeedback) {
+                  const delta: PlaybookDelta = fb.type === "harmful"
+                    ? { type: "harmful", bulletId: fb.bulletId, sourceSession: noteId, reason: "other", context: fb.reason }
+                    : { type: "helpful", bulletId: fb.bulletId, sourceSession: noteId, context: fb.reason };
+                  allDeltas.push(delta);
+                }
+                inlineFeedbackDeltaCount += inlineFeedback.length;
+              }
+
+              // Extract rule IDs and classify session outcome for auto-recording.
+              const inlineFeedbackIds = new Set(inlineFeedback.map(fb => fb.bulletId.toLowerCase()));
+              const ruleIds = extractRuleIdsFromTranscript(noteContent)
+                .filter(id => !inlineFeedbackIds.has(id));
+              if (ruleIds.length > 0) {
+                const outcomeInput = classifySessionOutcome(noteContent, diary, ruleIds);
+                if (outcomeInput) {
+                  pendingOutcomes.push(outcomeInput);
+                }
               }
             }
 
@@ -659,6 +504,166 @@ export async function orchestrateReflection(
       }
     } catch (err: any) {
       errors.push(`Knowledge reflection pipeline failed: ${err?.message || String(err)}`);
+    }
+
+    // ========================================================================
+    // PLAYBOOK CURATION (runs after BOTH Phase 1 and Phase 3 generate deltas)
+    // ========================================================================
+
+    let globalResult: CurationResult | undefined;
+    let repoResult: CurationResult | undefined;
+    let autoOutcome: ReflectionOutcome["autoOutcome"] | undefined;
+
+    if (options.dryRun) {
+      dryRunDeltas = allDeltas;
+    } else if (allDeltas.length > 0) {
+      const performMerge = async () => {
+        // Reload fresh playbooks under lock
+        const globalPlaybook = await loadPlaybook(globalPath);
+        let repoPlaybook: Playbook | null = null;
+        if (hasRepo) {
+          repoPlaybook = await loadPlaybook(repoPath!);
+        }
+
+        // Create fresh merged context to ensure deduplication uses up-to-date data
+        const freshMerged = mergePlaybooks(globalPlaybook, repoPlaybook);
+
+        // Pre-process deltas to decompose 'merge' operations into atomic add/deprecate actions.
+        const processedDeltas: PlaybookDelta[] = [];
+
+        for (const delta of allDeltas) {
+          if (delta.type !== "merge") {
+            processedDeltas.push(delta);
+            continue;
+          }
+
+          const mergedContent = delta.mergedContent;
+          const threshold = typeof config.dedupSimilarityThreshold === "number" ? config.dedupSimilarityThreshold : 0.85;
+
+          const exactMatch = findFirstHashMatch(freshMerged, mergedContent);
+          if (exactMatch && !isActiveBullet(exactMatch)) {
+            warn(`[orchestrator] Skipping merge delta: merged content matches deprecated/blocked bullet ${exactMatch.id}`);
+            continue;
+          }
+
+          const replacement =
+            exactMatch && isActiveBullet(exactMatch)
+              ? exactMatch
+              : findBestActiveSimilarBullet(freshMerged, mergedContent, threshold);
+
+          if (replacement) {
+            for (const id of delta.bulletIds) {
+              if (id === replacement.id) continue;
+              processedDeltas.push({
+                type: "deprecate",
+                bulletId: id,
+                reason: `Merged into existing ${replacement.id}`,
+                replacedBy: replacement.id
+              });
+            }
+            continue;
+          }
+
+          const newBulletId = generateBulletId();
+          processedDeltas.push({
+            type: "add",
+            bullet: {
+              id: newBulletId,
+              content: mergedContent,
+              category: "merged",
+              tags: []
+            },
+            sourceSession: "merged-operation",
+            reason: delta.reason || "Merged from existing rules"
+          });
+
+          for (const id of delta.bulletIds) {
+            processedDeltas.push({
+              type: "deprecate",
+              bulletId: id,
+              reason: `Merged into ${newBulletId}`,
+              replacedBy: newBulletId
+            });
+          }
+        }
+
+        // Partition deltas (Routing Logic)
+        const globalDeltas: PlaybookDelta[] = [];
+        const repoDeltas: PlaybookDelta[] = [];
+
+        for (const delta of processedDeltas) {
+          let routed = false;
+          if ('bulletId' in delta && delta.bulletId) {
+            if (repoPlaybook && findBullet(repoPlaybook, delta.bulletId)) {
+              repoDeltas.push(delta);
+              routed = true;
+            } else if (findBullet(globalPlaybook, delta.bulletId)) {
+              globalDeltas.push(delta);
+              routed = true;
+            }
+          }
+          if (!routed) {
+            globalDeltas.push(delta);
+          }
+        }
+
+        // Apply Curation
+        if (globalDeltas.length > 0) {
+          globalResult = curatePlaybook(globalPlaybook, globalDeltas, config, freshMerged);
+          await savePlaybook(globalResult.playbook, globalPath, { updateLastReflection: true });
+        }
+
+        if (repoDeltas.length > 0 && repoPlaybook && repoPath) {
+          repoResult = curatePlaybook(repoPlaybook, repoDeltas, config, freshMerged);
+          await savePlaybook(repoResult.playbook, repoPath, { updateLastReflection: true });
+        }
+      };
+
+      // Execute Merge with Locking
+      await withLock(globalPath, async () => {
+        if (hasRepo && repoPath) {
+          await withLock(repoPath, performMerge);
+        } else {
+          await performMerge();
+        }
+      });
+
+      log(`Curated ${allDeltas.length} playbook delta(s)`);
+    }
+
+    // Auto-record rule outcomes (post-merge, best-effort)
+    if (pendingOutcomes.length > 0) {
+      try {
+        const records = [];
+        for (const input of pendingOutcomes) {
+          const record = await recordOutcome(input, config);
+          records.push(record);
+        }
+        const feedbackResult = await applyOutcomeFeedback(records, config);
+        autoOutcome = {
+          outcomesRecorded: records.length,
+          feedbackApplied: feedbackResult.applied,
+          missingRules: feedbackResult.missing,
+          inlineFeedbackDeltas: inlineFeedbackDeltaCount,
+        };
+        log(`Auto-recorded ${records.length} outcome(s): ${feedbackResult.applied} feedback event(s) applied`);
+      } catch (err: any) {
+        const msg = err?.message || String(err);
+        errors.push(`Auto-outcome recording failed: ${msg}`);
+        autoOutcome = {
+          outcomesRecorded: 0,
+          feedbackApplied: 0,
+          missingRules: [],
+          inlineFeedbackDeltas: inlineFeedbackDeltaCount,
+        };
+      }
+    } else if (inlineFeedbackDeltaCount > 0) {
+      autoOutcome = {
+        outcomesRecorded: 0,
+        feedbackApplied: 0,
+        missingRules: [],
+        inlineFeedbackDeltas: inlineFeedbackDeltaCount,
+      };
     }
 
     return {

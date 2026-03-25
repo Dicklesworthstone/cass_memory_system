@@ -1226,6 +1226,11 @@ export const ReflectorCall1OutputSchema = z.object({
     kind: BulletKindEnum,
     reasoning: z.string(), // why this bullet is worth extracting
   })).default([]),
+  feedback: z.array(z.object({
+    bulletId: z.string().min(1), // ID of existing bullet (e.g. "b-abc123")
+    type: z.enum(["helpful", "harmful"]),
+    reasoning: z.string(), // why this session reinforces or contradicts the bullet
+  })).default([]),
   topic_suggestions: z.array(z.object({
     slug: z.string().min(1),
     name: z.string().min(1),
