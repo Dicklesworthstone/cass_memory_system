@@ -218,6 +218,68 @@ export async function scanForModifiedTranscripts(
 }
 
 /**
+ * Normalize a path or project directory name to a canonical form for comparison.
+ * Claude Code encodes working directories as project dir names by replacing
+ * path separators and other non-alphanumeric characters with hyphens.
+ * We normalize both sides the same way so they can be compared.
+ */
+function normalizePathForMatch(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]/g, "-");
+}
+
+/**
+ * Find the best transcript match for the current working directory.
+ *
+ * Used by cm_snapshot when no explicit session ID is specified. Instead of
+ * blindly picking scans[0] (which is filesystem-order across ALL projects),
+ * this function:
+ *   1. Filters to transcripts whose project directory matches `cwd`
+ *   2. Sorts by file modification time (newest first)
+ *
+ * The active conversation's transcript is the most recently modified file
+ * in its project directory, so this reliably picks the correct transcript.
+ *
+ * Falls back to all scans sorted by mtime if no project match is found.
+ */
+export async function findBestTranscriptForCwd(
+  scans: TranscriptScanResult[],
+  cwd?: string
+): Promise<TranscriptScanResult | null> {
+  if (scans.length === 0) return null;
+  if (scans.length === 1) return scans[0];
+
+  const effectiveCwd = cwd || process.cwd();
+  const normalizedCwd = normalizePathForMatch(effectiveCwd);
+
+  // Filter to transcripts whose project directory matches the cwd.
+  // Transcript paths look like: ~/.claude/projects/{project-dir}/{uuid}.jsonl
+  // where {project-dir} is the encoded working directory.
+  const projectMatches = scans.filter((s) => {
+    const projectDir = path.basename(path.dirname(s.transcriptPath));
+    return normalizePathForMatch(projectDir) === normalizedCwd;
+  });
+
+  const candidates = projectMatches.length > 0 ? projectMatches : scans;
+
+  // Sort by file modification time (newest first).
+  // The active conversation's transcript was just written to (the cm_snapshot
+  // call itself appears in it), so it has the most recent mtime.
+  const withMtime = await Promise.all(
+    candidates.map(async (s) => {
+      try {
+        const stat = await fs.stat(s.transcriptPath);
+        return { scan: s, mtime: stat.mtimeMs };
+      } catch {
+        return { scan: s, mtime: 0 };
+      }
+    })
+  );
+
+  withMtime.sort((a, b) => b.mtime - a.mtime);
+  return withMtime[0]?.scan ?? null;
+}
+
+/**
  * Read raw transcript content from a byte offset.
  * Returns the raw JSONL text from the offset onward.
  */

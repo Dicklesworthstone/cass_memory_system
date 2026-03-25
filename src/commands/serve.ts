@@ -649,7 +649,7 @@ async function handleToolCall(name: string, args: any): Promise<any> {
           }
         : undefined;
 
-      const { processTranscript, processAllTranscripts, scanForModifiedTranscripts } =
+      const { processTranscript, processAllTranscripts, scanForModifiedTranscripts, findBestTranscriptForCwd } =
         await import("../session-notes.js");
 
       if (sessionArg || agentContent) {
@@ -659,7 +659,7 @@ async function handleToolCall(name: string, args: any): Promise<any> {
           ? scans.find(
               (s) => s.transcriptPath === sessionArg || s.sessionId === sessionArg || s.transcriptPath.includes(sessionArg)
             )
-          : scans[0]; // Default to most recent modified transcript when agent provides content
+          : await findBestTranscriptForCwd(scans); // Match to current project + most recent mtime
 
         if (!match) {
           if (agentContent) {

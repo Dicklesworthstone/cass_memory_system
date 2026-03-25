@@ -143,6 +143,7 @@ Core module for the session note lifecycle: discovering transcripts, reading fro
 - **`processTranscript(scan, config, options)`** — main entry point: generates or extends a session note from a TranscriptScanResult
 - **`processAllTranscripts(config, options)`** — batch processing for the periodic job
 - **`scanForModifiedTranscripts(config)`** — discovers transcripts with new content since last offset
+- **`findBestTranscriptForCwd(scans, cwd?)`** — project-scoped matching: filters scans to transcripts in the matching project directory (normalizes path encoding), sorts by mtime (newest first). Used by cm_snapshot/CLI snapshot when no explicit session ID is provided. Falls back to all scans sorted by mtime if no project matches.
 - **`discoverTranscripts()`** — finds `.jsonl` files in `~/.claude/projects/`
 - **`readTranscriptFromOffset(filePath, offset)`** — byte-level offset reading
 - **`formatTranscriptChunk(raw)`** — custom JSONL formatter optimized for session notes (NOT diary.ts formatRawSession)
@@ -154,7 +155,7 @@ Core module for the session note lifecycle: discovering transcripts, reading fro
 
 ### Content Generation Paths
 `processTranscript()` supports three paths via `GenerateNoteOptions`:
-1. **Agent-provided** (`agentContent` set): Claude Code generates the note during the session via `cm_snapshot` MCP tool. No API cost. Highest quality. Primary path. Title derived from first sentence of abstract.
+1. **Agent-provided** (`agentContent` set): Claude Code generates the note during the session via `cm_snapshot` MCP tool. No API cost. Highest quality. Primary path. Title derived from first sentence of abstract. Uses `findBestTranscriptForCwd()` to match to the correct transcript (project-scoped + mtime sorting) — prevents cross-project contamination.
 2. **LLM-generated** (default): Reads raw transcript, makes API call via llm.ts (Haiku). For large transcripts (>60K chars), uses map-reduce: chunk → Haiku summarize each → Sonnet synthesize. LLM generates title.
 3. **Raw** (`raw: true`): Extracts metadata from transcript without LLM. Last-resort fallback. Body capped at 30K chars.
 

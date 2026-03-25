@@ -15,6 +15,7 @@ import {
   saveProcessingState,
   discoverTranscripts,
   scanForModifiedTranscripts,
+  findBestTranscriptForCwd,
   readTranscriptFromOffset,
   formatTranscriptChunk,
   processTranscript,
@@ -645,5 +646,208 @@ describe("sessionNotePath", () => {
     const notePath = sessionNotePath("session-abc123", config);
     expect(notePath).toContain("session-notes");
     expect(notePath).toEndWith("session-abc123.md");
+  });
+});
+
+// ============================================================================
+// findBestTranscriptForCwd
+// ============================================================================
+
+describe("findBestTranscriptForCwd", () => {
+  function makeScan(projectDir: string, uuid: string, transcriptDir?: string): TranscriptScanResult {
+    const dir = transcriptDir || path.join(tempDir, ".claude", "projects", projectDir);
+    return {
+      sessionId: `session-${uuid}`,
+      transcriptPath: path.join(dir, `${uuid}.jsonl`),
+      currentSize: 1000,
+      lastOffset: 0,
+      isNew: true,
+    };
+  }
+
+  test("returns null for empty scans", async () => {
+    const result = await findBestTranscriptForCwd([], "/some/cwd");
+    expect(result).toBeNull();
+  });
+
+  test("returns the single scan when only one exists", async () => {
+    const scan = makeScan("-Other-Project", "aaa-bbb");
+    const result = await findBestTranscriptForCwd([scan], "/Some/Unrelated/Path");
+    expect(result).toBe(scan);
+  });
+
+  test("filters to matching project directory", async () => {
+    // Create real files so stat() works for mtime sorting
+    const projA = path.join(tempDir, ".claude", "projects", "-Users-test-ProjectA");
+    const projB = path.join(tempDir, ".claude", "projects", "-Users-test-ProjectB");
+    await mkdir(projA, { recursive: true });
+    await mkdir(projB, { recursive: true });
+
+    const fileA = path.join(projA, "uuid-aaaa.jsonl");
+    const fileB = path.join(projB, "uuid-bbbb.jsonl");
+    await writeFile(fileA, "{}");
+    await writeFile(fileB, "{}");
+
+    const scanA: TranscriptScanResult = {
+      sessionId: "session-uuid-aaaa",
+      transcriptPath: fileA,
+      currentSize: 100,
+      lastOffset: 0,
+      isNew: true,
+    };
+    const scanB: TranscriptScanResult = {
+      sessionId: "session-uuid-bbbb",
+      transcriptPath: fileB,
+      currentSize: 100,
+      lastOffset: 0,
+      isNew: true,
+    };
+
+    // cwd matches ProjectA — should pick scanA
+    const result = await findBestTranscriptForCwd([scanB, scanA], "/Users/test/ProjectA");
+    expect(result?.sessionId).toBe("session-uuid-aaaa");
+  });
+
+  test("handles underscore vs hyphen normalization", async () => {
+    // Simulates: cwd has underscores, project dir has hyphens
+    const projDir = path.join(tempDir, ".claude", "projects", "-Users-dev-my-cool-project");
+    await mkdir(projDir, { recursive: true });
+    const file = path.join(projDir, "uuid-1111.jsonl");
+    await writeFile(file, "{}");
+
+    const scan: TranscriptScanResult = {
+      sessionId: "session-uuid-1111",
+      transcriptPath: file,
+      currentSize: 100,
+      lastOffset: 0,
+      isNew: true,
+    };
+
+    const otherDir = path.join(tempDir, ".claude", "projects", "-Users-dev-other-proj");
+    await mkdir(otherDir, { recursive: true });
+    const otherFile = path.join(otherDir, "uuid-2222.jsonl");
+    await writeFile(otherFile, "{}");
+
+    const otherScan: TranscriptScanResult = {
+      sessionId: "session-uuid-2222",
+      transcriptPath: otherFile,
+      currentSize: 100,
+      lastOffset: 0,
+      isNew: true,
+    };
+
+    // cwd uses underscores: my_cool_project → normalized to my-cool-project
+    const result = await findBestTranscriptForCwd(
+      [otherScan, scan],
+      "/Users/dev/my_cool_project"
+    );
+    expect(result?.sessionId).toBe("session-uuid-1111");
+  });
+
+  test("sorts by mtime within matching project (newest first)", async () => {
+    const projDir = path.join(tempDir, ".claude", "projects", "-Users-test-MyProject");
+    await mkdir(projDir, { recursive: true });
+
+    const fileOld = path.join(projDir, "uuid-old.jsonl");
+    const fileNew = path.join(projDir, "uuid-new.jsonl");
+
+    // Write old file first, then new file
+    await writeFile(fileOld, "old");
+    // Small delay to ensure different mtime
+    await new Promise((r) => setTimeout(r, 50));
+    await writeFile(fileNew, "new");
+
+    const scanOld: TranscriptScanResult = {
+      sessionId: "session-uuid-old",
+      transcriptPath: fileOld,
+      currentSize: 100,
+      lastOffset: 0,
+      isNew: true,
+    };
+    const scanNew: TranscriptScanResult = {
+      sessionId: "session-uuid-new",
+      transcriptPath: fileNew,
+      currentSize: 100,
+      lastOffset: 0,
+      isNew: true,
+    };
+
+    // Even though scanOld is first in array, scanNew should win (newer mtime)
+    const result = await findBestTranscriptForCwd(
+      [scanOld, scanNew],
+      "/Users/test/MyProject"
+    );
+    expect(result?.sessionId).toBe("session-uuid-new");
+  });
+
+  test("falls back to all scans sorted by mtime when no project matches", async () => {
+    const projDir = path.join(tempDir, ".claude", "projects", "-Users-test-SomeProject");
+    await mkdir(projDir, { recursive: true });
+
+    const fileOld = path.join(projDir, "uuid-old.jsonl");
+    const fileNew = path.join(projDir, "uuid-new.jsonl");
+    await writeFile(fileOld, "old");
+    await new Promise((r) => setTimeout(r, 50));
+    await writeFile(fileNew, "new");
+
+    const scanOld: TranscriptScanResult = {
+      sessionId: "session-uuid-old",
+      transcriptPath: fileOld,
+      currentSize: 100,
+      lastOffset: 0,
+      isNew: true,
+    };
+    const scanNew: TranscriptScanResult = {
+      sessionId: "session-uuid-new",
+      transcriptPath: fileNew,
+      currentSize: 100,
+      lastOffset: 0,
+      isNew: true,
+    };
+
+    // cwd doesn't match any project — should still pick newest by mtime
+    const result = await findBestTranscriptForCwd(
+      [scanOld, scanNew],
+      "/Completely/Different/Path"
+    );
+    expect(result?.sessionId).toBe("session-uuid-new");
+  });
+
+  test("prevents cross-project contamination", async () => {
+    // Simulate the exact bug: transcripts from two different projects
+    const cassDir = path.join(tempDir, ".claude", "projects", "-Users-dev-cass-memory-system");
+    const rewayDir = path.join(tempDir, ".claude", "projects", "-Users-dev-reway-mvp-v2");
+    await mkdir(cassDir, { recursive: true });
+    await mkdir(rewayDir, { recursive: true });
+
+    const cassFile = path.join(cassDir, "cass-uuid.jsonl");
+    const rewayFile = path.join(rewayDir, "reway-uuid.jsonl");
+
+    // reway was modified first, cass is more recent
+    await writeFile(rewayFile, "reway content");
+    await new Promise((r) => setTimeout(r, 50));
+    await writeFile(cassFile, "cass content");
+
+    const cassScan: TranscriptScanResult = {
+      sessionId: "session-cass-uuid",
+      transcriptPath: cassFile,
+      currentSize: 100,
+      lastOffset: 0,
+      isNew: true,
+    };
+    const rewayScan: TranscriptScanResult = {
+      sessionId: "session-reway-uuid",
+      transcriptPath: rewayFile,
+      currentSize: 100,
+      lastOffset: 0,
+      isNew: true,
+    };
+
+    // From cass project cwd — must pick cass transcript, never reway
+    const result = await findBestTranscriptForCwd(
+      [rewayScan, cassScan], // reway first in array (simulates filesystem order)
+      "/Users/dev/cass_memory_system" // underscore in real path → hyphen in project dir
+    );
+    expect(result?.sessionId).toBe("session-cass-uuid");
   });
 });

@@ -14,6 +14,7 @@ import {
   processTranscript,
   processAllTranscripts,
   scanForModifiedTranscripts,
+  findBestTranscriptForCwd,
 } from "../session-notes.js";
 import { log, error as logError, printJson, isJsonOutput } from "../utils.js";
 
@@ -49,7 +50,7 @@ export async function snapshotCommand(opts: {
               s.sessionId === opts.session ||
               s.transcriptPath.includes(opts.session!)
           )
-        : scans[0]; // Default to most recent when agent provides content
+        : await findBestTranscriptForCwd(scans); // Match to current project + most recent mtime
 
       if (!match) {
         if (json) {

@@ -569,3 +569,39 @@ Tested cm_context → cm_detail flow with multiple query types:
 - "reflection pipeline" → LLM Pipeline Architecture auto-included.
 - "PostgreSQL RLS" (no knowledge) → graceful degradation with session summaries as fallback.
 - Full agent simulation: cm_context → picks relevant items → cm_detail → has full architectural context to proceed.
+
+---
+
+### [Bugfix] Fix cm_snapshot cross-project session note contamination
+**Date:** 2026-03-25
+**Files changed:** `src/session-notes.ts`, `src/commands/serve.ts`, `src/commands/snapshot.ts`, `test/session-notes.test.ts`
+**Differs from plan:** N/A — this is a bugfix, not a planned phase step.
+
+**Bug:** When `cm_snapshot` was called with agent-provided content (the primary path — agents call this per CLAUDE.md instructions), it picked `scans[0]` from an unsorted list of ALL modified transcripts across ALL projects. This caused:
+1. **Cross-project contamination:** Agent content from Project A's conversation attached to Project B's session note (e.g., cass_memory_system content appearing in reway-mvp-v2 session note).
+2. **Same-chat splitting:** Agent content from one conversation attached to a different transcript in the same project, creating two session notes for one conversation.
+3. **Offset poisoning:** The incorrect `cm_snapshot` advanced the offset for the wrong transcript, causing the reflector to skip that transcript's actual content entirely.
+
+**Root cause:** `discoverTranscripts()` returns files in filesystem `readdir` order (arbitrary). `scanForModifiedTranscripts()` doesn't sort. When `cm_snapshot` had no explicit `session` arg and agent content was provided, `scans[0]` was effectively random among all modified transcripts.
+
+**Fix:** Added `findBestTranscriptForCwd(scans, cwd?)` to `session-notes.ts`:
+1. Computes normalized project directory name from `process.cwd()` (or explicit cwd)
+2. Filters scans to transcripts in the matching project directory (normalizes both sides: lowercases, replaces all non-alphanumeric chars with hyphens — handles underscore↔hyphen encoding differences)
+3. Sorts by file mtime (newest first) — the active conversation's transcript was just written to, so it has the most recent mtime
+4. Falls back to all scans sorted by mtime if no project matches
+
+Updated both `cm_snapshot` MCP handler (serve.ts) and CLI `snapshotCommand` (snapshot.ts) to use `findBestTranscriptForCwd()` instead of `scans[0]`.
+
+**Tests:** 7 new tests in `test/session-notes.test.ts`:
+- Empty scans → null
+- Single scan → returns it directly
+- Filters to matching project directory
+- Handles underscore↔hyphen normalization
+- Sorts by mtime within matching project
+- Falls back to mtime sort when no project matches
+- Prevents cross-project contamination (regression test for the exact bug)
+
+**Gotchas:**
+- Claude Code project directory encoding is not a simple `/` → `-` replacement. `cass_memory_system` (underscores) becomes `cass-memory-system` (hyphens). The normalization function handles this by replacing ALL non-alphanumeric chars.
+- The PreCompact hook was NOT affected — it passes `--session <id>` from Claude Code's stdin JSON, which matches by session ID directly. Its fallback path (no session_id) uses `processAllTranscripts` which reads actual transcript content per-file, so no cross-contamination.
+- The reflector path (`processAllTranscripts`) was also correct — each transcript maps to its own session ID. The reflector amplified the bug by appending correct content to already-contaminated session notes.
