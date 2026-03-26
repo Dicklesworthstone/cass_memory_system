@@ -28,7 +28,7 @@ export const SECRET_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = 
   { pattern: /[A-Za-z0-9/+=]{40}(?=\s|$|"|')/g, replacement: "[AWS_SECRET_KEY]" },
 
   // Generic API keys/tokens
-  { pattern: /Bearer\s+[A-Za-z0-9\-\._~\+\/]+=*/g, replacement: "[BEARER_TOKEN]" },
+  { pattern: /Bearer\s+[A-Za-z0-9\-\._~\+\/]{20,}=*/g, replacement: "[BEARER_TOKEN]" },
   
   // Use capturing groups to preserve JSON/YAML structure (keys, quotes, separators)
   // Matches: (key + separator + quote)(value)(quote)

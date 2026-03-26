@@ -86,6 +86,19 @@ describe("sanitize", () => {
       const result = sanitize(text, enabledConfig);
       expect(result).toContain("[BEARER_TOKEN]");
     });
+
+    it("does not flag 'Bearer of bad news' as a token (false positive)", () => {
+      const text = "Bearer of bad news";
+      const result = sanitize(text, enabledConfig);
+      expect(result).toBe("Bearer of bad news");
+      expect(result).not.toContain("[BEARER_TOKEN]");
+    });
+
+    it("does not flag short strings after Bearer", () => {
+      const text = "Bearer shorttoken";
+      const result = sanitize(text, enabledConfig);
+      expect(result).toBe("Bearer shorttoken");
+    });
   });
 
   describe("API keys and tokens", () => {
