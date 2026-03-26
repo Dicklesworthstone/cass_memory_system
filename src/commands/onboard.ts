@@ -10,7 +10,7 @@
 import chalk from "chalk";
 import { loadConfig } from "../config.js";
 import { loadMergedPlaybook, getActiveBullets } from "../playbook.js";
-import { cassExport, handleCassUnavailable, CassSearchOptions, safeCassSearchWithDegraded } from "../cass.js";
+import { cassExport, handleCassUnavailable, cassTimeline, CassSearchOptions, safeCassSearchWithDegraded } from "../cass.js";
 import {
   getCliName,
   expandPath,
@@ -97,16 +97,26 @@ async function getOnboardStatus(): Promise<OnboardStatus> {
   const playbook = await loadMergedPlaybook(config);
   const availability = await handleCassUnavailable({ cassPath: config.cassPath });
 
-  // We don't have a reliable way to get conversation counts from cass
-  // so we leave these as 0 (unknown) rather than using fake placeholder values
-  const totalConversations = 0;
-  const totalMessages = 0;
+  // Query cassTimeline for real conversation/message counts
+  let totalConversations = 0;
+  let totalMessages = 0;
+  if (availability.canContinue && availability.fallbackMode === "none") {
+    try {
+      const timeline = await cassTimeline(365, config.cassPath);
+      for (const group of timeline.groups) {
+        totalConversations += group.sessions.length;
+        for (const session of group.sessions) {
+          totalMessages += session.messageCount || 0;
+        }
+      }
+    } catch {
+      // If timeline query fails, counts remain 0 (unknown)
+    }
+  }
 
   // Use getActiveBullets for consistent filtering (includes maturity check)
   const playbookRules = getActiveBullets(playbook).length;
-  // Ratio is meaningless without real conversation counts
-  const onboardingRatio = 0;
-  // Base needs assessment on playbook size alone since we can't count conversations
+  const onboardingRatio = totalConversations > 0 ? (playbookRules / totalConversations) * 100 : 0;
   const needsOnboarding = playbookRules < 20;
 
   let recommendation: string;
