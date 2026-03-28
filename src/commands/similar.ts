@@ -1,7 +1,7 @@
 import chalk from "chalk";
 import { loadConfig } from "../config.js";
 import { loadMergedPlaybook, getActiveBullets } from "../playbook.js";
-import { findSimilarBulletsSemantic, getSemanticStatus, formatSemanticModeMessage } from "../semantic.js";
+import { findSimilarBulletsSemantic, getSemanticStatus, formatSemanticModeMessage, setEmbeddingBackend, configureOllamaEmbedding } from "../semantic.js";
 import { getEffectiveScore } from "../scoring.js";
 import { isJsonOutput, isToonOutput, jaccardSimilarity, truncate, getCliName, printStructuredResult, reportError, validateOneOf, warn } from "../utils.js";
 import { ErrorCode, PlaybookBullet } from "../types.js";
@@ -93,6 +93,12 @@ export async function generateSimilarResults(
       ? config.embeddingModel.trim()
       : undefined;
   const semanticEnabled = config.semanticSearchEnabled && embeddingModel !== "none";
+
+  // Configure embedding backend from config
+  if ((config as any).embeddingBackend === "ollama") {
+    setEmbeddingBackend("ollama");
+    configureOllamaEmbedding((config as any).ollamaBaseUrl || "http://localhost:11434", embeddingModel);
+  }
 
   if (semanticEnabled) {
     try {

@@ -146,6 +146,58 @@ export async function getEmbedder(
   return embedderPromise;
 }
 
+// --- Ollama embedding backend ---
+
+let ollamaBaseUrl = "http://localhost:11434";
+let ollamaModel = "nomic-embed-text";
+
+export function configureOllamaEmbedding(baseUrl: string, model?: string): void {
+  ollamaBaseUrl = baseUrl.replace(/\/+$/, "");
+  if (model) ollamaModel = model;
+}
+
+async function embedTextOllama(text: string): Promise<number[]> {
+  const resp = await fetch(`${ollamaBaseUrl}/api/embed`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: ollamaModel, input: text }),
+  });
+  if (!resp.ok) {
+    throw new Error(`Ollama embed failed (${resp.status}): ${await resp.text()}`);
+  }
+  const data: any = await resp.json();
+  const embeddings = data?.embeddings;
+  if (Array.isArray(embeddings) && embeddings.length > 0) {
+    return embeddings[0];
+  }
+  throw new Error("Ollama returned no embeddings");
+}
+
+async function batchEmbedOllama(texts: string[]): Promise<number[][]> {
+  const resp = await fetch(`${ollamaBaseUrl}/api/embed`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: ollamaModel, input: texts }),
+  });
+  if (!resp.ok) {
+    throw new Error(`Ollama batch embed failed (${resp.status}): ${await resp.text()}`);
+  }
+  const data: any = await resp.json();
+  const embeddings = data?.embeddings;
+  if (Array.isArray(embeddings)) {
+    return embeddings;
+  }
+  throw new Error("Ollama returned no embeddings");
+}
+
+// --- Embedding backend selection ---
+
+let embeddingBackend: "xenova" | "ollama" = "xenova";
+
+export function setEmbeddingBackend(backend: "xenova" | "ollama"): void {
+  embeddingBackend = backend;
+}
+
 export async function embedText(
   text: string,
   options: { model?: string } = {}
@@ -154,6 +206,10 @@ export async function embedText(
   if (model === "none") return [];
   const cleaned = text?.trim();
   if (!cleaned) return [];
+
+  if (embeddingBackend === "ollama") {
+    return embedTextOllama(cleaned);
+  }
 
   const embedder = await getEmbedder(model);
   const result: any = await embedder(cleaned, { pooling: "mean", normalize: true });
@@ -173,6 +229,24 @@ export async function batchEmbed(
 ): Promise<number[][]> {
   const model = options.model || DEFAULT_EMBEDDING_MODEL;
   if (model === "none") return texts.map(() => []);
+
+  // Ollama backend: batch via API (handles its own batching)
+  if (embeddingBackend === "ollama") {
+    const cleaned = texts.map((t) => (typeof t === "string" ? t.trim() : ""));
+    const nonEmpty = cleaned.filter(t => t);
+    if (nonEmpty.length === 0) return cleaned.map(() => []);
+    const embeddings = await batchEmbedOllama(nonEmpty);
+    const output: number[][] = [];
+    let embIdx = 0;
+    for (const t of cleaned) {
+      if (t) { output.push(embeddings[embIdx++] || []); }
+      else { output.push([]); }
+    }
+    if (typeof options.onProgress === "function") {
+      options.onProgress({ processed: nonEmpty.length, total: nonEmpty.length });
+    }
+    return output;
+  }
 
   const safeBatchSize =
     Number.isFinite(batchSize) && batchSize > 0 ? Math.floor(batchSize) : 32;

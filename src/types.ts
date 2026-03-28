@@ -404,6 +404,7 @@ export const ConfigSchema = z.object({
   semanticSearchEnabled: z.boolean().default(false),
   semanticWeight: z.number().min(0).max(1).default(0.6),
   embeddingModel: z.string().default("Xenova/all-MiniLM-L6-v2"),
+  embeddingBackend: z.enum(["xenova", "ollama"]).default("xenova"),
   verbose: z.boolean().default(false),
   jsonOutput: z.boolean().default(false),
   apiKey: z.string().optional(),

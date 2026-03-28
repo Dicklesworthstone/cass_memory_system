@@ -31,7 +31,7 @@ import {
 import { withLock } from "../lock.js";
 import { getEffectiveScore } from "../scoring.js";
 import { ContextResult, ScoredBullet, Config, CassSearchHit, PlaybookBullet, ErrorCode } from "../types.js";
-import { cosineSimilarity, embedText, loadOrComputeEmbeddingsForBullets } from "../semantic.js";
+import { cosineSimilarity, embedText, loadOrComputeEmbeddingsForBullets, setEmbeddingBackend, configureOllamaEmbedding } from "../semantic.js";
 import chalk from "chalk";
 import { agentIconPrefix, formatRule, formatTipPrefix, getOutputStyle, iconPrefix, wrapText } from "../output.js";
 import { createProgress, type ProgressReporter } from "../progress.js";
@@ -235,6 +235,12 @@ export async function scoreBulletsEnhanced(
       ? config.embeddingModel.trim()
       : undefined;
   const semanticEnabled = config.semanticSearchEnabled && embeddingModel !== "none";
+
+  // Configure embedding backend from config
+  if ((config as any).embeddingBackend === "ollama") {
+    setEmbeddingBackend("ollama");
+    configureOllamaEmbedding((config as any).ollamaBaseUrl || "http://localhost:11434", embeddingModel);
+  }
 
   const semanticWeight = clamp01(
     typeof config.semanticWeight === "number" ? config.semanticWeight : 0.6
