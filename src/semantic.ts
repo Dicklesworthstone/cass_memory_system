@@ -16,6 +16,207 @@ export const EMBEDDING_CACHE_VERSION = "1.0";
 let embedderPromise: Promise<any> | null = null;
 let embedderModel: string | null = null;
 
+// ============================================================================
+// OLLAMA EMBEDDING BACKEND
+// ============================================================================
+
+export type EmbeddingBackend = "xenova" | "ollama";
+
+let embeddingBackend: EmbeddingBackend = "xenova";
+
+interface OllamaConfig {
+  baseUrl: string;
+  model: string;
+}
+
+const ollamaConfig: OllamaConfig = {
+  baseUrl: "http://localhost:11434",
+  model: "all-minilm",
+};
+
+/**
+ * Set the active embedding backend ("xenova" or "ollama").
+ */
+export function setEmbeddingBackend(backend: EmbeddingBackend): void {
+  embeddingBackend = backend;
+}
+
+/**
+ * Get the active embedding backend.
+ */
+export function getEmbeddingBackend(): EmbeddingBackend {
+  return embeddingBackend;
+}
+
+/**
+ * Configure the Ollama embedding endpoint.
+ *
+ * @param baseUrl - The Ollama API base URL (e.g. "http://localhost:11434")
+ * @param model - The Ollama model to use for embeddings (e.g. "all-minilm", "nomic-embed-text")
+ */
+export function configureOllamaEmbedding(baseUrl: string, model: string): void {
+  ollamaConfig.baseUrl = baseUrl.replace(/\/+$/, ""); // strip trailing slashes
+  ollamaConfig.model = model;
+}
+
+/**
+ * Embed a single text using Ollama's /api/embed endpoint.
+ *
+ * @param text - The text to embed (must be non-empty after trimming)
+ * @returns The embedding vector as a number array
+ * @throws Error with descriptive message on connection failure, model not found, etc.
+ */
+async function embedTextOllama(text: string): Promise<number[]> {
+  const url = `${ollamaConfig.baseUrl}/api/embed`;
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: ollamaConfig.model, input: text }),
+    });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes("ECONNREFUSED") || message.includes("fetch failed")) {
+      throw new Error(
+        `Ollama connection refused at ${ollamaConfig.baseUrl}. ` +
+        `Is Ollama running? Start it with: ollama serve`
+      );
+    }
+    throw new Error(`Ollama embedding request failed: ${message}`);
+  }
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "(no body)");
+    if (response.status === 404 || body.includes("not found")) {
+      throw new Error(
+        `Ollama model "${ollamaConfig.model}" not found. ` +
+        `Pull it with: ollama pull ${ollamaConfig.model}`
+      );
+    }
+    throw new Error(
+      `Ollama embedding failed (HTTP ${response.status}): ${body}`
+    );
+  }
+
+  const json = await response.json() as { embeddings?: number[][] };
+  if (
+    !json.embeddings ||
+    !Array.isArray(json.embeddings) ||
+    json.embeddings.length === 0 ||
+    !Array.isArray(json.embeddings[0])
+  ) {
+    throw new Error("Unexpected Ollama response: missing or empty embeddings array");
+  }
+
+  return json.embeddings[0];
+}
+
+/**
+ * Batch-embed multiple texts using Ollama's /api/embed endpoint.
+ *
+ * Ollama's /api/embed accepts an array of strings in the `input` field,
+ * returning one embedding per input text.
+ *
+ * @param texts - Array of texts to embed
+ * @param onProgress - Optional progress callback
+ * @returns Array of embedding vectors, one per input text
+ */
+async function batchEmbedOllama(
+  texts: string[],
+  onProgress?: (event: { processed: number; total: number }) => void
+): Promise<number[][]> {
+  const url = `${ollamaConfig.baseUrl}/api/embed`;
+
+  // Filter out empty strings but track indices
+  const cleaned = texts.map((t) => (typeof t === "string" ? t.trim() : ""));
+  const output: number[][] = new Array(cleaned.length);
+  for (let i = 0; i < cleaned.length; i++) {
+    if (!cleaned[i]) output[i] = [];
+  }
+
+  const nonEmpty: Array<{ index: number; text: string }> = [];
+  for (let i = 0; i < cleaned.length; i++) {
+    if (cleaned[i]) nonEmpty.push({ index: i, text: cleaned[i] });
+  }
+
+  if (nonEmpty.length === 0) return output;
+
+  // Ollama supports batch embed via an array in the input field.
+  // Send in chunks to avoid overwhelming the server with huge payloads.
+  const BATCH_SIZE = 64;
+  for (let start = 0; start < nonEmpty.length; start += BATCH_SIZE) {
+    const batch = nonEmpty.slice(start, start + BATCH_SIZE);
+    const batchTexts = batch.map((b) => b.text);
+
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: ollamaConfig.model, input: batchTexts }),
+      });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes("ECONNREFUSED") || message.includes("fetch failed")) {
+        throw new Error(
+          `Ollama connection refused at ${ollamaConfig.baseUrl}. ` +
+          `Is Ollama running? Start it with: ollama serve`
+        );
+      }
+      throw new Error(`Ollama batch embedding request failed: ${message}`);
+    }
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => "(no body)");
+      if (response.status === 404 || body.includes("not found")) {
+        throw new Error(
+          `Ollama model "${ollamaConfig.model}" not found. ` +
+          `Pull it with: ollama pull ${ollamaConfig.model}`
+        );
+      }
+      throw new Error(
+        `Ollama batch embedding failed (HTTP ${response.status}): ${body}`
+      );
+    }
+
+    const json = await response.json() as { embeddings?: number[][] };
+    if (
+      !json.embeddings ||
+      !Array.isArray(json.embeddings) ||
+      json.embeddings.length !== batchTexts.length
+    ) {
+      throw new Error(
+        `Unexpected Ollama batch response: expected ${batchTexts.length} embeddings, ` +
+        `got ${json.embeddings?.length ?? 0}`
+      );
+    }
+
+    for (let i = 0; i < batch.length; i++) {
+      output[batch[i].index] = json.embeddings[i];
+    }
+
+    if (typeof onProgress === "function") {
+      try {
+        onProgress({
+          processed: Math.min(start + batch.length, nonEmpty.length),
+          total: nonEmpty.length,
+        });
+      } catch {
+        // Progress is best-effort
+      }
+    }
+  }
+
+  // Fill any remaining unset entries with empty embeddings
+  for (let i = 0; i < output.length; i++) {
+    if (!Array.isArray(output[i])) output[i] = [];
+  }
+
+  return output;
+}
+
 export interface ModelLoadProgress {
   status: "initiate" | "download" | "progress" | "done" | "ready";
   name?: string;
@@ -155,6 +356,11 @@ export async function embedText(
   const cleaned = text?.trim();
   if (!cleaned) return [];
 
+  // Route to Ollama backend when configured
+  if (embeddingBackend === "ollama") {
+    return embedTextOllama(cleaned);
+  }
+
   const embedder = await getEmbedder(model);
   const result: any = await embedder(cleaned, { pooling: "mean", normalize: true });
 
@@ -173,6 +379,11 @@ export async function batchEmbed(
 ): Promise<number[][]> {
   const model = options.model || DEFAULT_EMBEDDING_MODEL;
   if (model === "none") return texts.map(() => []);
+
+  // Route to Ollama backend when configured
+  if (embeddingBackend === "ollama") {
+    return batchEmbedOllama(texts, options.onProgress);
+  }
 
   const safeBatchSize =
     Number.isFinite(batchSize) && batchSize > 0 ? Math.floor(batchSize) : 32;
@@ -655,6 +866,7 @@ export interface SemanticStatus {
 export function getSemanticStatus(config: {
   semanticSearchEnabled?: boolean;
   embeddingModel?: string;
+  embeddingBackend?: EmbeddingBackend;
 }): SemanticStatus {
   const model = typeof config.embeddingModel === "string" && config.embeddingModel.trim() !== ""
     ? config.embeddingModel.trim()
@@ -683,11 +895,13 @@ export function getSemanticStatus(config: {
   }
 
   // Semantic is enabled in config - model availability is determined at runtime
+  const backend = config.embeddingBackend ?? "xenova";
+  const modelLabel = backend === "ollama" ? `ollama:${ollamaConfig.model}` : model;
   return {
     enabled: true,
     available: true, // Assume available; actual check happens during embedding
-    reason: "Semantic search enabled",
-    model,
+    reason: `Semantic search enabled (${backend} backend)`,
+    model: modelLabel,
   };
 }
 
@@ -740,6 +954,19 @@ export async function warmupEmbeddings(
 ): Promise<WarmupResult> {
   const model = options.model || DEFAULT_EMBEDDING_MODEL;
   const startTime = Date.now();
+
+  // For Ollama backend, warm up by running a test embed through Ollama
+  if (embeddingBackend === "ollama") {
+    try {
+      await embedTextOllama("warmup test");
+      const durationMs = Date.now() - startTime;
+      return { success: true, durationMs };
+    } catch (error: unknown) {
+      const durationMs = Date.now() - startTime;
+      const message = error instanceof Error ? error.message : String(error);
+      return { success: false, durationMs, error: message };
+    }
+  }
 
   try {
     // Load the embedder (triggers download if needed, shows progress)

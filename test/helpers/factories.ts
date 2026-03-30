@@ -61,6 +61,7 @@ export function createTestConfig(overrides: Partial<Config> = {}): Config {
     },
     semanticSearchEnabled: false,
     semanticWeight: 0.6,
+    embeddingBackend: "xenova",
     embeddingModel: "Xenova/all-MiniLM-L6-v2",
     verbose: false,
     jsonOutput: false,
