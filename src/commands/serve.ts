@@ -518,19 +518,10 @@ async function routeRequest(body: JsonRpcRequest): Promise<JsonRpcResponse> {
       return {
         jsonrpc: "2.0",
         id: body.id ?? null,
-        result: {
-          content: [{ type: "text", text: JSON.stringify(result) }],
-        },
+        result,
       };
     } catch (err: any) {
-      return {
-        jsonrpc: "2.0",
-        id: body.id ?? null,
-        result: {
-          content: [{ type: "text", text: JSON.stringify({ error: err?.message || "Tool call failed" }) }],
-          isError: true,
-        },
-      };
+      return buildError(body.id ?? null, err?.message || "Tool call failed");
     }
   }
 
