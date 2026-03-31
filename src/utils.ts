@@ -1077,7 +1077,7 @@ export function resolveGlobalDir(): string {
   }
 
   if (process.env.XDG_DATA_HOME) {
-    return path.join(process.env.XDG_DATA_HOME, "cass-memory");
+    return path.join(expandPath(process.env.XDG_DATA_HOME), "cass-memory");
   }
 
   return expandPath("~/.cass-memory");
