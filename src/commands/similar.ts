@@ -86,10 +86,13 @@ export async function generateSimilarResults(
   // Configure embedding backend before any embedding operations
   if (config.embeddingBackend === "ollama") {
     setEmbeddingBackend("ollama");
-    const ollamaModel =
-      typeof config.embeddingModel === "string" && config.embeddingModel.trim() !== ""
-        ? config.embeddingModel.trim()
-        : "all-minilm";
+    // Strip "Xenova/" prefix if present — the default embeddingModel is a
+    // Xenova model name, but Ollama expects bare model names like "all-minilm".
+    let ollamaModel = "all-minilm";
+    if (typeof config.embeddingModel === "string" && config.embeddingModel.trim() !== "") {
+      const raw = config.embeddingModel.trim();
+      ollamaModel = raw.startsWith("Xenova/") ? raw.slice("Xenova/".length).toLowerCase() : raw;
+    }
     configureOllamaEmbedding(config.ollamaBaseUrl, ollamaModel);
   } else {
     setEmbeddingBackend("xenova");
