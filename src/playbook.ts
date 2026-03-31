@@ -25,6 +25,7 @@ import {
   atomicWrite,
   extractAgentFromPath,
   resolveRepoDir,
+  resolveGlobalDir,
   tokenize
 } from "./utils.js";
 import { z } from "zod";
@@ -354,8 +355,8 @@ export async function loadMergedPlaybook(config: Config): Promise<Playbook> {
   
   const merged = mergePlaybooks(globalPlaybook, repoPlaybook);
   
-  const globalBlocked = await loadBlockedLog("~/.cass-memory/blocked.log");
-  const globalToxic = await loadBlockedLog("~/.cass-memory/toxic_bullets.log");
+  const globalBlocked = await loadBlockedLog(path.join(resolveGlobalDir(), "blocked.log"));
+  const globalToxic = await loadBlockedLog(path.join(resolveGlobalDir(), "toxic_bullets.log"));
   
   const repoBlockedPath = repoDir ? path.join(repoDir, "blocked.log") : null;
   const repoBlocked = repoBlockedPath ? await loadBlockedLog(repoBlockedPath) : [];

@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import path from "node:path";
 import chalk from "chalk";
 import { icon } from "../output.js";
 import { getDefaultConfig, saveConfig } from "../config.js";
@@ -8,6 +9,7 @@ import { Config, ConfigSchema, ErrorCode } from "../types.js";
 import {
   expandPath,
   ensureGlobalStructure,
+  resolveGlobalDir,
   fileExists,
   now,
   getCliName,
@@ -40,7 +42,7 @@ function migrateDeprecatedLlmConfig(raw: Partial<Config>): Partial<Config> {
 
 async function loadGlobalConfigEnsuringInit(): Promise<Config> {
   const defaultConfig = getDefaultConfig();
-  const configPath = expandPath("~/.cass-memory/config.json");
+  const configPath = path.join(resolveGlobalDir(), "config.json");
 
   // Ensure base directories + config exist. (Idempotent; does not overwrite.)
   await ensureGlobalStructure(JSON.stringify(defaultConfig, null, 2));
@@ -120,7 +122,7 @@ export async function privacyCommand(
   let config = await loadGlobalConfigEnsuringInit();
   const runner = deps.cassRunner;
   const cli = getCliName();
-  const globalConfigPath = expandPath("~/.cass-memory/config.json");
+  const globalConfigPath = path.join(resolveGlobalDir(), "config.json");
   const daysCheck = validatePositiveInt(flags.days, "days", { min: 1, allowUndefined: true });
   if (!daysCheck.ok) {
     reportError(daysCheck.message, {

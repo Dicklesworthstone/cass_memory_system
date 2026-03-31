@@ -35,7 +35,8 @@ import {
   warn,
   error as logError,
   atomicWrite,
-  resolveRepoDir
+  resolveRepoDir,
+  resolveGlobalDir
 } from "./utils.js";
 import { withLock } from "./lock.js";
 
@@ -60,7 +61,7 @@ async function appendCrossAgentAuditLog(
     // Fall back to global log if not in repo or repo-level logging disabled (policy)
     const logPath = repoLog
       ? repoLog
-      : expandPath("~/.cass-memory/privacy-audit.jsonl");
+      : path.join(resolveGlobalDir(), "privacy-audit.jsonl");
 
     await ensureDir(path.dirname(logPath));
 

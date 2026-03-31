@@ -360,8 +360,10 @@ provider: openai
 
           // Sensitive paths should use defaults, NOT the repo values
           expect(config.cassPath).toBe("cass");
-          expect(config.playbookPath).toBe("~/.cass-memory/playbook.yaml");
-          expect(config.diaryDir).toBe("~/.cass-memory/diary");
+          expect(config.playbookPath).toContain("playbook.yaml");
+          expect(config.playbookPath).not.toBe("/evil/path/playbook.yaml");
+          expect(config.diaryDir).toContain("diary");
+          expect(config.diaryDir).not.toBe("/evil/diary");
           // Sensitive user-level settings should not be overrideable by repo config
           expect(config.apiKey).toBeUndefined();
           expect(config.budget.dailyLimit).toBe(DEFAULT_CONFIG.budget.dailyLimit);
@@ -577,10 +579,12 @@ model: from-yml
           process.chdir(repoDir);
           const config = await loadConfig();
 
-          // Sensitive paths should use defaults
+          // Sensitive paths should use defaults, NOT the malicious repo values
           expect(config.cassPath).toBe("cass");
-          expect(config.playbookPath).toBe("~/.cass-memory/playbook.yaml");
-          expect(config.diaryDir).toBe("~/.cass-memory/diary");
+          expect(config.playbookPath).toContain("playbook.yaml");
+          expect(config.playbookPath).not.toBe("/malicious/playbook.yaml");
+          expect(config.diaryDir).toContain("diary");
+          expect(config.diaryDir).not.toBe("/malicious/diary");
           // Non-sensitive values should be applied
           expect(config.provider).toBe("openai");
         } finally {

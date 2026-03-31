@@ -2,11 +2,12 @@ import { installGuard, installGitHook } from "./guard.js";
 import { getDefaultConfig } from "../config.js";
 import { createEmptyPlaybook, loadPlaybook, savePlaybook } from "../playbook.js";
 import { withLock } from "../lock.js";
-import { expandPath, fileExists, warn, resolveRepoDir, ensureRepoStructure, ensureGlobalStructure, getCliName, printJsonResult, atomicWrite, reportError, now } from "../utils.js";
+import { expandPath, fileExists, warn, resolveRepoDir, resolveGlobalDir, ensureRepoStructure, ensureGlobalStructure, getCliName, printJsonResult, atomicWrite, reportError, now } from "../utils.js";
 import { ErrorCode, Config, TraumaEntry } from "../types.js";
 import { scanForTraumas, saveTrauma } from "../trauma.js";
 import { cassAvailable } from "../cass.js";
 import { applyStarter, loadStarter } from "../starters.js";
+import path from "node:path";
 import chalk from "chalk";
 import yaml from "yaml";
 import readline from "node:readline";
@@ -99,8 +100,8 @@ export async function initCommand(options: InitOptions) {
   if (process.env.CASS_PATH) {
     config.cassPath = process.env.CASS_PATH;
   }
-  const configPath = expandPath("~/.cass-memory/config.json");
-  const playbookPath = expandPath("~/.cass-memory/playbook.yaml");
+  const configPath = path.join(resolveGlobalDir(), "config.json");
+  const playbookPath = path.join(resolveGlobalDir(), "playbook.yaml");
   const playbook = createEmptyPlaybook();
   
   const hasConfig = await fileExists(configPath);

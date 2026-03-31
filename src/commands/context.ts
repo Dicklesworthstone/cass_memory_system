@@ -25,6 +25,7 @@ import {
   ensureDir,
   expandPath,
   resolveRepoDir,
+  resolveGlobalDir,
   fileExists,
   atomicWrite
 } from "../utils.js";
@@ -471,7 +472,7 @@ async function appendContextLog(entry: {
 
     const logPath = repoLog
       ? repoLog
-      : expandPath("~/.cass-memory/context-log.jsonl");
+      : path.join(resolveGlobalDir(), "context-log.jsonl");
 
     await ensureDir(path.dirname(logPath));
 

@@ -1,7 +1,7 @@
 import { loadConfig } from "../config.js";
 import { loadPlaybook, savePlaybook, findBullet, addBullet, deprecateBullet, appendBlockedLog } from "../playbook.js";
 import path from "node:path";
-import { fileExists, now, resolveRepoDir, expandPath, printJsonResult, reportError } from "../utils.js";
+import { fileExists, now, resolveRepoDir, resolveGlobalDir, expandPath, printJsonResult, reportError } from "../utils.js";
 import { ErrorCode } from "../types.js";
 import { withLock } from "../lock.js";
 import chalk from "chalk";
@@ -66,7 +66,7 @@ export async function forgetCommand(
       // 1. Add to blocked log
       const blockedLogPath = savePath === repoPath
         ? path.join(path.dirname(repoPath!), "blocked.log")
-        : "~/.cass-memory/blocked.log";
+        : path.join(resolveGlobalDir(), "blocked.log");
 
       await appendBlockedLog({
         id: bullet.id,

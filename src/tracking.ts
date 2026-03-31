@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import { ProcessedEntry } from "./types.js";
-import { ensureDir, fileExists, expandPath, now, atomicWrite, withLock, warn } from "./utils.js";
+import { ensureDir, fileExists, expandPath, now, atomicWrite, withLock, warn, resolveGlobalDir } from "./utils.js";
 import { sanitize } from "./sanitize.js";
 
 // -----------------------------------------------------------------------------
@@ -120,14 +120,14 @@ export type UsageEvent =
 // Usage Analytics Implementation
 // -----------------------------------------------------------------------------
 
-const DEFAULT_USAGE_LOG_PATH = "~/.cass-memory/usage.jsonl";
+const DEFAULT_USAGE_LOG_PATH = () => path.join(resolveGlobalDir(), "usage.jsonl");
 let usageLogPathOverride: string | null = null;
 
 /**
  * Get the path to the usage log file.
  */
 export function getUsageLogPath(): string {
-  return usageLogPathOverride ?? expandPath(DEFAULT_USAGE_LOG_PATH);
+  return usageLogPathOverride ?? DEFAULT_USAGE_LOG_PATH();
 }
 
 /**
@@ -388,10 +388,8 @@ export async function getUsageStats(): Promise<{
 // Processed log paths
 // -----------------------------------------------------------------------------
 
-const DEFAULT_REFLECTIONS_DIR = "~/.cass-memory/reflections";
-
 export function getProcessedLogPath(workspacePath?: string): string {
-  const reflectionsDir = expandPath(DEFAULT_REFLECTIONS_DIR);
+  const reflectionsDir = path.join(resolveGlobalDir(), "reflections");
   if (!workspacePath) {
     return path.join(reflectionsDir, "global.processed.log");
   }

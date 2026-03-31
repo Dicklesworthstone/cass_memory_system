@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { Config, DiaryEntry, FeedbackEvent } from "./types.js";
-import { expandPath, ensureDir, fileExists, now, resolveRepoDir } from "./utils.js";
+import { expandPath, ensureDir, fileExists, now, resolveRepoDir, resolveGlobalDir } from "./utils.js";
 import { sanitize } from "./sanitize.js";
 import { getSanitizeConfig } from "./config.js";
 import { loadPlaybook, savePlaybook, findBullet } from "./playbook.js";
@@ -166,14 +166,14 @@ export async function resolveOutcomeLogPath(): Promise<string> {
   const useRepoLog = repoDir ? await fileExists(repoDir) : false;
   if (useRepoLog) return path.join(repoDir!, "outcomes.jsonl");
 
-  return expandPath("~/.cass-memory/outcomes.jsonl");
+  return path.join(resolveGlobalDir(), "outcomes.jsonl");
 }
 
 async function resolveContextLogPath(): Promise<string> {
   const repoDir = await resolveRepoDir();
   const useRepoLog = repoDir ? await fileExists(repoDir) : false;
   if (useRepoLog) return path.join(repoDir!, "context-log.jsonl");
-  return expandPath("~/.cass-memory/context-log.jsonl");
+  return path.join(resolveGlobalDir(), "context-log.jsonl");
 }
 
 export async function recordOutcome(

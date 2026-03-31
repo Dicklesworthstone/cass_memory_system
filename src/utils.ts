@@ -1068,6 +1068,18 @@ export async function resolveRepoDir(): Promise<string | null> {
 }
 
 export function resolveGlobalDir(): string {
+  // Priority:
+  // 1. CASS_MEMORY_HOME env var (explicit override)
+  // 2. XDG_DATA_HOME explicitly set → $XDG_DATA_HOME/cass-memory
+  // 3. ~/.cass-memory (default, backward compatible)
+  if (process.env.CASS_MEMORY_HOME) {
+    return expandPath(process.env.CASS_MEMORY_HOME);
+  }
+
+  if (process.env.XDG_DATA_HOME) {
+    return path.join(process.env.XDG_DATA_HOME, "cass-memory");
+  }
+
   return expandPath("~/.cass-memory");
 }
 

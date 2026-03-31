@@ -1,7 +1,7 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 import { Config } from "./types.js";
-import { expandPath, ensureDir, atomicWrite, now, fileExists, warn } from "./utils.js";
+import { expandPath, ensureDir, atomicWrite, now, fileExists, warn, resolveGlobalDir } from "./utils.js";
 import { withLock } from "./lock.js";
 import { icon } from "./output.js";
 
@@ -50,7 +50,7 @@ export async function recordCost(
     cost
   };
 
-  const costDir = expandPath("~/.cass-memory/cost");
+  const costDir = path.join(resolveGlobalDir(), "cost");
   await ensureDir(costDir);
 
   const month = new Date().toISOString().slice(0, 7); // YYYY-MM
@@ -115,7 +115,7 @@ export async function checkBudget(config: Config): Promise<{ allowed: boolean; r
   const budget = config.budget;
   if (!budget) return { allowed: true }; // No budget set
 
-  const costDir = expandPath("~/.cass-memory/cost");
+  const costDir = path.join(resolveGlobalDir(), "cost");
   const totalPath = path.join(costDir, "total.json");
   
   // If total.json doesn't exist, we assume 0 cost (or legacy migration could happen here, 
@@ -155,7 +155,7 @@ export async function getUsageStats(config: Config): Promise<{
   dailyLimit: number;
   monthlyLimit: number;
 }> {
-  const costDir = expandPath("~/.cass-memory/cost");
+  const costDir = path.join(resolveGlobalDir(), "cost");
   const totalPath = path.join(costDir, "total.json");
   
   let dailyTotal = 0;

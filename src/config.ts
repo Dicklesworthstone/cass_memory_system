@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
 import { Config, ConfigSchema, SanitizationConfig, BudgetConfig } from "./types.js";
-import { fileExists, warn, atomicWrite, expandPath, normalizeYamlKeys, resolveRepoDir } from "./utils.js";
+import { fileExists, warn, atomicWrite, expandPath, normalizeYamlKeys, resolveRepoDir, resolveGlobalDir } from "./utils.js";
 
 // --- Defaults ---
 
@@ -159,7 +159,7 @@ async function loadRepoConfig(repoCassDir: string): Promise<{
 
 export async function loadConfig(cliOverrides: Partial<Config> = {}): Promise<Config> {
   const defaults = getCachedDefaults();
-  const globalConfigPath = expandPath("~/.cass-memory/config.json");
+  const globalConfigPath = path.join(resolveGlobalDir(), "config.json");
   const globalConfigRaw = await loadConfigFile(globalConfigPath);
 
   // Migrate deprecated llm.* shape to top-level
@@ -296,10 +296,25 @@ export async function loadConfig(cliOverrides: Partial<Config> = {}): Promise<Co
     result.data.verbose = true;
   }
 
+  // Resolve legacy hardcoded defaults to the dynamic global dir.
+  // This ensures fresh installs use XDG paths while existing installs
+  // that have explicitly set paths in config.json are preserved.
+  const globalDir = resolveGlobalDir();
+  const legacyDefaults: Record<string, string> = {
+    playbookPath: "~/.cass-memory/playbook.yaml",
+    diaryDir: "~/.cass-memory/diary",
+  };
+  for (const [key, legacyDefault] of Object.entries(legacyDefaults)) {
+    const val = (result.data as any)[key];
+    if (val === legacyDefault) {
+      (result.data as any)[key] = path.join(globalDir, key === "playbookPath" ? "playbook.yaml" : "diary");
+    }
+  }
+
   return result.data;
 }
 
 export async function saveConfig(config: Config): Promise<void> {
-  const globalConfigPath = expandPath("~/.cass-memory/config.json");
+  const globalConfigPath = path.join(resolveGlobalDir(), "config.json");
   await atomicWrite(globalConfigPath, JSON.stringify(config, null, 2));
 }

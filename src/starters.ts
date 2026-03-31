@@ -9,7 +9,7 @@ import {
   BulletSource
 } from "./types.js";
 import { createEmptyPlaybook } from "./playbook.js";
-import { expandPath, hashContent, now } from "./utils.js";
+import { expandPath, hashContent, now, resolveGlobalDir } from "./utils.js";
 
 type StarterBulletInput = {
   id?: string;
@@ -226,8 +226,8 @@ const BUILTIN_STARTERS: StarterDefinition[] = [
 
 async function discoverCustomStarterFiles(): Promise<string[]> {
   const roots = [
-    expandPath("~/.cass-memory/starters"),
-    expandPath("~/.cass-memory/starters/custom"),
+    path.join(resolveGlobalDir(), "starters"),
+    path.join(resolveGlobalDir(), "starters", "custom"),
   ];
 
   const files: string[] = [];
