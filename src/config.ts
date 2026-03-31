@@ -316,5 +316,19 @@ export async function loadConfig(cliOverrides: Partial<Config> = {}): Promise<Co
 
 export async function saveConfig(config: Config): Promise<void> {
   const globalConfigPath = path.join(resolveGlobalDir(), "config.json");
-  await atomicWrite(globalConfigPath, JSON.stringify(config, null, 2));
+
+  // Normalize dynamically resolved paths back to portable defaults before
+  // persisting. loadConfig() expands "~/.cass-memory/playbook.yaml" to an
+  // absolute path at runtime; if we saved that absolute path, it would
+  // become stale when CASS_MEMORY_HOME or XDG_DATA_HOME changes.
+  const globalDir = resolveGlobalDir();
+  const toSave = { ...config };
+  if (toSave.playbookPath === path.join(globalDir, "playbook.yaml")) {
+    toSave.playbookPath = "~/.cass-memory/playbook.yaml";
+  }
+  if (toSave.diaryDir === path.join(globalDir, "diary")) {
+    toSave.diaryDir = "~/.cass-memory/diary";
+  }
+
+  await atomicWrite(globalConfigPath, JSON.stringify(toSave, null, 2));
 }
