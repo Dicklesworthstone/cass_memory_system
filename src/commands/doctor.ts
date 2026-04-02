@@ -384,10 +384,11 @@ async function computeDoctorChecks(
 
   // 3) LLM config (optional - system works without it via graceful degradation)
   const availableProviders = getAvailableProviders();
-  // Ollama is available when explicitly configured even without OLLAMA_BASE_URL env var
-  const ollamaConfigured = config.provider === "ollama";
-  const hasAnyApiKey = availableProviders.length > 0 || !!config.apiKey || ollamaConfigured;
-  const configuredProviderAvailable = isLLMAvailable(config.provider) || !!config.apiKey || ollamaConfigured;
+  // Ollama and Bedrock are available when explicitly configured even without
+  // standard env vars — Ollama defaults to localhost, Bedrock uses IAM roles.
+  const usesImplicitAuth = config.provider === "ollama" || config.provider === "bedrock";
+  const hasAnyApiKey = availableProviders.length > 0 || !!config.apiKey || usesImplicitAuth;
+  const configuredProviderAvailable = isLLMAvailable(config.provider) || !!config.apiKey || usesImplicitAuth;
 
   let llmMessage: string;
   let llmStatus: CheckStatus = "warn";
@@ -405,7 +406,7 @@ async function computeDoctorChecks(
       llmMessage = `Provider: ${config.provider} not configured, but ${availableProviders.join(", ")} available (will auto-fallback)`;
     }
   } else {
-    llmMessage = `No API keys set (optional - set ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY, or OLLAMA_BASE_URL for AI-powered reflection)`;
+    llmMessage = `No API keys set (optional - set ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY, OLLAMA_BASE_URL, or AWS credentials for AI-powered reflection)`;
   }
 
   checks.push({
@@ -799,8 +800,8 @@ export async function runSelfTest(
   const currentProvider = config.provider;
   const hasCurrentProvider = availableProviders.includes(currentProvider);
   const hasConfigApiKey = !!config.apiKey;
-  const isOllamaProvider = currentProvider === "ollama";
-  const hasAnyApiKey = availableProviders.length > 0 || hasConfigApiKey || isOllamaProvider;
+  const providerUsesImplicitAuth = currentProvider === "ollama" || currentProvider === "bedrock";
+  const hasAnyApiKey = availableProviders.length > 0 || hasConfigApiKey || providerUsesImplicitAuth;
 
   if (!hasAnyApiKey) {
     // No API keys from env vars or config
@@ -811,7 +812,7 @@ export async function runSelfTest(
       message: "No API keys configured",
       details: { availableProviders: [], currentProvider, keySource: "none" },
     });
-  } else if (isOllamaProvider) {
+  } else if (currentProvider === "ollama") {
     // Ollama uses a base URL, not an API key
     const baseUrl = resolveOllamaBaseUrl(config.ollamaBaseUrl);
     checks.push({
@@ -827,6 +828,24 @@ export async function runSelfTest(
         semanticSearchEnabled: config.semanticSearchEnabled,
         embeddingModel: config.embeddingModel,
         keySource: "ollama"
+      },
+    });
+  } else if (currentProvider === "bedrock") {
+    // Bedrock uses AWS credential chain (env vars, profile, IAM role)
+    const region = process.env.AWS_REGION || "us-east-1";
+    checks.push({
+      category: "Self-Test",
+      item: "LLM System",
+      status: "pass",
+      message: `${currentProvider} (${config.model}) @ ${region}`,
+      details: {
+        availableProviders,
+        currentProvider,
+        model: config.model,
+        region,
+        semanticSearchEnabled: config.semanticSearchEnabled,
+        embeddingModel: config.embeddingModel,
+        keySource: "aws-credentials"
       },
     });
   } else if (hasConfigApiKey) {
