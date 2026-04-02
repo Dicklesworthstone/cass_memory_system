@@ -1,6 +1,6 @@
 // src/llm.ts
 // LLM Provider Abstraction - Using Vercel AI SDK
-// Supports OpenAI, Anthropic, Google, and Ollama providers with a unified interface
+// Supports OpenAI, Anthropic, Google, Ollama, and AWS Bedrock providers with a unified interface
 
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
