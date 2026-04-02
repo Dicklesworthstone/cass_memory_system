@@ -71,8 +71,9 @@ const KEY_PREFIX_MAP: Record<string, string> = {
 export function getApiKey(provider: string): string {
   const normalized = provider.trim().toLowerCase() as LLMProvider;
 
-  // Ollama doesn't use an API key — return empty string
-  if (normalized === "ollama") {
+  // Ollama and Bedrock don't use a single API key — return empty string.
+  // Bedrock uses the AWS credential chain (env vars, profile, IAM role).
+  if (normalized === "ollama" || normalized === "bedrock") {
     return "";
   }
 
@@ -97,8 +98,8 @@ export function getApiKey(provider: string): string {
 export function validateApiKey(provider: string): void {
   const normalized = provider.trim().toLowerCase() as LLMProvider;
 
-  // Ollama doesn't use an API key — nothing to validate
-  if (normalized === "ollama") return;
+  // Ollama and Bedrock don't use a traditional API key — nothing to validate.
+  if (normalized === "ollama" || normalized === "bedrock") return;
 
   const envVar = ENV_VAR_MAP[normalized];
   if (!envVar) return;
@@ -772,7 +773,7 @@ Make queries specific enough to be useful but broad enough to match variations.`
 
 // --- Multi-Provider Fallback ---
 
-const FALLBACK_ORDER: LLMProvider[] = ["anthropic", "openai", "google", "ollama"];
+const FALLBACK_ORDER: LLMProvider[] = ["anthropic", "openai", "google", "bedrock", "ollama"];
 
 const FALLBACK_MODELS: Record<LLMProvider, string> = {
   anthropic: "claude-3-5-sonnet-20241022",
@@ -797,10 +798,11 @@ export async function llmWithFallback<T>(
   const availableProviders = getAvailableProviders();
   const providerOrder: Array<{ provider: LLMProvider; model: string; apiKey?: string }> = [];
 
-  // Ollama is always considered available when explicitly configured as the primary provider
-  // since it uses a base URL (defaults to localhost:11434) rather than an API key.
-  const primaryIsOllama = primaryProvider === "ollama";
-  if (availableProviders.includes(primaryProvider) || apiKeyOverride !== undefined || primaryIsOllama) {
+  // Ollama and Bedrock are always considered available when explicitly configured
+  // as the primary provider: Ollama defaults to localhost:11434, and Bedrock can
+  // use IAM roles or instance profiles that we can't detect via env vars.
+  const primaryUsesImplicitAuth = primaryProvider === "ollama" || primaryProvider === "bedrock";
+  if (availableProviders.includes(primaryProvider) || apiKeyOverride !== undefined || primaryUsesImplicitAuth) {
     providerOrder.push({ provider: primaryProvider, model: primaryModel, apiKey: apiKeyOverride });
   }
 
