@@ -5,6 +5,7 @@
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
+import { createAmazonBedrock } from "@ai-sdk/amazon-bedrock";
 import { createOllama } from "ollama-ai-provider";
 import { generateObject, type LanguageModel } from "ai";
 import { z } from "zod";
@@ -54,6 +55,7 @@ const ENV_VAR_MAP: Record<LLMProvider, string> = {
   anthropic: "ANTHROPIC_API_KEY",
   google: "GOOGLE_GENERATIVE_AI_API_KEY",
   ollama: "OLLAMA_BASE_URL",
+  bedrock: "AWS_ACCESS_KEY_ID",
 };
 
 /**
@@ -156,6 +158,15 @@ export function getModel(config: { provider: string; model: string; apiKey?: str
     return createOllama({ baseURL: apiBase })(config.model);
   }
 
+  if (provider === "bedrock") {
+    const bedrock = createAmazonBedrock({
+      region: process.env.AWS_REGION || "us-east-1",
+      // Uses AWS credential chain: env vars (AWS_ACCESS_KEY_ID +
+      // AWS_SECRET_ACCESS_KEY), shared credentials file, IAM role, etc.
+    });
+    return bedrock(config.model);
+  }
+
   const apiKey = config.apiKey || getApiKey(provider);
 
   // Support custom base URL for OpenAI-compatible endpoints (OpenRouter, Azure, etc.)
@@ -175,6 +186,13 @@ export function isLLMAvailable(provider: LLMProvider): boolean {
   // synchronous and a network probe would block.
   if (provider === "ollama") {
     return !!process.env.OLLAMA_BASE_URL || !!process.env.OLLAMA_HOST;
+  }
+  // Bedrock supports multiple auth methods: explicit credentials, shared
+  // credentials file, IAM roles, etc.  Check for the most common env vars.
+  if (provider === "bedrock") {
+    return !!(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY)
+      || !!process.env.AWS_PROFILE
+      || !!process.env.AWS_WEB_IDENTITY_TOKEN_FILE;
   }
   const envVar = ENV_VAR_MAP[provider];
   return !!process.env[envVar];
@@ -761,6 +779,7 @@ const FALLBACK_MODELS: Record<LLMProvider, string> = {
   openai: "gpt-4o-mini",
   google: "gemini-1.5-flash",
   ollama: "llama3.2:3b",
+  bedrock: "anthropic.claude-sonnet-4-20250514-v1:0",
 };
 
 export async function llmWithFallback<T>(
@@ -793,7 +812,7 @@ export async function llmWithFallback<T>(
 
   if (providerOrder.length === 0) {
     throw new Error(
-      "No LLM providers available. Set one of: OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY, or OLLAMA_BASE_URL"
+      "No LLM providers available. Set one of: OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY, OLLAMA_BASE_URL, or AWS_ACCESS_KEY_ID+AWS_SECRET_ACCESS_KEY (Bedrock)"
     );
   }
 

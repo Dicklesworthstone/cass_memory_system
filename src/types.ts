@@ -41,7 +41,7 @@ export type BulletState = z.infer<typeof BulletStateEnum>;
 export const BulletMaturityEnum = z.enum(["candidate", "established", "proven", "deprecated"]);
 export type BulletMaturity = z.infer<typeof BulletMaturityEnum>;
 
-export const LLMProviderEnum = z.enum(["openai", "anthropic", "google", "ollama"]);
+export const LLMProviderEnum = z.enum(["openai", "anthropic", "google", "ollama", "bedrock"]);
 export type LLMProvider = z.infer<typeof LLMProviderEnum>;
 
 // ============================================================================

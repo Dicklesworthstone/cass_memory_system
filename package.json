@@ -34,6 +34,7 @@
     "test:ci": "bun test --timeout 60000"
   },
   "dependencies": {
+    "@ai-sdk/amazon-bedrock": "^1.1.6",
     "@ai-sdk/anthropic": "^1.0.0",
     "@ai-sdk/google": "^1.0.0",
     "@ai-sdk/openai": "^1.0.0",
