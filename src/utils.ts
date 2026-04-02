@@ -2545,7 +2545,7 @@ function defaultRecoveryForCategory(category: ErrorCategory, cli: string): strin
       ];
     case "llm":
       return [
-        "Verify your LLM provider API key is set (e.g. OPENAI_API_KEY / ANTHROPIC_API_KEY / GOOGLE_GENERATIVE_AI_API_KEY).",
+        "Verify your LLM provider credentials are set (e.g. OPENAI_API_KEY / ANTHROPIC_API_KEY / GOOGLE_GENERATIVE_AI_API_KEY / OLLAMA_BASE_URL / AWS credentials for Bedrock).",
         "Retry the command, or disable LLM-dependent features if supported.",
       ];
     case "internal":
@@ -2565,7 +2565,7 @@ function defaultRecoveryForCode(code: string, cli: string): string[] | undefined
   switch (code) {
     case ErrorCode.MISSING_API_KEY:
       return [
-        "Set an API key for your chosen provider (OPENAI_API_KEY / ANTHROPIC_API_KEY / GOOGLE_GENERATIVE_AI_API_KEY).",
+        "Set credentials for your chosen provider (OPENAI_API_KEY / ANTHROPIC_API_KEY / GOOGLE_GENERATIVE_AI_API_KEY / OLLAMA_BASE_URL / AWS credentials for Bedrock).",
         "If supported, store the key in config and re-run the command.",
         "Or disable LLM-dependent features (for example, set CASS_MEMORY_LLM=none where supported).",
       ];
