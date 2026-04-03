@@ -186,69 +186,87 @@ export function getModel(config: { provider: string; model: string; apiKey?: str
 // Shells out to installed CLI tools (claude, codex, gemini) for LLM calls,
 // reusing their existing auth instead of requiring separate API keys.
 
-/** Known CLI tools and their invocation patterns. */
-const CLI_TOOL_CONFIGS: Record<string, { args: string[] }> = {
-  claude:  { args: ["-p"] },       // claude -p "prompt" (print mode)
-  codex:   { args: ["--quiet"] },  // codex --quiet "prompt"
-  gemini:  { args: [] },           // gemini "prompt"
+/** Known CLI tools and their invocation flags (prompt is always piped via stdin). */
+const CLI_TOOL_CONFIGS: Record<string, { flags: string[] }> = {
+  claude:  { flags: ["-p"] },       // claude -p (print mode, reads prompt from stdin)
+  codex:   { flags: ["--quiet"] },  // codex --quiet (reads from stdin)
+  gemini:  { flags: [] },           // gemini (reads from stdin)
 };
 
-/** Cache for CLI tool availability checks. */
-let _cliToolCache: { command: string; available: boolean } | null = null;
+/** Cached result of CLI tool resolution to avoid repeated `which` subprocesses. */
+let _cliResolveCache: { key: string; result: string | null } | null = null;
 
 /**
  * Resolve which CLI command to use.
  * Priority: config.cliCommand > CASS_CLI_COMMAND env > auto-detect on PATH.
+ * Result is cached per key to avoid repeated subprocess calls.
  */
 export function resolveCliCommand(cliCommand?: string): string | null {
-  if (cliCommand) return cliCommand;
-  if (process.env.CASS_CLI_COMMAND) return process.env.CASS_CLI_COMMAND;
+  const key = cliCommand || process.env.CASS_CLI_COMMAND || "__auto__";
+  if (_cliResolveCache?.key === key) return _cliResolveCache.result;
 
-  // Auto-detect: check known tools on PATH
-  for (const tool of Object.keys(CLI_TOOL_CONFIGS)) {
-    try {
-      const result = Bun.spawnSync(["which", tool], { stdout: "pipe", stderr: "pipe" });
-      if (result.exitCode === 0) return tool;
-    } catch {
-      // which not available or tool not found — try next
+  let result: string | null = null;
+
+  if (cliCommand) {
+    result = cliCommand;
+  } else if (process.env.CASS_CLI_COMMAND) {
+    result = process.env.CASS_CLI_COMMAND;
+  } else {
+    // Auto-detect: check known tools on PATH
+    for (const tool of Object.keys(CLI_TOOL_CONFIGS)) {
+      try {
+        const proc = Bun.spawnSync(["which", tool], { stdout: "pipe", stderr: "pipe" });
+        if (proc.exitCode === 0) { result = tool; break; }
+      } catch {
+        // which not available or tool not found — try next
+      }
     }
   }
-  return null;
+
+  _cliResolveCache = { key, result };
+  return result;
 }
 
 /**
- * Check if a CLI LLM tool is available (synchronous, cached).
+ * Check if a CLI LLM tool is available (synchronous, cached via resolveCliCommand).
  */
 export function isCliAvailable(cliCommand?: string): boolean {
-  const cmd = resolveCliCommand(cliCommand);
-  if (!cmd) return false;
-  if (_cliToolCache?.command === cmd) return _cliToolCache.available;
-
-  try {
-    const result = Bun.spawnSync(["which", cmd], { stdout: "pipe", stderr: "pipe" });
-    const available = result.exitCode === 0;
-    _cliToolCache = { command: cmd, available };
-    return available;
-  } catch {
-    _cliToolCache = { command: cmd, available: false };
-    return false;
-  }
+  return resolveCliCommand(cliCommand) !== null;
 }
 
 /**
  * Extract JSON from CLI output that may contain markdown fences or prose.
+ * Tries progressively less strict strategies and validates with JSON.parse.
  */
 function extractJsonFromOutput(output: string): string {
-  // Try to extract from markdown code fences first
-  const fenceMatch = output.match(/```(?:json)?\s*\n([\s\S]*?)\n\s*```/);
-  if (fenceMatch) return fenceMatch[1].trim();
+  const trimmed = output.trim();
 
-  // Try to find a JSON object or array directly
-  const jsonMatch = output.match(/(\{[\s\S]*\}|\[[\s\S]*\])/);
-  if (jsonMatch) return jsonMatch[1].trim();
+  // Strategy 1: the entire output is valid JSON
+  try { JSON.parse(trimmed); return trimmed; } catch {}
 
-  // Return the raw output as a last resort
-  return output.trim();
+  // Strategy 2: extract from markdown code fences
+  const fenceMatch = trimmed.match(/```(?:json)?\s*\n([\s\S]*?)\n\s*```/);
+  if (fenceMatch) {
+    try { JSON.parse(fenceMatch[1].trim()); return fenceMatch[1].trim(); } catch {}
+  }
+
+  // Strategy 3: find the first `{...}` or `[...]` that parses as valid JSON.
+  // Scan for opening braces/brackets and try parsing from each position.
+  for (let i = 0; i < trimmed.length; i++) {
+    const ch = trimmed[i];
+    if (ch !== "{" && ch !== "[") continue;
+    const closing = ch === "{" ? "}" : "]";
+    // Search backwards from end for the matching close
+    for (let j = trimmed.length - 1; j > i; j--) {
+      if (trimmed[j] !== closing) continue;
+      const candidate = trimmed.slice(i, j + 1);
+      try { JSON.parse(candidate); return candidate; } catch {}
+      break; // only try the outermost matching close for this opening
+    }
+  }
+
+  // Fallback: return as-is and let the caller's JSON.parse fail with a clear error
+  return trimmed;
 }
 
 /**
@@ -286,11 +304,13 @@ export async function cliGenerateObject<T>(
     "Output ONLY the JSON object, nothing else.",
   ].join("\n");
 
-  // Resolve invocation pattern
-  const toolConfig = CLI_TOOL_CONFIGS[cmd] ?? { args: [] };
-  const spawnArgs = [cmd, ...toolConfig.args, enhancedPrompt];
+  // Resolve invocation pattern — prompt is always piped via stdin to avoid
+  // hitting OS argument length limits on long reflection prompts.
+  const toolConfig = CLI_TOOL_CONFIGS[cmd] ?? { flags: [] };
+  const spawnArgs = [cmd, ...toolConfig.flags];
 
   const proc = Bun.spawn(spawnArgs, {
+    stdin: new Response(enhancedPrompt).body!,
     stdout: "pipe",
     stderr: "pipe",
     env: { ...process.env, NO_COLOR: "1" },

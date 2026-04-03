@@ -31,6 +31,7 @@ if (existsSync(onnxPath)) {
 
   // Only patch if not already patched
   if (src.includes("import * as ONNX_NODE from 'onnxruntime-node'")) {
+    // Step 1: Replace the static import with a dynamic try/catch
     src = src.replace(
       "import * as ONNX_NODE from 'onnxruntime-node';",
       [
@@ -40,32 +41,21 @@ if (existsSync(onnxPath)) {
       ].join("\n"),
     );
 
-    // Fix the branch that uses ONNX_NODE — handle null case
+    // Step 2: Add ONNX_NODE null guard to the if condition
     src = src.replace(
       /if\s*\(typeof process !== 'undefined' && process\?\.release\?\.name === 'node'\)\s*\{[\s\S]*?ONNX = ONNX_NODE\.default \?\? ONNX_NODE;/,
       `if (typeof process !== 'undefined' && process?.release?.name === 'node' && ONNX_NODE) {\n    // Native onnxruntime-node available\n    ONNX = ONNX_NODE.default ?? ONNX_NODE;`,
     );
 
-    // After the if/else block, ensure ONNX falls back to web if node failed
-    // Add a safety net after the existing if/else
+    // Step 3: Add a WASM safety net AFTER the entire if/else block.
+    // Find the else block's closing brace by locating the last top-level `}`
+    // in the file (the if/else is the last statement).
     if (!src.includes("// [patched] WASM safety net")) {
-      src = src.replace(
-        /^(export let ONNX;\n)/m,
-        "export let ONNX;\n",
-      );
-
-      // Add fallback after the if/else block
-      const closingBrace = src.lastIndexOf(
-        "ONNX = ONNX_WEB.default ?? ONNX_WEB;",
-      );
-      if (closingBrace !== -1) {
-        const afterBlock = src.indexOf("}", closingBrace);
-        if (afterBlock !== -1) {
-          src =
-            src.slice(0, afterBlock + 1) +
-            "\n\n// [patched] WASM safety net — ensure ONNX is always defined\nif (!ONNX) { ONNX = ONNX_WEB.default ?? ONNX_WEB; }\n" +
-            src.slice(afterBlock + 1);
-        }
+      const lastBrace = src.lastIndexOf("}");
+      if (lastBrace !== -1) {
+        src =
+          src.slice(0, lastBrace + 1) +
+          "\n\n// [patched] WASM safety net — ensure ONNX is always defined\nif (!ONNX) { ONNX = ONNX_WEB.default ?? ONNX_WEB; }\n";
       }
     }
 
