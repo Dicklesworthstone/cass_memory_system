@@ -700,11 +700,17 @@ export async function generateObjectSafe<T>(
 ): Promise<T> {
   // CLI provider: bypass AI SDK entirely and shell out to the CLI tool
   if (config.provider === "cli" && io === DEFAULT_LLM_IO) {
+    let lastCliError: string | undefined;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        const result = await cliGenerateObject(schema, prompt, config.cliCommand);
+        // On retry, prepend the previous error so the model can self-correct
+        const retryPrompt = attempt > 1 && lastCliError
+          ? `[PREVIOUS ATTEMPT FAILED: ${lastCliError}]\nYou MUST output valid JSON this time.\n\n${prompt}`
+          : prompt;
+        const result = await cliGenerateObject(schema, retryPrompt, config.cliCommand);
         return result.object;
       } catch (err: any) {
+        lastCliError = err.message?.slice(0, 200);
         if (attempt >= maxAttempts) throw err;
         warn(`[CLI] Attempt ${attempt} failed: ${err.message}. Retrying...`);
       }
