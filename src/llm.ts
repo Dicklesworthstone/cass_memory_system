@@ -193,17 +193,21 @@ export function getModel(config: { provider: string; model: string; apiKey?: str
 /** Known CLI tools and their invocation flags (prompt is always piped via stdin). */
 const CLI_TOOL_CONFIGS: Record<string, { flags: string[] }> = {
   claude:  { flags: ["-p"] },       // claude -p (print mode, reads prompt from stdin)
-  codex:   { flags: ["--quiet"] },  // codex --quiet (reads from stdin)
+  codex:   { flags: [] },           // codex (reads from stdin)
   gemini:  { flags: [] },           // gemini (reads from stdin)
 };
 
-/** Cached result of CLI tool resolution to avoid repeated `which` subprocesses. */
+/** Auto-detection order: prefer tools most likely to support JSON output via stdin. */
+const CLI_AUTO_DETECT_ORDER = ["claude", "codex", "gemini"];
+
+/** Cached result of CLI tool resolution to avoid repeated PATH lookups. */
 let _cliResolveCache: { key: string; result: string | null } | null = null;
 
 /**
  * Resolve which CLI command to use.
  * Priority: config.cliCommand > CASS_CLI_COMMAND env > auto-detect on PATH.
- * Result is cached per key to avoid repeated subprocess calls.
+ * Result is cached per key. Uses Bun.which() for cross-platform PATH lookup
+ * (works on Linux, macOS, and Windows — unlike spawning `which`).
  */
 export function resolveCliCommand(cliCommand?: string): string | null {
   const key = cliCommand || process.env.CASS_CLI_COMMAND || "__auto__";
@@ -212,18 +216,15 @@ export function resolveCliCommand(cliCommand?: string): string | null {
   let result: string | null = null;
 
   if (cliCommand) {
-    result = cliCommand;
+    // Explicit command: validate it actually exists on PATH
+    result = Bun.which(cliCommand) ? cliCommand : null;
   } else if (process.env.CASS_CLI_COMMAND) {
-    result = process.env.CASS_CLI_COMMAND;
+    const envCmd = process.env.CASS_CLI_COMMAND;
+    result = Bun.which(envCmd) ? envCmd : null;
   } else {
     // Auto-detect: check known tools on PATH
-    for (const tool of Object.keys(CLI_TOOL_CONFIGS)) {
-      try {
-        const proc = Bun.spawnSync(["which", tool], { stdout: "pipe", stderr: "pipe" });
-        if (proc.exitCode === 0) { result = tool; break; }
-      } catch {
-        // which not available or tool not found — try next
-      }
+    for (const tool of CLI_AUTO_DETECT_ORDER) {
+      if (Bun.which(tool)) { result = tool; break; }
     }
   }
 
