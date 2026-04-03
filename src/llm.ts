@@ -72,9 +72,9 @@ const KEY_PREFIX_MAP: Record<string, string> = {
 export function getApiKey(provider: string): string {
   const normalized = provider.trim().toLowerCase() as LLMProvider;
 
-  // Ollama and Bedrock don't use a single API key — return empty string.
-  // Bedrock uses the AWS credential chain (env vars, profile, IAM role).
-  if (normalized === "ollama" || normalized === "bedrock") {
+  // Ollama, Bedrock, and CLI don't use a single API key — return empty string.
+  // Bedrock uses the AWS credential chain; CLI uses the tool's own auth.
+  if (normalized === "ollama" || normalized === "bedrock" || normalized === "cli") {
     return "";
   }
 
@@ -99,8 +99,8 @@ export function getApiKey(provider: string): string {
 export function validateApiKey(provider: string): void {
   const normalized = provider.trim().toLowerCase() as LLMProvider;
 
-  // Ollama and Bedrock don't use a traditional API key — nothing to validate.
-  if (normalized === "ollama" || normalized === "bedrock") return;
+  // Ollama, Bedrock, and CLI don't use a traditional API key — nothing to validate.
+  if (normalized === "ollama" || normalized === "bedrock" || normalized === "cli") return;
 
   const envVar = ENV_VAR_MAP[normalized];
   if (!envVar) return;

@@ -19,7 +19,7 @@ import {
   isToonOutput,
   validateOneOf
 } from "../utils.js";
-import { isLLMAvailable, getAvailableProviders, validateApiKey, resolveOllamaBaseUrl } from "../llm.js";
+import { isLLMAvailable, getAvailableProviders, validateApiKey, resolveOllamaBaseUrl, resolveCliCommand } from "../llm.js";
 import { SECRET_PATTERNS, compileExtraPatterns } from "../sanitize.js";
 import { loadPlaybook, savePlaybook, createEmptyPlaybook } from "../playbook.js";
 import { withLock } from "../lock.js";
@@ -248,8 +248,8 @@ function buildRecommendedActions(params: {
   if (llmCheck?.status === "warn") {
     actions.push({
       label: "Configure an LLM API key (optional)",
-      command: "export ANTHROPIC_API_KEY=\"...\"  # or OPENAI_API_KEY / GOOGLE_GENERATIVE_AI_API_KEY / OLLAMA_BASE_URL",
-      reason: "Enables AI-powered reflection. The CLI works fully without it. For local LLMs, use Ollama.",
+      command: "export ANTHROPIC_API_KEY=\"...\"  # or OPENAI_API_KEY / GOOGLE_GENERATIVE_AI_API_KEY / OLLAMA_BASE_URL / install claude CLI",
+      reason: "Enables AI-powered reflection. The CLI works fully without it. For local LLMs, use Ollama. If you have Claude Code or similar installed, set provider to 'cli'.",
       urgency: "low",
     });
   }
@@ -386,7 +386,7 @@ async function computeDoctorChecks(
   const availableProviders = getAvailableProviders();
   // Ollama and Bedrock are available when explicitly configured even without
   // standard env vars — Ollama defaults to localhost, Bedrock uses IAM roles.
-  const usesImplicitAuth = config.provider === "ollama" || config.provider === "bedrock";
+  const usesImplicitAuth = config.provider === "ollama" || config.provider === "bedrock" || config.provider === "cli";
   const hasAnyApiKey = availableProviders.length > 0 || !!config.apiKey || usesImplicitAuth;
   const configuredProviderAvailable = isLLMAvailable(config.provider) || !!config.apiKey || usesImplicitAuth;
 
@@ -406,7 +406,7 @@ async function computeDoctorChecks(
       llmMessage = `Provider: ${config.provider} not configured, but ${availableProviders.join(", ")} available (will auto-fallback)`;
     }
   } else {
-    llmMessage = `No API keys set (optional - set ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY, OLLAMA_BASE_URL, or AWS credentials for AI-powered reflection)`;
+    llmMessage = `No API keys set (optional - set ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY, OLLAMA_BASE_URL, AWS credentials, or install a CLI tool like claude/codex/gemini for AI-powered reflection)`;
   }
 
   checks.push({
@@ -800,7 +800,7 @@ export async function runSelfTest(
   const currentProvider = config.provider;
   const hasCurrentProvider = availableProviders.includes(currentProvider);
   const hasConfigApiKey = !!config.apiKey;
-  const providerUsesImplicitAuth = currentProvider === "ollama" || currentProvider === "bedrock";
+  const providerUsesImplicitAuth = currentProvider === "ollama" || currentProvider === "bedrock" || currentProvider === "cli";
   const hasAnyApiKey = availableProviders.length > 0 || hasConfigApiKey || providerUsesImplicitAuth;
 
   if (!hasAnyApiKey) {
@@ -809,7 +809,7 @@ export async function runSelfTest(
       category: "Self-Test",
       item: "LLM System",
       status: "fail",
-      message: "No API keys configured",
+      message: "No LLM provider configured (set an API key or install claude/codex/gemini CLI)",
       details: { availableProviders: [], currentProvider, keySource: "none" },
     });
   } else if (currentProvider === "ollama") {
@@ -846,6 +846,24 @@ export async function runSelfTest(
         semanticSearchEnabled: config.semanticSearchEnabled,
         embeddingModel: config.embeddingModel,
         keySource: "aws-credentials"
+      },
+    });
+  } else if (currentProvider === "cli") {
+    // CLI provider uses an installed tool's own auth
+    const cliTool = resolveCliCommand(config.cliCommand) || "not found";
+    checks.push({
+      category: "Self-Test",
+      item: "LLM System",
+      status: cliTool !== "not found" ? "pass" : "warn",
+      message: cliTool !== "not found" ? `cli (${cliTool})` : "cli provider configured but no CLI tool found on PATH",
+      details: {
+        availableProviders,
+        currentProvider,
+        cliTool,
+        cliCommand: config.cliCommand,
+        semanticSearchEnabled: config.semanticSearchEnabled,
+        embeddingModel: config.embeddingModel,
+        keySource: "cli"
       },
     });
   } else if (hasConfigApiKey) {
