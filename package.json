@@ -31,7 +31,8 @@
     "test:coverage": "bun test --coverage",
     "test:watch": "bun test --watch",
     "test:fast": "bun test test/*.fast.test.ts",
-    "test:ci": "bun test --timeout 60000"
+    "test:ci": "bun test --timeout 60000",
+    "postinstall": "node scripts/patch-standalone-deps.mjs"
   },
   "dependencies": {
     "@ai-sdk/amazon-bedrock": "^1.1.6",

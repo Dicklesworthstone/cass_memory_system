@@ -41,7 +41,7 @@ export type BulletState = z.infer<typeof BulletStateEnum>;
 export const BulletMaturityEnum = z.enum(["candidate", "established", "proven", "deprecated"]);
 export type BulletMaturity = z.infer<typeof BulletMaturityEnum>;
 
-export const LLMProviderEnum = z.enum(["openai", "anthropic", "google", "ollama", "bedrock"]);
+export const LLMProviderEnum = z.enum(["openai", "anthropic", "google", "ollama", "bedrock", "cli"]);
 export type LLMProvider = z.infer<typeof LLMProviderEnum>;
 
 // ============================================================================
@@ -411,7 +411,8 @@ export const ConfigSchema = z.object({
   baseUrl: z.string().optional(),
   ollamaBaseUrl: z.string().default("http://localhost:11434"),
   sanitization: SanitizationConfigSchema.default({}),
-  budget: BudgetConfigSchema.default({})
+  budget: BudgetConfigSchema.default({}),
+  cliCommand: z.string().optional(),
 });
 export type Config = z.infer<typeof ConfigSchema>;
 

@@ -1,6 +1,6 @@
 // src/llm.ts
 // LLM Provider Abstraction - Using Vercel AI SDK
-// Supports OpenAI, Anthropic, Google, Ollama, and AWS Bedrock providers with a unified interface
+// Supports OpenAI, Anthropic, Google, Ollama, AWS Bedrock, and CLI providers with a unified interface
 
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
@@ -56,6 +56,7 @@ const ENV_VAR_MAP: Record<LLMProvider, string> = {
   google: "GOOGLE_GENERATIVE_AI_API_KEY",
   ollama: "OLLAMA_BASE_URL",
   bedrock: "AWS_ACCESS_KEY_ID",
+  cli: "CASS_CLI_COMMAND",
 };
 
 /**
@@ -181,6 +182,161 @@ export function getModel(config: { provider: string; model: string; apiKey?: str
   }
 }
 
+// --- CLI LLM Backend ---
+// Shells out to installed CLI tools (claude, codex, gemini) for LLM calls,
+// reusing their existing auth instead of requiring separate API keys.
+
+/** Known CLI tools and their invocation patterns. */
+const CLI_TOOL_CONFIGS: Record<string, { args: string[] }> = {
+  claude:  { args: ["-p"] },       // claude -p "prompt" (print mode)
+  codex:   { args: ["--quiet"] },  // codex --quiet "prompt"
+  gemini:  { args: [] },           // gemini "prompt"
+};
+
+/** Cache for CLI tool availability checks. */
+let _cliToolCache: { command: string; available: boolean } | null = null;
+
+/**
+ * Resolve which CLI command to use.
+ * Priority: config.cliCommand > CASS_CLI_COMMAND env > auto-detect on PATH.
+ */
+export function resolveCliCommand(cliCommand?: string): string | null {
+  if (cliCommand) return cliCommand;
+  if (process.env.CASS_CLI_COMMAND) return process.env.CASS_CLI_COMMAND;
+
+  // Auto-detect: check known tools on PATH
+  for (const tool of Object.keys(CLI_TOOL_CONFIGS)) {
+    try {
+      const result = Bun.spawnSync(["which", tool], { stdout: "pipe", stderr: "pipe" });
+      if (result.exitCode === 0) return tool;
+    } catch {
+      // which not available or tool not found — try next
+    }
+  }
+  return null;
+}
+
+/**
+ * Check if a CLI LLM tool is available (synchronous, cached).
+ */
+export function isCliAvailable(cliCommand?: string): boolean {
+  const cmd = resolveCliCommand(cliCommand);
+  if (!cmd) return false;
+  if (_cliToolCache?.command === cmd) return _cliToolCache.available;
+
+  try {
+    const result = Bun.spawnSync(["which", cmd], { stdout: "pipe", stderr: "pipe" });
+    const available = result.exitCode === 0;
+    _cliToolCache = { command: cmd, available };
+    return available;
+  } catch {
+    _cliToolCache = { command: cmd, available: false };
+    return false;
+  }
+}
+
+/**
+ * Extract JSON from CLI output that may contain markdown fences or prose.
+ */
+function extractJsonFromOutput(output: string): string {
+  // Try to extract from markdown code fences first
+  const fenceMatch = output.match(/```(?:json)?\s*\n([\s\S]*?)\n\s*```/);
+  if (fenceMatch) return fenceMatch[1].trim();
+
+  // Try to find a JSON object or array directly
+  const jsonMatch = output.match(/(\{[\s\S]*\}|\[[\s\S]*\])/);
+  if (jsonMatch) return jsonMatch[1].trim();
+
+  // Return the raw output as a last resort
+  return output.trim();
+}
+
+/**
+ * Call an LLM via a CLI tool (claude, codex, gemini, etc.).
+ * Sends the prompt as an argument and parses JSON from stdout.
+ */
+export async function cliGenerateObject<T>(
+  schema: z.ZodSchema<T>,
+  prompt: string,
+  cliCommand?: string,
+): Promise<{ object: T; usage: LLMUsage }> {
+  const cmd = resolveCliCommand(cliCommand);
+  if (!cmd) {
+    throw new Error(
+      "No CLI LLM tool found. Install one of: claude, codex, gemini — or set cliCommand in config."
+    );
+  }
+
+  // Build a schema hint for the prompt — uses zodToJsonSchema-like extraction
+  let schemaHint = "structured JSON object";
+  try {
+    const schemaDef = (schema as any)?._def;
+    if (schemaDef?.typeName === "ZodObject" && schemaDef?.shape) {
+      const shape = typeof schemaDef.shape === "function" ? schemaDef.shape() : schemaDef.shape;
+      const fields = Object.entries(shape).map(([k, v]) => `"${k}": ${(v as any)?._def?.typeName || "unknown"}`);
+      schemaHint = `{ ${fields.join(", ")} }`;
+    }
+  } catch { /* non-critical — use generic hint */ }
+
+  const enhancedPrompt = [
+    prompt,
+    "",
+    "CRITICAL: You MUST respond with ONLY valid JSON (no markdown, no explanation, no prose).",
+    `The JSON must conform to this schema: ${schemaHint}`,
+    "Output ONLY the JSON object, nothing else.",
+  ].join("\n");
+
+  // Resolve invocation pattern
+  const toolConfig = CLI_TOOL_CONFIGS[cmd] ?? { args: [] };
+  const spawnArgs = [cmd, ...toolConfig.args, enhancedPrompt];
+
+  const proc = Bun.spawn(spawnArgs, {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env, NO_COLOR: "1" },
+  });
+
+  const [stdout, stderr] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+
+  const exitCode = await proc.exited;
+  if (exitCode !== 0) {
+    throw new Error(
+      `CLI tool '${cmd}' exited with code ${exitCode}: ${stderr.slice(0, 500)}`
+    );
+  }
+
+  if (!stdout.trim()) {
+    throw new Error(`CLI tool '${cmd}' produced no output`);
+  }
+
+  // Parse JSON from output
+  const jsonStr = extractJsonFromOutput(stdout);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonStr);
+  } catch (e) {
+    throw new Error(
+      `Failed to parse JSON from '${cmd}' output:\n${jsonStr.slice(0, 500)}`
+    );
+  }
+
+  // Validate against schema
+  const validated = schema.safeParse(parsed);
+  if (!validated.success) {
+    throw new Error(
+      `CLI output failed schema validation: ${validated.error.message}\nRaw JSON: ${jsonStr.slice(0, 500)}`
+    );
+  }
+
+  return {
+    object: validated.data,
+    usage: { promptTokens: 0, completionTokens: 0 },
+  };
+}
+
 export function isLLMAvailable(provider: LLMProvider): boolean {
   // Ollama is "available" when either OLLAMA_BASE_URL or OLLAMA_HOST is set.
   // We cannot auto-detect a running local server because this function is
@@ -194,6 +350,10 @@ export function isLLMAvailable(provider: LLMProvider): boolean {
     return !!(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY)
       || !!process.env.AWS_PROFILE
       || !!process.env.AWS_WEB_IDENTITY_TOKEN_FILE;
+  }
+  // CLI provider: check if a CLI LLM tool is on PATH
+  if (provider === "cli") {
+    return isCliAvailable();
   }
   const envVar = ENV_VAR_MAP[provider];
   return !!process.env[envVar];
@@ -492,6 +652,20 @@ export async function generateObjectSafe<T>(
   maxAttempts: number = 3,
   io: LLMIO = DEFAULT_LLM_IO
 ): Promise<T> {
+  // CLI provider: bypass AI SDK entirely and shell out to the CLI tool
+  if (config.provider === "cli" && io === DEFAULT_LLM_IO) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const result = await cliGenerateObject(schema, prompt, config.cliCommand);
+        return result.object;
+      } catch (err: any) {
+        if (attempt >= maxAttempts) throw err;
+        warn(`[CLI] Attempt ${attempt} failed: ${err.message}. Retrying...`);
+      }
+    }
+    throw new Error("CLI LLM backend: all attempts exhausted");
+  }
+
   // Only create real model when using real LLM (not mock LLMIO)
   // Mock LLMIO ignores the model and just uses prompt content for detection
   let model: ReturnType<typeof getModel> | null = null;
@@ -773,7 +947,7 @@ Make queries specific enough to be useful but broad enough to match variations.`
 
 // --- Multi-Provider Fallback ---
 
-const FALLBACK_ORDER: LLMProvider[] = ["anthropic", "openai", "google", "bedrock", "ollama"];
+const FALLBACK_ORDER: LLMProvider[] = ["anthropic", "openai", "google", "bedrock", "ollama", "cli"];
 
 const FALLBACK_MODELS: Record<LLMProvider, string> = {
   anthropic: "claude-3-5-sonnet-20241022",
@@ -781,6 +955,7 @@ const FALLBACK_MODELS: Record<LLMProvider, string> = {
   google: "gemini-1.5-flash",
   ollama: "llama3.2:3b",
   bedrock: "anthropic.claude-sonnet-4-20250514-v1:0",
+  cli: "default",
 };
 
 export async function llmWithFallback<T>(
@@ -814,7 +989,7 @@ export async function llmWithFallback<T>(
 
   if (providerOrder.length === 0) {
     throw new Error(
-      "No LLM providers available. Set one of: OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY, OLLAMA_BASE_URL, or AWS_ACCESS_KEY_ID+AWS_SECRET_ACCESS_KEY (Bedrock)"
+      "No LLM providers available. Set one of: OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY, OLLAMA_BASE_URL, AWS_ACCESS_KEY_ID+AWS_SECRET_ACCESS_KEY (Bedrock), or install a CLI tool (claude, codex, gemini)"
     );
   }
 
@@ -825,6 +1000,12 @@ export async function llmWithFallback<T>(
     const isLastProvider = i === providerOrder.length - 1;
 
     try {
+      // CLI provider: bypass AI SDK, shell out directly
+      if (provider === "cli") {
+        const result = await cliGenerateObject<T>(schema, prompt, config.cliCommand);
+        return result.object;
+      }
+
       const llmModel = getModel({ provider, model, apiKey, baseUrl: config.baseUrl, ollamaBaseUrl: config.ollamaBaseUrl });
       const costConfig: Config = { ...config, provider, model, apiKey };
 
