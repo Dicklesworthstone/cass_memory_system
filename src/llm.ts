@@ -313,6 +313,8 @@ export async function cliGenerateObject<T>(
   const toolConfig = CLI_TOOL_CONFIGS[cmd] ?? { flags: [] };
   const spawnArgs = [cmd, ...toolConfig.flags];
 
+  const CLI_TIMEOUT_MS = 120_000; // 2 minutes — generous for large prompts
+
   const proc = Bun.spawn(spawnArgs, {
     stdin: new Response(enhancedPrompt).body!,
     stdout: "pipe",
@@ -320,12 +322,31 @@ export async function cliGenerateObject<T>(
     env: { ...process.env, NO_COLOR: "1" },
   });
 
-  const [stdout, stderr] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ]);
+  // Race the process against a timeout to prevent indefinite hangs
+  let timeoutId: ReturnType<typeof setTimeout>;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      proc.kill();
+      reject(new Error(`CLI tool '${cmd}' timed out after ${CLI_TIMEOUT_MS / 1000}s`));
+    }, CLI_TIMEOUT_MS);
+  });
 
-  const exitCode = await proc.exited;
+  let stdout: string;
+  let stderr: string;
+  let exitCode: number;
+  try {
+    [stdout, stderr, exitCode] = await Promise.race([
+      Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]),
+      timeoutPromise,
+    ]) as [string, string, number];
+  } finally {
+    clearTimeout(timeoutId!);
+  }
+
   if (exitCode !== 0) {
     throw new Error(
       `CLI tool '${cmd}' exited with code ${exitCode}: ${stderr.slice(0, 500)}`

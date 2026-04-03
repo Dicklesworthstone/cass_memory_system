@@ -75,7 +75,7 @@ export async function auditCommand(
     const availableProviders = getAvailableProviders();
     if (!hasApiKeyOverride && availableProviders.length === 0) {
       const message =
-        "Audit requires LLM access. Set one of: ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_GENERATIVE_AI_API_KEY (or set apiKey in config).";
+        "Audit requires LLM access. Set one of: ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY, OLLAMA_BASE_URL, AWS credentials (Bedrock), or install a CLI tool (claude/codex/gemini) and set provider to 'cli'.";
       reportError(message, { code: ErrorCode.MISSING_API_KEY, json: flags.json, command, startedAtMs });
       return;
     }
