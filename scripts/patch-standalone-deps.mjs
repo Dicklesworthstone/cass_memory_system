@@ -73,6 +73,7 @@ if (existsSync(imagePath)) {
   let src = readFileSync(imagePath, "utf8");
 
   if (src.includes("import sharp from 'sharp'")) {
+    // Step 1: Replace the static import with a dynamic try/catch
     src = src.replace(
       "import sharp from 'sharp';",
       [
@@ -82,9 +83,26 @@ if (existsSync(imagePath)) {
       ].join("\n"),
     );
 
+    // Step 2: The module has an if/else chain that throws when neither browser
+    // APIs nor sharp are available. In a standalone binary without sharp, this
+    // throw crashes at module load time even for text-only embedding pipelines.
+    // Replace the hard throw with a deferred error (only throws if image
+    // processing is actually attempted, not at import time).
+    if (src.includes("throw new Error('Unable to load image processing library.')")) {
+      src = src.replace(
+        "throw new Error('Unable to load image processing library.');",
+        [
+          "// [patched] Deferred error instead of load-time crash for text-only pipelines",
+          "loadImageFunction = async () => { throw new Error('Image processing unavailable: sharp not loaded (standalone binary). Only text pipelines are supported.'); };",
+          "createCanvasFunction = () => { throw new Error('Canvas unavailable: sharp not loaded (standalone binary). Only text pipelines are supported.'); };",
+          "ImageDataClass = class ImageData { constructor() { throw new Error('ImageData unavailable: sharp not loaded'); } };",
+        ].join("\n    "),
+      );
+    }
+
     writeFileSync(imagePath, src);
     patched++;
-    console.log("[patch-standalone-deps] Patched image.js: sharp → dynamic import with null fallback");
+    console.log("[patch-standalone-deps] Patched image.js: sharp → dynamic import + deferred image error");
   }
 }
 

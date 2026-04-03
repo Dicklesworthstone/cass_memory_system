@@ -320,7 +320,7 @@ export async function cliGenerateObject<T>(
     stdin: new Response(enhancedPrompt).body!,
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, NO_COLOR: "1" },
+    env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0" },
   });
 
   // Race the process against a timeout to prevent indefinite hangs
@@ -332,16 +332,21 @@ export async function cliGenerateObject<T>(
     }, CLI_TIMEOUT_MS);
   });
 
+  // Extract Promise.all so we can suppress orphaned rejections if the
+  // timeout wins the race but the process later errors on stream close.
+  const resultPromise = Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  resultPromise.catch(() => {}); // prevent unhandled rejection after timeout
+
   let stdout: string;
   let stderr: string;
   let exitCode: number;
   try {
     [stdout, stderr, exitCode] = await Promise.race([
-      Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-        proc.exited,
-      ]),
+      resultPromise,
       timeoutPromise,
     ]) as [string, string, number];
   } finally {
