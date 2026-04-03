@@ -152,6 +152,10 @@ export function resolveOllamaBaseUrl(ollamaBaseUrl?: string): string {
 export function getModel(config: { provider: string; model: string; apiKey?: string; baseUrl?: string; ollamaBaseUrl?: string }): LanguageModel {
   const provider = config.provider as LLMProvider;
 
+  if (provider === "cli") {
+    throw new Error("CLI provider does not use AI SDK models — use cliGenerateObject() instead");
+  }
+
   if (provider === "ollama") {
     const baseURL = resolveOllamaBaseUrl(config.ollamaBaseUrl);
     // ollama-ai-provider expects baseURL with /api suffix
@@ -271,7 +275,7 @@ function extractJsonFromOutput(output: string): string {
 
 /**
  * Call an LLM via a CLI tool (claude, codex, gemini, etc.).
- * Sends the prompt as an argument and parses JSON from stdout.
+ * Pipes the prompt via stdin and parses JSON from stdout.
  */
 export async function cliGenerateObject<T>(
   schema: z.ZodSchema<T>,
@@ -996,7 +1000,7 @@ export async function llmWithFallback<T>(
   // Ollama and Bedrock are always considered available when explicitly configured
   // as the primary provider: Ollama defaults to localhost:11434, and Bedrock can
   // use IAM roles or instance profiles that we can't detect via env vars.
-  const primaryUsesImplicitAuth = primaryProvider === "ollama" || primaryProvider === "bedrock";
+  const primaryUsesImplicitAuth = primaryProvider === "ollama" || primaryProvider === "bedrock" || primaryProvider === "cli";
   if (availableProviders.includes(primaryProvider) || apiKeyOverride !== undefined || primaryUsesImplicitAuth) {
     providerOrder.push({ provider: primaryProvider, model: primaryModel, apiKey: apiKeyOverride });
   }
