@@ -244,7 +244,8 @@ export function isCliAvailable(cliCommand?: string): boolean {
  * Tries progressively less strict strategies and validates with JSON.parse.
  */
 function extractJsonFromOutput(output: string): string {
-  const trimmed = output.trim();
+  // Strip UTF-8 BOM (U+FEFF) — some CLI tools on Windows emit it
+  const trimmed = output.trim().replace(/^\uFEFF/, "");
 
   // Strategy 1: the entire output is valid JSON
   try { JSON.parse(trimmed); return trimmed; } catch {}
@@ -351,6 +352,12 @@ export async function cliGenerateObject<T>(
     ]) as [string, string, number];
   } finally {
     clearTimeout(timeoutId!);
+  }
+
+  // Guard against runaway output (10MB should be far more than any LLM response)
+  const MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
+  if (stdout.length > MAX_OUTPUT_BYTES) {
+    throw new Error(`CLI tool '${cmd}' produced ${(stdout.length / 1024 / 1024).toFixed(1)}MB of output (limit: ${MAX_OUTPUT_BYTES / 1024 / 1024}MB)`);
   }
 
   if (exitCode !== 0) {

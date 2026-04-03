@@ -412,7 +412,7 @@ export const ConfigSchema = z.object({
   ollamaBaseUrl: z.string().default("http://localhost:11434"),
   sanitization: SanitizationConfigSchema.default({}),
   budget: BudgetConfigSchema.default({}),
-  cliCommand: z.string().min(1).optional(),
+  cliCommand: z.string().min(1).max(256).optional(),
 });
 export type Config = z.infer<typeof ConfigSchema>;
 

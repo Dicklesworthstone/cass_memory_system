@@ -21,6 +21,12 @@ const root = join(__dirname, "..");
 const TRANSFORMERS = join(root, "node_modules", "@xenova", "transformers");
 
 let patched = 0;
+let warnings = 0;
+
+function warnPatch(file, detail) {
+  console.warn(`[patch-standalone-deps] WARNING: ${file} — ${detail}`);
+  warnings++;
+}
 
 // --- Patch 1: onnx.js ---
 // Replace static `import * as ONNX_NODE from 'onnxruntime-node'` with a
@@ -32,6 +38,7 @@ if (existsSync(onnxPath)) {
   // Only patch if not already patched
   if (src.includes("import * as ONNX_NODE from 'onnxruntime-node'")) {
     // Step 1: Replace the static import with a dynamic try/catch
+    const beforeStep1 = src;
     src = src.replace(
       "import * as ONNX_NODE from 'onnxruntime-node';",
       [
@@ -40,22 +47,30 @@ if (existsSync(onnxPath)) {
         "try { ONNX_NODE = await import('onnxruntime-node'); } catch {}",
       ].join("\n"),
     );
+    if (src === beforeStep1) {
+      warnPatch("onnx.js", "Step 1 (import replacement) did not match — @xenova/transformers may have changed format");
+    }
 
     // Step 2: Add ONNX_NODE null guard to the if condition
-    src = src.replace(
-      /if\s*\(typeof process !== 'undefined' && process\?\.release\?\.name === 'node'\)\s*\{[\s\S]*?ONNX = ONNX_NODE\.default \?\? ONNX_NODE;/,
-      `if (typeof process !== 'undefined' && process?.release?.name === 'node' && ONNX_NODE) {\n    // Native onnxruntime-node available\n    ONNX = ONNX_NODE.default ?? ONNX_NODE;`,
-    );
+    const ifBlockRegex = /if\s*\(typeof process !== 'undefined' && process\?\.release\?\.name === 'node'\)\s*\{[\s\S]*?ONNX = ONNX_NODE\.default \?\? ONNX_NODE;/;
+    if (ifBlockRegex.test(src)) {
+      src = src.replace(
+        ifBlockRegex,
+        `if (typeof process !== 'undefined' && process?.release?.name === 'node' && ONNX_NODE) {\n    // Native onnxruntime-node available\n    ONNX = ONNX_NODE.default ?? ONNX_NODE;`,
+      );
+    } else {
+      warnPatch("onnx.js", "Step 2 (if-block guard) regex did not match — runtime fallback may not work correctly");
+    }
 
     // Step 3: Add a WASM safety net AFTER the entire if/else block.
-    // Find the else block's closing brace by locating the last top-level `}`
-    // in the file (the if/else is the last statement).
     if (!src.includes("// [patched] WASM safety net")) {
       const lastBrace = src.lastIndexOf("}");
       if (lastBrace !== -1) {
         src =
           src.slice(0, lastBrace + 1) +
           "\n\n// [patched] WASM safety net — ensure ONNX is always defined\nif (!ONNX) { ONNX = ONNX_WEB.default ?? ONNX_WEB; }\n";
+      } else {
+        warnPatch("onnx.js", "Step 3 (safety net) could not find closing brace");
       }
     }
 
@@ -63,6 +78,8 @@ if (existsSync(onnxPath)) {
     patched++;
     console.log("[patch-standalone-deps] Patched onnx.js: onnxruntime-node → dynamic import with WASM fallback");
   }
+} else {
+  warnPatch("onnx.js", `File not found at ${onnxPath} — @xenova/transformers may have changed structure or is not installed`);
 }
 
 // --- Patch 2: image.js ---
@@ -88,9 +105,10 @@ if (existsSync(imagePath)) {
     // throw crashes at module load time even for text-only embedding pipelines.
     // Replace the hard throw with a deferred error (only throws if image
     // processing is actually attempted, not at import time).
-    if (src.includes("throw new Error('Unable to load image processing library.')")) {
+    const throwTarget = "throw new Error('Unable to load image processing library.');";
+    if (src.includes(throwTarget)) {
       src = src.replace(
-        "throw new Error('Unable to load image processing library.');",
+        throwTarget,
         [
           "// [patched] Deferred error instead of load-time crash for text-only pipelines",
           "loadImageFunction = async () => { throw new Error('Image processing unavailable: sharp not loaded (standalone binary). Only text pipelines are supported.'); };",
@@ -98,16 +116,24 @@ if (existsSync(imagePath)) {
           "ImageDataClass = class ImageData { constructor() { throw new Error('ImageData unavailable: sharp not loaded'); } };",
         ].join("\n    "),
       );
+    } else {
+      warnPatch("image.js", "Could not find 'Unable to load image processing library' throw — load-time crash may still occur in standalone binaries");
     }
 
     writeFileSync(imagePath, src);
     patched++;
     console.log("[patch-standalone-deps] Patched image.js: sharp → dynamic import + deferred image error");
   }
+} else {
+  warnPatch("image.js", `File not found at ${imagePath} — @xenova/transformers may have changed structure or is not installed`);
 }
 
 if (patched > 0) {
   console.log(`[patch-standalone-deps] Done: ${patched} file(s) patched for standalone binary compatibility`);
 } else {
   console.log("[patch-standalone-deps] No patches needed (already patched or files not found)");
+}
+
+if (warnings > 0) {
+  console.warn(`[patch-standalone-deps] ${warnings} warning(s) — standalone binary may have issues. Check @xenova/transformers version compatibility.`);
 }
