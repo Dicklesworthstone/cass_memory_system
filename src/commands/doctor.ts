@@ -809,7 +809,7 @@ export async function runSelfTest(
       category: "Self-Test",
       item: "LLM System",
       status: "fail",
-      message: "No LLM provider configured (set an API key or install claude/codex/gemini CLI)",
+      message: "No API keys configured (set an API key env var or install claude/codex/gemini CLI)",
       details: { availableProviders: [], currentProvider, keySource: "none" },
     });
   } else if (currentProvider === "ollama") {

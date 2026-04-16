@@ -69,18 +69,27 @@ const KEY_PREFIX_MAP: Record<string, string> = {
   google: "AIza",
 };
 
+/**
+ * Providers that getApiKey() can resolve. Bedrock (AWS credential chain) and
+ * CLI (tool-managed auth) do not fit the single-env-var API-key model and are
+ * handled upstream in getModel()/llmWithFallback(); asking getApiKey() about
+ * them is a programming error and is surfaced as an "Unknown LLM provider"
+ * throw with the supported list so the caller can fix their dispatch logic.
+ */
+const API_KEY_SUPPORTED_PROVIDERS: LLMProvider[] = ["openai", "anthropic", "google", "ollama"];
+
 export function getApiKey(provider: string): string {
   const normalized = provider.trim().toLowerCase() as LLMProvider;
 
-  // Ollama, Bedrock, and CLI don't use a single API key — return empty string.
-  // Bedrock uses the AWS credential chain; CLI uses the tool's own auth.
-  if (normalized === "ollama" || normalized === "bedrock" || normalized === "cli") {
+  // Ollama is a supported provider but uses OLLAMA_BASE_URL, not an API key.
+  // Return empty string so isLLMAvailable/getModel can route appropriately.
+  if (normalized === "ollama") {
     return "";
   }
 
   const envVar = ENV_VAR_MAP[normalized];
-  if (!envVar) {
-    const supported = Object.keys(ENV_VAR_MAP).join(", ");
+  if (!envVar || !API_KEY_SUPPORTED_PROVIDERS.includes(normalized)) {
+    const supported = API_KEY_SUPPORTED_PROVIDERS.join(", ");
     throw new Error(
       `Unknown LLM provider '${provider}'. Supported providers: ${supported}.`
     );
@@ -1053,7 +1062,8 @@ export async function llmWithFallback<T>(
 
   if (providerOrder.length === 0) {
     throw new Error(
-      "No LLM providers available. Set one of: OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY, OLLAMA_BASE_URL, AWS_ACCESS_KEY_ID+AWS_SECRET_ACCESS_KEY (Bedrock), or install a CLI tool (claude, codex, gemini)"
+      "No LLM providers available. Set one of: OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY, or OLLAMA_BASE_URL. " +
+      "Other options: configure AWS credentials for Bedrock (AWS_ACCESS_KEY_ID+AWS_SECRET_ACCESS_KEY) or install a local CLI tool (claude, codex, gemini)."
     );
   }
 
