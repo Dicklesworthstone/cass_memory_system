@@ -209,6 +209,13 @@ function clamp01(value: number): number {
   return value;
 }
 
+export interface ScoreBulletsMeta {
+  /** Mode actually used: "semantic" when query+bullet embeddings were loaded, else "keyword". */
+  semanticMode: "semantic" | "keyword";
+  /** If the user asked for semantic but we fell back, this holds the underlying error message. */
+  semanticError?: string;
+}
+
 export async function scoreBulletsEnhanced(
   bullets: PlaybookBullet[],
   task: string,
@@ -227,9 +234,16 @@ export async function scoreBulletsEnhanced(
       skipped: number;
       message: string;
     }) => void;
+    /** Optional out-param: receives which scoring mode ran + why it degraded. */
+    meta?: ScoreBulletsMeta;
   } = {}
 ): Promise<ScoredBullet[]> {
-  if (bullets.length === 0) return [];
+  if (bullets.length === 0) {
+    if (options.meta) {
+      options.meta.semanticMode = "keyword";
+    }
+    return [];
+  }
 
   const embeddingModel =
     typeof config.embeddingModel === "string" && config.embeddingModel.trim() !== ""
@@ -242,6 +256,7 @@ export async function scoreBulletsEnhanced(
   );
 
   let queryEmbedding: number[] | null = null;
+  let semanticError: string | undefined;
   if (semanticEnabled) {
     try {
       queryEmbedding =
@@ -271,11 +286,25 @@ export async function scoreBulletsEnhanced(
         // ignore
       }
       queryEmbedding = null;
-      if (!options.json) {
-        warn(
-          `[context] Semantic search unavailable; using keyword-only scoring. ${err?.message || ""}`.trim()
-        );
-      }
+      semanticError = err?.message ? String(err.message) : String(err);
+      // ALWAYS warn (not just in human output). Silent fallback hid a
+      // major runtime regression in v0.2.5 (standalone binary WASM init
+      // failures). Stderr warnings don't pollute JSON stdout.
+      warn(
+        `[context] Semantic search unavailable; using keyword-only scoring. ${semanticError || ""}`.trim()
+      );
+    }
+  }
+
+  // Record which mode we actually ran.
+  if (options.meta) {
+    const ran = semanticEnabled && queryEmbedding && queryEmbedding.length > 0
+      ? "semantic" as const
+      : "keyword" as const;
+    options.meta.semanticMode = ran;
+    if (semanticEnabled && ran === "keyword") {
+      options.meta.semanticError =
+        semanticError || "Semantic search requested but no query embedding produced";
     }
   }
 
@@ -355,8 +384,10 @@ export async function generateContextResult(
     return b.workspace === flags.workspace;
   });
 
+  const scoringMeta: ScoreBulletsMeta = { semanticMode: "keyword" };
   const scoredBullets = await scoreBulletsEnhanced(activeBullets, task, keywords, config, {
     json: flags.json,
+    meta: scoringMeta,
     onSemanticProgress: options.onProgress
       ? (event) =>
         options.onProgress?.({
@@ -437,6 +468,14 @@ export async function generateContextResult(
   );
   if (degraded) {
     result.degraded = degraded;
+  }
+
+  // Surface which mode actually ran + why we degraded (if applicable).
+  // This makes silent semantic-search fallback visible to agents consuming
+  // JSON/TOON output (e.g. `cm context ... --json | jq '.data.semanticMode'`).
+  result.semanticMode = scoringMeta.semanticMode;
+  if (scoringMeta.semanticError) {
+    result.semanticError = scoringMeta.semanticError;
   }
 
   const shouldLog =
@@ -880,6 +919,26 @@ export async function contextCommand(
   // Human Output (premium, width-aware)
   console.log(chalk.bold(`CONTEXT FOR: ${normalizedTask}`));
   console.log(divider);
+
+  // Loud, one-line banner when semantic search was requested but we fell
+  // back to keyword-only. Silent fallback hid a binary-build regression
+  // for an entire release cycle — never again.
+  if (result.semanticError) {
+    console.log(
+      chalk.yellow(
+        `${iconPrefix("warning")}Semantic search unavailable; using keyword-only scoring.`
+      )
+    );
+    console.log(chalk.yellow(`  Reason: ${result.semanticError}`));
+    console.log(
+      chalk.yellow(
+        `  Fix:    set "embeddingBackend": "ollama" in ~/.cass-memory/config.json, ` +
+          `or build from source (install.sh --from-source), ` +
+          `or disable: semanticSearchEnabled: false`
+      )
+    );
+    console.log("");
+  }
 
   if (result.degraded?.cass && !result.degraded.cass.available) {
     const cass = result.degraded.cass;

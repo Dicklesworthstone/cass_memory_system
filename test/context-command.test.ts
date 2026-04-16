@@ -884,6 +884,26 @@ describe("generateContextResult", () => {
     });
   });
 
+  test("result always includes semanticMode (issue #42)", async () => {
+    // Regression guard: before v0.2.6, `ContextResult` had no `semanticMode`
+    // field, so agents consuming `jq '.data.semanticMode'` could not tell
+    // whether semantic search actually ran or silently fell back to
+    // keyword-only. The fix adds the field unconditionally.
+    await withTempCassHome(async (env) => {
+      const bullets = [createTestBullet({ id: "b-1", content: "rule one" })];
+      writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook(bullets)));
+
+      const capture = captureConsole();
+      try {
+        const { result } = await generateContextResult("any query", { json: true });
+        expect(result.semanticMode).toBeDefined();
+        expect(["semantic", "keyword"]).toContain(result.semanticMode!);
+      } finally {
+        capture.restore();
+      }
+    });
+  });
+
   test("orders relevant bullets by relevance score", async () => {
     await withTempCassHome(async (env) => {
       const bullets = [

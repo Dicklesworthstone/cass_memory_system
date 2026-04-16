@@ -1539,7 +1539,45 @@ Remote cass is **opt-in** and queries other machines via SSH (using your existin
 | `semanticSearchEnabled` | `false` | Enable embedding-based search |
 | `semanticWeight` | `0.6` | Weight of semantic vs keyword (0-1) |
 | `embeddingModel` | `Xenova/all-MiniLM-L6-v2` | Transformer model |
+| `embeddingBackend` | `xenova` | Embedding backend: `xenova` (local WASM) or `ollama` |
+| `ollamaBaseUrl` | `http://localhost:11434` | Base URL when `embeddingBackend: "ollama"` |
 | `dedupSimilarityThreshold` | `0.85` | Threshold for duplicate detection |
+
+##### How do I tell whether semantic search actually ran?
+
+The `cm context` command emits a `semanticMode` field in JSON/TOON output
+(one of `"semantic"` or `"keyword"`). When the user asked for semantic
+but the runtime could not provide it, `semanticError` explains why:
+
+```bash
+$ cm context "optimize API latency" --json | jq '.data | {semanticMode, semanticError}'
+{ "semanticMode": "semantic", "semanticError": null }
+```
+
+In human output, a yellow warning banner is printed whenever semantic
+was requested but unavailable — no more silent fallback.
+
+##### Troubleshooting: "Semantic search unavailable" in the prebuilt binary
+
+Releases ≤ v0.2.5 shipped a prebuilt binary that could not locate its
+bundled WASM runtime inside Bun's virtual filesystem. This was fixed in
+v0.2.6 (see issue #42): the onnxruntime-web WASM files are now embedded
+via Bun's `type: "file"` imports and wired up at startup. If you see
+`ENOENT: ... /$bunfs/dist/ort-wasm-*.wasm` on an older binary, upgrade:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/cass_memory_system/main/install.sh | bash -s -- --easy-mode
+```
+
+Alternatively, point cass-memory at a local Ollama daemon (no WASM):
+
+```json
+{
+  "semanticSearchEnabled": true,
+  "embeddingBackend": "ollama",
+  "embeddingModel": "all-minilm"
+}
+```
 
 ### Environment Variables
 

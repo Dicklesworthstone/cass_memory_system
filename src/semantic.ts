@@ -9,6 +9,7 @@ import {
 import { atomicWrite, expandPath, hashContent, resolveGlobalDir, warn } from "./utils.js";
 import { withLock } from "./lock.js";
 import { getOutputStyle } from "./output.js";
+import { ensureOnnxWasmRuntime } from "./wasm-runtime.js";
 
 export const DEFAULT_EMBEDDING_MODEL = "Xenova/all-MiniLM-L6-v2";
 export const EMBEDDING_CACHE_VERSION = "1.0";
@@ -269,7 +270,19 @@ async function loadEmbedder(
   model: string,
   options: { showProgress?: boolean; progressCallback?: ProgressCallback } = {}
 ): Promise<any> {
+  // IMPORT ORDER IS LOAD-BEARING. @xenova/transformers/src/env.js
+  // unconditionally sets `onnx_env.wasm.wasmPaths = path.join(__dirname, "/dist/")`
+  // at module-evaluation time. In a Bun standalone binary, __dirname is
+  // `/$bunfs`, so wasmPaths becomes `/$bunfs/dist/` — a path that does
+  // not exist, causing semantic search to abort with
+  //   "Aborted(Error: ENOENT: ... open '/$bunfs/dist/ort-wasm-*.wasm')".
+  //
+  // We MUST therefore import @xenova/transformers FIRST (let env.js run
+  // and clobber wasmPaths with its bad default), then immediately call
+  // ensureOnnxWasmRuntime() to overwrite wasmPaths with the correct
+  // embedded-file map. See src/wasm-runtime.ts for the fix rationale.
   const { pipeline } = await import("@xenova/transformers");
+  await ensureOnnxWasmRuntime();
 
   const showProgress = options.showProgress ?? shouldShowProgress();
   const progressCallback = options.progressCallback ?? (showProgress ? createStderrProgressCallback() : undefined);
@@ -995,7 +1008,10 @@ export async function warmupEmbeddings(
  */
 export async function isModelCached(model = DEFAULT_EMBEDDING_MODEL): Promise<boolean> {
   try {
+    // See loadEmbedder for why WASM runtime setup must happen AFTER
+    // @xenova/transformers import (env.js clobbers wasmPaths at import).
     const { pipeline } = await import("@xenova/transformers");
+    await ensureOnnxWasmRuntime();
     // Try to load with local_files_only - will fail if not cached
     await pipeline("feature-extraction", model, {
       local_files_only: true,

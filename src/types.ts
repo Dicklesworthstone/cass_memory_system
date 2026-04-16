@@ -517,6 +517,19 @@ export const ContextResultSchema = z.object({
   suggestedCassQueries: z.array(z.string()),
   degraded: DegradedSummarySchema.optional(),
   formattedPrompt: z.string().optional(),
+  /**
+   * Which scoring mode was actually used ("semantic" = embeddings+keyword,
+   * "keyword" = keyword-only). Always set, so callers can detect silent
+   * fallback from semantic → keyword via `jq '.data.semanticMode'`.
+   */
+  semanticMode: z.enum(["semantic", "keyword"]).optional(),
+  /**
+   * If semantic search was requested but unavailable, this explains why
+   * (e.g. WASM runtime initialization failed, Ollama unreachable, model
+   * missing). Present iff `semanticMode === "keyword"` and the user had
+   * `semanticSearchEnabled: true`.
+   */
+  semanticError: z.string().optional(),
   traumaWarning: z.object({
     pattern: z.string(),
     reason: z.string(),
