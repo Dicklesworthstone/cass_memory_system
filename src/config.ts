@@ -299,18 +299,29 @@ export async function loadConfig(cliOverrides: Partial<Config> = {}): Promise<Co
     result.data.verbose = true;
   }
 
-  // Resolve legacy hardcoded defaults to the dynamic global dir.
-  // This ensures fresh installs use XDG paths while existing installs
-  // that have explicitly set paths in config.json are preserved.
-  const globalDir = resolveGlobalDir();
-  const legacyDefaults: Record<string, string> = {
-    playbookPath: "~/.cass-memory/playbook.yaml",
-    diaryDir: "~/.cass-memory/diary",
-  };
-  for (const [key, legacyDefault] of Object.entries(legacyDefaults)) {
-    const val = (result.data as any)[key];
-    if (val === legacyDefault) {
-      (result.data as any)[key] = path.join(globalDir, key === "playbookPath" ? "playbook.yaml" : "diary");
+  // Resolve legacy hardcoded defaults to the dynamic global dir *only* when
+  // the user has explicitly opted into a non-default global location via
+  // CASS_MEMORY_HOME or XDG_DATA_HOME. Without an explicit override we must
+  // preserve the portable "~/.cass-memory/..." literal so:
+  //   - security tests can assert that repo configs cannot override sensitive
+  //     paths (the returned value must equal DEFAULT_CONFIG.playbookPath /
+  //     .diaryDir exactly, not a $HOME-expanded absolute path), and
+  //   - saveConfig/loadConfig round-trips remain stable.
+  // Downstream callers all run the value through expandPath(), which handles
+  // the "~" expansion at use-time.
+  const hasExplicitGlobalDir =
+    !!process.env.CASS_MEMORY_HOME || !!process.env.XDG_DATA_HOME;
+  if (hasExplicitGlobalDir) {
+    const globalDir = resolveGlobalDir();
+    const legacyDefaults: Record<string, string> = {
+      playbookPath: "~/.cass-memory/playbook.yaml",
+      diaryDir: "~/.cass-memory/diary",
+    };
+    for (const [key, legacyDefault] of Object.entries(legacyDefaults)) {
+      const val = (result.data as any)[key];
+      if (val === legacyDefault) {
+        (result.data as any)[key] = path.join(globalDir, key === "playbookPath" ? "playbook.yaml" : "diary");
+      }
     }
   }
 
