@@ -188,7 +188,20 @@ export function getModel(config: { provider: string; model: string; apiKey?: str
   const baseURL = config.baseUrl;
 
   switch (provider) {
-    case "openai": return createOpenAI({ apiKey, ...(baseURL ? { baseURL } : {}) })(config.model);
+    case "openai": {
+      // When pointed at a custom OpenAI-compatible gateway (baseURL), disable
+      // structured outputs. Strict structured outputs send `strict: true` in
+      // the request, which requires every property to appear in `required`
+      // and optional fields to use a null union. Third-party gateways that
+      // enforce the documented strict semantics reject schemas that don't
+      // comply (see issue #44), while cass's current Zod schemas legitimately
+      // use `.optional()` in places.
+      // On the real OpenAI endpoint, structured outputs is kept on — the SDK
+      // already handles Zod optional fields there, and strict mode genuinely
+      // helps reduce hallucination.
+      const openaiProvider = createOpenAI({ apiKey, ...(baseURL ? { baseURL } : {}) });
+      return openaiProvider(config.model, baseURL ? { structuredOutputs: false } : undefined);
+    }
     case "anthropic": return createAnthropic({ apiKey, ...(baseURL ? { baseURL } : {}) })(config.model);
     case "google": return createGoogleGenerativeAI({ apiKey, ...(baseURL ? { baseURL } : {}) })(config.model);
     default: throw new Error(`Unsupported provider: ${config.provider}`);

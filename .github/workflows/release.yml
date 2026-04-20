@@ -20,7 +20,8 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  # Linux x64 and Windows x64 cross-compile from ubuntu-latest.
+  build-linux-windows:
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -43,7 +44,7 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Build all binaries (cross-compilation)
+      - name: Build Linux x64 and Windows x64
         run: |
           mkdir -p dist
 
@@ -52,49 +53,116 @@ jobs:
           # instruction" on older CPUs (see issue #40).
           bun build src/cm.ts --compile --target=bun-linux-x64-baseline --outfile dist/cass-memory-linux-x64
 
-          # macOS ARM64 (Apple Silicon)
-          bun build src/cm.ts --compile --target=bun-darwin-arm64 --outfile dist/cass-memory-macos-arm64
-
-          # macOS x64 (Intel) — use baseline target for maximum CPU compatibility
-          bun build src/cm.ts --compile --target=bun-darwin-x64-baseline --outfile dist/cass-memory-macos-x64
-
           # Windows x64 — use baseline target for maximum CPU compatibility
           bun build src/cm.ts --compile --target=bun-windows-x64-baseline --outfile dist/cass-memory-windows-x64.exe
 
           ls -la dist/
 
-      - name: Generate checksums
-        run: |
-          cd dist
-          sha256sum cass-memory-linux-x64 > cass-memory-linux-x64.sha256
-          sha256sum cass-memory-macos-arm64 > cass-memory-macos-arm64.sha256
-          sha256sum cass-memory-macos-x64 > cass-memory-macos-x64.sha256
-          sha256sum cass-memory-windows-x64.exe > cass-memory-windows-x64.exe.sha256
-          ls -la
-
-      - name: Upload artifacts
+      - name: Upload Linux/Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: binaries
+          name: linux-windows-binaries
+          path: dist/*
+          if-no-files-found: error
+
+  # macOS binaries must be built natively so codesign is available.
+  # Apple Silicon (arm64) mandatorily requires at least an ad-hoc signature:
+  # AMFI terminates unsigned arm64 Mach-Os with SIGKILL at exec.
+  # See issue #43.
+  build-macos:
+    runs-on: macos-15
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            bun-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build macOS arm64 and x64
+        run: |
+          mkdir -p dist
+
+          # macOS ARM64 (Apple Silicon) — native build on macos-15 runner
+          bun build src/cm.ts --compile --target=bun-darwin-arm64 --outfile dist/cass-memory-macos-arm64
+
+          # macOS x64 (Intel) — use baseline target for maximum CPU compatibility
+          bun build src/cm.ts --compile --target=bun-darwin-x64-baseline --outfile dist/cass-memory-macos-x64
+
+          ls -la dist/
+
+      - name: Ad-hoc codesign macOS binaries
+        run: |
+          # On Apple Silicon, AMFI terminates unsigned arm64 binaries with
+          # SIGKILL at exec. Installing via curl does not set the
+          # com.apple.quarantine xattr, so Gatekeeper is not involved — the
+          # kernel itself refuses to run unsigned arm64 Mach-Os. An ad-hoc
+          # signature (signer "-") is sufficient to satisfy AMFI.
+          # See issue #43.
+          codesign --force --sign - --timestamp=none dist/cass-memory-macos-arm64
+          codesign --force --sign - --timestamp=none dist/cass-memory-macos-x64
+
+          # Verify both signatures exist and are structurally valid.
+          codesign -dv dist/cass-memory-macos-arm64
+          codesign -dv dist/cass-memory-macos-x64
+          codesign --verify --verbose=2 dist/cass-memory-macos-arm64
+          codesign --verify --verbose=2 dist/cass-memory-macos-x64
+
+          # Smoke test: the signed arm64 binary must actually exec on this
+          # Apple Silicon runner (previously SIGKILL'd here under AMFI).
+          dist/cass-memory-macos-arm64 --version
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-binaries
           path: dist/*
           if-no-files-found: error
 
   release:
-    needs: build
+    needs: [build-linux-windows, build-macos]
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download artifacts
+      - name: Download Linux/Windows artifacts
         uses: actions/download-artifact@v4
         with:
-          name: binaries
+          name: linux-windows-binaries
+          path: release
+
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-binaries
           path: release
 
       - name: List release assets
         run: ls -la release/
+
+      - name: Generate checksums
+        run: |
+          cd release
+          sha256sum cass-memory-linux-x64 > cass-memory-linux-x64.sha256
+          sha256sum cass-memory-macos-arm64 > cass-memory-macos-arm64.sha256
+          sha256sum cass-memory-macos-x64 > cass-memory-macos-x64.sha256
+          sha256sum cass-memory-windows-x64.exe > cass-memory-windows-x64.exe.sha256
+          ls -la
 
       - name: Get version
         id: version
@@ -157,8 +225,23 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     needs: publish-installer
+    # Skip if the tap dispatch token is not configured.
+    if: ${{ github.repository_owner == 'Dicklesworthstone' }}
     steps:
+      - name: Check for dispatch token
+        id: check_token
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -n "$HOMEBREW_TAP_TOKEN" ]; then
+            echo "has_token=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_token=false" >> "$GITHUB_OUTPUT"
+            echo "HOMEBREW_TAP_TOKEN is not configured — skipping dispatch."
+          fi
+
       - name: Trigger formula update
+        if: steps.check_token.outputs.has_token == 'true'
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
@@ -171,8 +254,9 @@ jobs:
             }
 
       - name: Log dispatch
+        if: steps.check_token.outputs.has_token == 'true'
         run: |
-          echo "✅ Dispatched formula-update event to homebrew-tap"
+          echo "Dispatched formula-update event to homebrew-tap"
           echo "   Tool: cm"
           echo "   Version: ${{ needs.publish-installer.outputs.version }}"
 
@@ -181,8 +265,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     needs: publish-installer
+    if: ${{ github.repository_owner == 'Dicklesworthstone' }}
     steps:
+      - name: Check for dispatch token
+        id: check_token
+        env:
+          SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+        run: |
+          if [ -n "$SCOOP_BUCKET_TOKEN" ]; then
+            echo "has_token=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_token=false" >> "$GITHUB_OUTPUT"
+            echo "SCOOP_BUCKET_TOKEN is not configured — skipping dispatch."
+          fi
+
       - name: Trigger manifest update
+        if: steps.check_token.outputs.has_token == 'true'
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.SCOOP_BUCKET_TOKEN }}
@@ -195,7 +293,8 @@ jobs:
             }
 
       - name: Log dispatch
+        if: steps.check_token.outputs.has_token == 'true'
         run: |
-          echo "✅ Dispatched manifest-update event to scoop-bucket"
+          echo "Dispatched manifest-update event to scoop-bucket"
           echo "   Tool: cm"
           echo "   Version: ${{ needs.publish-installer.outputs.version }}"

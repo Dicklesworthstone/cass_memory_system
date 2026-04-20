@@ -17,13 +17,16 @@ export async function scanSessionsForViolations(
   const activeBullets = getActiveBullets(playbook);
   
   const CONCURRENCY = 3;
+  // Use .nullable() rather than .optional() so the schema is strict-mode
+  // compliant on OpenAI-compatible gateways that require every property
+  // key to appear in `required`. See issue #44.
   const AuditOutputSchema = z.object({
     results: z.array(z.object({
       ruleId: z.string(),
-      status: z.enum(["followed", "violated", "not_applicable"]).optional(), // Optional to handle omitted results
+      status: z.enum(["followed", "violated", "not_applicable"]).nullable(),
       evidence: z.string()
     })),
-    summary: z.string().optional()
+    summary: z.string().nullable()
   });
 
   // Warn if rule count is high
