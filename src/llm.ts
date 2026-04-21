@@ -189,18 +189,17 @@ export function getModel(config: { provider: string; model: string; apiKey?: str
 
   switch (provider) {
     case "openai": {
-      // When pointed at a custom OpenAI-compatible gateway (baseURL), disable
-      // structured outputs. Strict structured outputs send `strict: true` in
-      // the request, which requires every property to appear in `required`
-      // and optional fields to use a null union. Third-party gateways that
-      // enforce the documented strict semantics reject schemas that don't
-      // comply (see issue #44), while cass's current Zod schemas legitimately
-      // use `.optional()` in places.
-      // On the real OpenAI endpoint, structured outputs is kept on — the SDK
-      // already handles Zod optional fields there, and strict mode genuinely
-      // helps reduce hallucination.
+      // Strict structured outputs are kept enabled on both api.openai.com and
+      // custom OpenAI-compatible gateways. Strict mode sends `strict: true` in
+      // the request, which requires every property to appear in `required`,
+      // optional fields to use a null union, and `additionalProperties: false`
+      // on every object. The LLM-facing Zod schemas in src/llm.ts (validator),
+      // src/audit.ts (audit), and src/reflect.ts (reflector) are all written
+      // to comply with those rules — see issue #44. Disabling
+      // structuredOutputs on custom baseURLs would regress the fix by
+      // silently accepting malformed schemas on the real endpoint too.
       const openaiProvider = createOpenAI({ apiKey, ...(baseURL ? { baseURL } : {}) });
-      return openaiProvider(config.model, baseURL ? { structuredOutputs: false } : undefined);
+      return openaiProvider(config.model);
     }
     case "anthropic": return createAnthropic({ apiKey, ...(baseURL ? { baseURL } : {}) })(config.model);
     case "google": return createGoogleGenerativeAI({ apiKey, ...(baseURL ? { baseURL } : {}) })(config.model);
@@ -934,16 +933,24 @@ export interface ValidatorResult {
   suggestedRefinement?: string;
 }
 
+// OpenAI strict-mode schema requirements (issue #44):
+//   - every property must appear in the `required` array
+//   - optional fields must use a null union (`.nullable()`, not `.optional()`)
+//   - every object must set `additionalProperties: false` (via `.strict()`)
+// The `.default([])` we had before translated to "property absent OK", which
+// strict mode rejects with HTTP 400 on OpenAI-compatible gateways. Arrays are
+// now required with no default — the model is expected to supply `[]` when
+// there is no evidence, which the prompt already implies.
 const ValidatorOutputSchema = z.object({
   verdict: z.enum(['ACCEPT', 'REJECT', 'REFINE', 'ACCEPT_WITH_CAUTION']),
   confidence: z.number().min(0).max(1),
   reason: z.string(),
   evidence: z.object({
-    supporting: z.array(z.string()).default([]),
-    contradicting: z.array(z.string()).default([])
-  }),
-  suggestedRefinement: z.string().optional().nullable()
-});
+    supporting: z.array(z.string()),
+    contradicting: z.array(z.string())
+  }).strict(),
+  suggestedRefinement: z.string().nullable()
+}).strict();
 
 // Helper interface for ValidatorOutput
 type ValidatorOutput = z.infer<typeof ValidatorOutputSchema>;

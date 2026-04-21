@@ -5,13 +5,10 @@ import {
   Playbook,
   PlaybookBullet,
   PlaybookDelta,
-  // Import individual schemas to construct LLM-specific loose schema
-  AddDeltaSchema,
-  HelpfulDeltaSchema,
-  HarmfulDeltaSchema,
-  ReplaceDeltaSchema,
-  DeprecateDeltaSchema,
-  MergeDeltaSchema,
+  HarmfulReasonEnum,
+  BulletScopeEnum,
+  BulletTypeEnum,
+  BulletKindEnum,
   CassHit,
   DecisionLogEntry
 } from "./types.js";
@@ -158,25 +155,154 @@ export function deduplicateDeltas(newDeltas: PlaybookDelta[], existing: Playbook
 
 // --- Main Reflector ---
 
-// Define a loose schema for LLM output where sourceSession is optional for 'add' deltas.
-// We will inject sourceSession systematically in the code, saving tokens and reducing validation errors.
-const LLMAddDeltaSchema = AddDeltaSchema.extend({
-  sourceSession: z.string().optional()
-});
+// OpenAI strict-mode requirements (issue #44):
+//   - every property in each object must appear in the `required` array
+//   - optional fields must use a null union (`.nullable()`, not `.optional()`)
+//   - every object must set `additionalProperties: false` (via `.strict()`)
+//   - discriminated unions translate to `anyOf` and each variant must comply
+// The internal `PlaybookBullet` model has ~30 tracking fields (timestamps,
+// counters, embeddings, …) that are filled in by `addBullet()` at persistence
+// time, not by the LLM. We therefore expose a minimal, strict-compliant
+// LLM-facing schema here and let the downstream code enrich it. Field list
+// mirrors what curate.ts consumes from `delta.bullet`.
+const LLMNewBulletSchema = z.object({
+  content: z.string(),
+  category: z.string(),
+  kind: BulletKindEnum.nullable(),
+  type: BulletTypeEnum.nullable(),
+  isNegative: z.boolean().nullable(),
+  scope: BulletScopeEnum.nullable(),
+  workspace: z.string().nullable(),
+  searchPointer: z.string().nullable(),
+  tags: z.array(z.string()).nullable()
+}).strict();
+
+const LLMAddDeltaSchema = z.object({
+  type: z.literal("add"),
+  bullet: LLMNewBulletSchema,
+  reason: z.string(),
+  // sourceSession is injected by reflectOnSession() after the LLM responds,
+  // but strict mode requires the property to be present in the schema's
+  // `required` list. We accept null here and overwrite post-hoc.
+  sourceSession: z.string().nullable()
+}).strict();
+
+const LLMHelpfulDeltaSchema = z.object({
+  type: z.literal("helpful"),
+  bulletId: z.string(),
+  sourceSession: z.string().nullable(),
+  context: z.string().nullable()
+}).strict();
+
+const LLMHarmfulDeltaSchema = z.object({
+  type: z.literal("harmful"),
+  bulletId: z.string(),
+  sourceSession: z.string().nullable(),
+  reason: HarmfulReasonEnum.nullable(),
+  context: z.string().nullable()
+}).strict();
+
+const LLMReplaceDeltaSchema = z.object({
+  type: z.literal("replace"),
+  bulletId: z.string(),
+  newContent: z.string(),
+  reason: z.string().nullable()
+}).strict();
+
+const LLMDeprecateDeltaSchema = z.object({
+  type: z.literal("deprecate"),
+  bulletId: z.string(),
+  reason: z.string(),
+  replacedBy: z.string().nullable()
+}).strict();
+
+const LLMMergeDeltaSchema = z.object({
+  type: z.literal("merge"),
+  bulletIds: z.array(z.string()),
+  mergedContent: z.string(),
+  reason: z.string().nullable()
+}).strict();
 
 const LLMPlaybookDeltaSchema = z.discriminatedUnion("type", [
   LLMAddDeltaSchema,
-  HelpfulDeltaSchema,
-  HarmfulDeltaSchema,
-  ReplaceDeltaSchema,
-  DeprecateDeltaSchema,
-  MergeDeltaSchema,
+  LLMHelpfulDeltaSchema,
+  LLMHarmfulDeltaSchema,
+  LLMReplaceDeltaSchema,
+  LLMDeprecateDeltaSchema,
+  LLMMergeDeltaSchema,
 ]);
 
 // Schema for the LLM output - array of deltas
 const ReflectorOutputSchema = z.object({
   deltas: z.array(LLMPlaybookDeltaSchema)
-});
+}).strict();
+
+type LLMReflectorDelta = z.infer<typeof LLMPlaybookDeltaSchema>;
+
+/**
+ * Normalize an LLM-produced delta (strict schema with nullable fields) to a
+ * domain `PlaybookDelta`. Null LLM values collapse to `undefined` so they
+ * stop being serialized and match the domain's `.optional()` contract.
+ * `sourceSession` on "add" is always rewritten by the caller, so we pass a
+ * placeholder here and let `reflectOnSession` overwrite it.
+ */
+function normalizeLLMDelta(d: LLMReflectorDelta, sessionPath: string): PlaybookDelta {
+  switch (d.type) {
+    case "add":
+      return {
+        type: "add",
+        bullet: {
+          content: d.bullet.content,
+          category: d.bullet.category,
+          ...(d.bullet.kind !== null ? { kind: d.bullet.kind } : {}),
+          ...(d.bullet.type !== null ? { type: d.bullet.type } : {}),
+          ...(d.bullet.isNegative !== null ? { isNegative: d.bullet.isNegative } : {}),
+          ...(d.bullet.scope !== null ? { scope: d.bullet.scope } : {}),
+          ...(d.bullet.workspace !== null ? { workspace: d.bullet.workspace } : {}),
+          ...(d.bullet.searchPointer !== null ? { searchPointer: d.bullet.searchPointer } : {}),
+          ...(d.bullet.tags !== null ? { tags: d.bullet.tags } : {}),
+        },
+        reason: d.reason,
+        sourceSession: d.sourceSession ?? sessionPath
+      };
+    case "helpful":
+      return {
+        type: "helpful",
+        bulletId: d.bulletId,
+        sourceSession: d.sourceSession ?? sessionPath,
+        ...(d.context !== null ? { context: d.context } : {})
+      };
+    case "harmful":
+      return {
+        type: "harmful",
+        bulletId: d.bulletId,
+        sourceSession: d.sourceSession ?? sessionPath,
+        ...(d.reason !== null ? { reason: d.reason } : {}),
+        ...(d.context !== null ? { context: d.context } : {})
+      };
+    case "replace":
+      return {
+        type: "replace",
+        bulletId: d.bulletId,
+        newContent: d.newContent,
+        ...(d.reason !== null ? { reason: d.reason } : {})
+      };
+    case "deprecate":
+      return {
+        type: "deprecate",
+        bulletId: d.bulletId,
+        reason: d.reason,
+        ...(d.replacedBy !== null ? { replacedBy: d.replacedBy } : {})
+      };
+    case "merge":
+      return {
+        type: "merge",
+        bulletIds: d.bulletIds,
+        mergedContent: d.mergedContent,
+        ...(d.reason !== null ? { reason: d.reason } : {})
+      };
+  }
+}
 
 // Early exit logic
 export function shouldExitEarly(
@@ -258,16 +384,13 @@ export async function reflectOnSession(
         io
       );
 
-      const validDeltas: PlaybookDelta[] = output.deltas.map(d => {
-        if (d.type === "add") {
-          // Force sourceSession injection
-          return { ...d, sourceSession: diary.sessionPath } as PlaybookDelta;
-        }
-        if ((d.type === "helpful" || d.type === "harmful") && !d.sourceSession) {
-          return { ...d, sourceSession: diary.sessionPath } as PlaybookDelta;
-        }
-        return d as PlaybookDelta;
-      });
+      // `output.deltas` are strict-mode LLM deltas (see issue #44) — null
+      // fields must be collapsed to `undefined` before curation. "add" deltas
+      // always get `sourceSession` injected from the diary, overriding any
+      // value the LLM may have supplied.
+      const validDeltas: PlaybookDelta[] = output.deltas.map(d =>
+        normalizeLLMDelta(d, diary.sessionPath)
+      );
 
       const uniqueDeltas = deduplicateDeltas(validDeltas, allDeltas);
       const duplicatesRemoved = validDeltas.length - uniqueDeltas.length;

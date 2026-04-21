@@ -17,17 +17,20 @@ export async function scanSessionsForViolations(
   const activeBullets = getActiveBullets(playbook);
   
   const CONCURRENCY = 3;
-  // Use .nullable() rather than .optional() so the schema is strict-mode
-  // compliant on OpenAI-compatible gateways that require every property
-  // key to appear in `required`. See issue #44.
+  // OpenAI strict-mode schema requirements (issue #44):
+  //   - every property must appear in the `required` array
+  //   - optional fields must use a null union (`.nullable()`, not `.optional()`)
+  //   - every object must set `additionalProperties: false` (via `.strict()`)
+  // Violating any of these yields HTTP 400 on OpenAI-compatible gateways that
+  // enforce the documented strict semantics.
   const AuditOutputSchema = z.object({
     results: z.array(z.object({
       ruleId: z.string(),
       status: z.enum(["followed", "violated", "not_applicable"]).nullable(),
       evidence: z.string()
-    })),
+    }).strict()),
     summary: z.string().nullable()
-  });
+  }).strict();
 
   // Warn if rule count is high
   if (activeBullets.length > 100) {
