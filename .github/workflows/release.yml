@@ -46,6 +46,10 @@ jobs:
 
       - name: Build Linux x64 and Windows x64
         run: |
+          # Start from a clean dist/ so stale artifacts cannot leak into
+          # the release (see #45 — shipped binaries can quietly carry pre-fix
+          # content if dist/ is reused).
+          rm -rf dist
           mkdir -p dist
 
           # Linux x64 — use baseline target (no AVX2) for maximum CPU compatibility
@@ -57,6 +61,30 @@ jobs:
           bun build src/cm.ts --compile --target=bun-windows-x64-baseline --outfile dist/cass-memory-windows-x64.exe
 
           ls -la dist/
+
+      - name: Verify compiled binaries contain no Rust-style \u{...} escapes (#45)
+        run: |
+          # Regression guard for issue #45: Bun's TypeScript loader normalises
+          # non-ASCII characters inside `String.raw` templates to `\u{…}`
+          # escape sequences that Python's parser rejects. The unit tests cover
+          # the TypeScript source, but the failure mode is only visible in the
+          # final compiled binary.
+          #
+          # We scan for the specific failure shape — a `\u{…}` escape adjacent
+          # to content that's clearly meant to be user-facing text (e.g. the
+          # "HOT STOVE" banner). This is tight enough to avoid false positives
+          # from legitimate JavaScript Unicode regex patterns like
+          # `/[\u{D800}-\u{DFFF}]/u` that survive bundling inside JS source.
+          for bin in dist/cass-memory-linux-x64 dist/cass-memory-windows-x64.exe; do
+            echo "Scanning $bin for mangled trauma-guard emoji..."
+            if strings "$bin" | grep -E '\\u\{[0-9a-fA-F]+\} ?HOT STOVE|HOT STOVE ?\\u\{[0-9a-fA-F]+\}' | head -5; then
+              echo "::error::Binary $bin contains Rust-style \\u{...} escapes in trauma-guard text (regression of #45)."
+              echo "::error::A String.raw template almost certainly has a literal non-ASCII character."
+              echo "::error::Route the character through \${VAR} interpolation. See src/trauma_guard_script.ts."
+              exit 1
+            fi
+          done
+          echo "All Linux/Windows binaries clean."
 
       - name: Upload Linux/Windows artifacts
         uses: actions/upload-artifact@v4
@@ -94,6 +122,9 @@ jobs:
 
       - name: Build macOS arm64 and x64
         run: |
+          # Start from a clean dist/ so stale artifacts cannot leak into the
+          # release (see #45).
+          rm -rf dist
           mkdir -p dist
 
           # macOS ARM64 (Apple Silicon) — native build on macos-15 runner
@@ -103,6 +134,19 @@ jobs:
           bun build src/cm.ts --compile --target=bun-darwin-x64-baseline --outfile dist/cass-memory-macos-x64
 
           ls -la dist/
+
+      - name: Verify compiled binaries contain no Rust-style \u{...} escapes (#45)
+        run: |
+          # Regression guard for issue #45 — see the Linux/Windows job for rationale.
+          for bin in dist/cass-memory-macos-arm64 dist/cass-memory-macos-x64; do
+            echo "Scanning $bin for mangled trauma-guard emoji..."
+            if strings "$bin" | grep -E '\\u\{[0-9a-fA-F]+\} ?HOT STOVE|HOT STOVE ?\\u\{[0-9a-fA-F]+\}' | head -5; then
+              echo "::error::Binary $bin contains Rust-style \\u{...} escapes in trauma-guard text (regression of #45)."
+              echo "::error::Route the character through \${VAR} interpolation. See src/trauma_guard_script.ts."
+              exit 1
+            fi
+          done
+          echo "All macOS binaries clean."
 
       - name: Ad-hoc codesign macOS binaries
         run: |
