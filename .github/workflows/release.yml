@@ -75,9 +75,15 @@ jobs:
           # "HOT STOVE" banner). This is tight enough to avoid false positives
           # from legitimate JavaScript Unicode regex patterns like
           # `/[\u{D800}-\u{DFFF}]/u` that survive bundling inside JS source.
+          #
+          # Capture matches into a variable instead of using `if pipe | head`
+          # — `head -5` always exits 0 regardless of grep's match status, so
+          # the naive `if` form is a constant-true guard.
           for bin in dist/cass-memory-linux-x64 dist/cass-memory-windows-x64.exe; do
             echo "Scanning $bin for mangled trauma-guard emoji..."
-            if strings "$bin" | grep -E '\\u\{[0-9a-fA-F]+\} ?HOT STOVE|HOT STOVE ?\\u\{[0-9a-fA-F]+\}' | head -5; then
+            matches="$(strings "$bin" | grep -E '\\u\{[0-9a-fA-F]+\} ?HOT STOVE|HOT STOVE ?\\u\{[0-9a-fA-F]+\}' | head -5 || true)"
+            if [ -n "$matches" ]; then
+              echo "$matches"
               echo "::error::Binary $bin contains Rust-style \\u{...} escapes in trauma-guard text (regression of #45)."
               echo "::error::A String.raw template almost certainly has a literal non-ASCII character."
               echo "::error::Route the character through \${VAR} interpolation. See src/trauma_guard_script.ts."
@@ -140,7 +146,9 @@ jobs:
           # Regression guard for issue #45 — see the Linux/Windows job for rationale.
           for bin in dist/cass-memory-macos-arm64 dist/cass-memory-macos-x64; do
             echo "Scanning $bin for mangled trauma-guard emoji..."
-            if strings "$bin" | grep -E '\\u\{[0-9a-fA-F]+\} ?HOT STOVE|HOT STOVE ?\\u\{[0-9a-fA-F]+\}' | head -5; then
+            matches="$(strings "$bin" | grep -E '\\u\{[0-9a-fA-F]+\} ?HOT STOVE|HOT STOVE ?\\u\{[0-9a-fA-F]+\}' | head -5 || true)"
+            if [ -n "$matches" ]; then
+              echo "$matches"
               echo "::error::Binary $bin contains Rust-style \\u{...} escapes in trauma-guard text (regression of #45)."
               echo "::error::Route the character through \${VAR} interpolation. See src/trauma_guard_script.ts."
               exit 1
