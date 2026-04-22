@@ -37,6 +37,63 @@ describe("TRAUMA_GUARD_SCRIPT - Export Validation", () => {
   // ... existing tests ...
 });
 
+// =============================================================================
+// Regression tests for issue #45 — Rust-style \u{1f525} escapes leaking into
+// compiled binaries. Bun's TypeScript loader normalises non-ASCII characters
+// in template literals to \u{…} escapes; inside `String.raw` those escapes
+// are preserved as literal backslash sequences, producing a Python hook
+// that fails with `SyntaxError: (unicode error) 'unicodeescape' codec can't
+// decode bytes … truncated \uXXXX escape`.
+// =============================================================================
+describe("TRAUMA_GUARD_SCRIPT / GIT_PRECOMMIT_HOOK — no raw \\u{…} escapes", () => {
+  it("TRAUMA_GUARD_SCRIPT contains no literal \\u{...} escape sequences", () => {
+    // If this fails, bun has regressed or someone reintroduced a literal emoji
+    // into the String.raw template. Route emoji through `${FIRE}` interpolation
+    // (see src/trauma_guard_script.ts).
+    expect(TRAUMA_GUARD_SCRIPT).not.toMatch(/\\u\{[0-9a-fA-F]+\}/);
+  });
+
+  it("GIT_PRECOMMIT_HOOK contains no literal \\u{...} escape sequences", () => {
+    expect(GIT_PRECOMMIT_HOOK).not.toMatch(/\\u\{[0-9a-fA-F]+\}/);
+  });
+
+  it("TRAUMA_GUARD_SCRIPT embeds the fire emoji as a literal code point", () => {
+    // U+1F525 as a four-byte UTF-16 surrogate pair (🔥) — asserting the actual
+    // runtime string contains the character, not the escape form.
+    expect(TRAUMA_GUARD_SCRIPT).toContain("🔥 HOT STOVE");
+  });
+
+  it("installed trauma guard parses as valid Python (ast.parse)", async () => {
+    // End-to-end: the very failure mode the user hit. If `\u{1f525}` is
+    // present, ast.parse raises SyntaxError at line with "\uXXXX truncated".
+    await withTempDir("trauma-guard-parse", async (dir) => {
+      const scriptPath = join(dir, "trauma_guard.py");
+      await writeFile(scriptPath, TRAUMA_GUARD_SCRIPT);
+      const result = spawnSync(
+        "python3",
+        ["-c", `import ast; ast.parse(open(${JSON.stringify(scriptPath)}).read())`],
+        { encoding: "utf-8" }
+      );
+      expect(result.stderr).toBe("");
+      expect(result.status).toBe(0);
+    });
+  });
+
+  it("installed git pre-commit hook parses as valid Python (ast.parse)", async () => {
+    await withTempDir("git-precommit-parse", async (dir) => {
+      const scriptPath = join(dir, "trauma_guard_precommit.py");
+      await writeFile(scriptPath, GIT_PRECOMMIT_HOOK);
+      const result = spawnSync(
+        "python3",
+        ["-c", `import ast; ast.parse(open(${JSON.stringify(scriptPath)}).read())`],
+        { encoding: "utf-8" }
+      );
+      expect(result.stderr).toBe("");
+      expect(result.status).toBe(0);
+    });
+  });
+});
+
 // ... existing TRAUMA_GUARD_SCRIPT tests ...
 
 // =============================================================================

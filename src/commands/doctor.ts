@@ -123,6 +123,32 @@ async function validateJsonFile(filePath: string): Promise<JsonFileValidation> {
   }
 }
 
+async function validateGuardParseable(
+  guardPath: string
+): Promise<{ ok: boolean; reason?: string }> {
+  // Prefer python3 (installer uses #!/usr/bin/env python3), fall back to python.
+  const { spawnSync } = await import("node:child_process");
+  for (const interp of ["python3", "python"]) {
+    const r = spawnSync(
+      interp,
+      ["-c", `import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read())`, guardPath],
+      { encoding: "utf-8", timeout: 5000 }
+    );
+    if (r.error && (r.error as NodeJS.ErrnoException).code === "ENOENT") {
+      continue; // Try next interpreter.
+    }
+    if (r.status === 0) {
+      return { ok: true };
+    }
+    const stderr = (r.stderr || "").trim();
+    const firstLine = stderr.split("\n").pop() || "unknown parse error";
+    return { ok: false, reason: firstLine };
+  }
+  // No Python available — cannot verify. Treat as ok so this check never
+  // fails on a Python-less host; the presence check above already passed.
+  return { ok: true };
+}
+
 async function getPlaybookSchemaVersion(
   playbookPath: string
 ): Promise<{ version: number | null; error?: string }> {
@@ -558,14 +584,34 @@ async function computeDoctorChecks(
   if (await fileExists(".claude")) {
     const guardPath = ".claude/hooks/trauma_guard.py";
     const guardExists = await fileExists(guardPath);
-    checks.push({
-      category: "Trauma System",
-      item: "Safety Guard",
-      status: guardExists ? "pass" : "warn",
-      message: guardExists
-        ? "Guard installed in .claude/hooks"
-        : "Guard NOT installed in .claude/hooks (run 'cm guard --install')",
-    });
+    if (!guardExists) {
+      checks.push({
+        category: "Trauma System",
+        item: "Safety Guard",
+        status: "warn",
+        message: "Guard NOT installed in .claude/hooks (run 'cm guard --install')",
+      });
+    } else {
+      // File presence is not enough. Issue #45: the v0.2.4–v0.2.8 release
+      // binaries wrote a trauma_guard.py whose emoji string literals had
+      // been mangled into literal `\u{1f525}` backslash sequences. Python
+      // rejects those with `SyntaxError: (unicode error) ... truncated
+      // \uXXXX escape`, and because the hook is a non-blocking PreToolUse,
+      // Claude Code kept running commands while silently printing the
+      // traceback — doctor said "healthy" while the guard was doing nothing.
+      // Catch that and similar future breakages by actually parsing the
+      // installed file with `python3 -c "import ast; ast.parse(...)"`.
+      const parseCheck = await validateGuardParseable(guardPath);
+      checks.push({
+        category: "Trauma System",
+        item: "Safety Guard",
+        status: parseCheck.ok ? "pass" : "fail",
+        message: parseCheck.ok
+          ? "Guard installed in .claude/hooks and parses as valid Python"
+          : `Guard is installed but does NOT parse as valid Python — ${parseCheck.reason}. ` +
+            "Reinstall with 'cm guard --install'.",
+      });
+    }
   }
 
   return checks;

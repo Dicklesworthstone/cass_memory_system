@@ -1,3 +1,14 @@
+// Bun's TypeScript loader normalises non-ASCII characters inside template
+// literals into `\u{…}` escape sequences. That normalisation is lossless for
+// ordinary template literals (the runtime decodes the escape) but it is NOT
+// lossless for `String.raw` — the tag keeps backslashes literal, so an emoji
+// authored as 🔥 ends up as the 8-character string `\u{1f525}` in every
+// compiled binary. Interpolating the emoji through a regular expression
+// (`${FIRE}`) sidesteps the normalisation, because the expression is
+// evaluated before `String.raw` sees it. Do not replace these interpolations
+// with inline emoji without retesting `bun build --compile`.
+const FIRE = "\u{1F525}";
+
 export const TRAUMA_GUARD_SCRIPT = String.raw`#!/usr/bin/env python3
 """
 Dynamic Trauma Guard for Project Hot Stove.
@@ -115,7 +126,7 @@ def main():
 
         use_emoji = os.environ.get("CASS_MEMORY_NO_EMOJI") is None
         banner = (
-            "🔥 HOT STOVE: VISCERAL SAFETY INTERVENTION 🔥"
+            "${FIRE} HOT STOVE: VISCERAL SAFETY INTERVENTION ${FIRE}"
             if use_emoji
             else "[HOT STOVE] VISCERAL SAFETY INTERVENTION"
         )
@@ -279,7 +290,7 @@ def main():
 
         use_emoji = os.environ.get("CASS_MEMORY_NO_EMOJI") is None
         banner = (
-            "🔥 HOT STOVE: COMMIT BLOCKED 🔥"
+            "${FIRE} HOT STOVE: COMMIT BLOCKED ${FIRE}"
             if use_emoji
             else "[HOT STOVE] COMMIT BLOCKED"
         )
