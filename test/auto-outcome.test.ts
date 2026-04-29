@@ -110,6 +110,31 @@ describe("extractRuleIdsFromTranscript", () => {
     const content = "Just a normal conversation about coding best practices.";
     expect(extractRuleIdsFromTranscript(content)).toEqual([]);
   });
+
+  it("does not match UUID fragments (regression for #46)", () => {
+    // Session paths often contain canonical UUIDs. The previous regex used
+    // `\b` which matched at the boundary between `0` and `b` inside a UUID,
+    // yielding a false-positive extraction like `b-9695-acef9cb0bbdc`.
+    const content =
+      "session at ~/.claude/projects/foo/00b8018e-2cd7-4e0b-9695-acef9cb0bbdc.jsonl mentioned";
+    const ids = extractRuleIdsFromTranscript(content);
+    expect(ids).not.toContain("b-9695-acef9cb0bbdc");
+    expect(ids).toEqual([]);
+  });
+
+  it("does not match hex-string fragments preceded by hex digits", () => {
+    // Belt-and-suspenders: any hex digit ahead of `b-` should block the match.
+    const content = "sha 0123456789abcdef0b-cafef00d12 referenced";
+    expect(extractRuleIdsFromTranscript(content)).toEqual([]);
+  });
+
+  it("still matches valid bullet IDs adjacent to punctuation/whitespace", () => {
+    // Real bullet IDs from Date.now().toString(36) + randomBytes look like this.
+    // They typically appear at line start, after whitespace, or after `:`/`[`,
+    // none of which are hex digits, so the lookbehind permits them.
+    const content = "rule b-mn3ot59c-nny4gb applied";
+    expect(extractRuleIdsFromTranscript(content)).toContain("b-mn3ot59c-nny4gb");
+  });
 });
 
 // --- classifySessionOutcome ---

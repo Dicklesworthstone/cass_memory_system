@@ -408,8 +408,16 @@ export async function applyOutcomeFeedback(
  * positives (b-tree, b-tag). A post-filter additionally requires at least
  * one digit, since generated IDs (from Date.now().toString(36)) always
  * contain digits while English words (b-spline, b-factor) do not.
+ *
+ * The leading negative lookbehind `(?<![0-9a-f])` rejects matches preceded
+ * by a hex digit, which prevents false positives inside UUIDs. For example,
+ * a session path containing `00b8018e-2cd7-4e0b-9695-acef9cb0bbdc` would
+ * otherwise yield a spurious `b-9695-acef9cb0bbdc` extraction because `\b`
+ * matches at the boundary between `0` and `b`. The lookbehind blocks that
+ * match while still permitting real IDs preceded by whitespace, `:`, `[`,
+ * line start, etc. V8/Bun support look-behind so this is safe.
  */
-const RULE_ID_PATTERN = /\bb-[a-z0-9]{6,}(?:-[a-z0-9]+)*\b/gi;
+const RULE_ID_PATTERN = /(?<![0-9a-f])b-[a-z0-9]{6,}(?:-[a-z0-9]+)*\b/gi;
 
 /**
  * Extract playbook rule IDs (b-xxx format) from session transcript content.
