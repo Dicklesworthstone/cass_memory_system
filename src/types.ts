@@ -410,6 +410,17 @@ export const ConfigSchema = z.object({
   apiKey: z.string().optional(),
   baseUrl: z.string().optional(),
   ollamaBaseUrl: z.string().default("http://localhost:11434"),
+  // Opt-in escape hatch for OpenAI strict structured-outputs mode.
+  // The reflect/audit/validate Zod schemas are written to be strict-compliant
+  // (`.nullable()` not `.optional()`, `.strict()` on every object, no
+  // unsupported constructs) so strict mode SHOULD work on api.openai.com and
+  // OpenAI-compatible gateways. In practice some gateways (and occasionally
+  // gpt-4o-mini itself, see #47) return invalid JSON with strict on. Flip
+  // this to `true` to disable structured outputs and fall back to plain JSON
+  // mode. Default false to preserve the strict-schema-validation guarantees
+  // that issue #44 fixed; only flip when you've confirmed strict-mode is the
+  // failure surface.
+  disableStructuredOutputs: z.boolean().default(false),
   sanitization: SanitizationConfigSchema.default({}),
   budget: BudgetConfigSchema.default({}),
   cliCommand: z.string().min(1).max(256).optional(),

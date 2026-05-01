@@ -67,6 +67,7 @@ export function createTestConfig(overrides: Partial<Config> = {}): Config {
     jsonOutput: false,
     ollamaBaseUrl: "http://localhost:11434",
     baseUrl: undefined,
+    disableStructuredOutputs: false,
     sanitization: {
       enabled: true,
       extraPatterns: [],

@@ -158,7 +158,7 @@ export function resolveOllamaBaseUrl(ollamaBaseUrl?: string): string {
   return ollamaBaseUrl || "http://localhost:11434";
 }
 
-export function getModel(config: { provider: string; model: string; apiKey?: string; baseUrl?: string; ollamaBaseUrl?: string }): LanguageModel {
+export function getModel(config: { provider: string; model: string; apiKey?: string; baseUrl?: string; ollamaBaseUrl?: string; disableStructuredOutputs?: boolean }): LanguageModel {
   const provider = config.provider as LLMProvider;
 
   if (provider === "cli") {
@@ -189,16 +189,25 @@ export function getModel(config: { provider: string; model: string; apiKey?: str
 
   switch (provider) {
     case "openai": {
-      // Strict structured outputs are kept enabled on both api.openai.com and
-      // custom OpenAI-compatible gateways. Strict mode sends `strict: true` in
-      // the request, which requires every property to appear in `required`,
-      // optional fields to use a null union, and `additionalProperties: false`
-      // on every object. The LLM-facing Zod schemas in src/llm.ts (validator),
-      // src/audit.ts (audit), and src/reflect.ts (reflector) are all written
-      // to comply with those rules — see issue #44. Disabling
-      // structuredOutputs on custom baseURLs would regress the fix by
-      // silently accepting malformed schemas on the real endpoint too.
-      const openaiProvider = createOpenAI({ apiKey, ...(baseURL ? { baseURL } : {}) });
+      // Strict structured outputs are kept enabled by default on both
+      // api.openai.com and custom OpenAI-compatible gateways. Strict mode
+      // sends `strict: true` in the request, which requires every property
+      // to appear in `required`, optional fields to use a null union, and
+      // `additionalProperties: false` on every object. The LLM-facing Zod
+      // schemas in src/llm.ts (validator), src/audit.ts (audit), and
+      // src/reflect.ts (reflector) are all written to comply — see #44.
+      //
+      // The `disableStructuredOutputs` config flag (default false) is the
+      // opt-in escape hatch for users hit by gateway/model strict-mode
+      // incompatibilities (#47). Flipping it on disables `strict: true`
+      // and falls back to plain JSON mode; the schemas are still applied
+      // by AI SDK as a post-hoc Zod validator, so empty/wrong outputs
+      // still fail loud rather than silently passing.
+      const openaiProvider = createOpenAI({
+        apiKey,
+        ...(baseURL ? { baseURL } : {}),
+        ...(config.disableStructuredOutputs ? { structuredOutputs: false } : {}),
+      });
       return openaiProvider(config.model);
     }
     case "anthropic": return createAnthropic({ apiKey, ...(baseURL ? { baseURL } : {}) })(config.model);
@@ -815,8 +824,32 @@ export async function generateObjectSafe<T>(
 
       // If we are here, it's likely a schema validation error or model hallucination (JSON parse error).
       // We log it and continue the loop to retry with a "fix it" prompt.
+      //
+      // AI SDK v6 wraps NoObjectGeneratedError with the raw text the model
+      // produced on `err.text` and the parsed-but-rejected value on
+      // `err.value`. Surface those when present — without them the user
+      // just sees "Invalid JSON response" and has no way to tell whether
+      // the model returned malformed JSON, a truncated response, a Zod
+      // validation failure, or a strict-mode gateway rejection.
+      const rawText = err?.text ?? err?.cause?.text;
+      const rejectedValue = err?.value ?? err?.cause?.value;
+      const diagnosticParts: string[] = [];
+      if (typeof rawText === "string" && rawText.length > 0) {
+        const snippet = rawText.length > 500 ? `${rawText.slice(0, 500)}…[+${rawText.length - 500}]` : rawText;
+        diagnosticParts.push(`raw=${JSON.stringify(snippet)}`);
+      }
+      if (rejectedValue !== undefined) {
+        try {
+          const valueStr = JSON.stringify(rejectedValue);
+          const valueSnippet = valueStr.length > 500 ? `${valueStr.slice(0, 500)}…` : valueStr;
+          diagnosticParts.push(`value=${valueSnippet}`);
+        } catch { /* unserializable */ }
+      }
+      const diagnostic = diagnosticParts.length > 0 ? ` | ${diagnosticParts.join(" ")}` : "";
       if (attempt < maxAttempts) {
-        warn(`[LLM] Schema validation failed (attempt ${attempt}): ${errorMsg}. Retrying with stricter prompt...`);
+        warn(`[LLM] Schema validation failed (attempt ${attempt}): ${errorMsg}${diagnostic}. Retrying with stricter prompt...`);
+      } else {
+        warn(`[LLM] Schema validation failed after ${maxAttempts} attempts: ${errorMsg}${diagnostic}`);
       }
     }
   }
