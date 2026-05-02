@@ -825,12 +825,14 @@ export async function generateObjectSafe<T>(
       // If we are here, it's likely a schema validation error or model hallucination (JSON parse error).
       // We log it and continue the loop to retry with a "fix it" prompt.
       //
-      // AI SDK v6 wraps NoObjectGeneratedError with the raw text the model
-      // produced on `err.text` and the parsed-but-rejected value on
-      // `err.value`. Surface those when present — without them the user
-      // just sees "Invalid JSON response" and has no way to tell whether
-      // the model returned malformed JSON, a truncated response, a Zod
-      // validation failure, or a strict-mode gateway rejection.
+      // AI SDK's NoObjectGeneratedError exposes the raw text the model
+      // produced on `err.text` (per @ai-sdk/core typings); some wrapper
+      // paths also tuck the parsed-but-rejected value into `err.value` or
+      // `err.cause.{text,value}`. Surface whatever's available — without
+      // them the user just sees "Invalid JSON response" and has no way to
+      // tell whether the model returned malformed JSON, a truncated
+      // response, a Zod validation failure, or a strict-mode gateway
+      // rejection.
       const rawText = err?.text ?? err?.cause?.text;
       const rejectedValue = err?.value ?? err?.cause?.value;
       const diagnosticParts: string[] = [];
