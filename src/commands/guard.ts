@@ -87,6 +87,64 @@ export async function installGuard(json?: boolean, silent?: boolean) {
   // 2. Write Script
   await fs.writeFile(scriptPath, TRAUMA_GUARD_SCRIPT, { encoding: "utf-8", mode: 0o755 });
 
+  // 2a. Post-write validation — confirm the script is parseable Python.
+  //
+  // Background: issue #48 (and previously #45) showed that build-time
+  // normalisation drift in `bun build --compile` could ship a TRAUMA_GUARD_SCRIPT
+  // containing invalid Unicode escapes, producing a Python file that fails at
+  // ast.parse with "truncated \uXXXX escape". Claude Code's PreToolUse hook
+  // surface silently no-ops on a SyntaxError, so the user gets a sham guard
+  // that never fires. The unit-test suite catches this against the TS source,
+  // but the compiled-binary path is the failure surface that bites users.
+  //
+  // We run `python3 -c 'import ast; ast.parse(open(path).read())'` against the
+  // freshly-installed script. If parsing fails, we delete the bad script,
+  // surface a structured error pointing at the upstream cm bug, and abort the
+  // install — better to leave the user with no guard than a silent-no-op one.
+  //
+  // python3 missing is treated as a warning (not a failure), since the
+  // existing python3-availability check already warns above and a missing
+  // python3 means the guard wouldn't run anyway.
+  try {
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const pExecFile = promisify(execFile);
+    await pExecFile(
+      "python3",
+      [
+        "-c",
+        `import ast,sys; ast.parse(open(sys.argv[1]).read()); print("ok")`,
+        scriptPath,
+      ],
+      { timeout: 5000 },
+    );
+  } catch (parseErr: any) {
+    // python3 absent is a soft fail (already warned above). A real ast.parse
+    // SyntaxError is hard-fail — don't ship a broken guard.
+    const isMissingPython =
+      parseErr?.code === "ENOENT" || /python3.*not found/i.test(String(parseErr?.message ?? ""));
+    if (!isMissingPython) {
+      try {
+        await fs.unlink(scriptPath);
+      } catch {
+        // best-effort cleanup; continue to surface the error
+      }
+      const stderr = String(parseErr?.stderr ?? parseErr?.message ?? "unknown error");
+      const msg = `Error: trauma guard installation aborted — the generated trauma_guard.py failed Python parse-time validation. This indicates an upstream cm template bug; please report.`;
+      if (!silent) {
+        reportError(msg, {
+          code: ErrorCode.CONFIG_INVALID,
+          hint: `Report the failing cm version at https://github.com/Dicklesworthstone/cass_memory_system/issues, including this stderr: ${stderr.trim().slice(0, 500)}`,
+          details: { scriptPath, stderr: stderr.trim().slice(0, 1000) },
+          json,
+          command,
+          startedAtMs,
+        });
+      }
+      return;
+    }
+  }
+
   // 3. Update settings.json
   let settings: any = {};
   if (await fileExists(settingsPath)) {

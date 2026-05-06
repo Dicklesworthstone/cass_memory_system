@@ -1,13 +1,26 @@
-// Bun's TypeScript loader normalises non-ASCII characters inside template
-// literals into `\u{…}` escape sequences. That normalisation is lossless for
-// ordinary template literals (the runtime decodes the escape) but it is NOT
-// lossless for `String.raw` — the tag keeps backslashes literal, so an emoji
-// authored as 🔥 ends up as the 8-character string `\u{1f525}` in every
-// compiled binary. Interpolating the emoji through a regular expression
-// (`${FIRE}`) sidesteps the normalisation, because the expression is
-// evaluated before `String.raw` sees it. Do not replace these interpolations
-// with inline emoji without retesting `bun build --compile`.
-const FIRE = "\u{1F525}";
+// FIRE is emitted into the produced Python script as the Python-side escape
+// `\U0001F525` (NOT the emoji character and NOT the JS-side escape `\u{1F525}`).
+//
+// Why: Bun's `bun build --compile` path was observed to normalise the JS-side
+// `"\u{1F525}"` constant into a literal 8-character string `\u{1f525}` inside
+// the compiled binary even when the constant was interpolated through
+// `${FIRE}` into a `String.raw` template (see issue #48). The Python parser
+// then refuses the resulting hook with `SyntaxError: (unicode error)
+// 'unicodeescape' codec can't decode bytes … truncated \uXXXX escape`,
+// because Python's `\u` escape only takes four hex digits and 0x1F525 is
+// above U+FFFF.
+//
+// Using a Python-side escape (`\U` capital, eight hex digits) sidesteps the
+// problem entirely: the JS string contains only ASCII (`\`, `U`, `0`, `0`,
+// `0`, `1`, `F`, `5`, `2`, `5`), so there is nothing for Bun to normalise.
+// At Python parse time `\U0001F525` decodes to U+1F525 (🔥), so the rendered
+// banner is identical at runtime.
+//
+// If you want to switch back to inline emoji (🔥), you MUST re-test against
+// `bun build --compile` on every supported platform; #48 demonstrates that
+// passing `bun test` against the TS-source import is not sufficient to catch
+// the compiled-binary normalisation drift.
+const FIRE = "\\U0001F525";
 
 export const TRAUMA_GUARD_SCRIPT = String.raw`#!/usr/bin/env python3
 """

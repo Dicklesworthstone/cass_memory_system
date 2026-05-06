@@ -57,10 +57,41 @@ describe("TRAUMA_GUARD_SCRIPT / GIT_PRECOMMIT_HOOK — no raw \\u{…} escapes",
     expect(GIT_PRECOMMIT_HOOK).not.toMatch(/\\u\{[0-9a-fA-F]+\}/);
   });
 
-  it("TRAUMA_GUARD_SCRIPT embeds the fire emoji as a literal code point", () => {
-    // U+1F525 as a four-byte UTF-16 surrogate pair (🔥) — asserting the actual
-    // runtime string contains the character, not the escape form.
-    expect(TRAUMA_GUARD_SCRIPT).toContain("🔥 HOT STOVE");
+  it("TRAUMA_GUARD_SCRIPT embeds the fire emoji as a Python-side escape", () => {
+    // We deliberately emit `\U0001F525` (Python escape) rather than the literal
+    // 🔥 character or the JS-side `\u{1F525}` escape. The Python parser decodes
+    // `\U0001F525` to U+1F525 (🔥) at script-execution time, so the rendered
+    // banner is identical at runtime — but the on-disk script contains only
+    // ASCII, which is immune to Bun's compiled-binary normalisation drift
+    // documented in #48 (and previously #45).
+    expect(TRAUMA_GUARD_SCRIPT).toContain("\\U0001F525 HOT STOVE");
+    // And as a regression guard: it must NOT contain the literal emoji or the
+    // JS-side escape form, because those are the two shapes that have leaked
+    // bugs in the past.
+    expect(TRAUMA_GUARD_SCRIPT).not.toContain("🔥 HOT STOVE");
+    expect(TRAUMA_GUARD_SCRIPT).not.toMatch(/\\u\{[0-9a-fA-F]+\}\s*HOT STOVE/);
+  });
+
+  it("GIT_PRECOMMIT_HOOK embeds the fire emoji as a Python-side escape", () => {
+    expect(GIT_PRECOMMIT_HOOK).toContain("\\U0001F525 HOT STOVE");
+    expect(GIT_PRECOMMIT_HOOK).not.toContain("🔥 HOT STOVE");
+    expect(GIT_PRECOMMIT_HOOK).not.toMatch(/\\u\{[0-9a-fA-F]+\}\s*HOT STOVE/);
+  });
+
+  it("Python parses the FIRE escape to U+1F525 (🔥) at runtime", async () => {
+    // End-to-end semantic check: when Python actually executes the trauma
+    // guard, the banner string must include the real fire emoji character —
+    // otherwise we've shipped a script that prints `\U0001F525` literally.
+    await withTempDir("trauma-guard-fire-decode", async (dir) => {
+      const scriptPath = join(dir, "fire_check.py");
+      await writeFile(
+        scriptPath,
+        `banner = "\\U0001F525 HOT STOVE: VISCERAL SAFETY INTERVENTION \\U0001F525"\nprint(banner)\n`,
+      );
+      const result = spawnSync("python3", [scriptPath], { encoding: "utf-8" });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("🔥 HOT STOVE");
+    });
   });
 
   it("installed trauma guard parses as valid Python (ast.parse)", async () => {
