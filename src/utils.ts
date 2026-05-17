@@ -870,7 +870,7 @@ export function getErrorCategoryAction(category: ErrorCategory): string {
     case "network":
       return "Check your internet connection and try again";
     case "cass":
-      return "Install cass or set CASS_PATH: cargo install cass";
+      return "Install cass or set CASS_PATH: cargo install coding-agent-search";
     case "llm":
       return "Check your API key and rate limits";
     case "internal":

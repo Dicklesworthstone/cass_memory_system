@@ -341,7 +341,7 @@ export async function handleCassUnavailable(
 
   const installMessage = [
     "cass binary not found. Falling back to playbook-only mode (history disabled).",
-    "Install via `cargo install cass` or download a release binary:",
+    "Install via `cargo install coding-agent-search` or download a release binary:",
     "https://github.com/Dicklesworthstone/coding_agent_session_search",
     "Then set CASS_PATH or config.cassPath."
   ].join(" ");
@@ -581,7 +581,7 @@ function classifyCassSearchError(err: any, query: string): CassDegradedInfo {
       available: false,
       reason: "NOT_FOUND",
       message: "cass binary not found; falling back to playbook-only mode (history disabled).",
-      suggestedFix: ["cargo install cass", "cass index"],
+      suggestedFix: ["cargo install coding-agent-search", "cass index"],
     };
   }
 
@@ -654,7 +654,7 @@ function classifyRemoteCassSearchFailure(
       available: false,
       reason: "NOT_FOUND",
       message: `cass not found on ${display}; remote history disabled for this host.`,
-      suggestedFix: [`ssh ${quotedSshTarget} cargo install cass`, `ssh ${quotedSshTarget} cass index --full`],
+      suggestedFix: [`ssh ${quotedSshTarget} cargo install coding-agent-search`, `ssh ${quotedSshTarget} cass index --full`],
     };
   }
 
@@ -685,7 +685,7 @@ function classifyRemoteCassSearchFailure(
       available: false,
       reason: "NOT_FOUND",
       message: `remote(${display}): ${base.message}`,
-      suggestedFix: [`ssh ${quotedSshTarget} cargo install cass`, `ssh ${quotedSshTarget} cass index --full`],
+      suggestedFix: [`ssh ${quotedSshTarget} cargo install coding-agent-search`, `ssh ${quotedSshTarget} cass index --full`],
     };
   }
 
@@ -773,7 +773,7 @@ export async function safeCassSearchWithDegraded(
         available: false,
         reason: "NOT_FOUND",
         message: availability.message,
-        suggestedFix: ["cargo install cass", "cass index"],
+        suggestedFix: ["cargo install coding-agent-search", "cass index"],
       },
       remoteDegraded: remoteDegraded.length > 0 ? remoteDegraded : undefined
     };

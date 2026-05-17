@@ -252,7 +252,7 @@ function buildRecommendedActions(params: {
   if (cassCheck?.status === "fail") {
     actions.push({
       label: "Install cass (enables history)",
-      command: "cargo install cass",
+      command: "cargo install coding-agent-search",
       reason: "cass is required for cross-agent history snippets and validation evidence.",
       urgency: "high",
     });

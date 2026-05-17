@@ -270,7 +270,7 @@ describe("Error Categorization", () => {
       expect(getErrorCategoryAction("configuration")).toContain("config files");
       expect(getErrorCategoryAction("filesystem")).toContain("permissions");
       expect(getErrorCategoryAction("network")).toContain("internet connection");
-      expect(getErrorCategoryAction("cass")).toContain("cargo install cass");
+      expect(getErrorCategoryAction("cass")).toContain("cargo install coding-agent-search");
       expect(getErrorCategoryAction("llm")).toContain("API key");
       expect(getErrorCategoryAction("internal")).toContain("bug");
     });
