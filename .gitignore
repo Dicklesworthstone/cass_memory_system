@@ -61,6 +61,9 @@ usage.jsonl
 
 # Beads (issue tracking is committed; runtime files are ignored via `.beads/.gitignore`)
 .beads/.local_version
+# Runtime interactions log — written by the cass_memory_system process
+# alongside the canonical issues.jsonl; not part of the tracked corpus.
+.beads/interactions.jsonl
 
 # Python / uv
 __pycache__/
