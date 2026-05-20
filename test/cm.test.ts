@@ -9,6 +9,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { createProgram, hasJsonFlag, handleCliError } from "../src/cm.js";
+import { __setStdoutSinkForTests } from "../src/utils.js";
 
 const ROOT = join(import.meta.dir, "..");
 const PACKAGE_JSON = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf-8"));
@@ -49,12 +50,18 @@ function captureConsole<T>(fn: () => T): { result: T; logs: string[]; errors: st
   console.error = (...args: any[]) => {
     errors.push(args.map(String).join(" "));
   };
+  // Structured stdout output writes straight to fd 1 (see #50), bypassing
+  // console.log, so capture it through the same sink the production code uses.
+  __setStdoutSinkForTests((text) => {
+    logs.push(text.replace(/\n$/, ""));
+  });
 
   try {
     return { result: fn(), logs, errors };
   } finally {
     console.log = originalLog;
     console.error = originalError;
+    __setStdoutSinkForTests(null);
   }
 }
 
