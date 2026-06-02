@@ -10,19 +10,27 @@
 import { describe, test, expect } from "bun:test";
 import { writeFileSync } from "node:fs";
 import yaml from "yaml";
+import { realpathSync } from "node:fs";
 import {
   contextCommand,
   buildContextResult,
   buildCassHistoryQuery,
   contextWithoutCass,
   generateContextResult,
+  resolveWorkspaceFilter,
 } from "../src/commands/context.js";
 import { withTempCassHome } from "./helpers/temp.js";
 import { withTempGitRepo } from "./helpers/git.js";
 import { createTestPlaybook, createTestBullet, createTestConfig } from "./helpers/factories.js";
+import { __setStdoutSinkForTests } from "../src/utils.js";
 
 /**
  * Capture console output during async function execution.
+ *
+ * Structured JSON/TOON output is emitted via utils.writeStdoutSync (added in
+ * the #50 stdout-flush fix), which bypasses console.log entirely. We install
+ * the test-only stdout sink so getOutput() sees that output too — otherwise
+ * `--json` assertions read an empty buffer.
  */
 function captureConsole() {
   const logs: string[] = [];
@@ -36,6 +44,9 @@ function captureConsole() {
   console.error = (...args: unknown[]) => {
     errors.push(args.map(String).join(" "));
   };
+  __setStdoutSinkForTests((text: string) => {
+    logs.push(text.endsWith("\n") ? text.slice(0, -1) : text);
+  });
 
   return {
     logs,
@@ -43,6 +54,7 @@ function captureConsole() {
     restore: () => {
       console.log = originalLog;
       console.error = originalError;
+      __setStdoutSinkForTests(null);
     },
     getOutput: () => logs.join("\n"),
     getErrors: () => errors.join("\n"),
@@ -881,6 +893,70 @@ describe("generateContextResult", () => {
       } finally {
         capture.restore();
       }
+    });
+  });
+
+  // Regression for #52: workspace-scoped rules stored with an ABSOLUTE
+  // `workspace` path must surface (a) when running inside that dir without
+  // --workspace (default to cwd), and (b) with the documented `--workspace .`
+  // (relative paths normalized to absolute). Previously both returned nothing.
+  describe("#52 workspace defaulting + normalization", () => {
+    test("resolveWorkspaceFilter defaults to cwd and canonicalizes relative paths", () => {
+      const cwdReal = realpathSync(process.cwd());
+      // No argument -> cwd
+      expect(resolveWorkspaceFilter()).toBe(cwdReal);
+      expect(resolveWorkspaceFilter("")).toBe(cwdReal);
+      // "." and relative -> absolute cwd
+      expect(resolveWorkspaceFilter(".")).toBe(cwdReal);
+      // Absolute path passes through (canonicalized)
+      expect(resolveWorkspaceFilter(cwdReal)).toBe(cwdReal);
+    });
+
+    test("absolute workspace bullet surfaces from cwd (no --workspace) and via --workspace .", async () => {
+      await withTempCassHome(async (env) => {
+        await withTempGitRepo(async (repoDir) => {
+          const absRepo = realpathSync(repoDir);
+          const bullets = [
+            createTestBullet({ id: "b-global", content: "Global API rule", scope: "global", tags: ["api"] }),
+            createTestBullet({
+              id: "b-ws",
+              content: "Repo-local API rule",
+              scope: "workspace",
+              workspace: absRepo,
+              tags: ["api"],
+            }),
+            createTestBullet({
+              id: "b-other",
+              content: "Other repo API rule",
+              scope: "workspace",
+              workspace: "/some/other/absolute/path",
+              tags: ["api"],
+            }),
+          ];
+          writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook(bullets)));
+
+          const originalCwd = process.cwd();
+          const capture = captureConsole();
+          try {
+            process.chdir(absRepo);
+
+            // (a) No --workspace: should default to cwd (= the repo) and surface b-ws.
+            const fromCwd = await generateContextResult("build API endpoint", {});
+            const idsCwd = fromCwd.result.relevantBullets.map((b) => b.id);
+            expect(idsCwd).toContain("b-ws");
+            expect(idsCwd).not.toContain("b-other");
+
+            // (b) --workspace . : relative path normalized to absolute cwd.
+            const fromDot = await generateContextResult("build API endpoint", { workspace: "." });
+            const idsDot = fromDot.result.relevantBullets.map((b) => b.id);
+            expect(idsDot).toContain("b-ws");
+            expect(idsDot).not.toContain("b-other");
+          } finally {
+            process.chdir(originalCwd);
+            capture.restore();
+          }
+        });
+      });
     });
   });
 

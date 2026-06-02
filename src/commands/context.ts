@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
 import path from "node:path";
 import { loadConfig, getSanitizeConfig } from "../config.js";
 import { sanitize } from "../sanitize.js";
@@ -40,6 +41,39 @@ import { createProgress, type ProgressReporter } from "../progress.js";
 const MAX_CASS_HISTORY_QUERY_TERMS = 8;
 const CASS_HISTORY_TIMEOUT_SECONDS = 8;
 const PATHOLOGICAL_CASS_QUERY_TOKEN = /^(?:bd|br)-[a-z0-9]+(?:[.-][a-z0-9]+)+$/i;
+
+/**
+ * Resolve the effective workspace path for filtering workspace-scoped bullets.
+ *
+ * Workspace-scoped bullets store their `workspace` field as an absolute path
+ * and are matched by exact string comparison. To make repo-local rules visible:
+ *  - default to the current working directory when no workspace is provided, so
+ *    running `cm context` inside a repo surfaces that repo's rules; and
+ *  - canonicalize any provided value (expand `~`, resolve `.`/relative paths and
+ *    symlinks) to an absolute path so the documented `--workspace .` matches.
+ *
+ * Returns the canonicalized absolute path, or `undefined` only if even cwd
+ * cannot be resolved (which should never happen in practice).
+ */
+export function resolveWorkspaceFilter(workspace?: string): string | undefined {
+  const raw = typeof workspace === "string" && workspace.trim() !== "" ? workspace.trim() : process.cwd();
+  // Expand ~ first, then resolve relative segments against cwd.
+  const expanded = expandPath(raw);
+  let resolved: string;
+  try {
+    resolved = path.resolve(expanded);
+  } catch {
+    return undefined;
+  }
+  // Best-effort symlink canonicalization so a symlinked repo path still matches
+  // a stored real path (and vice versa). Falls back to the resolved path when
+  // the directory does not exist yet.
+  try {
+    return fsSync.realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+}
 
 /**
  * ReDoS-safe matcher for deprecated patterns.
@@ -375,13 +409,20 @@ export async function generateContextResult(
   const keywords = extractKeywords(task);
   const cassQuery = buildCassHistoryQuery(task);
 
+  // Default workspace to cwd and canonicalize so repo-local (workspace-scoped)
+  // rules surface automatically, and `--workspace .`/relative paths match the
+  // absolute paths stored on bullets.
+  const effectiveWorkspace = resolveWorkspaceFilter(flags.workspace);
+
   const activeBullets = getActiveBullets(playbook).filter((b) => {
     // Always include global rules
     if (b.scope !== "workspace") return true;
-    
-    // For workspace rules, only include if a workspace is specified AND matches
-    if (!flags.workspace) return false;
-    return b.workspace === flags.workspace;
+
+    // For workspace rules, only include if a workspace is resolved AND matches.
+    // Canonicalize the stored workspace too so symlink/relative differences in
+    // how the rule was authored don't defeat the exact-match comparison.
+    if (!effectiveWorkspace || !b.workspace) return false;
+    return resolveWorkspaceFilter(b.workspace) === effectiveWorkspace;
   });
 
   const scoringMeta: ScoreBulletsMeta = { semanticMode: "keyword" };
@@ -552,10 +593,14 @@ export async function contextWithoutCass(
     const playbook = await loadMergedPlaybook(config);
     const keywords = extractKeywords(task);
 
+    // Mirror generateContextResult: default workspace to cwd and canonicalize
+    // so workspace-scoped rules surface in the cass-unavailable fallback too.
+    const effectiveWorkspace = resolveWorkspaceFilter(workspace);
+
     const activeBullets = getActiveBullets(playbook).filter((b) => {
-      if (!workspace) return true;
       if (b.scope !== "workspace") return true;
-      return b.workspace === workspace;
+      if (!effectiveWorkspace || !b.workspace) return false;
+      return resolveWorkspaceFilter(b.workspace) === effectiveWorkspace;
     });
 
     const scoredBullets: ScoredBullet[] = activeBullets.map(b => {

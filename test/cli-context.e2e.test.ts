@@ -12,6 +12,7 @@ import { contextCommand, generateContextResult, ContextFlags, scoreBulletsEnhanc
 import { withTempCassHome, TestEnv, makeCassStub } from "./helpers/temp.js";
 import { createE2ELogger } from "./helpers/e2e-logger.js";
 import { createTestConfig } from "./helpers/factories.js";
+import { __setStdoutSinkForTests } from "../src/utils.js";
 
 // Helper to capture console output
 function captureConsole() {
@@ -26,6 +27,12 @@ function captureConsole() {
   console.error = (...args: any[]) => {
     errors.push(args.map(String).join(" "));
   };
+  // Structured JSON/TOON output is written via utils.writeStdoutSync (#50
+  // stdout-flush fix), bypassing console.log. Capture that sink too so
+  // `--json` assertions on capture.logs see the output.
+  __setStdoutSinkForTests((text: string) => {
+    logs.push(text.endsWith("\n") ? text.slice(0, -1) : text);
+  });
 
   return {
     logs,
@@ -33,6 +40,7 @@ function captureConsole() {
     restore: () => {
       console.log = originalLog;
       console.error = originalError;
+      __setStdoutSinkForTests(null);
     }
   };
 }

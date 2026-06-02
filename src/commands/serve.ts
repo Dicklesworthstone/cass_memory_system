@@ -13,6 +13,7 @@ import {
   warn,
   error as logError,
   reportError,
+  getVersion,
   validateNonEmptyString,
   validateOneOf,
   validatePositiveInt,
@@ -50,6 +51,16 @@ type JsonRpcRequest = {
 type JsonRpcResponse =
   | { jsonrpc: "2.0"; id: string | number | null; result: any }
   | { jsonrpc: "2.0"; id: string | number | null; error: { code: number; message: string; data?: any } };
+
+// Latest MCP protocol version this server implements. We echo the client's
+// requested version when it is a string (per the MCP spec's version
+// negotiation), otherwise fall back to this.
+const MCP_PROTOCOL_VERSION = "2025-06-18";
+
+const SERVER_INFO = {
+  name: "cass-memory",
+  version: getVersion(),
+};
 
 const TOOL_DEFS = [
   {
@@ -501,7 +512,66 @@ async function handleResourceRead(uri: string): Promise<any> {
   }
 }
 
+/**
+ * Wrap a tool-call payload in the MCP-required `content` array form.
+ * MCP clients (e.g. Claude Code) expect `tools/call` results shaped as
+ * `{ content: [{ type: "text", text: "..." }], isError?: boolean }`.
+ * Returning the bare result object renders as "Tool ran without output".
+ */
+function wrapToolResult(payload: unknown, isError = false): { content: Array<{ type: "text"; text: string }>; isError?: boolean } {
+  const text = typeof payload === "string" ? payload : JSON.stringify(payload);
+  const wrapped: { content: Array<{ type: "text"; text: string }>; isError?: boolean } = {
+    content: [{ type: "text", text }],
+  };
+  if (isError) wrapped.isError = true;
+  return wrapped;
+}
+
+/**
+ * JSON-RPC notifications carry no `id` and expect no response. MCP uses
+ * `notifications/initialized` after the handshake; we acknowledge it without a
+ * body. `routeRequest` still returns a (suppressed) result for these so its
+ * return type stays non-null for the many request-oriented call sites/tests.
+ */
+function isNotification(body: JsonRpcRequest): boolean {
+  return body.method === "notifications/initialized" || body.method === "initialized";
+}
+
 async function routeRequest(body: JsonRpcRequest): Promise<JsonRpcResponse> {
+  // MCP lifecycle: every client MUST complete an `initialize` handshake
+  // before any other request. Echo the client's protocolVersion when it is a
+  // string (spec version negotiation), advertise the tools/resources we serve.
+  if (body.method === "initialize") {
+    const requested = body.params?.protocolVersion;
+    const protocolVersion = typeof requested === "string" && requested.trim() !== ""
+      ? requested
+      : MCP_PROTOCOL_VERSION;
+    return {
+      jsonrpc: "2.0",
+      id: body.id ?? null,
+      result: {
+        protocolVersion,
+        capabilities: {
+          tools: {},
+          resources: {},
+        },
+        serverInfo: SERVER_INFO,
+      },
+    };
+  }
+
+  // The `initialized` notification has no `id` and expects no response; the
+  // HTTP layer suppresses the body via isNotification(). We still return a
+  // well-formed result so callers that don't pre-check get a valid object.
+  if (isNotification(body)) {
+    return { jsonrpc: "2.0", id: body.id ?? null, result: {} };
+  }
+
+  // Liveness check used by clients during/after the handshake.
+  if (body.method === "ping") {
+    return { jsonrpc: "2.0", id: body.id ?? null, result: {} };
+  }
+
   if (body.method === "tools/list") {
     return { jsonrpc: "2.0", id: body.id ?? null, result: { tools: TOOL_DEFS } };
   }
@@ -515,12 +585,17 @@ async function routeRequest(body: JsonRpcRequest): Promise<JsonRpcResponse> {
 
     try {
       const result = await handleToolCall(name, args);
+      // MCP requires tools/call results in the `content` array form. Returning
+      // the raw object renders as "Tool ran without output" in strict clients.
       return {
         jsonrpc: "2.0",
         id: body.id ?? null,
-        result,
+        result: wrapToolResult(result),
       };
     } catch (err: any) {
+      // Input-validation / execution failures are surfaced as JSON-RPC errors
+      // (clients map these to tool-call failures). wrapToolResult's isError
+      // form is available for callers that prefer in-band error content.
       return buildError(body.id ?? null, err?.message || "Tool call failed");
     }
   }
@@ -550,6 +625,9 @@ export const __test = {
   isLoopbackHost,
   headerValue,
   extractBearerToken,
+  isNotification,
+  wrapToolResult,
+  MCP_PROTOCOL_VERSION,
 };
 
 export async function serveCommand(options: { port?: number; host?: string } = {}): Promise<void> {
@@ -679,6 +757,13 @@ export async function serveCommand(options: { port?: number; host?: string } = {
       try {
         const raw = Buffer.concat(chunks).toString("utf-8");
         const parsed = JSON.parse(raw) as JsonRpcRequest;
+        // Notifications (e.g. notifications/initialized) produce no response
+        // body per JSON-RPC; acknowledge with 202 Accepted and an empty body.
+        if (isNotification(parsed)) {
+          res.writeHead(202);
+          res.end();
+          return;
+        }
         const response = await routeRequest(parsed);
         res.setHeader("content-type", "application/json");
         res.writeHead(200);

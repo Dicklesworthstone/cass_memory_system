@@ -13,7 +13,28 @@ import path from "node:path";
 import { __test, computePlaybookStats, serveCommand } from "../src/commands/serve.js";
 import { withTempCassHome } from "./helpers/temp.js";
 
-const { buildError, routeRequest, isLoopbackHost, headerValue, extractBearerToken } = __test;
+const {
+  buildError,
+  routeRequest,
+  isLoopbackHost,
+  headerValue,
+  extractBearerToken,
+  isNotification,
+  wrapToolResult,
+  MCP_PROTOCOL_VERSION,
+} = __test;
+
+/**
+ * Unwrap an MCP tools/call result `{ content: [{ type, text }] }` back into the
+ * underlying tool payload (parsing JSON text). Asserts the content-array shape.
+ */
+function unwrapToolResult(result: any): any {
+  expect(result).toBeDefined();
+  expect(Array.isArray(result.content)).toBe(true);
+  expect(result.content.length).toBeGreaterThan(0);
+  expect(result.content[0].type).toBe("text");
+  return JSON.parse(result.content[0].text);
+}
 
 function captureConsole() {
   const logs: string[] = [];
@@ -287,6 +308,66 @@ describe("routeRequest JSON-RPC routing", () => {
 
       expect(response.id).toBeNull();
     }, "serve-missing-id");
+  });
+
+  // Regression for #51: the MCP `initialize` handshake must succeed (not -32601)
+  // and must advertise protocolVersion, capabilities, and serverInfo.
+  it("handles initialize handshake and echoes the client protocolVersion", async () => {
+    await withTempCassHome(async () => {
+      const response = await routeRequest({
+        jsonrpc: "2.0",
+        id: 100,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          clientInfo: { name: "c", version: "1" },
+        },
+      });
+
+      expect("error" in response).toBe(false);
+      expect("result" in response).toBe(true);
+      if ("result" in response) {
+        expect(response.result.protocolVersion).toBe("2025-06-18");
+        expect(response.result.capabilities).toBeDefined();
+        expect(response.result.capabilities.tools).toBeDefined();
+        expect(response.result.serverInfo).toBeDefined();
+        expect(response.result.serverInfo.name).toBe("cass-memory");
+        expect(typeof response.result.serverInfo.version).toBe("string");
+      }
+    }, "serve-initialize");
+  });
+
+  it("falls back to the server protocolVersion when the client omits it", async () => {
+    await withTempCassHome(async () => {
+      const response = await routeRequest({
+        jsonrpc: "2.0",
+        id: 101,
+        method: "initialize",
+        params: { capabilities: {} },
+      });
+
+      expect("result" in response).toBe(true);
+      if ("result" in response) {
+        expect(response.result.protocolVersion).toBe(MCP_PROTOCOL_VERSION);
+      }
+    }, "serve-initialize-default-version");
+  });
+
+  it("answers ping with an empty result", async () => {
+    await withTempCassHome(async () => {
+      const response = await routeRequest({ jsonrpc: "2.0", id: 102, method: "ping" });
+      expect("result" in response).toBe(true);
+      if ("result" in response) {
+        expect(response.result).toEqual({});
+      }
+    }, "serve-ping");
+  });
+
+  it("treats notifications/initialized as a notification (no response body)", async () => {
+    expect(isNotification({ jsonrpc: "2.0", method: "notifications/initialized" })).toBe(true);
+    expect(isNotification({ jsonrpc: "2.0", method: "initialized" })).toBe(true);
+    expect(isNotification({ jsonrpc: "2.0", id: 1, method: "tools/list" })).toBe(false);
   });
 });
 
@@ -602,6 +683,45 @@ describe("tool call validation", () => {
     }, "serve-context-validation");
   });
 
+  // Regression for #51 (part 2): successful tools/call results MUST be wrapped
+  // in the MCP `content` array, not returned as the raw object (which strict
+  // clients render as "Tool ran without output").
+  it("wraps successful tools/call results in the MCP content array", async () => {
+    await withTempCassHome(async () => {
+      const response = await routeRequest({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "cm_context",
+          arguments: { task: "fix the auth bug", limit: 1 }
+        }
+      });
+
+      expect("result" in response).toBe(true);
+      if ("result" in response) {
+        // Must be the content-array wrapper, not the bare ContextResult.
+        expect(Array.isArray(response.result.content)).toBe(true);
+        expect(response.result.content[0].type).toBe("text");
+        // task should NOT be a top-level field on the wrapper.
+        expect(response.result.task).toBeUndefined();
+        const payload = unwrapToolResult(response.result);
+        expect(payload.task).toBe("fix the auth bug");
+        expect(Array.isArray(payload.relevantBullets)).toBe(true);
+      }
+    }, "serve-toolcall-content-wrapper");
+  });
+
+  it("wrapToolResult marks errors with isError and serializes objects", () => {
+    const ok = wrapToolResult({ a: 1 });
+    expect(ok.content[0].text).toBe(JSON.stringify({ a: 1 }));
+    expect(ok.isError).toBeUndefined();
+
+    const err = wrapToolResult("boom", true);
+    expect(err.content[0].text).toBe("boom");
+    expect(err.isError).toBe(true);
+  });
+
   it("memory_search validates query parameter", async () => {
     await withTempCassHome(async () => {
       const response = await routeRequest({
@@ -845,10 +965,11 @@ describe("successful tool calls", () => {
 
       expect("result" in response).toBe(true);
       if ("result" in response) {
-        expect(response.result.playbook).toBeDefined();
-        expect(Array.isArray(response.result.playbook)).toBe(true);
+        const payload = unwrapToolResult(response.result);
+        expect(payload.playbook).toBeDefined();
+        expect(Array.isArray(payload.playbook)).toBe(true);
         // Should find our bullet since it contains "authentication"
-        const found = response.result.playbook.find((b: any) => b.id === "search-test-1");
+        const found = payload.playbook.find((b: any) => b.id === "search-test-1");
         if (found) {
           expect(found.content).toContain("Authentication");
         }
@@ -887,10 +1008,11 @@ describe("successful tool calls", () => {
 
       expect("result" in response).toBe(true);
       if ("result" in response) {
-        expect(response.result.playbook).toBeDefined();
-        expect(response.result.cass).toBeDefined();
-        expect(Array.isArray(response.result.playbook)).toBe(true);
-        expect(Array.isArray(response.result.cass)).toBe(true);
+        const payload = unwrapToolResult(response.result);
+        expect(payload.playbook).toBeDefined();
+        expect(payload.cass).toBeDefined();
+        expect(Array.isArray(payload.playbook)).toBe(true);
+        expect(Array.isArray(payload.cass)).toBe(true);
       }
     }, "serve-search-both-scope");
   });
@@ -909,8 +1031,9 @@ describe("successful tool calls", () => {
 
       expect("result" in response).toBe(true);
       if ("result" in response) {
-        expect(response.result.cass).toBeDefined();
-        expect(response.result.playbook).toBeUndefined();
+        const payload = unwrapToolResult(response.result);
+        expect(payload.cass).toBeDefined();
+        expect(payload.playbook).toBeUndefined();
       }
     }, "serve-search-cass-scope");
   });
