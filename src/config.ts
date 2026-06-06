@@ -80,8 +80,20 @@ function migrateLlmConfig(config: Partial<any>): Partial<any> {
     rest.model = llm.model;
   }
 
-  // Warn once about deprecated config shape
-  if (!_llmMigrationWarned) {
+  // Migrate LLM timeouts (#53). `llm.timeoutMs` is the documented config knob;
+  // surface it as the resolved top-level `llmTimeoutMs` consumed by the LLM layer.
+  if (llm.timeoutMs !== undefined && rest.llmTimeoutMs === undefined) {
+    rest.llmTimeoutMs = llm.timeoutMs;
+  }
+  if (llm.totalTimeoutMs !== undefined && rest.llmTotalTimeoutMs === undefined) {
+    rest.llmTotalTimeoutMs = llm.totalTimeoutMs;
+  }
+
+  // Warn once about deprecated config shape — only for the deprecated
+  // provider/model keys. `llm.timeoutMs`/`llm.totalTimeoutMs` are the
+  // canonical, documented home for the LLM timeouts (#53), so their presence
+  // alone must not trigger the migration warning.
+  if (!_llmMigrationWarned && (llm.provider || llm.model)) {
     _llmMigrationWarned = true;
     warn(
       `Config uses deprecated 'llm.provider/llm.model' shape. ` +

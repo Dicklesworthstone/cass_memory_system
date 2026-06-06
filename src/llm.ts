@@ -629,12 +629,22 @@ export function fillPrompt(
 
 // --- Resilience Wrapper ---
 
+// Default per-operation timeout (ms). Overridable per-call via config
+// (`llm.timeoutMs`) or globally via the CM_LLM_TIMEOUT_MS env var. See #53.
+export const DEFAULT_PER_OP_TIMEOUT_MS = 30000;
+// Default total timeout ceiling across all retries (ms). Must be >=
+// maxRetries * perOperationTimeoutMs, otherwise a bumped per-op timeout is
+// silently masked by the total ceiling (see llmWithRetry below). With
+// maxRetries=3 and a 30s per-op default, 120000ms leaves headroom for
+// retries + backoff. Overridable via `llm.totalTimeoutMs` / CM_LLM_TOTAL_TIMEOUT_MS.
+export const DEFAULT_TOTAL_TIMEOUT_MS = 120000;
+
 export const LLM_RETRY_CONFIG = {
   maxRetries: 3,
   baseDelayMs: 1000,
   maxDelayMs: 30000,
-  totalTimeoutMs: 60000, 
-  perOperationTimeoutMs: 30000,
+  totalTimeoutMs: Number(process.env.CM_LLM_TOTAL_TIMEOUT_MS) || DEFAULT_TOTAL_TIMEOUT_MS,
+  perOperationTimeoutMs: Number(process.env.CM_LLM_TIMEOUT_MS) || DEFAULT_PER_OP_TIMEOUT_MS,
   retryableErrors: [
     "rate_limit_exceeded",
     "server_error",
@@ -663,21 +673,47 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, operationName: st
   }
 }
 
+/**
+ * Timeout overrides for a single llmWithRetry invocation. When provided these
+ * win over the env/default values baked into LLM_RETRY_CONFIG, letting callers
+ * thread per-config timeouts (e.g. config.json `llm.timeoutMs`, #53) through.
+ */
+export interface LLMTimeoutOverrides {
+  perOperationTimeoutMs?: number;
+  totalTimeoutMs?: number;
+}
+
 export async function llmWithRetry<T>(
   operation: () => Promise<T>,
-  operationName: string
+  operationName: string,
+  overrides: LLMTimeoutOverrides = {}
 ): Promise<T> {
   const startTime = Date.now();
   let attempt = 0;
-  
+
+  // Precedence: explicit config override > env/default (LLM_RETRY_CONFIG).
+  const perOperationTimeoutMs =
+    overrides.perOperationTimeoutMs && overrides.perOperationTimeoutMs > 0
+      ? overrides.perOperationTimeoutMs
+      : LLM_RETRY_CONFIG.perOperationTimeoutMs;
+  // Ensure the total ceiling never masks an explicitly bumped per-op timeout:
+  // it must be at least maxRetries * perOp so all retries can actually run.
+  const minTotal = perOperationTimeoutMs * LLM_RETRY_CONFIG.maxRetries;
+  const totalTimeoutMs = Math.max(
+    overrides.totalTimeoutMs && overrides.totalTimeoutMs > 0
+      ? overrides.totalTimeoutMs
+      : LLM_RETRY_CONFIG.totalTimeoutMs,
+    minTotal
+  );
+
   while (true) {
     try {
       const elapsed = Date.now() - startTime;
-      if (elapsed > LLM_RETRY_CONFIG.totalTimeoutMs) {
-        throw new Error(`${operationName} exceeded total timeout ceiling of ${LLM_RETRY_CONFIG.totalTimeoutMs}ms`);
+      if (elapsed > totalTimeoutMs) {
+        throw new Error(`${operationName} exceeded total timeout ceiling of ${totalTimeoutMs}ms`);
       }
 
-      return await withTimeout(operation(), LLM_RETRY_CONFIG.perOperationTimeoutMs, operationName);
+      return await withTimeout(operation(), perOperationTimeoutMs, operationName);
     } catch (err: any) {
       attempt++;
       const isRetryable = LLM_RETRY_CONFIG.retryableErrors.some(e => {
@@ -910,7 +946,10 @@ export async function extractDiary<T>(
 
   return llmWithRetry(async () => {
     return generateObjectSafe(schema, prompt, config, 3, io);
-  }, "extractDiary");
+  }, "extractDiary", {
+    perOperationTimeoutMs: config.llmTimeoutMs,
+    totalTimeoutMs: config.llmTotalTimeoutMs,
+  });
 }
 
 export async function runReflector<T>(

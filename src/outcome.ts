@@ -520,6 +520,6 @@ export function classifySessionOutcome(
     errorCount,
     hadRetries,
     task,
-    durationSec: diary.duration,
+    durationSec: diary.duration ?? undefined,
   };
 }

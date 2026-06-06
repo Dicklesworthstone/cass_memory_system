@@ -459,6 +459,9 @@ export async function generateDiaryFromContent(
     timestamp: now(),
     agent: metadata.agent,
     workspace: metadata.workspace,
+    // Normalize null -> undefined: the schema now accepts `duration: null` from
+    // OpenAI-compatible providers (#53), but downstream consumers expect number|undefined.
+    duration: extracted.duration ?? undefined,
     status: extracted.status,
     accomplishments: extracted.accomplishments || [],
     decisions: extracted.decisions || [],

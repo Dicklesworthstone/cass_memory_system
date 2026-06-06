@@ -269,7 +269,7 @@ export const DiaryEntrySchema = z.object({
   timestamp: z.string(),
   agent: z.string(),
   workspace: z.string().optional(),
-  duration: z.number().optional(),
+  duration: z.number().nullish(), // number | null | undefined — some OpenAI-compatible providers emit `duration: null`
   status: SessionStatusEnum,
   accomplishments: z.array(z.string()).default([]),
   decisions: z.array(z.string()).default([]),
@@ -365,10 +365,20 @@ export const ConfigSchema = z.object({
   schema_version: z.number().default(1),
   llm: z.object({
     provider: z.string().default("anthropic"),
-    model: z.string().default("claude-sonnet-4-20250514")
+    model: z.string().default("claude-sonnet-4-20250514"),
+    // Per-operation LLM timeout in ms (e.g. for `cm reflect`'s extractDiary call).
+    // Migrated to top-level `llmTimeoutMs` by loadConfig(). See #53.
+    timeoutMs: z.number().int().positive().optional(),
+    // Total timeout ceiling across all retries, in ms. Migrated to `llmTotalTimeoutMs`.
+    totalTimeoutMs: z.number().int().positive().optional()
   }).optional(),
   provider: LLMProviderEnum.default("anthropic"),
   model: z.string().default("claude-sonnet-4-20250514"),
+  // Resolved LLM timeouts (per-operation / total across retries) in ms. Optional;
+  // when unset the LLM layer falls back to env vars then hardcoded defaults. These
+  // are populated from `llm.timeoutMs` / `llm.totalTimeoutMs` by the config loader.
+  llmTimeoutMs: z.number().int().positive().optional(),
+  llmTotalTimeoutMs: z.number().int().positive().optional(),
   cassPath: z.string().default("cass"),
   remoteCass: RemoteCassConfigSchema.default({}),
   playbookPath: z.string().default("~/.cass-memory/playbook.yaml"),

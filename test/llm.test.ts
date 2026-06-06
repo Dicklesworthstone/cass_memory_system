@@ -443,7 +443,10 @@ describe("LLM_RETRY_CONFIG", () => {
     expect(LLM_RETRY_CONFIG.maxRetries).toBe(3);
     expect(LLM_RETRY_CONFIG.baseDelayMs).toBe(1000);
     expect(LLM_RETRY_CONFIG.maxDelayMs).toBe(30000);
-    expect(LLM_RETRY_CONFIG.totalTimeoutMs).toBe(60000);
+    // Total default raised to 120000 (#53) so a bumped per-op timeout isn't masked
+    // by the total ceiling (must be >= maxRetries * perOp). Both are env-overridable
+    // via CM_LLM_TOTAL_TIMEOUT_MS / CM_LLM_TIMEOUT_MS.
+    expect(LLM_RETRY_CONFIG.totalTimeoutMs).toBe(120000);
     expect(LLM_RETRY_CONFIG.perOperationTimeoutMs).toBe(30000);
   });
 
