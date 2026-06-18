@@ -566,7 +566,7 @@ helpful:
 
 harmful:
 { "type": "harmful", "bulletId": string, "sourceSession": null,
-  "reason": "incorrect" | "outdated" | "too_broad" | "too_narrow" | "context_specific" | "superseded" | null,
+  "reason": "caused_bug" | "wasted_time" | "contradicted_requirements" | "wrong_context" | "outdated" | "other" | null,
   "context": string | null }
 
 replace:
