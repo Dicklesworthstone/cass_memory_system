@@ -437,12 +437,21 @@ export async function generateDiaryFromContent(
   const metadata = extractSessionMetadata(sessionPath);
 
   // 2. LLM Extraction
-  const ExtractionSchema = DiaryEntrySchema.omit({ 
-    id: true, 
-    sessionPath: true, 
-    timestamp: true, 
-    relatedSessions: true, 
-    searchAnchors: true 
+  // `agent` is derived from the session path by extractSessionMetadata() and
+  // always overwritten on the assembled diary below — so we omit it from the
+  // LLM-facing schema rather than requiring the model to emit it. The CLI
+  // provider can't force structured output (it has no equivalent to
+  // generateObject's tool-schema enforcement), and PROMPTS.diary's schema block
+  // never asks for `agent`, so a required `agent` field made every CLI diary
+  // extraction fail Zod validation with `path:["agent"], "Required"` (#54).
+  // Same class of fix as the `duration: null` injection in #53.
+  const ExtractionSchema = DiaryEntrySchema.omit({
+    id: true,
+    sessionPath: true,
+    timestamp: true,
+    agent: true,
+    relatedSessions: true,
+    searchAnchors: true
   });
 
   const extracted = await extractDiary(

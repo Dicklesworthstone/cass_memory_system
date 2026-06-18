@@ -14,7 +14,15 @@ import { extractKeywords, log, now } from "./utils.js";
 
 /**
  * Normalize LLM validator result to our internal verdict types.
- * Maps REFINE to ACCEPT_WITH_CAUTION with reduced confidence.
+ * Maps REFINE to ACCEPT_WITH_CAUTION with reduced confidence, and treats a
+ * native ACCEPT_WITH_CAUTION as a non-rejecting (valid) verdict.
+ *
+ * `runValidator` sets `valid = (verdict === 'ACCEPT')`, so a model that
+ * answers ACCEPT_WITH_CAUTION directly (an accept *variant* the validator
+ * prompt explicitly offers) would otherwise keep `valid=false` and be dropped
+ * during reflection — even though the standalone `cm validate` command treats
+ * the same verdict as non-rejecting. That cross-path inconsistency silently
+ * discarded cautiously-accepted rules (#54); rescue it here to match.
  */
 export function normalizeValidatorVerdict(result: ValidatorResult): ValidatorResult {
   if (result.verdict === "REFINE") {
@@ -24,6 +32,9 @@ export function normalizeValidatorVerdict(result: ValidatorResult): ValidatorRes
       valid: true,
       confidence: result.confidence * 0.8 // Reduce confidence for refined rules
     };
+  }
+  if (result.verdict === "ACCEPT_WITH_CAUTION") {
+    return { ...result, valid: true };
   }
   return result;
 }

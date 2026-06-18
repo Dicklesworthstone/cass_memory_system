@@ -222,7 +222,12 @@ export function getModel(config: { provider: string; model: string; apiKey?: str
 
 /** Known CLI tools and their invocation flags (prompt is always piped via stdin). */
 const CLI_TOOL_CONFIGS: Record<string, { flags: string[] }> = {
-  claude:  { flags: ["-p"] },       // claude -p (print mode, reads prompt from stdin)
+  // claude -p (print mode, reads prompt from stdin). --strict-mcp-config makes
+  // the subprocess ignore the user's project/global MCP config (no --mcp-config
+  // is passed), so a pure JSON-summarizer call doesn't boot the entire MCP stack
+  // + hooks. On MCP-heavy machines that startup cost added many seconds per call
+  // and intermittently pushed a single call over the timeout → 0 deltas (#54).
+  claude:  { flags: ["-p", "--strict-mcp-config"] },
   codex:   { flags: [] },           // codex (reads from stdin)
   gemini:  { flags: [] },           // gemini (reads from stdin)
 };
@@ -313,6 +318,7 @@ export async function cliGenerateObject<T>(
   schema: z.ZodSchema<T>,
   prompt: string,
   cliCommand?: string,
+  timeoutMs?: number,
 ): Promise<{ object: T; usage: LLMUsage }> {
   const cmd = resolveCliCommand(cliCommand);
   if (!cmd) {
@@ -345,7 +351,18 @@ export async function cliGenerateObject<T>(
   const toolConfig = CLI_TOOL_CONFIGS[cmd] ?? { flags: [] };
   const spawnArgs = [cmd, ...toolConfig.flags];
 
-  const CLI_TIMEOUT_MS = 120_000; // 2 minutes — generous for large prompts
+  // Per-call subprocess timeout. A full reflector generation (up to 20 detailed
+  // deltas) on the CLI path can exceed the old hardcoded 120s and get killed on
+  // every attempt → 0 deltas (#54). Honor an explicit override (threaded from
+  // config.llmTimeoutMs, mirroring #53) or the CM_CLI_TIMEOUT_MS env var, else
+  // fall back to the generous 120s default.
+  const envTimeout = Number(process.env.CM_CLI_TIMEOUT_MS);
+  const CLI_TIMEOUT_MS =
+    timeoutMs && timeoutMs > 0
+      ? timeoutMs
+      : Number.isFinite(envTimeout) && envTimeout > 0
+        ? envTimeout
+        : 120_000; // 2 minutes — generous for large prompts
 
   const proc = Bun.spawn(spawnArgs, {
     stdin: new Response(enhancedPrompt).body!,
@@ -519,8 +536,55 @@ Delta types:
 - harmful: Existing bullet caused problems (reference by ID, explain why)
 - replace: Existing bullet needs updated wording
 - deprecate: Existing bullet is outdated
+- merge: Two or more existing bullets should be combined (reference by IDs)
 
-Maximum 20 deltas per reflection. Focus on quality over quantity.`,
+Maximum 20 deltas per reflection. Focus on quality over quantity.
+
+Respond with JSON of the form { "deltas": [ ...delta objects... ] }, where each
+delta object EXACTLY matches one of these shapes (no extra keys, all keys present):
+
+add:
+{
+  "type": "add",
+  "bullet": {
+    "content": string,                  // the rule itself, imperative and specific
+    "category": string,                 // e.g. "testing", "debugging", "git"
+    "kind": "project_convention" | "stack_pattern" | "workflow_rule" | "anti_pattern" | null,
+    "type": "rule" | "anti-pattern" | null,
+    "isNegative": boolean | null,
+    "scope": "global" | "workspace" | "language" | "framework" | "task" | null,
+    "workspace": string | null,
+    "searchPointer": string | null,
+    "tags": string[] | null
+  },
+  "reason": string,
+  "sourceSession": null                  // always null; the system fills this in
+}
+
+helpful:
+{ "type": "helpful", "bulletId": string, "sourceSession": null, "context": string | null }
+
+harmful:
+{ "type": "harmful", "bulletId": string, "sourceSession": null,
+  "reason": "incorrect" | "outdated" | "too_broad" | "too_narrow" | "context_specific" | "superseded" | null,
+  "context": string | null }
+
+replace:
+{ "type": "replace", "bulletId": string, "newContent": string, "reason": string | null }
+
+deprecate:
+{ "type": "deprecate", "bulletId": string, "reason": string, "replacedBy": string | null }
+
+merge:
+{ "type": "merge", "bulletIds": string[], "mergedContent": string, "reason": string | null }
+
+RULES:
+- Every key listed above MUST be present in each delta object (use null for unknowns).
+- For "add" deltas, set "kind", "type", "scope" (and harmful "reason") to null UNLESS the
+  value is EXACTLY one of the literal strings listed — never invent new enum values.
+- Use the literal string "add"/"helpful"/etc. for "type" at the delta level.
+- "sourceSession" must be null; it is overwritten by the system.
+- Output ONLY the JSON object; no prose, no markdown fences.`,
 
   validator: `You are a scientific validator checking if a proposed rule is supported by historical evidence.
 
@@ -785,7 +849,7 @@ export async function generateObjectSafe<T>(
         const retryPrompt = attempt > 1 && lastCliError
           ? `[PREVIOUS ATTEMPT FAILED: ${lastCliError}]\nYou MUST output valid JSON this time.\n\n${prompt}`
           : prompt;
-        const result = await cliGenerateObject(schema, retryPrompt, config.cliCommand);
+        const result = await cliGenerateObject(schema, retryPrompt, config.cliCommand, config.llmTimeoutMs);
         return result.object;
       } catch (err: any) {
         lastCliError = err.message?.slice(0, 200);
@@ -1170,7 +1234,7 @@ export async function llmWithFallback<T>(
     try {
       // CLI provider: bypass AI SDK, shell out directly
       if (provider === "cli") {
-        const result = await cliGenerateObject<T>(schema, prompt, config.cliCommand);
+        const result = await cliGenerateObject<T>(schema, prompt, config.cliCommand, config.llmTimeoutMs);
         return result.object;
       }
 
