@@ -6,9 +6,22 @@ import {
   ValidationEvidence,
   DecisionLogEntry
 } from "./types.js";
-import { runValidator, ValidatorResult } from "./llm.js";
+import { runValidator, ValidatorResult, type LLMIO } from "./llm.js";
 import { safeCassSearch, type CassRunner } from "./cass.js";
 import { extractKeywords, log, now } from "./utils.js";
+
+// Shared helper so call sites can pass `safeCassSearch(...)` without
+// repeating the conditional runner-argument dance.
+function searchCass(
+  query: string,
+  options: { limit?: number; days?: number },
+  config: Config,
+  runner?: CassRunner
+) {
+  return runner
+    ? safeCassSearch(query, options, config.cassPath, config, runner)
+    : safeCassSearch(query, options, config.cassPath, config);
+}
 
 // --- Verdict Normalization ---
 
@@ -84,26 +97,12 @@ export async function evidenceCountGate(
     };
   }
 
-  const hits = runner
-    ? await safeCassSearch(
-        keywords.join(" "),
-        {
-          limit: 20,
-          days: config.validationLookbackDays,
-        },
-        config.cassPath,
-        config,
-        runner
-      )
-    : await safeCassSearch(
-        keywords.join(" "),
-        {
-          limit: 20,
-          days: config.validationLookbackDays,
-        },
-        config.cassPath,
-        config
-      );
+  const hits = await searchCass(
+    keywords.join(" "),
+    { limit: 20, days: config.validationLookbackDays },
+    config,
+    runner
+  );
 
   const sessions = new Set<string>();
   const successSessions = new Set<string>();
@@ -174,7 +173,9 @@ Relevance: ${h.score}
 
 export async function validateDelta(
   delta: PlaybookDelta,
-  config: Config
+  config: Config,
+  runner?: CassRunner,
+  io?: LLMIO
 ): Promise<{ valid: boolean; result?: ValidationResult; gate?: EvidenceGateResult; decisionLog?: DecisionLogEntry[] }> {
   const decisionLog: DecisionLogEntry[] = [];
 
@@ -213,7 +214,7 @@ export async function validateDelta(
   }
 
   // 1. Run Gate
-  const gate = await evidenceCountGate(content, config);
+  const gate = await evidenceCountGate(content, config, runner);
 
   if (!gate.passed) {
     log(`Rule rejected by evidence gate: ${gate.reason}`);
@@ -254,15 +255,26 @@ export async function validateDelta(
     };
   }
 
-  // Optimize: If gate suggests "draft" due to lack of evidence (0 sessions),
-  // skip LLM validation (which would likely reject due to lack of evidence)
-  // and accept as draft immediately.
-  if (gate.suggestedState === "draft" && gate.sessionCount === 0) {
+  // Optimize: If gate suggests "draft" but found no corroborating success
+  // signal (successCount === 0), skip LLM validation and accept as a draft
+  // immediately. The LLM validator judges a rule purely on historical
+  // corroboration, so an uncorroborated novel lesson would be REJECTED rather
+  // than drafted — contradicting the documented "candidates until proven"
+  // design. This covers both "no history" (sessionCount === 0) AND the common
+  // "near-noise hits with no success language" case (sessionCount > 0 &&
+  // successCount === 0); a plain sessionCount === 0 check missed the latter,
+  // since a cass keyword search almost always returns *some* sessions (#54,
+  // finding A). The strong-failure case (failureCount >= 3 && successCount ===
+  // 0) is already rejected upstream by the gate (!gate.passed), so this only
+  // widens the *draft* path — a bullet that DID accumulate successes
+  // (successCount > 0) still flows through to LLM validation as before. This
+  // is provider-independent (it changes validation for all providers).
+  if (gate.suggestedState === "draft" && gate.successCount === 0) {
     decisionLog.push({
       timestamp: now(),
       phase: "add",
       action: "accepted",
-      reason: `Accepted as draft (new pattern/no history): ${gate.reason}`,
+      reason: `Accepted as draft (novel/uncorroborated, no success signal): ${gate.reason}`,
       content: content.slice(0, 100)
     });
     return {
@@ -274,10 +286,10 @@ export async function validateDelta(
 
   // 2. Run LLM
   const keywords = extractKeywords(content);
-  const evidenceHits = await safeCassSearch(keywords.join(" "), { limit: 10 }, config.cassPath, config);
+  const evidenceHits = await searchCass(keywords.join(" "), { limit: 10 }, config, runner);
   const formattedEvidence = formatEvidence(evidenceHits);
 
-  const rawResult = await runValidator(content, formattedEvidence, config);
+  const rawResult = await runValidator(content, formattedEvidence, config, io);
   const result = normalizeValidatorVerdict(rawResult);
 
   let finalVerdict = result.verdict as "ACCEPT" | "REJECT" | "ACCEPT_WITH_CAUTION" | "REFINE";
