@@ -8,6 +8,28 @@ All notable changes to **cass-memory** (`cm`) are documented in this file.
 
 ---
 
+## [0.2.12] -- 2026-06-21
+
+### Reflection Pipeline -- ship the `cm reflect` fixes
+
+These fixes were already merged to `main` but had not landed in any tagged /
+brew-installable build, so users on `v0.2.11` (the prior Homebrew latest) still
+saw `cm reflect` produce **zero deltas on every provider**. This release ships
+them. ([#55](https://github.com/Dicklesworthstone/cass_memory_system/issues/55))
+
+- **Unblock CLI-provider reflect (0 deltas).** CLI prompts omit JSON schemas, so the
+  `agent` field was wrongly required and the diary timeout was hardcoded; also drop
+  `ACCEPT_WITH_CAUTION` from the embedded reflector ([79e3a9f](https://github.com/Dicklesworthstone/cass_memory_system/commit/79e3a9fd)) ([#54](https://github.com/Dicklesworthstone/cass_memory_system/issues/54))
+- **Accept `duration: null` in the diary schema** and make LLM timeouts configurable, so
+  slower gateway / CLI providers no longer fail at a fixed 30s `extractDiary` timeout
+  ([2e63e9b](https://github.com/Dicklesworthstone/cass_memory_system/commit/2e63e9ba)) ([#53](https://github.com/Dicklesworthstone/cass_memory_system/issues/53))
+- **Correct the harmful-delta reason enum** in the embedded reflector schema
+  ([e3e9f06](https://github.com/Dicklesworthstone/cass_memory_system/commit/e3e9f063))
+- **Widen the auto-draft validation bypass** to `successCount === 0`
+  ([523b6f9](https://github.com/Dicklesworthstone/cass_memory_system/commit/523b6f9a)) ([#54](https://github.com/Dicklesworthstone/cass_memory_system/issues/54) finding A)
+
+---
+
 ## [Unreleased] (since v0.2.3 -- 2026-01-07)
 
 ### LLM Provider Support
