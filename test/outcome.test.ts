@@ -345,6 +345,108 @@ describe("scoreImplicitFeedback", () => {
       expect(result!.decayedValue).toBeGreaterThanOrEqual(0.1);
     });
   });
+
+  // Regression suite for #56: a non-failure session must never manufacture a
+  // `harmful` mark from weak, incidental signals, and an auto-graded session
+  // whose rule set is the injected context must never blanket-blame harm.
+  describe("#56 harm-attribution policy", () => {
+    it("does NOT mark mixed + single error as harmful (the corpus flood)", () => {
+      // This is the exact incident scenario: a `mixed` session with errorCount 1.
+      const result = scoreImplicitFeedback({
+        sessionId: "s",
+        outcome: "mixed",
+        errorCount: 1,
+      });
+      // Net harm (0.3) is below the override margin -> abstain, never harmful.
+      expect(result?.type).not.toBe("harmful");
+      expect(result).toBeNull();
+    });
+
+    it("does NOT mark partial + single error as harmful", () => {
+      const result = scoreImplicitFeedback({
+        sessionId: "s",
+        outcome: "partial",
+        errorCount: 1,
+      });
+      expect(result).toBeNull();
+    });
+
+    it("does NOT mark mixed + negative sentiment as harmful", () => {
+      const result = scoreImplicitFeedback({
+        sessionId: "s",
+        outcome: "mixed",
+        sentiment: "negative",
+      });
+      expect(result).toBeNull();
+    });
+
+    it("does NOT mark mixed + retries as harmful", () => {
+      const result = scoreImplicitFeedback({
+        sessionId: "s",
+        outcome: "mixed",
+        hadRetries: true,
+      });
+      expect(result).toBeNull();
+    });
+
+    it("still allows mixed -> harmful when negative evidence is overwhelming", () => {
+      // 2+ errors (0.7) + retries (0.5) + negative sentiment (0.5) = 1.7 net harm,
+      // which clears the 1.0 override margin: a genuine pile-up still flips.
+      const result = scoreImplicitFeedback({
+        sessionId: "s",
+        outcome: "mixed",
+        errorCount: 3,
+        hadRetries: true,
+        sentiment: "negative",
+      });
+      expect(result?.type).toBe("harmful");
+    });
+
+    it("still credits a pure mixed/partial session as helpful (non-null)", () => {
+      expect(scoreImplicitFeedback({ sessionId: "s", outcome: "mixed" })?.type).toBe("helpful");
+      expect(scoreImplicitFeedback({ sessionId: "s", outcome: "partial" })?.type).toBe("helpful");
+    });
+
+    it("suppresses harm for an auto-graded session with a blast-radius rule set", () => {
+      // A genuine `failure` that injected the whole context (50 shown rules) must
+      // NOT blanket-condemn all of them: we cannot attribute the failure to any
+      // specific shown rule.
+      const big = Array.from({ length: 50 }, (_, i) => `b-rule${i}0`);
+      const result = scoreImplicitFeedback({
+        sessionId: "s",
+        outcome: "failure",
+        errorCount: 1,
+        rulesUsed: big,
+        autoGraded: true,
+      });
+      expect(result?.type).not.toBe("harmful");
+      expect(result).toBeNull();
+    });
+
+    it("still grades harm for an auto-graded FAILURE with a small (citation-sized) rule set", () => {
+      // Small-N deliberate-citation-sized sets on a real failure are trusted.
+      const result = scoreImplicitFeedback({
+        sessionId: "s",
+        outcome: "failure",
+        rulesUsed: ["b-abc123", "b-def456"],
+        autoGraded: true,
+      });
+      expect(result?.type).toBe("harmful");
+    });
+
+    it("does NOT apply the blast-radius guard to manual (non-auto) outcomes", () => {
+      // A user who explicitly lists many rules in `cm outcome failure ...` is
+      // trusted — the guard only fires for auto-harvested (shown) rule sets.
+      const big = Array.from({ length: 50 }, (_, i) => `b-rule${i}0`);
+      const result = scoreImplicitFeedback({
+        sessionId: "s",
+        outcome: "failure",
+        rulesUsed: big,
+        // autoGraded intentionally unset (manual path)
+      });
+      expect(result?.type).toBe("harmful");
+    });
+  });
 });
 
 describe("recordOutcome", () => {

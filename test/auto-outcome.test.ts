@@ -14,6 +14,7 @@ import {
   extractRuleIdsFromTranscript,
   classifySessionOutcome,
   detectSentiment,
+  scoreImplicitFeedback,
 } from "../src/outcome.js";
 import type { DiaryEntry } from "../src/types.js";
 
@@ -246,6 +247,25 @@ describe("classifySessionOutcome", () => {
     const diary = makeDiary({ duration: 300 });
     const result = classifySessionOutcome("done", diary, ["b-abc123"]);
     expect(result!.durationSec).toBe(300);
+  });
+
+  it("marks the outcome as auto-graded (rules were harvested, not cited) [#56]", () => {
+    // Auto-extracted rule sets are largely the rules `cm context` injected, so
+    // the classified outcome must carry autoGraded:true to trigger the stricter
+    // harm-attribution policy / blast-radius guard in scoreImplicitFeedback.
+    const result = classifySessionOutcome("done", makeDiary(), ["b-abc123", "b-def456"]);
+    expect(result!.autoGraded).toBe(true);
+  });
+
+  it("does not condemn the injected rule set on a mixed/error session [#56]", () => {
+    // End-to-end through the auto path: a mixed session that injected many rules
+    // and hit a couple of error mentions must not yield a harmful verdict.
+    const injected = Array.from({ length: 30 }, (_, i) => `b-inject${i}0`);
+    const content = "Working... Error: boom\nError: boom again\n" + injected.join(" ");
+    const result = classifySessionOutcome(content, makeDiary({ status: "mixed" }), injected);
+    expect(result!.autoGraded).toBe(true);
+    const scored = scoreImplicitFeedback(result!);
+    expect(scored?.type).not.toBe("harmful");
   });
 });
 

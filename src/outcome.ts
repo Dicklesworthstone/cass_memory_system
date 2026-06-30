@@ -62,6 +62,17 @@ export interface OutcomeInput {
   errorCount?: number;
   hadRetries?: boolean;
   sentiment?: Sentiment;
+  /**
+   * True when `rulesUsed` was harvested automatically — i.e. it is the set of
+   * rules that `cm context` *injected/showed* in the transcript (or was
+   * back-filled from the context log), NOT a list the agent deliberately cited.
+   * A shown rule cannot be assumed to have *caused* anything, so auto-graded
+   * outcomes are held to a stricter attribution policy in
+   * `scoreImplicitFeedback` (see #56). Manual `cm outcome` / MCP `cm_outcome`
+   * calls leave this unset, so explicit user-provided rule lists are graded
+   * normally.
+   */
+  autoGraded?: boolean;
 }
 
 export interface OutcomeRecord extends OutcomeInput {
@@ -83,6 +94,34 @@ export interface ContextLogEntry {
 
 const FAST_THRESHOLD_SECONDS = 600; // 10 minutes
 const SLOW_THRESHOLD_SECONDS = 3600; // 1 hour
+
+/**
+ * #56 — Harm-attribution guards.
+ *
+ * The auto-outcome grader applies a single session-level verdict to *every*
+ * rule ID that appears in a transcript. Because `cm context` injects the
+ * playbook, that set is the whole shown context, not deliberate citations.
+ * Two guards keep a non-success session from condemning rules it merely
+ * displayed:
+ *
+ * 1. HARM_OVERRIDE_MARGIN — on any outcome that is NOT an explicit `failure`
+ *    (i.e. `success` / `mixed` / `partial`), incidental negative signals must
+ *    not be allowed to *manufacture* harm. Harm is only warranted when the
+ *    negative evidence dominates the positive evidence by at least a full
+ *    clear-signal's worth (1.0). This still lets an overwhelming pile-up of
+ *    negative signals flip a session (the historical "success can become
+ *    harmful" behaviour), but a single error (+0.3) in an ambiguous `mixed`
+ *    session can no longer flip dozens of rules to harmful — it abstains
+ *    instead (neutral / no-op grading).
+ *
+ * 2. AUTO_GRADE_BLAST_RADIUS — when an *auto-graded* outcome attributes to more
+ *    rules than any agent could plausibly have deliberately cited in one
+ *    session, the set is the injected context, not citations. We never
+ *    manufacture harm across such a set (we cannot tell which shown rule, if
+ *    any, contributed). Genuine small-N citations still grade normally.
+ */
+const HARM_OVERRIDE_MARGIN = 1.0;
+const AUTO_GRADE_BLAST_RADIUS = 8;
 
 export function scoreImplicitFeedback(signals: OutcomeInput): {
   type: "helpful" | "harmful";
@@ -144,6 +183,39 @@ export function scoreImplicitFeedback(signals: OutcomeInput): {
 
   if (helpfulFinal === 0 && harmfulFinal === 0) return null;
 
+  // --- Harm-attribution policy (#56) ---
+  //
+  // An auto-graded outcome whose rule set is the injected context (too large to
+  // be deliberate citations) must never produce harm: we cannot attribute a
+  // failure to any specific *shown* rule, so blanket-blaming them is pure noise.
+  const isBroadAutoGraded =
+    signals.autoGraded === true &&
+    (signals.rulesUsed?.length ?? 0) > AUTO_GRADE_BLAST_RADIUS;
+
+  // Harm is only warranted when EITHER the primary outcome is an explicit
+  // `failure`, OR the negative evidence dominates the positive evidence by a
+  // full clear-signal's margin. A `mixed`/`partial`/`success` session with only
+  // weak, incidental negatives (a single error, one retry, one terse phrase)
+  // must not condemn the rules it merely displayed. The `- 1e-9` tolerance
+  // keeps the margin robust against floating-point accumulation.
+  const harmJustified =
+    !isBroadAutoGraded &&
+    (signals.outcome === "failure"
+      ? harmfulFinal >= helpfulFinal
+      : harmfulFinal - helpfulFinal >= HARM_OVERRIDE_MARGIN - 1e-9);
+
+  if (harmJustified) {
+    return {
+      type: "harmful",
+      decayedValue: Math.min(2, Math.max(0.1, harmfulFinal)),
+      context: reasons.join(", "),
+    };
+  }
+
+  // Not harmful. Credit `helpful` when there is a net-positive (or tied) lean;
+  // otherwise abstain (return null) rather than fabricate a signal on
+  // inconclusive evidence — this is the neutral / no-op grading that prevents
+  // the corpus-wide false-negative flood.
   if (helpfulFinal >= harmfulFinal) {
     return {
       type: "helpful",
@@ -152,11 +224,7 @@ export function scoreImplicitFeedback(signals: OutcomeInput): {
     };
   }
 
-  return {
-    type: "harmful",
-    decayedValue: Math.min(2, Math.max(0.1, harmfulFinal)),
-    context: reasons.join(", "),
-  };
+  return null;
 }
 
 // --- Persistence ---
@@ -268,7 +336,10 @@ function enrichOutcomeWithContext(outcome: OutcomeRecord, contextLog: ContextLog
     .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0];
 
   if (!match) return outcome;
-  return { ...outcome, rulesUsed: match.ruleIds };
+  // The back-filled IDs come straight from the injected context log — these
+  // rules were *shown*, not deliberately cited — so mark the outcome auto-graded
+  // to apply the stricter harm-attribution policy (#56).
+  return { ...outcome, rulesUsed: match.ruleIds, autoGraded: true };
 }
 
 async function resolveTargetPath(
@@ -521,5 +592,9 @@ export function classifySessionOutcome(
     hadRetries,
     task,
     durationSec: diary.duration ?? undefined,
+    // These IDs were scraped from the transcript (largely the rules `cm context`
+    // injected), not deliberately cited, so they get the stricter #56 harm
+    // policy / blast-radius guard.
+    autoGraded: true,
   };
 }
