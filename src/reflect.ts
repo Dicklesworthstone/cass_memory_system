@@ -263,7 +263,13 @@ function normalizeLLMDelta(d: LLMReflectorDelta, sessionPath: string): PlaybookD
           ...(d.bullet.tags !== null ? { tags: d.bullet.tags } : {}),
         },
         reason: d.reason,
-        sourceSession: d.sourceSession ?? sessionPath
+        // Provenance is authoritative: a rule's source is ALWAYS the diary
+        // being reflected on, never a value the LLM supplied. The reflector
+        // prompt instructs the model to emit `sourceSession: null`, but we do
+        // not trust that — a model that echoes or hallucinates a path must not
+        // be able to write a fabricated/unresolvable source pointer into the
+        // rule's provenance (see issue #58). Always overwrite with sessionPath.
+        sourceSession: sessionPath
       };
     case "helpful":
       return {
