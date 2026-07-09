@@ -43,6 +43,7 @@ export interface LLMConfig {
   apiKey?: string;
   baseUrl?: string;
   ollamaBaseUrl?: string;
+  disableStructuredOutputs?: boolean;
 }
 
 /**
@@ -206,9 +207,15 @@ export function getModel(config: { provider: string; model: string; apiKey?: str
       const openaiProvider = createOpenAI({
         apiKey,
         ...(baseURL ? { baseURL } : {}),
-        ...(config.disableStructuredOutputs ? { structuredOutputs: false } : {}),
       });
-      return openaiProvider(config.model);
+      // NOTE: in @ai-sdk/openai 1.x `structuredOutputs` is a *model* setting;
+      // passing it to createOpenAI() is silently ignored (root cause of #47
+      // persisting). Apply it per-model so `disableStructuredOutputs: true`
+      // actually turns off strict json_schema / strict tool definitions.
+      return openaiProvider(
+        config.model,
+        config.disableStructuredOutputs ? { structuredOutputs: false } : {}
+      );
     }
     case "anthropic": return createAnthropic({ apiKey, ...(baseURL ? { baseURL } : {}) })(config.model);
     case "google": return createGoogleGenerativeAI({ apiKey, ...(baseURL ? { baseURL } : {}) })(config.model);
@@ -869,7 +876,10 @@ export async function generateObjectSafe<T>(
       model: config.model,
       apiKey: config.apiKey,
       baseUrl: config.baseUrl,
-      ollamaBaseUrl: config.ollamaBaseUrl
+      ollamaBaseUrl: config.ollamaBaseUrl,
+      // #47 escape hatch: without this line the flag was dropped here, so
+      // strict `json_schema` was still sent to gateways that reject it (400).
+      disableStructuredOutputs: config.disableStructuredOutputs
     };
     model = getModel(llmConfig);
   }
@@ -887,7 +897,14 @@ export async function generateObjectSafe<T>(
         model,
         schema,
         prompt: enhancedPrompt,
-        temperature
+        temperature,
+        // With structured outputs disabled, force plain JSON mode. The default
+        // ("auto" → tool mode) breaks providers that reject forced tool_choice
+        // (e.g. DeepSeek thinking models return 400
+        // "Thinking mode does not support this tool_choice").
+        ...(config.provider === "openai" && config.disableStructuredOutputs
+          ? { mode: "json" as const }
+          : {})
       }, config, "generateObjectSafe", io);
 
       return result.object;
@@ -1238,7 +1255,7 @@ export async function llmWithFallback<T>(
         return result.object;
       }
 
-      const llmModel = getModel({ provider, model, apiKey, baseUrl: config.baseUrl, ollamaBaseUrl: config.ollamaBaseUrl });
+      const llmModel = getModel({ provider, model, apiKey, baseUrl: config.baseUrl, ollamaBaseUrl: config.ollamaBaseUrl, disableStructuredOutputs: config.disableStructuredOutputs });
       const costConfig: Config = { ...config, provider, model, apiKey };
 
       const result = await monitoredGenerateObject<T>({
@@ -1246,6 +1263,9 @@ export async function llmWithFallback<T>(
         schema,
         prompt,
         temperature: 0.3,
+        ...(provider === "openai" && config.disableStructuredOutputs
+          ? { mode: "json" as const }
+          : {})
       }, costConfig, "llmWithFallback", io);
 
       return result.object;
