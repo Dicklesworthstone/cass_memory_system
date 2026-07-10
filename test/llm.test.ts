@@ -3,6 +3,8 @@ import {
   getApiKey,
   validateApiKey,
   getModel,
+  generateObjectSafe,
+  objectGenerationOverrides,
   isLLMAvailable,
   getAvailableProviders,
   fillPrompt,
@@ -10,6 +12,7 @@ import {
   llmWithFallback,
   LLM_RETRY_CONFIG,
   PROMPTS,
+  type LLMIO,
   type LLMProvider
 } from "../src/llm.js";
 import { truncateForContext } from "../src/utils.js";
@@ -25,6 +28,8 @@ interface EnvBackup {
   ANTHROPIC_API_KEY?: string;
   GOOGLE_GENERATIVE_AI_API_KEY?: string;
   OLLAMA_BASE_URL?: string;
+  AWS_ACCESS_KEY_ID?: string;
+  CASS_CLI_COMMAND?: string;
 }
 
 let envBackup: EnvBackup = {};
@@ -35,11 +40,22 @@ function saveEnv() {
     ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
     GOOGLE_GENERATIVE_AI_API_KEY: process.env.GOOGLE_GENERATIVE_AI_API_KEY,
     OLLAMA_BASE_URL: process.env.OLLAMA_BASE_URL,
+    AWS_ACCESS_KEY_ID: process.env.AWS_ACCESS_KEY_ID,
+    CASS_CLI_COMMAND: process.env.CASS_CLI_COMMAND,
   };
 }
 
 function restoreEnv() {
-  for (const [key, value] of Object.entries(envBackup)) {
+  const keys: Array<keyof EnvBackup> = [
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GOOGLE_GENERATIVE_AI_API_KEY",
+    "OLLAMA_BASE_URL",
+    "AWS_ACCESS_KEY_ID",
+    "CASS_CLI_COMMAND",
+  ];
+  for (const key of keys) {
+    const value = envBackup[key];
     if (value === undefined) {
       delete process.env[key];
     } else {
@@ -53,6 +69,12 @@ function clearAllApiKeys() {
   delete process.env.ANTHROPIC_API_KEY;
   delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
   delete process.env.OLLAMA_BASE_URL;
+  delete process.env.AWS_ACCESS_KEY_ID;
+  // The cli provider is auto-detected from claude/codex/gemini binaries on
+  // PATH, so "no keys" tests were not hermetic on dev machines that have
+  // those tools installed. Pointing CASS_CLI_COMMAND at a nonexistent binary
+  // makes resolveCliCommand() return null (it validates via Bun.which).
+  process.env.CASS_CLI_COMMAND = "cass-test-nonexistent-cli-binary";
 }
 
 // ============================================================================
@@ -315,6 +337,106 @@ describe("getModel", () => {
     process.env.GOOGLE_GENERATIVE_AI_API_KEY = "AIzaSyTest1234567890123456789012345678";
     const model = getModel({ provider: "google", model: "gemini-1.5-flash" });
     expect(model).toBeDefined();
+  });
+
+  // #47 escape hatch / PR #59: `structuredOutputs` is a model-level setting
+  // in @ai-sdk/openai 1.x — passing it to createOpenAI() is silently ignored.
+  // Reasoning-style model ids default to structured outputs ON, so they are
+  // the ids where the model-level toggle is observable.
+  it("disableStructuredOutputs turns structured outputs off at the model level", () => {
+    const flagOff = getModel({ provider: "openai", model: "o3", apiKey: "sk-test-key" }) as any;
+    expect(flagOff.supportsStructuredOutputs).toBe(true);
+
+    const flagOn = getModel({
+      provider: "openai",
+      model: "o3",
+      apiKey: "sk-test-key",
+      disableStructuredOutputs: true
+    }) as any;
+    expect(flagOn.supportsStructuredOutputs).toBe(false);
+  });
+
+  it("disableStructuredOutputs works for openai-compatible gateway model ids", () => {
+    const model = getModel({
+      provider: "openai",
+      model: "deepseek/deepseek-chat",
+      apiKey: "sk-test-key",
+      baseUrl: "https://openrouter.ai/api/v1",
+      disableStructuredOutputs: true
+    }) as any;
+    expect(model.supportsStructuredOutputs).toBe(false);
+  });
+});
+
+// ============================================================================
+// objectGenerationOverrides() Tests (#47 / PR #59)
+// ============================================================================
+
+describe("objectGenerationOverrides", () => {
+  it("forces json mode for openai when structured outputs are disabled", () => {
+    expect(objectGenerationOverrides("openai", true)).toEqual({ mode: "json" });
+  });
+
+  it("returns no override for openai when the flag is off", () => {
+    expect(objectGenerationOverrides("openai", false)).toEqual({});
+    expect(objectGenerationOverrides("openai", undefined)).toEqual({});
+  });
+
+  it("never overrides non-openai providers, even with the flag on", () => {
+    expect(objectGenerationOverrides("anthropic", true)).toEqual({});
+    expect(objectGenerationOverrides("google", true)).toEqual({});
+    expect(objectGenerationOverrides("ollama", true)).toEqual({});
+    expect(objectGenerationOverrides("bedrock", true)).toEqual({});
+  });
+});
+
+// ============================================================================
+// generateObjectSafe mode threading (#47 / PR #59)
+// ============================================================================
+
+describe("generateObjectSafe with disableStructuredOutputs", () => {
+  const schema = z.object({ test: z.string() });
+
+  function capturingIO(captured: { options: any }): LLMIO {
+    return {
+      generateObject: async <T>(options: any) => {
+        captured.options = options;
+        return { object: { test: "ok" } as T };
+      }
+    };
+  }
+
+  it("passes mode: json to generateObject when openai + flag on", async () => {
+    const captured: { options: any } = { options: null };
+    const config = createTestConfig({
+      provider: "openai",
+      model: "deepseek/deepseek-chat",
+      baseUrl: "https://openrouter.ai/api/v1",
+      disableStructuredOutputs: true
+    });
+
+    const result = await generateObjectSafe(schema, "prompt", config, 3, capturingIO(captured));
+
+    expect(result.test).toBe("ok");
+    expect(captured.options.mode).toBe("json");
+  });
+
+  it("does not set mode when the flag is off (default openai behavior unchanged)", async () => {
+    const captured: { options: any } = { options: null };
+    const config = createTestConfig({ provider: "openai", model: "gpt-4o-mini" });
+
+    await generateObjectSafe(schema, "prompt", config, 3, capturingIO(captured));
+
+    expect(captured.options.mode).toBeUndefined();
+  });
+
+  it("does not set mode for non-openai providers even with the flag on", async () => {
+    const captured: { options: any } = { options: null };
+    const config = createTestConfig({ disableStructuredOutputs: true }); // anthropic default
+
+    await generateObjectSafe(schema, "prompt", config, 3, capturingIO(captured));
+
+    expect(captured.options.mode).toBeUndefined();
   });
 });
 
@@ -600,11 +722,16 @@ describe("llmWithFallback", () => {
 // ============================================================================
 
 describe("LLM integration (skipped if no API keys)", () => {
-  const hasAnyProvider = () => getAvailableProviders().length > 0;
+  // Only API-key providers that getModel() can build via the AI SDK — the
+  // "cli" provider is auto-detected from binaries on PATH and getModel()
+  // intentionally throws for it (use cliGenerateObject() instead).
+  const sdkProviders = () =>
+    getAvailableProviders().filter((p): p is "openai" | "anthropic" | "google" =>
+      p === "openai" || p === "anthropic" || p === "google"
+    );
 
-  it.skipIf(!hasAnyProvider())("can create model for available provider", () => {
-    const providers = getAvailableProviders();
-    const provider = providers[0];
+  it.skipIf(sdkProviders().length === 0)("can create model for available provider", () => {
+    const provider = sdkProviders()[0];
     const model = getModel({
       provider,
       model: provider === "openai" ? "gpt-4o-mini" :

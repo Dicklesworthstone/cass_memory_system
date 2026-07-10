@@ -43,6 +43,8 @@ export interface LLMConfig {
   apiKey?: string;
   baseUrl?: string;
   ollamaBaseUrl?: string;
+  /** #47 escape hatch: disable strict structured outputs for openai-compatible gateways. */
+  disableStructuredOutputs?: boolean;
 }
 
 /**
@@ -203,17 +205,48 @@ export function getModel(config: { provider: string; model: string; apiKey?: str
       // and falls back to plain JSON mode; the schemas are still applied
       // by AI SDK as a post-hoc Zod validator, so empty/wrong outputs
       // still fail loud rather than silently passing.
+      //
+      // IMPORTANT: in @ai-sdk/openai 1.x, `structuredOutputs` is a *model*
+      // setting (OpenAIChatSettings), NOT a provider setting. Passing it to
+      // createOpenAI() is silently swallowed (object spreads bypass TS
+      // excess-property checks), which is why the #47 escape hatch never
+      // took effect — reported via PR #59. It must be applied per-model.
       const openaiProvider = createOpenAI({
         apiKey,
         ...(baseURL ? { baseURL } : {}),
-        ...(config.disableStructuredOutputs ? { structuredOutputs: false } : {}),
       });
-      return openaiProvider(config.model);
+      return config.disableStructuredOutputs
+        ? openaiProvider(config.model, { structuredOutputs: false })
+        : openaiProvider(config.model);
     }
     case "anthropic": return createAnthropic({ apiKey, ...(baseURL ? { baseURL } : {}) })(config.model);
     case "google": return createGoogleGenerativeAI({ apiKey, ...(baseURL ? { baseURL } : {}) })(config.model);
     default: throw new Error(`Unsupported provider: ${config.provider}`);
   }
+}
+
+/**
+ * generateObject() option overrides for the disableStructuredOutputs escape
+ * hatch (#47). With structured outputs off, the OpenAI chat model's
+ * defaultObjectGenerationMode is "tool", so generateObject's default "auto"
+ * mode sends a forced `tool_choice: {type: "function", ...}` — which some
+ * openai-compatible gateways/models reject outright (e.g. DeepSeek thinking
+ * models: 400 "Thinking mode does not support this tool_choice"). Forcing
+ * `mode: "json"` sends `response_format: {type: "json_object"}` with no
+ * tools; the AI SDK injects the schema into the prompt and still validates
+ * the result with Zod post-hoc, so guarantees are preserved.
+ *
+ * Only applies to the "openai" provider — the flag is an openai-compatible-
+ * gateway escape hatch and must not perturb anthropic/google/ollama/bedrock
+ * request shapes (fallback providers included).
+ */
+export function objectGenerationOverrides(
+  provider: string,
+  disableStructuredOutputs?: boolean
+): { mode?: "json" } {
+  return provider === "openai" && disableStructuredOutputs
+    ? { mode: "json" }
+    : {};
 }
 
 // --- CLI LLM Backend ---
@@ -869,7 +902,11 @@ export async function generateObjectSafe<T>(
       model: config.model,
       apiKey: config.apiKey,
       baseUrl: config.baseUrl,
-      ollamaBaseUrl: config.ollamaBaseUrl
+      ollamaBaseUrl: config.ollamaBaseUrl,
+      // Without this the #47 escape hatch was silently dropped here and
+      // strict json_schema / forced tool_choice still reached gateways that
+      // reject them (see PR #59).
+      disableStructuredOutputs: config.disableStructuredOutputs
     };
     model = getModel(llmConfig);
   }
@@ -883,11 +920,12 @@ export async function generateObjectSafe<T>(
 
       const temperature = attempt > 1 ? 0.35 : 0.3;
 
-      const result = await monitoredGenerateObject<T>({ 
+      const result = await monitoredGenerateObject<T>({
         model,
         schema,
         prompt: enhancedPrompt,
-        temperature
+        temperature,
+        ...objectGenerationOverrides(config.provider, config.disableStructuredOutputs)
       }, config, "generateObjectSafe", io);
 
       return result.object;
@@ -1238,7 +1276,7 @@ export async function llmWithFallback<T>(
         return result.object;
       }
 
-      const llmModel = getModel({ provider, model, apiKey, baseUrl: config.baseUrl, ollamaBaseUrl: config.ollamaBaseUrl });
+      const llmModel = getModel({ provider, model, apiKey, baseUrl: config.baseUrl, ollamaBaseUrl: config.ollamaBaseUrl, disableStructuredOutputs: config.disableStructuredOutputs });
       const costConfig: Config = { ...config, provider, model, apiKey };
 
       const result = await monitoredGenerateObject<T>({
@@ -1246,6 +1284,9 @@ export async function llmWithFallback<T>(
         schema,
         prompt,
         temperature: 0.3,
+        // Keyed on the per-iteration fallback provider, not config.provider:
+        // a fallback hop to/from openai must get the right request shape.
+        ...objectGenerationOverrides(provider, config.disableStructuredOutputs)
       }, costConfig, "llmWithFallback", io);
 
       return result.object;
