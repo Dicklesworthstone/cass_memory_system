@@ -19,7 +19,225 @@ import {
   validatePositiveInt,
 } from "../utils.js";
 import { analyzeScoreDistribution, getEffectiveScore, isStale } from "../scoring.js";
-import { ErrorCode, type PlaybookBullet } from "../types.js";
+import { ErrorCode, type Config, type PlaybookBullet } from "../types.js";
+
+// --- CASS-backed admission control (bounded concurrency) --------------------
+//
+// A single shared `cm serve` instance can be hit by several MCP clients at once.
+// CASS-backed tool calls (cm_context, memory_search with cass scope,
+// memory_reflect) all contend on one `cassPath` and can block each other past
+// client timeouts while a resumable CASS backfill is running (#61). The
+// controller below caps how many run concurrently and bounds/queues the rest,
+// returning a retryable "busy" error instead of letting callers hang.
+
+// JSON-RPC error code for a retryable, load-shedding "server busy" response.
+// Chosen in the server-defined -32000..-32099 range; clients should back off
+// and retry rather than treating it as a hard failure.
+export const MCP_BUSY_ERROR_CODE = -32010;
+
+export interface AdmissionSnapshot {
+  inFlight: number;
+  queued: number;
+  limit: number;
+  maxQueue: number;
+}
+
+export interface AdmissionMetrics extends AdmissionSnapshot {
+  enabled: boolean;
+  queueTimeoutMs: number;
+  totalAdmitted: number;
+  totalRejectedQueueFull: number;
+  totalRejectedTimeout: number;
+  maxObservedInFlight: number;
+  maxObservedQueued: number;
+  maxObservedWaitMs: number;
+}
+
+/**
+ * Raised when a CASS-backed call cannot be admitted: either the wait queue is
+ * full or the caller waited longer than the configured timeout. Surfaced to MCP
+ * clients as a retryable JSON-RPC error (`MCP_BUSY_ERROR_CODE`).
+ */
+export class AdmissionBusyError extends Error {
+  readonly retryable = true;
+  constructor(
+    readonly reason: "queue_full" | "queue_timeout",
+    readonly snapshot: AdmissionSnapshot
+  ) {
+    super(
+      reason === "queue_full"
+        ? "cass search server busy: admission queue is full; retry shortly"
+        : "cass search server busy: timed out waiting for an admission slot; retry shortly"
+    );
+    this.name = "AdmissionBusyError";
+  }
+}
+
+interface Waiter {
+  resolve: () => void;
+  reject: (err: unknown) => void;
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
+/**
+ * Bounded-concurrency semaphore with an optional bounded wait queue and a
+ * per-waiter timeout. Single-threaded (Node event loop) so no locking needed.
+ */
+export class CassAdmissionController {
+  private inFlight = 0;
+  private readonly queue: Waiter[] = [];
+
+  totalAdmitted = 0;
+  totalRejectedQueueFull = 0;
+  totalRejectedTimeout = 0;
+  maxObservedInFlight = 0;
+  maxObservedQueued = 0;
+  maxObservedWaitMs = 0;
+
+  constructor(
+    readonly limit: number,
+    readonly maxQueue: number, // 0 = unbounded queue
+    readonly queueTimeoutMs: number // 0 = wait indefinitely
+  ) {}
+
+  snapshot(): AdmissionSnapshot {
+    return { inFlight: this.inFlight, queued: this.queue.length, limit: this.limit, maxQueue: this.maxQueue };
+  }
+
+  metrics(): AdmissionMetrics {
+    return {
+      ...this.snapshot(),
+      enabled: true,
+      queueTimeoutMs: this.queueTimeoutMs,
+      totalAdmitted: this.totalAdmitted,
+      totalRejectedQueueFull: this.totalRejectedQueueFull,
+      totalRejectedTimeout: this.totalRejectedTimeout,
+      maxObservedInFlight: this.maxObservedInFlight,
+      maxObservedQueued: this.maxObservedQueued,
+      maxObservedWaitMs: Math.round(this.maxObservedWaitMs),
+    };
+  }
+
+  /**
+   * Acquire a slot. Resolves with a `release()` you MUST call exactly once
+   * (use try/finally). Rejects with `AdmissionBusyError` if the queue is full
+   * or the wait times out.
+   */
+  async acquire(): Promise<() => void> {
+    if (this.inFlight < this.limit) {
+      this.grant();
+      return this.makeRelease();
+    }
+
+    if (this.maxQueue > 0 && this.queue.length >= this.maxQueue) {
+      this.totalRejectedQueueFull++;
+      throw new AdmissionBusyError("queue_full", this.snapshot());
+    }
+
+    const waitStart = performance.now();
+    await new Promise<void>((resolve, reject) => {
+      const waiter: Waiter = { resolve, reject, timer: null };
+      if (this.queueTimeoutMs > 0) {
+        waiter.timer = setTimeout(() => {
+          const idx = this.queue.indexOf(waiter);
+          if (idx !== -1) this.queue.splice(idx, 1);
+          this.totalRejectedTimeout++;
+          reject(new AdmissionBusyError("queue_timeout", this.snapshot()));
+        }, this.queueTimeoutMs);
+        // Don't keep the process alive solely for a pending admission timer.
+        (waiter.timer as any)?.unref?.();
+      }
+      this.queue.push(waiter);
+      if (this.queue.length > this.maxObservedQueued) this.maxObservedQueued = this.queue.length;
+    });
+
+    // Slot was handed off to us directly (inFlight already reflects it).
+    const waited = performance.now() - waitStart;
+    if (waited > this.maxObservedWaitMs) this.maxObservedWaitMs = waited;
+    this.totalAdmitted++;
+    return this.makeRelease();
+  }
+
+  private grant(): void {
+    this.inFlight++;
+    this.totalAdmitted++;
+    if (this.inFlight > this.maxObservedInFlight) this.maxObservedInFlight = this.inFlight;
+  }
+
+  private makeRelease(): () => void {
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.release();
+    };
+  }
+
+  private release(): void {
+    const next = this.queue.shift();
+    if (next) {
+      // Hand the in-flight slot directly to the next waiter (inFlight unchanged).
+      if (next.timer) clearTimeout(next.timer);
+      if (this.inFlight > this.maxObservedInFlight) this.maxObservedInFlight = this.inFlight;
+      next.resolve();
+    } else {
+      this.inFlight--;
+    }
+  }
+}
+
+// Lazily constructed from config on first CASS-backed call so that unit tests
+// which drive routeRequest() directly (without serveCommand) still get sane
+// bounded behavior. `null` means the limiter is disabled (unbounded).
+let admissionController: CassAdmissionController | null = null;
+let admissionControllerInitialized = false;
+
+export function buildAdmissionController(config: Config): CassAdmissionController | null {
+  const serve = config.serve;
+  const limit = serve?.maxConcurrentCassCalls ?? 2;
+  // <= 0 (or non-finite) disables admission control entirely.
+  if (!Number.isFinite(limit) || limit <= 0) return null;
+  const maxQueue = Math.max(0, serve?.maxQueuedCassCalls ?? 32);
+  const queueTimeoutMs = Math.max(0, serve?.cassQueueTimeoutMs ?? 20000);
+  return new CassAdmissionController(limit, maxQueue, queueTimeoutMs);
+}
+
+async function getAdmissionController(): Promise<CassAdmissionController | null> {
+  if (admissionControllerInitialized) return admissionController;
+  const config = await loadConfig();
+  admissionController = buildAdmissionController(config);
+  admissionControllerInitialized = true;
+  return admissionController;
+}
+
+/** Test/serve hook: install a controller (or null to disable) and mark initialized. */
+export function setAdmissionController(controller: CassAdmissionController | null): void {
+  admissionController = controller;
+  admissionControllerInitialized = true;
+}
+
+/** Test hook: forget any cached controller so the next call rebuilds from config. */
+export function resetAdmissionController(): void {
+  admissionController = null;
+  admissionControllerInitialized = false;
+}
+
+/**
+ * Run `fn` under the CASS admission limiter. If the limiter is disabled the
+ * function runs directly. Emits a queue-wait profiling line when profiling is on.
+ */
+async function withCassAdmission<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  const controller = await getAdmissionController();
+  if (!controller) return fn();
+  const waitStart = performance.now();
+  const release = await controller.acquire();
+  maybeProfile(`${label} admission wait`, waitStart);
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
+}
 
 // Simple per-tool argument validation helper to reduce drift.
 function assertArgs(args: any, required: Record<string, string>) {
@@ -166,6 +384,18 @@ const RESOURCE_DEFS = [
     name: "Playbook Stats (alias)",
     description: "Playbook health metrics",
     mimeType: "application/json"
+  },
+  {
+    uri: "cm://serve",
+    name: "Serve Admission Metrics",
+    description: "CASS-backed concurrency limiter: in-flight, queue depth, wait latency, rejects",
+    mimeType: "application/json"
+  },
+  {
+    uri: "memory://serve",
+    name: "Serve Admission Metrics (alias)",
+    description: "CASS-backed concurrency limiter metrics",
+    mimeType: "application/json"
   }
 ];
 
@@ -275,13 +505,16 @@ async function handleToolCall(name: string, args: any): Promise<any> {
       const workspace = validateNonEmptyString(args?.workspace, "workspace", { allowUndefined: true });
       if (!workspace.ok) throw new Error(workspace.message);
 
-      const context = await generateContextResult(taskCheck.value, {
-        limit: limit.value ?? top.value,
-        history: history.value,
-        days: days.value,
-        workspace: workspace.value,
-        json: true
-      });
+      // cm_context fans out to cass history — gate it under the admission limiter.
+      const context = await withCassAdmission("cm_context", () =>
+        generateContextResult(taskCheck.value, {
+          limit: limit.value ?? top.value,
+          history: history.value,
+          days: days.value,
+          workspace: workspace.value,
+          json: true
+        })
+      );
       return context.result;
     }
     case "cm_feedback": {
@@ -379,7 +612,11 @@ async function handleToolCall(name: string, args: any): Promise<any> {
 
       if (scope === "cass" || scope === "both") {
         const t0 = performance.now();
-        const hits = await safeCassSearch(queryCheck.value, { limit, days, agent, workspace }, config.cassPath, config);
+        // Only the cass-backed branch contends on `cassPath`; a playbook-only
+        // search stays unbounded and fast.
+        const hits = await withCassAdmission("memory_search", () =>
+          safeCassSearch(queryCheck.value, { limit, days, agent, workspace }, config.cassPath, config)
+        );
         maybeProfile("memory_search cass search", t0);
         result.cass = hits.map((h) => ({
           path: h.source_path,
@@ -410,14 +647,16 @@ async function handleToolCall(name: string, args: any): Promise<any> {
       const workspace = workspaceCheck.value;
       const session = sessionCheck.value;
 
-      // Delegate to orchestrator
-      const outcome = await import("../orchestrator.js").then(m => m.orchestrateReflection(config, {
-        days,
-        maxSessions,
-        dryRun,
-        workspace,
-        session
-      }));
+      // Delegate to orchestrator (reads cass sessions) under the admission limiter.
+      const outcome = await withCassAdmission("memory_reflect", () =>
+        import("../orchestrator.js").then(m => m.orchestrateReflection(config, {
+          days,
+          maxSessions,
+          dryRun,
+          workspace,
+          session
+        }))
+      );
 
       // Construct response
       if (outcome.errors.length > 0) {
@@ -507,6 +746,27 @@ async function handleResourceRead(uri: string): Promise<any> {
       const stats = computePlaybookStats(playbook, config);
       return { uri, mimeType: "application/json", data: stats };
     }
+    case "cm://serve":
+    case "memory://serve": {
+      const controller = await getAdmissionController();
+      const data: AdmissionMetrics = controller
+        ? controller.metrics()
+        : {
+            enabled: false,
+            inFlight: 0,
+            queued: 0,
+            limit: 0,
+            maxQueue: 0,
+            queueTimeoutMs: 0,
+            totalAdmitted: 0,
+            totalRejectedQueueFull: 0,
+            totalRejectedTimeout: 0,
+            maxObservedInFlight: 0,
+            maxObservedQueued: 0,
+            maxObservedWaitMs: 0,
+          };
+      return { uri, mimeType: "application/json", data };
+    }
     default:
       throw new Error(`Unknown resource: ${uri}`);
   }
@@ -593,6 +853,16 @@ async function routeRequest(body: JsonRpcRequest): Promise<JsonRpcResponse> {
         result: wrapToolResult(result),
       };
     } catch (err: any) {
+      // Load-shedding: a bounded CASS-backed call that couldn't be admitted is a
+      // retryable "server busy" condition, not a hard failure. Surface it with a
+      // distinct code + retryable data so clients back off and retry.
+      if (err instanceof AdmissionBusyError) {
+        return buildError(body.id ?? null, err.message, MCP_BUSY_ERROR_CODE, {
+          retryable: true,
+          reason: err.reason,
+          ...err.snapshot,
+        });
+      }
       // Input-validation / execution failures are surfaced as JSON-RPC errors
       // (clients map these to tool-call failures). wrapToolResult's isError
       // form is available for callers that prefer in-band error content.
@@ -628,6 +898,11 @@ export const __test = {
   isNotification,
   wrapToolResult,
   MCP_PROTOCOL_VERSION,
+  getAdmissionController,
+  setAdmissionController,
+  resetAdmissionController,
+  buildAdmissionController,
+  MCP_BUSY_ERROR_CODE,
 };
 
 export async function serveCommand(options: { port?: number; host?: string } = {}): Promise<void> {
@@ -687,6 +962,12 @@ export async function serveCommand(options: { port?: number; host?: string } = {
     return;
   }
   const host = hostFromArgs.value ?? hostFromEnv.value ?? "127.0.0.1";
+
+  // Install the CASS admission limiter from config up front so its bounds apply
+  // from the very first request (rather than lazily on the first CASS call).
+  const serveConfig = await loadConfig();
+  setAdmissionController(buildAdmissionController(serveConfig));
+
   const token = getMcpHttpToken();
   const allowInsecureNoToken = process.env[MCP_HTTP_UNSAFE_NO_TOKEN_ENV] === "1";
   const loopback = isLoopbackHost(host);
@@ -788,6 +1069,17 @@ export async function serveCommand(options: { port?: number; host?: string } = {
     log(`Auth enabled via ${MCP_HTTP_TOKEN_ENV} (send: Authorization: Bearer <token> or X-MCP-Token)`, true);
   }
   warn("Transport is HTTP-only; stdio/SSE are intentionally disabled.");
+  {
+    const c = await getAdmissionController();
+    if (c) {
+      log(
+        `CASS admission limiter: max ${c.limit} concurrent, queue ${c.maxQueue === 0 ? "unbounded" : c.maxQueue}, wait timeout ${c.queueTimeoutMs === 0 ? "none" : `${c.queueTimeoutMs}ms`} (metrics: resource cm://serve)`,
+        true
+      );
+    } else {
+      warn("CASS admission limiter DISABLED (serve.maxConcurrentCassCalls <= 0): concurrent CASS calls are unbounded.");
+    }
+  }
   log(`Tools: ${TOOL_DEFS.map((t) => t.name).join(", ")}`, true);
   log(`Resources: ${RESOURCE_DEFS.map((r) => r.uri).join(", ")}`, true);
   log("Example (list tools):", true);

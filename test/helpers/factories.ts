@@ -86,6 +86,11 @@ export function createTestConfig(overrides: Partial<Config> = {}): Config {
       minFeedbackForActive: 3,
       minHelpfulForProven: 10,
       maxHarmfulRatioForProven: 0.1
+    },
+    serve: {
+      maxConcurrentCassCalls: 2,
+      maxQueuedCassCalls: 32,
+      cassQueueTimeoutMs: 20000
     }
   };
 

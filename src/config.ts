@@ -213,6 +213,9 @@ export async function loadConfig(cliOverrides: Partial<Config> = {}): Promise<Co
     delete repoConfig.cliCommand; // Prevent repo from redirecting CLI calls to arbitrary executables
     delete (repoConfig as any).budget;
     delete (repoConfig as any).sanitization;
+    // `serve` is a deployment concern (bounds a shared `cm serve` process); a
+    // committed repo config must not weaken/override a host's admission limits.
+    delete (repoConfig as any).serve;
   }
 
   // Migrate CLI overrides as well (unlikely but complete)
@@ -225,6 +228,25 @@ export async function loadConfig(cliOverrides: Partial<Config> = {}): Promise<Co
   }
   if (process.env.OLLAMA_BASE_URL) {
     envOverrides.ollamaBaseUrl = process.env.OLLAMA_BASE_URL;
+  }
+
+  // `cm serve` admission-control env overrides (#61). Parsed leniently: a
+  // non-integer value is ignored (falls back to config/default) rather than
+  // failing config load for a shared server process.
+  const parseEnvInt = (raw: string | undefined): number | undefined => {
+    if (raw === undefined || raw.trim() === "") return undefined;
+    const n = Number(raw);
+    return Number.isInteger(n) ? n : undefined;
+  };
+  const serveEnv: Partial<Config["serve"]> = {};
+  const maxConc = parseEnvInt(process.env.MCP_CASS_MAX_CONCURRENCY);
+  if (maxConc !== undefined) serveEnv.maxConcurrentCassCalls = maxConc;
+  const maxQueue = parseEnvInt(process.env.MCP_CASS_MAX_QUEUE);
+  if (maxQueue !== undefined && maxQueue >= 0) serveEnv.maxQueuedCassCalls = maxQueue;
+  const queueTimeout = parseEnvInt(process.env.MCP_CASS_QUEUE_TIMEOUT_MS);
+  if (queueTimeout !== undefined && queueTimeout >= 0) serveEnv.cassQueueTimeoutMs = queueTimeout;
+  if (Object.keys(serveEnv).length > 0) {
+    envOverrides.serve = serveEnv as Config["serve"];
   }
 
   // Base URL env var fallback: provider-specific env vars override config.
@@ -298,6 +320,12 @@ export async function loadConfig(cliOverrides: Partial<Config> = {}): Promise<Co
       ...defaults.budget,
       ...(globalConfig.budget || {}),
       ...(cliOverrides.budget || {}),
+    },
+    serve: {
+      ...defaults.serve,
+      ...(globalConfig.serve || {}),
+      ...(envOverrides.serve || {}),
+      ...(cliOverrides.serve || {}),
     },
   };
 

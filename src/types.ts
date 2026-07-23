@@ -361,6 +361,25 @@ export const RemoteCassConfigSchema = z.object({
 }).default({});
 export type RemoteCassConfig = z.infer<typeof RemoteCassConfigSchema>;
 
+// Bounded-concurrency / admission control for `cm serve` CASS-backed MCP calls.
+// A single shared `cm serve` instance can be hit by several MCP clients at once;
+// concurrent CASS-backed tool calls (cm_context, memory_search, memory_reflect)
+// contend on one `cassPath` and can block each other past client timeouts while a
+// resumable CASS backfill is running. These knobs bound how many run at once and
+// how new calls queue, returning a retryable "busy" error instead of hanging. (#61)
+export const ServeConfigSchema = z.object({
+  // Max CASS-backed MCP tool calls allowed to run at once. <= 0 disables the
+  // limiter entirely (unbounded, legacy behavior).
+  maxConcurrentCassCalls: z.number().int().default(2),
+  // Max calls that may wait for a slot before new calls are rejected with a
+  // retryable busy error. 0 = unbounded queue (only the concurrency cap applies).
+  maxQueuedCassCalls: z.number().int().nonnegative().default(32),
+  // Max time (ms) a call may wait for a slot before it is rejected with a
+  // retryable busy error. 0 = wait indefinitely.
+  cassQueueTimeoutMs: z.number().int().nonnegative().default(20000),
+}).default({});
+export type ServeConfig = z.infer<typeof ServeConfigSchema>;
+
 export const ConfigSchema = z.object({
   schema_version: z.number().default(1),
   llm: z.object({
@@ -433,6 +452,7 @@ export const ConfigSchema = z.object({
   disableStructuredOutputs: z.boolean().default(false),
   sanitization: SanitizationConfigSchema.default({}),
   budget: BudgetConfigSchema.default({}),
+  serve: ServeConfigSchema.default({}),
   cliCommand: z.string().min(1).max(256).optional(),
 });
 export type Config = z.infer<typeof ConfigSchema>;
