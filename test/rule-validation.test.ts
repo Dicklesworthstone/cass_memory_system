@@ -7,6 +7,7 @@ import {
   type ValidationResult,
 } from "../src/rule-validation.js";
 import { createEmptyPlaybook } from "../src/playbook.js";
+import { configureOllamaEmbedding, setEmbeddingBackend } from "../src/semantic.js";
 import { createTestBullet } from "./helpers/factories.js";
 
 describe("rule-validation.ts", () => {
@@ -102,16 +103,32 @@ describe("rule-validation.ts", () => {
     test("similarity check finds duplicates", async () => {
       const pb = createEmptyPlaybook("test");
       const existingContent = "When debugging async code, always check for unhandled promise rejections.";
-      pb.bullets.push(createTestBullet({ content: existingContent, category: "debugging" }));
+      pb.bullets.push(createTestBullet({
+        content: existingContent,
+        category: "debugging",
+        embedding: [1, 0],
+      }));
 
       // Very similar content
       const newContent = "When debugging asynchronous code, always check for unhandled promise rejections first.";
-
-      const result = await validateRule(newContent, "debugging", pb, {
-        similarityThreshold: 0.7, // Lower threshold for test reliability
+      const server = Bun.serve({
+        port: 0,
+        fetch: () => Response.json({ embeddings: [[1, 0]] }),
       });
 
-      expect(result.warnings.some(w => w.type === "similarity")).toBe(true);
+      try {
+        setEmbeddingBackend("ollama");
+        configureOllamaEmbedding(`http://127.0.0.1:${server.port}`, "test-model");
+
+        const result = await validateRule(newContent, "debugging", pb, {
+          similarityThreshold: 0.7,
+        });
+
+        expect(result.warnings.some(w => w.type === "similarity")).toBe(true);
+      } finally {
+        setEmbeddingBackend("xenova");
+        server.stop(true);
+      }
     });
 
     test("similarity check can be skipped", async () => {
