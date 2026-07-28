@@ -14,6 +14,7 @@ import { withTempCassHome, makeCassStub } from "./helpers/temp.js";
 import { withTempGitRepo } from "./helpers/git.js";
 import { createTestPlaybook, createTestBullet } from "./helpers/factories.js";
 import { markSessionProcessed, loadOnboardState } from "../src/onboard-state.js";
+import { __setStdoutSinkForTests } from "../src/utils.js";
 
 /**
  * Capture console output during async function execution.
@@ -30,11 +31,15 @@ function captureConsole() {
   console.error = (...args: unknown[]) => {
     errors.push(args.map(String).join(" "));
   };
+  __setStdoutSinkForTests((text) => {
+    logs.push(text.trimEnd());
+  });
 
   return {
     logs,
     errors,
     restore: () => {
+      __setStdoutSinkForTests(null);
       console.log = originalLog;
       console.error = originalError;
     },

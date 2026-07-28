@@ -15,6 +15,7 @@ import os from "node:os";
 import yaml from "yaml";
 
 import { statsCommand } from "../src/commands/stats.js";
+import { __setStdoutSinkForTests } from "../src/utils.js";
 import { createTestLogger, TestLogger } from "./helpers/logger.js";
 
 // --- Test Infrastructure ---
@@ -48,11 +49,15 @@ function captureConsole() {
   console.error = (...args: any[]) => {
     errors.push(args.map(String).join(" "));
   };
+  __setStdoutSinkForTests((text) => {
+    logs.push(text.trimEnd());
+  });
 
   return {
     logs,
     errors,
     restore: () => {
+      __setStdoutSinkForTests(null);
       console.log = originalLog;
       console.error = originalError;
     }
