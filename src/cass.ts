@@ -1059,7 +1059,14 @@ export async function cassTimeline(
   const resolvedCassPath = expandPath(cassPath);
   try {
     // cass timeline uses --since Nd format, not --days
-    const { stdout } = await runner.execFile(resolvedCassPath, ["timeline", "--since", `${days}d`, "--json"]);
+    const { stdout } = await runner.execFile(
+      resolvedCassPath,
+      ["timeline", "--since", `${days}d`, "--json"],
+      {
+        maxBuffer: 50 * 1024 * 1024,
+        timeout: 30 * 1000,
+      }
+    );
     const parsed = parseCassJsonOutput(stdout);
 
     // cass timeline returns { groups: {}, range: {...}, total_sessions: N }
@@ -1092,7 +1099,9 @@ export async function cassTimeline(
       }
     }
     return { groups: [] };
-  } catch {
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    warn(`[cass] Timeline query failed; session counts may be incomplete. ${message}`);
     return { groups: [] };
   }
 }

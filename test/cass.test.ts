@@ -22,10 +22,16 @@ function createCassRunnerStub(opts: {
   execError?: Partial<Record<string, { code: any; message?: string }>>;
   searchFallbackStdout?: string;
   searchFallbackStatus?: number;
+  onExecFile?: (
+    file: string,
+    args: string[],
+    options?: { maxBuffer?: number; timeout?: number }
+  ) => void;
   onSpawnSync?: (file: string, args: string[]) => void;
 }): CassRunner {
   return {
-    execFile: async (_file, args) => {
+    execFile: async (file, args, options) => {
+      opts.onExecFile?.(file, args, options);
       const cmd = args[0] ?? "";
       const err = opts.execError?.[cmd];
       if (err) {
@@ -235,6 +241,50 @@ describe("cass.ts core functions (runner stubbed)", () => {
 
     expect(result.groups).toHaveLength(1);
     expect(result.groups[0].date).toBe("2025-01-01");
+  });
+
+  it("cassTimeline allows large JSON output and bounds execution time", async () => {
+    let capturedOptions: { maxBuffer?: number; timeout?: number } | undefined;
+    const runner = createCassRunnerStub({
+      execStdout: { timeline: JSON.stringify({ groups: [] }) },
+      onExecFile: (_file, args, options) => {
+        if (args[0] === "timeline") capturedOptions = options;
+      },
+    });
+
+    await cassTimeline(365, "cass", runner);
+
+    expect(capturedOptions).toEqual({
+      maxBuffer: 50 * 1024 * 1024,
+      timeout: 30 * 1000,
+    });
+  });
+
+  it("cassTimeline surfaces execution failures on stderr", async () => {
+    const originalError = console.error;
+    const errors: string[] = [];
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+    };
+
+    try {
+      const runner = createCassRunnerStub({
+        execError: {
+          timeline: {
+            code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+            message: "stdout maxBuffer length exceeded",
+          },
+        },
+      });
+
+      const result = await cassTimeline(365, "cass", runner);
+
+      expect(result).toEqual({ groups: [] });
+      expect(errors.join("\n")).toContain("Timeline query failed");
+      expect(errors.join("\n")).toContain("stdout maxBuffer length exceeded");
+    } finally {
+      console.error = originalError;
+    }
   });
 
   it("cassTimeline tolerates leading logs before JSON", async () => {
