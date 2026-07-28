@@ -61,6 +61,38 @@ export function configureOllamaEmbedding(baseUrl: string, model: string): void {
 }
 
 /**
+ * Apply loaded configuration to the process-wide embedding runtime.
+ *
+ * Every command loads config before reaching semantic operations, so keeping
+ * backend selection here prevents individual callers from silently falling
+ * back to Xenova when Ollama was selected.
+ */
+export function configureEmbeddingBackend(config: {
+  embeddingBackend?: EmbeddingBackend;
+  embeddingModel?: string;
+  ollamaBaseUrl?: string;
+}): void {
+  const backend = config.embeddingBackend ?? "xenova";
+  setEmbeddingBackend(backend);
+
+  if (backend !== "ollama") return;
+
+  const rawModel =
+    typeof config.embeddingModel === "string" && config.embeddingModel.trim() !== ""
+      ? config.embeddingModel.trim()
+      : "all-minilm";
+  const model = rawModel.startsWith("Xenova/")
+    ? rawModel.slice("Xenova/".length).toLowerCase()
+    : rawModel;
+  const baseUrl =
+    typeof config.ollamaBaseUrl === "string" && config.ollamaBaseUrl.trim() !== ""
+      ? config.ollamaBaseUrl.trim()
+      : "http://localhost:11434";
+
+  configureOllamaEmbedding(baseUrl, model);
+}
+
+/**
  * Embed a single text using Ollama's /api/embed endpoint.
  *
  * @param text - The text to embed (must be non-empty after trimming)

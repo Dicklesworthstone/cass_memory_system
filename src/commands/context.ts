@@ -33,7 +33,7 @@ import {
 import { withLock } from "../lock.js";
 import { getEffectiveScore } from "../scoring.js";
 import { ContextResult, ScoredBullet, Config, CassSearchHit, PlaybookBullet, ErrorCode } from "../types.js";
-import { cosineSimilarity, embedText, loadOrComputeEmbeddingsForBullets, setEmbeddingBackend, configureOllamaEmbedding } from "../semantic.js";
+import { cosineSimilarity, embedText, loadOrComputeEmbeddingsForBullets } from "../semantic.js";
 import chalk from "chalk";
 import { agentIconPrefix, formatRule, formatTipPrefix, getOutputStyle, iconPrefix, wrapText } from "../output.js";
 import { createProgress, type ProgressReporter } from "../progress.js";
@@ -388,21 +388,6 @@ export async function generateContextResult(
   options: { onProgress?: (event: ContextProgressEvent) => void } = {}
 ): Promise<ContextComputation> {
   const config = await loadConfig();
-
-  // Configure embedding backend before any embedding operations
-  if (config.embeddingBackend === "ollama") {
-    setEmbeddingBackend("ollama");
-    // Strip "Xenova/" prefix if present — the default embeddingModel is a
-    // Xenova model name, but Ollama expects bare model names like "all-minilm".
-    let ollamaModel = "all-minilm";
-    if (typeof config.embeddingModel === "string" && config.embeddingModel.trim() !== "") {
-      const raw = config.embeddingModel.trim();
-      ollamaModel = raw.startsWith("Xenova/") ? raw.slice("Xenova/".length).toLowerCase() : raw;
-    }
-    configureOllamaEmbedding(config.ollamaBaseUrl, ollamaModel);
-  } else {
-    setEmbeddingBackend("xenova");
-  }
 
   const playbook = await loadMergedPlaybook(config);
 

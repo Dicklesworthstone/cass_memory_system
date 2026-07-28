@@ -1,7 +1,7 @@
 import chalk from "chalk";
 import { loadConfig } from "../config.js";
 import { loadMergedPlaybook, getActiveBullets } from "../playbook.js";
-import { findSimilarBulletsSemantic, getSemanticStatus, formatSemanticModeMessage, setEmbeddingBackend, configureOllamaEmbedding } from "../semantic.js";
+import { findSimilarBulletsSemantic, getSemanticStatus, formatSemanticModeMessage } from "../semantic.js";
 import { getEffectiveScore } from "../scoring.js";
 import { isJsonOutput, isToonOutput, jaccardSimilarity, truncate, getCliName, printStructuredResult, reportError, validateOneOf, warn } from "../utils.js";
 import { ErrorCode, PlaybookBullet } from "../types.js";
@@ -82,21 +82,6 @@ export async function generateSimilarResults(
   }
 
   const config = await loadConfig();
-
-  // Configure embedding backend before any embedding operations
-  if (config.embeddingBackend === "ollama") {
-    setEmbeddingBackend("ollama");
-    // Strip "Xenova/" prefix if present — the default embeddingModel is a
-    // Xenova model name, but Ollama expects bare model names like "all-minilm".
-    let ollamaModel = "all-minilm";
-    if (typeof config.embeddingModel === "string" && config.embeddingModel.trim() !== "") {
-      const raw = config.embeddingModel.trim();
-      ollamaModel = raw.startsWith("Xenova/") ? raw.slice("Xenova/".length).toLowerCase() : raw;
-    }
-    configureOllamaEmbedding(config.ollamaBaseUrl, ollamaModel);
-  } else {
-    setEmbeddingBackend("xenova");
-  }
 
   const playbook = await loadMergedPlaybook(config);
   const bullets = filterBulletsByScope(getActiveBullets(playbook), scope);

@@ -10,6 +10,7 @@ import {
   saveConfig,
 } from "../src/config.js";
 import { ConfigSchema, Config } from "../src/types.js";
+import { getEmbeddingBackend, getSemanticStatus, setEmbeddingBackend } from "../src/semantic.js";
 import { withTempDir, withTempCassHome, createIsolatedEnvironment, cleanupEnvironment, TestEnv } from "./helpers/index.js";
 
 // =============================================================================
@@ -972,6 +973,24 @@ describe("Config Defaults Snapshot", () => {
       expect(config.model).toBe("claude-sonnet-4-20250514");
       expect(config.dedupSimilarityThreshold).toBe(0.85);
       expect(config.pruneHarmfulThreshold).toBe(3);
+    });
+  });
+
+  test("loadConfig applies the configured embedding backend process-wide", async () => {
+    await withTempCassHome(async () => {
+      try {
+        const config = await loadConfig({
+          semanticSearchEnabled: true,
+          embeddingBackend: "ollama",
+          embeddingModel: "nomic-embed-text",
+          ollamaBaseUrl: "http://127.0.0.1:11434/",
+        });
+
+        expect(getEmbeddingBackend()).toBe("ollama");
+        expect(getSemanticStatus(config).model).toBe("ollama:nomic-embed-text");
+      } finally {
+        setEmbeddingBackend("xenova");
+      }
     });
   });
 });

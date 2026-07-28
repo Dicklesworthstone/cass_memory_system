@@ -3,6 +3,7 @@ import path from "node:path";
 import yaml from "yaml";
 import { Config, ConfigSchema, SanitizationConfig, BudgetConfig } from "./types.js";
 import { fileExists, warn, atomicWrite, expandPath, normalizeYamlKeys, resolveRepoDir, resolveGlobalDir } from "./utils.js";
+import { configureEmbeddingBackend } from "./semantic.js";
 
 // --- Defaults ---
 
@@ -365,6 +366,7 @@ export async function loadConfig(cliOverrides: Partial<Config> = {}): Promise<Co
     }
   }
 
+  configureEmbeddingBackend(result.data);
   return result.data;
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { batchEmbed, cosineSimilarity, embedText, findSemanticDuplicates, ModelLoadProgress, ProgressCallback, WarmupResult, warmupEmbeddings, isModelCached, getSemanticStatus, formatSemanticModeMessage, SemanticStatus } from "../src/semantic.js";
+import { batchEmbed, configureEmbeddingBackend, cosineSimilarity, embedText, findSemanticDuplicates, ModelLoadProgress, ProgressCallback, WarmupResult, warmupEmbeddings, isModelCached, getEmbeddingBackend, getSemanticStatus, formatSemanticModeMessage, SemanticStatus, setEmbeddingBackend } from "../src/semantic.js";
 
 describe("semantic: cosineSimilarity", () => {
   test("returns 1 for identical vectors", () => {
@@ -23,6 +23,24 @@ describe("semantic: embedding helpers (no model downloads)", () => {
   test("batchEmbed returns [] vectors when model is 'none'", async () => {
     const result = await batchEmbed(["hello", "", "world"], 32, { model: "none" });
     expect(result).toEqual([[], [], []]);
+  });
+
+  test("configureEmbeddingBackend normalizes Xenova model names for Ollama", () => {
+    try {
+      const config = {
+        semanticSearchEnabled: true,
+        embeddingBackend: "ollama" as const,
+        embeddingModel: "Xenova/all-MiniLM-L6-v2",
+        ollamaBaseUrl: "http://127.0.0.1:11434/",
+      };
+
+      configureEmbeddingBackend(config);
+
+      expect(getEmbeddingBackend()).toBe("ollama");
+      expect(getSemanticStatus(config).model).toBe("ollama:all-minilm-l6-v2");
+    } finally {
+      setEmbeddingBackend("xenova");
+    }
   });
 });
 
