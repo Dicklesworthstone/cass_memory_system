@@ -22,15 +22,12 @@ import {
 import { withTempCassHome } from "./helpers/temp.js";
 import { withTempGitRepo } from "./helpers/git.js";
 import { createTestPlaybook, createTestBullet, createTestConfig } from "./helpers/factories.js";
-import { __setStdoutSinkForTests } from "../src/utils.js";
 
 /**
  * Capture console output during async function execution.
  *
- * Structured JSON/TOON output is emitted via utils.writeStdoutSync (added in
- * the #50 stdout-flush fix), which bypasses console.log entirely. We install
- * the test-only stdout sink so getOutput() sees that output too — otherwise
- * `--json` assertions read an empty buffer.
+ * Structured JSON/TOON output is routed through console.log by test/setup.ts,
+ * so the same capture helper works for both human and structured formats.
  */
 function captureConsole() {
   const logs: string[] = [];
@@ -44,17 +41,12 @@ function captureConsole() {
   console.error = (...args: unknown[]) => {
     errors.push(args.map(String).join(" "));
   };
-  __setStdoutSinkForTests((text: string) => {
-    logs.push(text.endsWith("\n") ? text.slice(0, -1) : text);
-  });
-
   return {
     logs,
     errors,
     restore: () => {
       console.log = originalLog;
       console.error = originalError;
-      __setStdoutSinkForTests(null);
     },
     getOutput: () => logs.join("\n"),
     getErrors: () => errors.join("\n"),

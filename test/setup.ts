@@ -10,7 +10,12 @@
  * - Global test configuration
  * - Cleanup handlers
  */
-import { beforeAll, afterAll, afterEach } from "bun:test";
+import { beforeAll, afterAll, beforeEach, afterEach } from "bun:test";
+import { __setStdoutSinkForTests } from "../src/utils.js";
+import {
+  configureOllamaEmbedding,
+  setEmbeddingBackend,
+} from "../src/semantic.js";
 
 // Store original environment to restore after tests
 const originalEnv: Record<string, string | undefined> = {};
@@ -36,6 +41,16 @@ beforeAll(() => {
   }
 });
 
+beforeEach(() => {
+  // Structured JSON/TOON output intentionally bypasses console.log in
+  // production so large payloads cannot be truncated on process exit (#50).
+  // Most command tests already capture console.log, so adapt the test-only
+  // sink centrally instead of duplicating stdout plumbing in every suite.
+  __setStdoutSinkForTests((text) => {
+    console.log(text.endsWith("\n") ? text.slice(0, -1) : text);
+  });
+});
+
 afterAll(() => {
   // Restore original environment
   for (const [key, value] of Object.entries(originalEnv)) {
@@ -55,6 +70,9 @@ afterEach(() => {
   // Some command tests intentionally set process.exitCode to simulate CLI failures.
   // Ensure it never leaks across tests (and doesn't force bun test to exit non-zero).
   process.exitCode = 0;
+  __setStdoutSinkForTests(null);
+  setEmbeddingBackend("xenova");
+  configureOllamaEmbedding("http://localhost:11434", "all-minilm");
 });
 
 // Global timeout for tests (can be overridden per-test)

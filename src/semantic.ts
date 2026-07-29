@@ -13,6 +13,7 @@ import { ensureOnnxWasmRuntime } from "./wasm-runtime.js";
 
 export const DEFAULT_EMBEDDING_MODEL = "Xenova/all-MiniLM-L6-v2";
 export const EMBEDDING_CACHE_VERSION = "1.0";
+const OLLAMA_EMBED_TIMEOUT_MS = 30_000;
 
 let embedderPromise: Promise<any> | null = null;
 let embedderModel: string | null = null;
@@ -81,9 +82,12 @@ export function configureEmbeddingBackend(config: {
     typeof config.embeddingModel === "string" && config.embeddingModel.trim() !== ""
       ? config.embeddingModel.trim()
       : "all-minilm";
-  const model = rawModel.startsWith("Xenova/")
-    ? rawModel.slice("Xenova/".length).toLowerCase()
-    : rawModel;
+  const model =
+    rawModel === DEFAULT_EMBEDDING_MODEL
+      ? "all-minilm"
+      : rawModel.startsWith("Xenova/")
+        ? rawModel.slice("Xenova/".length).toLowerCase()
+        : rawModel;
   const baseUrl =
     typeof config.ollamaBaseUrl === "string" && config.ollamaBaseUrl.trim() !== ""
       ? config.ollamaBaseUrl.trim()
@@ -108,6 +112,7 @@ async function embedTextOllama(text: string): Promise<number[]> {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model: ollamaConfig.model, input: text }),
+      signal: AbortSignal.timeout(OLLAMA_EMBED_TIMEOUT_MS),
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
@@ -189,6 +194,7 @@ async function batchEmbedOllama(
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ model: ollamaConfig.model, input: batchTexts }),
+        signal: AbortSignal.timeout(OLLAMA_EMBED_TIMEOUT_MS),
       });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);

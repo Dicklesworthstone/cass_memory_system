@@ -4,10 +4,9 @@
  * Tests the `cm doctor` command for system health checks and auto-fix capabilities.
  * Uses isolated temp directories to avoid affecting the real system.
  */
-import { describe, it, expect, afterEach } from "bun:test";
-import { stat, readFile, mkdir, writeFile, rm } from "node:fs/promises";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { stat, mkdir, writeFile, rm } from "node:fs/promises";
 import path from "node:path";
-import yaml from "yaml";
 import os from "node:os";
 
 import {
@@ -15,8 +14,6 @@ import {
   detectFixableIssues,
   applyFixes,
   runSelfTest,
-  HealthCheck,
-  FixableIssue,
 } from "../src/commands/doctor.js";
 import { createEmptyPlaybook, savePlaybook } from "../src/playbook.js";
 import { createTestConfig } from "./helpers/index.js";
@@ -24,9 +21,11 @@ import { createTestConfig } from "./helpers/index.js";
 // --- Helper Functions ---
 
 let tempDirs: string[] = [];
+const suiteCwd = process.cwd();
+let originalCassPath: string | undefined;
+let currentTestDir = "";
 
 async function createTempDir(): Promise<string> {
-  const dir = await mkdir(path.join(os.tmpdir(), `doctor-test-${Date.now()}-${Math.random().toString(36).slice(2)}`), { recursive: true });
   const dirPath = path.join(os.tmpdir(), `doctor-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   await mkdir(dirPath, { recursive: true });
   tempDirs.push(dirPath);
@@ -42,12 +41,35 @@ async function exists(filePath: string): Promise<boolean> {
   }
 }
 
+beforeEach(async () => {
+  originalCassPath = process.env.CASS_PATH;
+  process.env.CASS_PATH = "/nonexistent/cass";
+  currentTestDir = await createTempDir();
+});
+
 afterEach(async () => {
+  const cwd = process.cwd();
+  if (tempDirs.some((dir) => cwd === dir || cwd.startsWith(`${dir}${path.sep}`))) {
+    process.chdir(suiteCwd);
+  }
+  if (originalCassPath === undefined) {
+    delete process.env.CASS_PATH;
+  } else {
+    process.env.CASS_PATH = originalCassPath;
+  }
   for (const dir of tempDirs) {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
   tempDirs = [];
 });
+
+function createDoctorTestConfig() {
+  return createTestConfig({
+    cassPath: "/nonexistent/cass",
+    playbookPath: path.join(currentTestDir, "playbook.yaml"),
+    diaryDir: path.join(currentTestDir, "diary"),
+  });
+}
 
 // Helper to capture console output
 function captureConsole() {
@@ -354,7 +376,7 @@ describe("E2E: CLI doctor command", () => {
 
   describe("Self-Test Functionality", () => {
     it("runSelfTest returns array of health checks", async () => {
-      const config = createTestConfig();
+      const config = createDoctorTestConfig();
       const checks = await runSelfTest(config);
 
       expect(Array.isArray(checks)).toBe(true);
@@ -371,7 +393,7 @@ describe("E2E: CLI doctor command", () => {
     });
 
     it("runSelfTest includes playbook load check", async () => {
-      const config = createTestConfig();
+      const config = createDoctorTestConfig();
       const checks = await runSelfTest(config);
 
       const playbookCheck = checks.find(c => c.item === "Playbook Load");
@@ -380,7 +402,7 @@ describe("E2E: CLI doctor command", () => {
     });
 
     it("runSelfTest includes sanitization check", async () => {
-      const config = createTestConfig();
+      const config = createDoctorTestConfig();
       const checks = await runSelfTest(config);
 
       const sanitizationCheck = checks.find(c => c.item === "Sanitization");
@@ -388,7 +410,7 @@ describe("E2E: CLI doctor command", () => {
     });
 
     it("runSelfTest includes config validation check", async () => {
-      const config = createTestConfig();
+      const config = createDoctorTestConfig();
       const checks = await runSelfTest(config);
 
       const configCheck = checks.find(c => c.item === "Config Validation");
@@ -396,7 +418,7 @@ describe("E2E: CLI doctor command", () => {
     });
 
     it("runSelfTest includes LLM system check", async () => {
-      const config = createTestConfig();
+      const config = createDoctorTestConfig();
       const checks = await runSelfTest(config);
 
       const llmCheck = checks.find(c => c.item === "LLM System");

@@ -381,7 +381,12 @@ describe("doctorCommand", () => {
 
     test("reports warn when no API keys are set", async () => {
       await withEnvAsync(
-        { ANTHROPIC_API_KEY: undefined, OPENAI_API_KEY: undefined, GOOGLE_GENERATIVE_AI_API_KEY: undefined },
+        {
+          ANTHROPIC_API_KEY: undefined,
+          OPENAI_API_KEY: undefined,
+          GOOGLE_GENERATIVE_AI_API_KEY: undefined,
+          CASS_CLI_COMMAND: "cass-test-nonexistent-cli-binary",
+        },
         async () => {
           await withTempCassHome(async (env) => {
             await withCwd(env.home, async () => {

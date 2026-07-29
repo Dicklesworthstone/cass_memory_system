@@ -8,7 +8,6 @@ import { writeFile } from "node:fs/promises";
 import yaml from "yaml";
 import { withTempCassHome } from "./helpers/temp.js";
 import { generateSimilarResults, similarCommand } from "../src/commands/similar.js";
-import { __setStdoutSinkForTests } from "../src/utils.js";
 
 function captureConsole() {
   const logs: string[] = [];
@@ -22,15 +21,10 @@ function captureConsole() {
   console.error = (...args: any[]) => {
     errors.push(args.map(String).join(" "));
   };
-  __setStdoutSinkForTests((text) => {
-    logs.push(text.trimEnd());
-  });
-
   return {
     logs,
     errors,
     restore: () => {
-      __setStdoutSinkForTests(null);
       console.log = originalLog;
       console.error = originalError;
     },

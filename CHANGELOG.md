@@ -8,6 +8,50 @@ All notable changes to **cass-memory** (`cm`) are documented in this file.
 
 ---
 
+## [0.2.13] -- 2026-07-28
+
+### Security
+
+- **Pin `protobufjs` to 7.6.5 across the compiled dependency graph**, removing
+  the vulnerable 6.11.4 runtime covered by
+  [GHSA-xq3m-2v4x-88gg](https://github.com/advisories/GHSA-xq3m-2v4x-88gg)
+  from standalone `cm` binaries.
+- **Raise `yaml` to the patched 2.8.3+ line**, addressing
+  [GHSA-48c2-rrv3-qjmp](https://github.com/advisories/GHSA-48c2-rrv3-qjmp).
+- **Pin the AWS XML builder to 3.972.37**, removing vulnerable transitive
+  `fast-xml-builder` and `fast-xml-parser` releases from the Bedrock provider
+  dependency graph.
+- Add a lockfile regression test that fails if `protobufjs` is no longer
+  overridden to the audited release or the patched AWS XML builder regresses.
+
+### Reliability
+
+- Bound Cass-backed MCP concurrency and queueing so one expensive request cannot
+  monopolize the server ([#61](https://github.com/Dicklesworthstone/cass_memory_system/issues/61)).
+- Handle large `cass timeline` responses with configurable buffers and timeouts
+  ([#62](https://github.com/Dicklesworthstone/cass_memory_system/issues/62)).
+- Apply the configured embedding backend consistently, including Ollama's
+  official `all-minilm` model mapping
+  ([#63](https://github.com/Dicklesworthstone/cass_memory_system/issues/63)).
+- Bound Ollama embedding requests with a 30-second timeout instead of allowing
+  an unavailable endpoint to hang indefinitely.
+- Honor `disableStructuredOutputs` for OpenAI-compatible gateways.
+- Preserve diary-derived rule provenance and stop mixed auto-graded sessions
+  from blanket-marking injected rules harmful
+  ([#58](https://github.com/Dicklesworthstone/cass_memory_system/issues/58),
+  [#56](https://github.com/Dicklesworthstone/cass_memory_system/issues/56)).
+
+### Release and Test Hardening
+
+- Use Bun exclusively for post-install processing and isolate test files to
+  prevent shared stdout, environment, and working-directory state from leaking.
+- Upload only explicit platform binaries from fresh release jobs so stale
+  `dist` contents cannot enter a release.
+- Bring MCP response and structured-output tests in line with the current wire
+  formats, and make Cass/LLM-dependent doctor tests hermetic.
+
+---
+
 ## [0.2.12] -- 2026-06-21
 
 ### Reflection Pipeline -- ship the `cm reflect` fixes

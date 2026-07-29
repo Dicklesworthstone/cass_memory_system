@@ -6,6 +6,29 @@ import { computePlaybookStats, __test as serveTest } from "../src/commands/serve
 import { withTempCassHome } from "./helpers/temp.js";
 import { withTempGitRepo } from "./helpers/git.js";
 
+function parseToolResult<T>(result: unknown): T {
+  if (
+    typeof result !== "object" ||
+    result === null ||
+    !("content" in result) ||
+    !Array.isArray(result.content)
+  ) {
+    throw new Error("Expected an MCP tool result with a content array");
+  }
+
+  const first = result.content[0];
+  if (
+    typeof first !== "object" ||
+    first === null ||
+    !("text" in first) ||
+    typeof first.text !== "string"
+  ) {
+    throw new Error("Expected the first MCP tool result item to contain text");
+  }
+
+  return JSON.parse(first.text) as T;
+}
+
 describe("serve module stats (unit)", () => {
   const config = createTestConfig();
 
@@ -407,8 +430,9 @@ describe("serve module tool calls", () => {
 
           expect("result" in response).toBe(true);
           if ("result" in response) {
-            expect(response.result).toHaveProperty("playbook");
-            expect(Array.isArray(response.result.playbook)).toBe(true);
+            const result = parseToolResult<{ playbook: unknown[] }>(response.result);
+            expect(result).toHaveProperty("playbook");
+            expect(Array.isArray(result.playbook)).toBe(true);
           }
         } finally {
           process.chdir(originalCwd);
@@ -440,11 +464,17 @@ describe("serve module tool calls", () => {
 
           expect("result" in response).toBe(true);
           if ("result" in response) {
+            const result = parseToolResult<{
+              success: boolean;
+              type: string;
+              score: number;
+              state: unknown;
+            }>(response.result);
             // recordFeedback returns { success, type, score, state }
-            expect(response.result.success).toBe(true);
-            expect(response.result.type).toBe("helpful");
-            expect(typeof response.result.score).toBe("number");
-            expect(response.result.state).toBeDefined();
+            expect(result.success).toBe(true);
+            expect(result.type).toBe("helpful");
+            expect(typeof result.score).toBe("number");
+            expect(result.state).toBeDefined();
           }
         } finally {
           process.chdir(originalCwd);
@@ -479,9 +509,14 @@ describe("serve module tool calls", () => {
 
           expect("result" in response).toBe(true);
           if ("result" in response) {
-            expect(response.result.success).toBe(true);
-            expect(response.result.type).toBe("harmful");
-            expect(typeof response.result.score).toBe("number");
+            const result = parseToolResult<{
+              success: boolean;
+              type: string;
+              score: number;
+            }>(response.result);
+            expect(result.success).toBe(true);
+            expect(result.type).toBe("harmful");
+            expect(typeof result.score).toBe("number");
           }
         } finally {
           process.chdir(originalCwd);
@@ -515,8 +550,12 @@ describe("serve module tool calls", () => {
 
           expect("result" in response).toBe(true);
           if ("result" in response) {
-            expect(response.result.sessionId).toBe("test-session-123");
-            expect(response.result.outcome).toBe("success");
+            const result = parseToolResult<{
+              sessionId: string;
+              outcome: string;
+            }>(response.result);
+            expect(result.sessionId).toBe("test-session-123");
+            expect(result.outcome).toBe("success");
           }
         } finally {
           process.chdir(originalCwd);
@@ -548,7 +587,8 @@ describe("serve module tool calls", () => {
 
           expect("result" in response).toBe(true);
           if ("result" in response) {
-            expect(response.result.outcome).toBe("failure");
+            const result = parseToolResult<{ outcome: string }>(response.result);
+            expect(result.outcome).toBe("failure");
           }
         } finally {
           process.chdir(originalCwd);
@@ -580,7 +620,8 @@ describe("serve module tool calls", () => {
 
           expect("result" in response).toBe(true);
           if ("result" in response) {
-            expect(response.result.outcome).toBe("mixed");
+            const result = parseToolResult<{ outcome: string }>(response.result);
+            expect(result.outcome).toBe("mixed");
           }
         } finally {
           process.chdir(originalCwd);
@@ -615,12 +656,16 @@ describe("serve module tool calls", () => {
 
           expect("result" in response).toBe(true);
           if ("result" in response) {
-            expect(response.result).toHaveProperty("playbook");
-            expect(response.result).toHaveProperty("cass");
-            expect(Array.isArray(response.result.playbook)).toBe(true);
-            expect(Array.isArray(response.result.cass)).toBe(true);
+            const result = parseToolResult<{
+              playbook: Array<{ id: string }>;
+              cass: unknown[];
+            }>(response.result);
+            expect(result).toHaveProperty("playbook");
+            expect(result).toHaveProperty("cass");
+            expect(Array.isArray(result.playbook)).toBe(true);
+            expect(Array.isArray(result.cass)).toBe(true);
             // Should find our bullet in playbook results
-            expect(response.result.playbook.some((b: any) => b.id === "b-auth-test")).toBe(true);
+            expect(result.playbook.some((bullet) => bullet.id === "b-auth-test")).toBe(true);
           }
         } finally {
           process.chdir(originalCwd);
@@ -648,9 +693,13 @@ describe("serve module tool calls", () => {
 
           expect("result" in response).toBe(true);
           if ("result" in response) {
-            expect(response.result).not.toHaveProperty("playbook");
-            expect(response.result).toHaveProperty("cass");
-            expect(Array.isArray(response.result.cass)).toBe(true);
+            const result = parseToolResult<{
+              playbook?: unknown[];
+              cass: unknown[];
+            }>(response.result);
+            expect(result).not.toHaveProperty("playbook");
+            expect(result).toHaveProperty("cass");
+            expect(Array.isArray(result.cass)).toBe(true);
           }
         } finally {
           process.chdir(originalCwd);
@@ -699,9 +748,13 @@ describe("serve module tool calls", () => {
 
           expect("result" in response).toBe(true);
           if ("result" in response) {
-            expect(response.result).toHaveProperty("sessionsProcessed");
-            expect(response.result).toHaveProperty("dryRun");
-            expect(response.result.dryRun).toBe(true);
+            const result = parseToolResult<{
+              sessionsProcessed: number;
+              dryRun: boolean;
+            }>(response.result);
+            expect(result).toHaveProperty("sessionsProcessed");
+            expect(result).toHaveProperty("dryRun");
+            expect(result.dryRun).toBe(true);
           }
         } finally {
           process.chdir(originalCwd);
@@ -732,9 +785,14 @@ describe("serve module tool calls", () => {
 
           expect("result" in response).toBe(true);
           if ("result" in response) {
-            expect(response.result).toHaveProperty("sessionsProcessed");
-            expect(response.result).toHaveProperty("deltasGenerated");
-            expect(response.result).toHaveProperty("message");
+            const result = parseToolResult<{
+              sessionsProcessed: number;
+              deltasGenerated: number;
+              message: string;
+            }>(response.result);
+            expect(result).toHaveProperty("sessionsProcessed");
+            expect(result).toHaveProperty("deltasGenerated");
+            expect(result).toHaveProperty("message");
           }
         } finally {
           process.chdir(originalCwd);

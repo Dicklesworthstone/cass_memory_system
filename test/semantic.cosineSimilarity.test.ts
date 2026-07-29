@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { batchEmbed, configureEmbeddingBackend, cosineSimilarity, embedText, findSemanticDuplicates, ModelLoadProgress, ProgressCallback, WarmupResult, warmupEmbeddings, isModelCached, getEmbeddingBackend, getSemanticStatus, formatSemanticModeMessage, SemanticStatus, setEmbeddingBackend } from "../src/semantic.js";
 
 describe("semantic: cosineSimilarity", () => {
@@ -25,7 +25,7 @@ describe("semantic: embedding helpers (no model downloads)", () => {
     expect(result).toEqual([[], [], []]);
   });
 
-  test("configureEmbeddingBackend normalizes Xenova model names for Ollama", () => {
+  test("configureEmbeddingBackend maps the default Xenova model to Ollama's official model name", () => {
     try {
       const config = {
         semanticSearchEnabled: true,
@@ -37,8 +37,61 @@ describe("semantic: embedding helpers (no model downloads)", () => {
       configureEmbeddingBackend(config);
 
       expect(getEmbeddingBackend()).toBe("ollama");
-      expect(getSemanticStatus(config).model).toBe("ollama:all-minilm-l6-v2");
+      expect(getSemanticStatus(config).model).toBe("ollama:all-minilm");
     } finally {
+      setEmbeddingBackend("xenova");
+    }
+  });
+
+  test("configureEmbeddingBackend still normalizes custom Xenova model names", () => {
+    try {
+      const config = {
+        semanticSearchEnabled: true,
+        embeddingBackend: "ollama" as const,
+        embeddingModel: "Xenova/custom-embedding-model",
+      };
+
+      configureEmbeddingBackend(config);
+
+      expect(getSemanticStatus(config).model).toBe("ollama:custom-embedding-model");
+    } finally {
+      setEmbeddingBackend("xenova");
+    }
+  });
+
+  test("Ollama embedding requests include a timeout signal", async () => {
+    const signals: Array<AbortSignal | null | undefined> = [];
+    const fetchSpy = spyOn(globalThis, "fetch").mockImplementation(
+      (async (_input, init) => {
+        signals.push(init?.signal);
+        const request = JSON.parse(String(init?.body)) as {
+          input: string | string[];
+        };
+        const inputs = Array.isArray(request.input)
+          ? request.input
+          : [request.input];
+        return Response.json({
+          embeddings: inputs.map(() => [1, 0]),
+        });
+      }) as typeof fetch,
+    );
+
+    try {
+      configureEmbeddingBackend({
+        embeddingBackend: "ollama",
+        embeddingModel: "all-minilm",
+        ollamaBaseUrl: "http://127.0.0.1:11434",
+      });
+
+      expect(await embedText("single")).toEqual([1, 0]);
+      expect(await batchEmbed(["first", "second"])).toEqual([
+        [1, 0],
+        [1, 0],
+      ]);
+      expect(signals).toHaveLength(2);
+      expect(signals.every((signal) => signal instanceof AbortSignal)).toBe(true);
+    } finally {
+      fetchSpy.mockRestore();
       setEmbeddingBackend("xenova");
     }
   });

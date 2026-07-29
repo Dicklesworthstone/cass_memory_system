@@ -5,6 +5,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { runSelfTest, HealthCheck } from "../src/commands/doctor.js";
 import { createTestConfig } from "./helpers/factories.js";
+import type { Config } from "../src/types.js";
 import { withTempDir, withTempCassHome } from "./helpers/temp.js";
 import { writeFile, mkdir, rm } from "node:fs/promises";
 import path from "node:path";
@@ -19,7 +20,9 @@ describe("runSelfTest", () => {
       OPENAI_API_KEY: process.env.OPENAI_API_KEY,
       ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
       GOOGLE_GENERATIVE_AI_API_KEY: process.env.GOOGLE_GENERATIVE_AI_API_KEY,
+      CASS_CLI_COMMAND: process.env.CASS_CLI_COMMAND,
     };
+    process.env.CASS_CLI_COMMAND = "cass-test-nonexistent-cli-binary";
   });
 
   afterEach(() => {
@@ -74,13 +77,20 @@ describe("runSelfTest", () => {
     });
   }
 
+  function createSelfTestConfig(overrides: Partial<Config> = {}): Config {
+    return createTestConfig({
+      cassPath: "/nonexistent/cass",
+      ...overrides,
+    });
+  }
+
   describe("Playbook Load Test", () => {
     it("reports pass for fast playbook load", async () => {
       await withTempDir("selftest", async (dir) => {
         const playbookPath = path.join(dir, "playbook.yaml");
         await writeFile(playbookPath, createValidPlaybookYaml(1));
 
-        const config = createTestConfig({ playbookPath });
+        const config = createSelfTestConfig({ playbookPath });
         const checks = await runSelfTest(config);
 
         const playbookCheck = checks.find(c => c.item === "Playbook Load");
@@ -97,7 +107,7 @@ describe("runSelfTest", () => {
         const playbookPath = path.join(dir, "playbook.yaml");
         await writeFile(playbookPath, createValidPlaybookYaml(0));
 
-        const config = createTestConfig({ playbookPath });
+        const config = createSelfTestConfig({ playbookPath });
         const checks = await runSelfTest(config);
 
         const playbookCheck = checks.find(c => c.item === "Playbook Load");
@@ -111,7 +121,7 @@ describe("runSelfTest", () => {
       await withTempDir("selftest", async (dir) => {
         const playbookPath = path.join(dir, "nonexistent.yaml");
 
-        const config = createTestConfig({ playbookPath });
+        const config = createSelfTestConfig({ playbookPath });
         const checks = await runSelfTest(config);
 
         const playbookCheck = checks.find(c => c.item === "Playbook Load");
@@ -130,7 +140,7 @@ describe("runSelfTest", () => {
         await writeFile(playbookPath, createValidPlaybookYaml(0));
 
         // Use non-existent cass path
-        const config = createTestConfig({
+        const config = createSelfTestConfig({
           playbookPath,
           cassPath: "/nonexistent/cass"
         });
@@ -150,7 +160,7 @@ describe("runSelfTest", () => {
         const playbookPath = path.join(dir, "playbook.yaml");
         await writeFile(playbookPath, createValidPlaybookYaml(0));
 
-        const config = createTestConfig({
+        const config = createSelfTestConfig({
           playbookPath,
           sanitization: { enabled: true, extraPatterns: [], auditLog: false, auditLevel: "info" }
         });
@@ -170,7 +180,7 @@ describe("runSelfTest", () => {
         const playbookPath = path.join(dir, "playbook.yaml");
         await writeFile(playbookPath, createValidPlaybookYaml(0));
 
-        const config = createTestConfig({
+        const config = createSelfTestConfig({
           playbookPath,
           sanitization: { enabled: false, extraPatterns: [], auditLog: false, auditLevel: "off" }
         });
@@ -190,7 +200,7 @@ describe("runSelfTest", () => {
         const playbookPath = path.join(dir, "playbook.yaml");
         await writeFile(playbookPath, createValidPlaybookYaml(0));
 
-        const config = createTestConfig({
+        const config = createSelfTestConfig({
           playbookPath,
           diaryDir: "/tmp/diary",
           dedupSimilarityThreshold: 0.85,
@@ -210,7 +220,7 @@ describe("runSelfTest", () => {
         const playbookPath = path.join(dir, "playbook.yaml");
         await writeFile(playbookPath, createValidPlaybookYaml(0));
 
-        const config = createTestConfig({
+        const config = createSelfTestConfig({
           playbookPath,
           dedupSimilarityThreshold: 1.5, // Invalid: > 1
         });
@@ -229,7 +239,7 @@ describe("runSelfTest", () => {
         const playbookPath = path.join(dir, "playbook.yaml");
         await writeFile(playbookPath, createValidPlaybookYaml(0));
 
-        const config = createTestConfig({
+        const config = createSelfTestConfig({
           playbookPath,
           pruneHarmfulThreshold: -1, // Invalid: negative
         });
@@ -254,7 +264,7 @@ describe("runSelfTest", () => {
         const playbookPath = path.join(dir, "playbook.yaml");
         await writeFile(playbookPath, createValidPlaybookYaml(0));
 
-        const config = createTestConfig({ playbookPath, provider: "anthropic" });
+        const config = createSelfTestConfig({ playbookPath, provider: "anthropic" });
         const checks = await runSelfTest(config);
 
         const llmCheck = checks.find(c => c.item === "LLM System");
@@ -271,7 +281,7 @@ describe("runSelfTest", () => {
         const playbookPath = path.join(dir, "playbook.yaml");
         await writeFile(playbookPath, createValidPlaybookYaml(0));
 
-        const config = createTestConfig({
+        const config = createSelfTestConfig({
           playbookPath,
           provider: "anthropic",
           model: "claude-3-5-sonnet-20241022"
@@ -294,7 +304,7 @@ describe("runSelfTest", () => {
         const playbookPath = path.join(dir, "playbook.yaml");
         await writeFile(playbookPath, createValidPlaybookYaml(0));
 
-        const config = createTestConfig({ playbookPath, provider: "anthropic" });
+        const config = createSelfTestConfig({ playbookPath, provider: "anthropic" });
         const checks = await runSelfTest(config);
 
         const llmCheck = checks.find(c => c.item === "LLM System");
@@ -317,7 +327,7 @@ describe("runSelfTest", () => {
         await writeFile(playbookPath, createValidPlaybookYaml(0));
 
         // Set apiKey in config instead of env var
-        const config = createTestConfig({
+        const config = createSelfTestConfig({
           playbookPath,
           provider: "anthropic",
           model: "claude-sonnet-4-20250514",
@@ -343,7 +353,7 @@ describe("runSelfTest", () => {
         const playbookPath = path.join(dir, "playbook.yaml");
         await writeFile(playbookPath, createValidPlaybookYaml(0));
 
-        const config = createTestConfig({ playbookPath });
+        const config = createSelfTestConfig({ playbookPath });
         const checks = await runSelfTest(config);
 
         // Should have exactly 5 checks
@@ -369,7 +379,7 @@ describe("runSelfTest", () => {
         const playbookPath = path.join(dir, "playbook.yaml");
         await writeFile(playbookPath, createValidPlaybookYaml(0));
 
-        const config = createTestConfig({ playbookPath, cassPath: "/nonexistent" });
+        const config = createSelfTestConfig({ playbookPath });
 
         const start = Date.now();
         await runSelfTest(config);

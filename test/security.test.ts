@@ -1,4 +1,6 @@
 import { describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { sanitize, compileExtraPatterns, SECRET_PATTERNS } from "../src/sanitize.js";
 
 // =============================================================================
@@ -393,5 +395,44 @@ describe("compileExtraPatterns", () => {
     const result = compileExtraPatterns(["file\\.txt"]);
     expect(result).toHaveLength(1);
     expect(result[0].test("file.txt")).toBe(true);
+  });
+});
+
+// =============================================================================
+// Dependency security
+// =============================================================================
+describe("dependency security", () => {
+  it("pins every protobufjs resolution to the patched 7.6.5 release", () => {
+    const root = join(import.meta.dir, "..");
+    const packageJson = JSON.parse(
+      readFileSync(join(root, "package.json"), "utf8"),
+    ) as { overrides?: Record<string, string> };
+    const lockfile = readFileSync(join(root, "bun.lock"), "utf8");
+    const resolvedVersions = [
+      ...lockfile.matchAll(
+        /"protobufjs": \["protobufjs@(\d+\.\d+\.\d+)"/g,
+      ),
+    ].map((match) => match[1]);
+
+    expect(packageJson.overrides?.protobufjs).toBe("7.6.5");
+    expect(resolvedVersions).toEqual(["7.6.5"]);
+  });
+
+  it("pins the AWS XML builder without vulnerable fast-xml transitive packages", () => {
+    const root = join(import.meta.dir, "..");
+    const packageJson = JSON.parse(
+      readFileSync(join(root, "package.json"), "utf8"),
+    ) as { overrides?: Record<string, string> };
+    const lockfile = readFileSync(join(root, "bun.lock"), "utf8");
+    const resolvedVersions = [
+      ...lockfile.matchAll(
+        /"[^"]*@aws-sdk\/xml-builder": \["@aws-sdk\/xml-builder@(\d+\.\d+\.\d+)"/g,
+      ),
+    ].map((match) => match[1]);
+
+    expect(packageJson.overrides?.["@aws-sdk/xml-builder"]).toBe("3.972.37");
+    expect([...new Set(resolvedVersions)]).toEqual(["3.972.37"]);
+    expect(lockfile).not.toContain('"fast-xml-builder": [');
+    expect(lockfile).not.toContain('"fast-xml-parser": [');
   });
 });

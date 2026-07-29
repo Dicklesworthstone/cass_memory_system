@@ -275,6 +275,7 @@ describe("audit command - Unit Tests", () => {
         ANTHROPIC_API_KEY: undefined,
         OPENAI_API_KEY: undefined,
         GOOGLE_GENERATIVE_AI_API_KEY: undefined,
+        CASS_CLI_COMMAND: "cass-test-nonexistent-cli-binary",
       },
       async () => {
         await withTempCassHome(async (env) => {

@@ -11,13 +11,13 @@ name: Notify ACFS of Installer Change
 
 on:
   push:
-    branches: [main, master]
+    branches: [main]
     paths:
       - 'install.sh'
       - 'scripts/install.sh'
       - '**/install.sh'
   pull_request:
-    branches: [main, master]
+    branches: [main]
     paths:
       - 'install.sh'
       - 'scripts/install.sh'

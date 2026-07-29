@@ -46,10 +46,9 @@ jobs:
 
       - name: Build Linux x64 and Windows x64
         run: |
-          # Start from a clean dist/ so stale artifacts cannot leak into
-          # the release (see #45 — shipped binaries can quietly carry pre-fix
-          # content if dist/ is reused).
-          rm -rf dist
+          # GitHub-hosted jobs start from a fresh checkout. Upload the explicit
+          # artifact paths below so unrelated dist files can never leak into a
+          # release (see #45).
           mkdir -p dist
 
           # Linux x64 — use baseline target (no AVX2) for maximum CPU compatibility
@@ -96,7 +95,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: linux-windows-binaries
-          path: dist/*
+          path: |
+            dist/cass-memory-linux-x64
+            dist/cass-memory-windows-x64.exe
           if-no-files-found: error
 
   # macOS binaries must be built natively so codesign is available.
@@ -128,9 +129,8 @@ jobs:
 
       - name: Build macOS arm64 and x64
         run: |
-          # Start from a clean dist/ so stale artifacts cannot leak into the
-          # release (see #45).
-          rm -rf dist
+          # GitHub-hosted jobs start from a fresh checkout. Upload only the
+          # two explicit macOS artifacts below.
           mkdir -p dist
 
           # macOS ARM64 (Apple Silicon) — native build on macos-15 runner
@@ -181,7 +181,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: macos-binaries
-          path: dist/*
+          path: |
+            dist/cass-memory-macos-arm64
+            dist/cass-memory-macos-x64
           if-no-files-found: error
 
   release:

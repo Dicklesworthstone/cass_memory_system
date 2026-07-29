@@ -1,6 +1,6 @@
 {
   "name": "cass-memory",
-  "version": "0.2.12",
+  "version": "0.2.13",
   "type": "module",
   "description": "Universal memory system for AI coding agents - implements ACE framework",
   "author": "Jeffrey Emanuel",
@@ -23,16 +23,16 @@
     "typecheck": "tsc --noEmit",
     "lint": "bun run typecheck",
     "typecheck:watch": "tsc --noEmit --watch",
-    "test": "bun test",
-    "test:unit": "bun test test/*.test.ts --exclude '*integration*' --exclude '*e2e*'",
-    "test:integration": "bun test test/*integration*.test.ts test/integration/",
-    "test:e2e": "bun test test/*e2e*.test.ts",
-    "test:property": "bun test test/*property*.test.ts",
-    "test:coverage": "bun test --coverage",
+    "test": "bun test --isolate",
+    "test:unit": "bun test test --isolate --path-ignore-patterns='**/*integration*.test.ts' --path-ignore-patterns='**/*e2e*.test.ts' --path-ignore-patterns='**/*property*.test.ts'",
+    "test:integration": "bun test test/*integration*.test.ts test/integration/ --isolate",
+    "test:e2e": "bun test test/*e2e*.test.ts --isolate",
+    "test:property": "bun test test/*property*.test.ts --isolate",
+    "test:coverage": "bun test --coverage --isolate",
     "test:watch": "bun test --watch",
     "test:fast": "bun test test/*.fast.test.ts",
-    "test:ci": "bun test --timeout 60000",
-    "postinstall": "node scripts/patch-standalone-deps.mjs"
+    "test:ci": "bun test --timeout 60000 --isolate",
+    "postinstall": "bun run scripts/patch-standalone-deps.mjs"
   },
   "dependencies": {
     "@ai-sdk/amazon-bedrock": "^1.1.6",
@@ -44,8 +44,12 @@
     "chalk": "^5.3.0",
     "commander": "^14.0.2",
     "ollama-ai-provider": "^1.2.0",
-    "yaml": "^2.3.0",
+    "yaml": "^2.8.3",
     "zod": "^3.23.0"
+  },
+  "overrides": {
+    "@aws-sdk/xml-builder": "3.972.37",
+    "protobufjs": "7.6.5"
   },
   "devDependencies": {
     "@types/bun": "^1.3.4",

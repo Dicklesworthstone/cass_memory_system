@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
-import { isToonOutput, printToon } from "../src/utils.js";
+import {
+  __setStdoutSinkForTests,
+  isToonOutput,
+  printToon,
+} from "../src/utils.js";
 
 describe("TOON output helpers", () => {
   const envKeys = [
@@ -105,21 +109,26 @@ describe("TOON output helpers", () => {
         return { pid: 0, output: [], stdout: "", stderr: "", status: 0, signal: null } as any;
       });
 
-    const writeSpy = spyOn(process.stdout, "write").mockImplementation(() => true);
+    let output = "";
+    __setStdoutSinkForTests((text) => {
+      output += text;
+    });
 
     // Ensure we don't accept Node `toon` as the encoder.
     process.env.TOON_TRU_BIN = "toon";
 
-    printToon({ a: 1 }, { fallbackToJson: false });
+    try {
+      printToon({ a: 1 }, { fallbackToJson: false });
 
-    // The encode step must use `tru`, not `toon`.
-    const encodeCall = calls.find((c) => c.args[0] === "--encode");
-    expect(encodeCall?.cmd).toBe("tru");
+      // The encode step must use `tru`, not `toon`.
+      const encodeCall = calls.find((c) => c.args[0] === "--encode");
+      expect(encodeCall?.cmd).toBe("tru");
 
-    // And the encoded output is written to stdout (no extra formatting).
-    expect(writeSpy).toHaveBeenCalled();
-
-    spawnSpy.mockRestore();
-    writeSpy.mockRestore();
+      // And the encoded output reaches the structured stdout sink unchanged.
+      expect(output).toBe("k=v\n");
+    } finally {
+      __setStdoutSinkForTests(null);
+      spawnSpy.mockRestore();
+    }
   });
 });

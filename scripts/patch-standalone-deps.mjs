@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * Postinstall patch for @xenova/transformers standalone binary compatibility.
  *
