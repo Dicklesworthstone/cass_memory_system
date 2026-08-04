@@ -42,6 +42,60 @@ describe("parseInlineFeedback", () => {
     });
   });
 
+  describe("Generated ID format (regression: issue #64)", () => {
+    // generateBulletId() emits `b-<timestamp36>-<random>` — always two
+    // hyphen-separated segments. The regex previously stopped at the first
+    // internal hyphen, silently dropping every marker citing a real ID.
+    test("parses a full generateBulletId-format ID (internal hyphen)", () => {
+      const content = "// [cass: helpful b-mn3ot59c-nny4gb] - saved me time";
+      const feedback = parseInlineFeedback(content);
+
+      expect(feedback).toHaveLength(1);
+      expect(feedback[0].type).toBe("helpful");
+      expect(feedback[0].bulletId).toBe("b-mn3ot59c-nny4gb");
+      expect(feedback[0].reason).toBe("saved me time");
+    });
+
+    test("parses the live output of generateBulletId inside a marker", async () => {
+      const { generateBulletId } = await import("../src/utils.js");
+      const id = generateBulletId();
+      // Sanity: generated IDs really do contain an internal hyphen
+      expect(id).toMatch(/^b-[a-z0-9]+-[a-z0-9]+$/);
+
+      const content = `// [cass: harmful ${id}] - advice was wrong here`;
+      const feedback = parseInlineFeedback(content);
+
+      expect(feedback).toHaveLength(1);
+      expect(feedback[0].type).toBe("harmful");
+      expect(feedback[0].bulletId).toBe(id);
+      expect(feedback[0].reason).toBe("advice was wrong here");
+    });
+
+    test("parses hyphenated IDs in all comment styles", () => {
+      const content = [
+        "# [cass: helpful b-mn3ot59c-abc123] - python style",
+        "/* [cass: harmful b-mn3ot59c-def456] - block style */",
+        "// [cass: helpful b-mn3ot59c-ghi789]",
+      ].join("\n");
+      const feedback = parseInlineFeedback(content);
+
+      expect(feedback).toHaveLength(3);
+      expect(feedback[0].bulletId).toBe("b-mn3ot59c-abc123");
+      expect(feedback[1].bulletId).toBe("b-mn3ot59c-def456");
+      expect(feedback[2].bulletId).toBe("b-mn3ot59c-ghi789");
+      expect(feedback[2].reason).toBeUndefined();
+    });
+
+    test("hyphenated ID feedback converts to deltas", () => {
+      const content = "// [cass: helpful b-mn3ot59c-nny4gb] - worked";
+      const deltas = inlineFeedbackToDeltas(parseInlineFeedback(content), "/tmp/session.jsonl");
+
+      expect(deltas).toHaveLength(1);
+      expect(deltas[0].bulletId).toBe("b-mn3ot59c-nny4gb");
+      expect(deltas[0].type).toBe("helpful");
+    });
+  });
+
   describe("Multiple feedbacks", () => {
     test("parses multiple feedbacks from multiline content", () => {
       const content = `

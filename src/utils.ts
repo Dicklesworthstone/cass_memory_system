@@ -3290,9 +3290,10 @@ export interface InlineFeedback {
  * - // [cass: helpful b-8f3a2c] - reason why it helped
  * - // [cass: harmful b-x7k9p1] - reason why it was wrong
  * - # [cass: helpful b-abc123] (Python/shell style)
+ * - // [cass: helpful b-mn3ot59c-nny4gb] (full generated IDs contain an internal hyphen)
  * - Block comments: slash-star [cass: harmful b-xyz] star-slash
  */
-const INLINE_FEEDBACK_REGEX = /(?:\/\/|#|\/\*)\s*\[cass:\s*(helpful|harmful)\s+(b-[a-zA-Z0-9]+)\](?:\s*[-:]?\s*(.+?))?(?:\s*\*\/)?$/gm;
+const INLINE_FEEDBACK_REGEX = /(?:\/\/|#|\/\*)\s*\[cass:\s*(helpful|harmful)\s+(b-[a-zA-Z0-9]+(?:-[a-zA-Z0-9]+)*)\](?:\s*[-:]?\s*(.+?))?(?:\s*\*\/)?$/gm;
 
 /**
  * Parse inline feedback comments from session content.
@@ -3340,7 +3341,7 @@ export function parseInlineFeedback(content: string): InlineFeedback[] {
       const [, type, bulletId, reason] = match;
 
       // Validate bullet ID format
-      if (bulletId && /^b-[a-zA-Z0-9]+$/.test(bulletId)) {
+      if (bulletId && /^b-[a-zA-Z0-9]+(?:-[a-zA-Z0-9]+)*$/.test(bulletId)) {
         feedback.push({
           type: type as "helpful" | "harmful",
           bulletId,
