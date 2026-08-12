@@ -13,6 +13,11 @@ bd.sock
 sync-state.json
 last-touched
 
+# Writer locks (per-process, never canonical tracker state)
+.write.lock
+.sync.lock
+.br-*-write-*.lock
+
 # Local version tracking (prevents upgrade notification spam after git ops)
 .local_version
 
