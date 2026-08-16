@@ -10,6 +10,8 @@ import {
   fillPrompt,
   llmWithRetry,
   llmWithFallback,
+  resolveEffectiveLLMConfig,
+  __resetAutoFallbackNoticeForTest,
   LLM_RETRY_CONFIG,
   PROMPTS,
   type LLMIO,
@@ -437,6 +439,132 @@ describe("generateObjectSafe with disableStructuredOutputs", () => {
     await generateObjectSafe(schema, "prompt", config, 3, capturingIO(captured));
 
     expect(captured.options.mode).toBeUndefined();
+  });
+});
+
+// ============================================================================
+// resolveEffectiveLLMConfig() Tests — the auto-fallback chain that `cm doctor`
+// advertises ("Provider: X not configured, but Y available (will auto-fallback)")
+// must be honored by the generateObjectSafe() path used by `cm reflect` (#67).
+// ============================================================================
+
+describe("resolveEffectiveLLMConfig", () => {
+  beforeEach(() => {
+    saveEnv();
+    __resetAutoFallbackNoticeForTest();
+  });
+  afterEach(() => restoreEnv());
+
+  it("keeps the configured provider when its API key is set", () => {
+    clearAllApiKeys();
+    process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+    const config = createTestConfig({ provider: "anthropic", model: "claude-sonnet-5" });
+    const resolved = resolveEffectiveLLMConfig(config);
+    expect(resolved.provider).toBe("anthropic");
+    expect(resolved.model).toBe("claude-sonnet-5");
+  });
+
+  it("keeps the configured provider when an explicit apiKey override is present", () => {
+    clearAllApiKeys();
+    const config = createTestConfig({ provider: "anthropic", apiKey: "sk-ant-override" });
+    const resolved = resolveEffectiveLLMConfig(config);
+    expect(resolved.provider).toBe("anthropic");
+  });
+
+  it("keeps implicit-auth providers (ollama, bedrock) even without env vars", () => {
+    clearAllApiKeys();
+    for (const provider of ["ollama", "bedrock"] as const) {
+      const config = createTestConfig({ provider, model: "anything" });
+      const resolved = resolveEffectiveLLMConfig(config);
+      expect(resolved.provider).toBe(provider);
+      expect(resolved.model).toBe("anything");
+    }
+  });
+
+  it("falls back to an available API provider when the configured one has no key", () => {
+    clearAllApiKeys();
+    process.env.OPENAI_API_KEY = "sk-test";
+    const config = createTestConfig({ provider: "anthropic", model: "claude-sonnet-5" });
+    const resolved = resolveEffectiveLLMConfig(config);
+    expect(resolved.provider).toBe("openai");
+    // Uses the fallback provider's known-good default model, not the
+    // configured (anthropic) model id.
+    expect(resolved.model).not.toBe("claude-sonnet-5");
+  });
+
+  it("falls back to the cli provider when only a CLI tool is available", () => {
+    clearAllApiKeys();
+    // "echo" exists on PATH everywhere the tests run, so resolveCliCommand()
+    // treats it as an available CLI tool.
+    process.env.CASS_CLI_COMMAND = "echo";
+    const config = createTestConfig({ provider: "anthropic", model: "claude-sonnet-5" });
+    const resolved = resolveEffectiveLLMConfig(config);
+    expect(resolved.provider).toBe("cli");
+  });
+
+  it("returns the config unchanged when nothing is available", () => {
+    clearAllApiKeys();
+    const config = createTestConfig({ provider: "anthropic", model: "claude-sonnet-5" });
+    const resolved = resolveEffectiveLLMConfig(config);
+    expect(resolved.provider).toBe("anthropic");
+    expect(resolved.model).toBe("claude-sonnet-5");
+  });
+});
+
+// ============================================================================
+// generateObjectSafe() retired-model handling (#66) — a 404/not_found_error
+// must surface the provider error verbatim with an actionable hint instead of
+// being swallowed into "Schema validation failed" retries.
+// ============================================================================
+
+describe("generateObjectSafe retired-model errors", () => {
+  const schema = z.object({ test: z.string() });
+
+  function throwingIO(err: any, calls: { count: number }): LLMIO {
+    return {
+      generateObject: async () => {
+        calls.count++;
+        throw err;
+      }
+    };
+  }
+
+  it("throws immediately with a hint on HTTP 404", async () => {
+    const calls = { count: 0 };
+    const err: any = new Error("Not Found: model: claude-sonnet-4-20250514");
+    err.statusCode = 404;
+    const config = createTestConfig({ provider: "anthropic", model: "claude-sonnet-4-20250514" });
+
+    await expect(
+      generateObjectSafe(schema, "prompt", config, 3, throwingIO(err, calls))
+    ).rejects.toThrow(/may have been retired/);
+    // Hard error — no retry attempts burned on a request that can never succeed
+    expect(calls.count).toBe(1);
+  });
+
+  it("throws immediately with a hint on a not_found_error body without a status code", async () => {
+    const calls = { count: 0 };
+    const err = new Error('{"type":"error","error":{"type":"not_found_error","message":"model: claude-sonnet-4-20250514"}}');
+    const config = createTestConfig({ provider: "anthropic", model: "claude-sonnet-4-20250514" });
+
+    const promise = generateObjectSafe(schema, "prompt", config, 3, throwingIO(err, calls));
+    await expect(promise).rejects.toThrow(/not_found_error/);
+    expect(calls.count).toBe(1);
+  });
+
+  it("mentions the configured model and config file in the hint", async () => {
+    const calls = { count: 0 };
+    const err: any = new Error("Not Found");
+    err.statusCode = 404;
+    const config = createTestConfig({ provider: "anthropic", model: "some-retired-model" });
+
+    try {
+      await generateObjectSafe(schema, "prompt", config, 3, throwingIO(err, calls));
+      throw new Error("expected rejection");
+    } catch (e: any) {
+      expect(e.message).toContain("some-retired-model");
+      expect(e.message).toContain("config.json");
+    }
   });
 });
 

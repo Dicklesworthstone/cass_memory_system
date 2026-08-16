@@ -304,8 +304,11 @@ export const ScoringConfigSectionSchema = z.object({
 export type ScoringConfigSection = z.infer<typeof ScoringConfigSectionSchema>;
 
 export const BudgetConfigSchema = z.object({
-  dailyLimit: z.number().default(0.10),
-  monthlyLimit: z.number().default(2.00),
+  // Defaults must cover at least one full reflect batch out of the box.
+  // The old 0.10/day default was below the cost of a single 5-session batch
+  // (~$0.70 observed), so the first `cm reflect` died mid-batch (#66).
+  dailyLimit: z.number().default(1.00),
+  monthlyLimit: z.number().default(20.00),
   warningThreshold: z.number().default(80),
   currency: z.string().default("USD")
 });
@@ -380,11 +383,23 @@ export const ServeConfigSchema = z.object({
 }).default({});
 export type ServeConfig = z.infer<typeof ServeConfigSchema>;
 
+/**
+ * Baked-in default Anthropic model for fresh installs.
+ *
+ * Keep this a CURRENT model id. The previous default, the dated snapshot
+ * "claude-sonnet-4-20250514", was retired upstream (June 2026) — every fresh
+ * `cm init` then shipped a config whose very first `cm reflect` failed with a
+ * swallowed 404 (#66). "claude-sonnet-5" is a rolling alias (no date suffix),
+ * so it tracks the current Sonnet release instead of pinning a snapshot that
+ * will retire.
+ */
+export const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5";
+
 export const ConfigSchema = z.object({
   schema_version: z.number().default(1),
   llm: z.object({
     provider: z.string().default("anthropic"),
-    model: z.string().default("claude-sonnet-4-20250514"),
+    model: z.string().default(DEFAULT_ANTHROPIC_MODEL),
     // Per-operation LLM timeout in ms (e.g. for `cm reflect`'s extractDiary call).
     // Migrated to top-level `llmTimeoutMs` by loadConfig(). See #53.
     timeoutMs: z.number().int().positive().optional(),
@@ -392,7 +407,7 @@ export const ConfigSchema = z.object({
     totalTimeoutMs: z.number().int().positive().optional()
   }).optional(),
   provider: LLMProviderEnum.default("anthropic"),
-  model: z.string().default("claude-sonnet-4-20250514"),
+  model: z.string().default(DEFAULT_ANTHROPIC_MODEL),
   // Resolved LLM timeouts (per-operation / total across retries) in ms. Optional;
   // when unset the LLM layer falls back to env vars then hardcoded defaults. These
   // are populated from `llm.timeoutMs` / `llm.totalTimeoutMs` by the config loader.
@@ -415,6 +430,7 @@ export const ConfigSchema = z.object({
     "inline_completion",      // Inline completion sessions
     "inline-completion",
     "/subagents/agent-a",     // Claude Code subagent internal sessions (agent-a* pattern)
+    "/subagents/workflows/",  // Claude Code workflow-subagent transcripts (large internal logs that flood reflect batches, #66)
   ]),
   // Set to true to include all sessions (ignore exclusion patterns)
   sessionIncludeAll: z.boolean().default(false),

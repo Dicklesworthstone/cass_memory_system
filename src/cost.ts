@@ -15,9 +15,16 @@ export interface CostEntry {
   context: string;
 }
 
-// Approximate costs per 1M tokens (as of late 2025)
+// Approximate costs per 1M tokens (as of mid 2026)
 const MODEL_COSTS: Record<string, { input: number; output: number }> = {
-  // Anthropic
+  // Anthropic — current aliases
+  "claude-sonnet-5": { input: 3.0, output: 15.0 },
+  "claude-sonnet-4-6": { input: 3.0, output: 15.0 },
+  "claude-sonnet-4-5": { input: 3.0, output: 15.0 },
+  "claude-opus-5": { input: 5.0, output: 25.0 },
+  "claude-opus-4-8": { input: 5.0, output: 25.0 },
+  "claude-haiku-4-5": { input: 1.0, output: 5.0 },
+  // Anthropic — legacy/retired snapshots (kept so old cost logs still price)
   "claude-sonnet-4-20250514": { input: 3.0, output: 15.0 },
   "claude-3-5-sonnet-20241022": { input: 3.0, output: 15.0 },
   "claude-3-opus-20240229": { input: 15.0, output: 75.0 },

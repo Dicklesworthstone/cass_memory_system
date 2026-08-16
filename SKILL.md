@@ -570,10 +570,10 @@ Config lives at `~/.cass-memory/config.json` (global) and `.cass/config.json` (r
 ```json
 {
   "provider": "anthropic",
-  "model": "claude-sonnet-4-20250514",
+  "model": "claude-sonnet-5",
   "budget": {
-    "dailyLimit": 0.10,
-    "monthlyLimit": 2.00
+    "dailyLimit": 1.00,
+    "monthlyLimit": 20.00
   },
   "scoring": {
     "decayHalfLifeDays": 90,

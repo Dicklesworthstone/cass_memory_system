@@ -35,6 +35,18 @@ beforeAll(() => {
   process.env.CASS_MEMORY_TEST = "1";
   process.env.CASS_MEMORY_VERBOSE = "0";
 
+  // Hermeticity: the cli LLM provider auto-detects claude/codex/gemini
+  // binaries on PATH, and generateObjectSafe() auto-falls back to it when no
+  // API keys are set (#67). Without this guard, key-less tests on dev machines
+  // with those tools installed would shell out to a REAL LLM (slow, burns
+  // quota). Pointing CASS_CLI_COMMAND at a nonexistent binary makes
+  // resolveCliCommand() return null. Tests that exercise the cli provider set
+  // CASS_CLI_COMMAND (or config.cliCommand) explicitly, which overrides this.
+  originalEnv.CASS_CLI_COMMAND = process.env.CASS_CLI_COMMAND;
+  if (!process.env.CASS_CLI_COMMAND) {
+    process.env.CASS_CLI_COMMAND = "cass-test-nonexistent-cli-binary";
+  }
+
   // Suppress console output during tests unless DEBUG is set
   if (!process.env.DEBUG) {
     // Tests can still capture console via their own mocks

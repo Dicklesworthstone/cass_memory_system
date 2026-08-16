@@ -59,7 +59,7 @@ let _llmMigrationWarned = false;
  * If llm.provider or llm.model is set, copy to top-level and warn once.
  *
  * Canonical shape (as of v0.1.0):
- *   { provider: "anthropic", model: "claude-sonnet-4-20250514", ... }
+ *   { provider: "anthropic", model: "claude-sonnet-5", ... }
  *
  * Deprecated shape:
  *   { llm: { provider: "anthropic", model: "..." }, ... }

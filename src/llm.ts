@@ -10,6 +10,7 @@ import { createOllama } from "ollama-ai-provider";
 import { generateObject, type LanguageModel } from "ai";
 import { z } from "zod";
 import type { Config, DiaryEntry, LLMProvider } from "./types.js";
+import { DEFAULT_ANTHROPIC_MODEL } from "./types.js";
 import { checkBudget, recordCost } from "./cost.js";
 import { truncateForContext, warn } from "./utils.js";
 
@@ -866,6 +867,55 @@ async function monitoredGenerateObject<T>(
   return result;
 }
 
+// Warn once per process when auto-fallback reroutes a request, so a
+// multi-session reflect batch doesn't repeat the notice per LLM call.
+let _autoFallbackNoticeShown = false;
+
+/** Test hook: reset the one-shot auto-fallback notice. */
+export function __resetAutoFallbackNoticeForTest(): void {
+  _autoFallbackNoticeShown = false;
+}
+
+/**
+ * Resolve the provider/model that will actually serve a request.
+ *
+ * `cm doctor` advertises: "Provider: X not configured, but Y available (will
+ * auto-fallback)". Historically only llmWithFallback() (used by `cm audit`)
+ * honored that promise — the generateObjectSafe() path used by `cm reflect`
+ * hard-required the configured provider's API key and errored per session on
+ * key-less boxes (#67). This helper makes the primary LLM path honor the same
+ * chain doctor advertises: when the configured provider is unusable and
+ * another provider (including a local CLI tool like claude/codex/gemini) is
+ * available, reroute to the first available provider in FALLBACK_ORDER with
+ * its known-good default model.
+ */
+export function resolveEffectiveLLMConfig(config: Config): Config {
+  const provider = config.provider as LLMProvider;
+  // An explicit apiKey override always makes the configured provider usable.
+  // Ollama (localhost default) and Bedrock (AWS credential chain / IAM roles)
+  // use implicit auth we can't reliably detect via env vars — respect the
+  // user's explicit choice, mirroring llmWithFallback()/doctor.
+  const hasApiKeyOverride = typeof config.apiKey === "string" && config.apiKey.trim() !== "";
+  const usesImplicitAuth = provider === "ollama" || provider === "bedrock";
+  if (hasApiKeyOverride || usesImplicitAuth || isLLMAvailable(provider)) return config;
+
+  const available = getAvailableProviders();
+  for (const fallback of FALLBACK_ORDER) {
+    if (fallback === provider || !available.includes(fallback)) continue;
+    if (!_autoFallbackNoticeShown) {
+      _autoFallbackNoticeShown = true;
+      const envVar = provider === "cli" ? "CASS_CLI_COMMAND" : `the ${provider} API key`;
+      const target = fallback === "cli"
+        ? "local CLI tool"
+        : `${fallback} (${FALLBACK_MODELS[fallback]})`;
+      warn(`[LLM] Provider '${provider}' is not configured — auto-falling back to ${target}. Configure ${envVar} to use '${provider}' directly.`);
+    }
+    return { ...config, provider: fallback, model: FALLBACK_MODELS[fallback] };
+  }
+  // Nothing usable — return unchanged and let the normal error surface.
+  return config;
+}
+
 export async function generateObjectSafe<T>(
   schema: z.ZodSchema<T>,
   prompt: string,
@@ -873,6 +923,12 @@ export async function generateObjectSafe<T>(
   maxAttempts: number = 3,
   io: LLMIO = DEFAULT_LLM_IO
 ): Promise<T> {
+  // Honor the auto-fallback chain doctor advertises (real LLM calls only —
+  // mock LLMIO tests inject responses directly and must stay hermetic).
+  if (io === DEFAULT_LLM_IO) {
+    config = resolveEffectiveLLMConfig(config);
+  }
+
   // CLI provider: bypass AI SDK entirely and shell out to the CLI tool
   if (config.provider === "cli" && io === DEFAULT_LLM_IO) {
     let lastCliError: string | undefined;
@@ -941,8 +997,26 @@ export async function generateObjectSafe<T>(
       // Identify hard API errors that won't be fixed by retrying (400 Bad Request, 401 Unauthorized, 403 Forbidden)
       // Note: 429 and 5xx are handled by llmWithRetry
       const status = err.statusCode || err.status;
+
+      // 404 / not_found_error almost always means the configured model id was
+      // retired or mistyped. Previously this was swallowed into a generic
+      // "Schema validation failed" retry loop, hiding the provider error and
+      // burning attempts on a request that can never succeed (#66). Surface
+      // the provider error verbatim plus an actionable hint.
+      const isModelNotFound = status === 404 || /not_found_error/i.test(errorMsg);
+      if (isModelNotFound) {
+        warn(`[LLM] Model/endpoint not found (${status ?? 404}): ${errorMsg}. Not retrying.`);
+        throw new Error(
+          `${errorMsg}\n` +
+          `Hint: model '${config.model}' was rejected by provider '${config.provider}' — it may have been retired. ` +
+          `Update the "model" field in ~/.cass-memory/config.json (or .cass/config.yaml) to a current model id ` +
+          `(e.g. "${DEFAULT_ANTHROPIC_MODEL}" for Anthropic) and re-run.`,
+          { cause: err }
+        );
+      }
+
       const isHardApiError = status === 400 || status === 401 || status === 403;
-      
+
       if (isHardApiError) {
         warn(`[LLM] Hard API error (${status}): ${errorMsg}. Not retrying.`);
         throw err;
@@ -1219,7 +1293,9 @@ Make queries specific enough to be useful but broad enough to match variations.`
 const FALLBACK_ORDER: LLMProvider[] = ["anthropic", "openai", "google", "bedrock", "ollama", "cli"];
 
 const FALLBACK_MODELS: Record<LLMProvider, string> = {
-  anthropic: "claude-3-5-sonnet-20241022",
+  // Rolling alias — the previous pin ("claude-3-5-sonnet-20241022") was
+  // retired upstream in Oct 2025, so the anthropic fallback hop itself 404'd.
+  anthropic: DEFAULT_ANTHROPIC_MODEL,
   openai: "gpt-4o-mini",
   google: "gemini-1.5-flash",
   ollama: "llama3.2:3b",

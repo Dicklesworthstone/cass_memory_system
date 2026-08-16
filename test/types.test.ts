@@ -436,7 +436,7 @@ describe("ConfigSchema", () => {
     const result = ConfigSchema.parse(config);
     expect(result.schema_version).toBe(1);
     expect(result.provider).toBe("anthropic");
-    expect(result.model).toBe("claude-sonnet-4-20250514");
+    expect(result.model).toBe("claude-sonnet-5");
     expect(result.cassPath).toBe("cass");
     expect(result.maxBulletsInContext).toBe(50);
     expect(result.maxHistoryInContext).toBe(10);

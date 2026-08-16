@@ -1436,10 +1436,10 @@ Config lives at `~/.cass-memory/config.json` (global) and `.cass/config.json` (r
 {
   // LLM Settings
   "provider": "anthropic",
-  "model": "claude-sonnet-4-20250514",
+  "model": "claude-sonnet-5",
   "budget": {
-    "dailyLimit": 0.10,
-    "monthlyLimit": 2.00,
+    "dailyLimit": 1.00,
+    "monthlyLimit": 20.00,
     "warningThreshold": 80
   },
 
@@ -1490,11 +1490,11 @@ Config lives at `~/.cass-memory/config.json` (global) and `.cass/config.json` (r
 | Option | Default | Description |
 |--------|---------|-------------|
 | `provider` | `"anthropic"` | LLM provider: `anthropic`, `openai`, `google` |
-| `model` | `"claude-sonnet-4-20250514"` | Model for reflection |
+| `model` | `"claude-sonnet-5"` | Model for reflection |
 | `baseUrl` | _(unset)_ | Custom base URL for OpenAI-compatible gateways (OpenRouter, Z.AI, Azure, etc.) |
 | `disableStructuredOutputs` | `false` | Opt-in escape hatch for OpenAI strict structured-outputs mode. The reflect/audit/validate Zod schemas are written to be strict-compliant, but if you hit `cm reflect` returning zero deltas with "Invalid JSON response" warnings on a particular gateway/model combination (see #47), flipping this to `true` falls back to plain JSON mode while still applying the schemas as a post-hoc validator. Leave `false` unless you've confirmed strict-mode is the failure surface. |
-| `budget.dailyLimit` | `0.10` | Max daily LLM spend (USD) |
-| `budget.monthlyLimit` | `2.00` | Max monthly LLM spend (USD) |
+| `budget.dailyLimit` | `1.00` | Max daily LLM spend (USD) |
+| `budget.monthlyLimit` | `20.00` | Max monthly LLM spend (USD) |
 | `budget.warningThreshold` | `80` | Percentage before warning |
 
 #### Scoring Settings

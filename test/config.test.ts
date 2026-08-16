@@ -41,7 +41,7 @@ describe("getDefaultConfig()", () => {
     // Core fields
     expect(config.schema_version).toBe(1);
     expect(config.provider).toBe("anthropic");
-    expect(config.model).toBe("claude-sonnet-4-20250514");
+    expect(config.model).toBe("claude-sonnet-5");
     expect(config.cassPath).toBe("cass");
 
     // Nested objects
@@ -61,8 +61,8 @@ describe("getDefaultConfig()", () => {
 
   test("budget defaults are sensible", () => {
     const config = getDefaultConfig();
-    expect(config.budget.dailyLimit).toBe(0.10);
-    expect(config.budget.monthlyLimit).toBe(2.00);
+    expect(config.budget.dailyLimit).toBe(1.00);
+    expect(config.budget.monthlyLimit).toBe(20.00);
     expect(config.budget.warningThreshold).toBe(80);
     expect(config.budget.currency).toBe("USD");
   });
@@ -207,7 +207,7 @@ describe("loadConfig() - CLI overrides", () => {
       // With isolated HOME and no config files, should return pure defaults
       const config = await loadConfig({});
       expect(config.provider).toBe("anthropic");
-      expect(config.model).toBe("claude-sonnet-4-20250514");
+      expect(config.model).toBe("claude-sonnet-5");
     });
   });
 });
@@ -244,7 +244,7 @@ describe("loadConfig() - Global config file", () => {
       const config = await loadConfig();
 
       expect(config.provider).toBe("anthropic");
-      expect(config.model).toBe("claude-sonnet-4-20250514");
+      expect(config.model).toBe("claude-sonnet-5");
     });
   });
 
@@ -261,7 +261,7 @@ describe("loadConfig() - Global config file", () => {
       const config = await loadConfig();
 
       expect(config.provider).toBe("openai");
-      expect(config.model).toBe("claude-sonnet-4-20250514"); // default
+      expect(config.model).toBe("claude-sonnet-5"); // default
     });
   });
 
@@ -716,14 +716,14 @@ describe("loadConfig() - LLM config migration", () => {
       await writeFile(
         env.configPath,
         JSON.stringify({
-          model: "claude-sonnet-4-20250514",
+          model: "claude-explicit-top-level",
           llm: { model: "gpt-4" }
         })
       );
 
       const config = await loadConfig();
       // Top-level should win
-      expect(config.model).toBe("claude-sonnet-4-20250514");
+      expect(config.model).toBe("claude-explicit-top-level");
     });
   });
 
@@ -920,7 +920,7 @@ describe("Config Defaults Snapshot", () => {
 
     // LLM Settings
     expect(defaults.provider).toBe("anthropic");
-    expect(defaults.model).toBe("claude-sonnet-4-20250514");
+    expect(defaults.model).toBe("claude-sonnet-5");
 
     // Paths
     expect(defaults.cassPath).toBe("cass");
@@ -935,8 +935,8 @@ describe("Config Defaults Snapshot", () => {
     expect(defaults.scoring.maxHarmfulRatioForProven).toBe(0.1);
 
     // Budget
-    expect(defaults.budget.dailyLimit).toBe(0.10);
-    expect(defaults.budget.monthlyLimit).toBe(2.00);
+    expect(defaults.budget.dailyLimit).toBe(1.00);
+    expect(defaults.budget.monthlyLimit).toBe(20.00);
     expect(defaults.budget.warningThreshold).toBe(80);
     expect(defaults.budget.currency).toBe("USD");
 
@@ -970,7 +970,7 @@ describe("Config Defaults Snapshot", () => {
       const config = await loadConfig({});
 
       // Should match ConfigSchema defaults exactly
-      expect(config.model).toBe("claude-sonnet-4-20250514");
+      expect(config.model).toBe("claude-sonnet-5");
       expect(config.dedupSimilarityThreshold).toBe(0.85);
       expect(config.pruneHarmfulThreshold).toBe(3);
     });
