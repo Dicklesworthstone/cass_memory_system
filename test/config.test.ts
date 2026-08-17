@@ -8,6 +8,8 @@ import {
   getSanitizeConfig,
   loadConfig,
   saveConfig,
+  isBudgetBakedInConfig,
+  bakeBudgetIntoConfig,
 } from "../src/config.js";
 import { ConfigSchema, Config } from "../src/types.js";
 import { getEmbeddingBackend, getSemanticStatus, setEmbeddingBackend } from "../src/semantic.js";
@@ -882,6 +884,125 @@ describe("saveConfig()", () => {
       } finally {
         process.env.HOME = originalHome;
       }
+    });
+  });
+});
+
+// =============================================================================
+// Budget baking (#68)
+// =============================================================================
+describe("isBudgetBakedInConfig() / bakeBudgetIntoConfig()", () => {
+  test("reports unbaked when config file is missing", async () => {
+    await withTempCassHome(async () => {
+      expect(await isBudgetBakedInConfig()).toBe(false);
+    });
+  });
+
+  test("reports unbaked when budget keys are absent from the file", async () => {
+    await withTempCassHome(async (env) => {
+      await writeFile(env.configPath, JSON.stringify({ provider: "anthropic" }, null, 2));
+      expect(await isBudgetBakedInConfig()).toBe(false);
+    });
+  });
+
+  test("reports unbaked when only one spend ceiling is present", async () => {
+    await withTempCassHome(async (env) => {
+      await writeFile(
+        env.configPath,
+        JSON.stringify({ budget: { dailyLimit: 0.5 } }, null, 2)
+      );
+      expect(await isBudgetBakedInConfig()).toBe(false);
+    });
+  });
+
+  test("reports baked when dailyLimit and monthlyLimit are present", async () => {
+    await withTempCassHome(async (env) => {
+      await writeFile(
+        env.configPath,
+        JSON.stringify({ budget: { dailyLimit: 0.5, monthlyLimit: 5 } }, null, 2)
+      );
+      expect(await isBudgetBakedInConfig()).toBe(true);
+    });
+  });
+
+  test("bake writes exactly the budget keys and preserves all other content and key order", async () => {
+    await withTempCassHome(async (env) => {
+      const original = {
+        schema_version: 1,
+        provider: "openai",
+        model: "gpt-5",
+        cassPath: "/usr/local/bin/cass",
+        scoring: { decayHalfLifeDays: 45 },
+        customUnknownKey: "keep-me",
+      };
+      await writeFile(env.configPath, JSON.stringify(original, null, 2));
+
+      const budget = getDefaultConfig().budget;
+      const wrote = await bakeBudgetIntoConfig(budget);
+      expect(wrote).toBe(true);
+
+      const { readFile } = await import("node:fs/promises");
+      const saved = JSON.parse(await readFile(env.configPath, "utf-8"));
+
+      // Budget keys are now baked with the resolved values.
+      expect(saved.budget).toEqual({
+        dailyLimit: budget.dailyLimit,
+        monthlyLimit: budget.monthlyLimit,
+        warningThreshold: budget.warningThreshold,
+        currency: budget.currency,
+      });
+
+      // Everything else is preserved byte-for-byte in value and order.
+      const { budget: _b, ...rest } = saved;
+      expect(rest).toEqual(original);
+      expect(Object.keys(saved)).toEqual([...Object.keys(original), "budget"]);
+
+      // And the file now reports baked.
+      expect(await isBudgetBakedInConfig()).toBe(true);
+    });
+  });
+
+  test("bake creates the config file when none exists", async () => {
+    await withTempCassHome(async (env) => {
+      const budget = getDefaultConfig().budget;
+      const wrote = await bakeBudgetIntoConfig(budget);
+      expect(wrote).toBe(true);
+
+      const { readFile } = await import("node:fs/promises");
+      const saved = JSON.parse(await readFile(env.configPath, "utf-8"));
+      expect(Object.keys(saved)).toEqual(["budget"]);
+      expect(saved.budget.dailyLimit).toBe(budget.dailyLimit);
+      expect(saved.budget.monthlyLimit).toBe(budget.monthlyLimit);
+    });
+  });
+
+  test("bake preserves unknown extra keys inside an existing budget object", async () => {
+    await withTempCassHome(async (env) => {
+      await writeFile(
+        env.configPath,
+        JSON.stringify({ budget: { customNote: "hi", dailyLimit: 0.25 } }, null, 2)
+      );
+
+      const budget = getDefaultConfig().budget;
+      await bakeBudgetIntoConfig(budget);
+
+      const { readFile } = await import("node:fs/promises");
+      const saved = JSON.parse(await readFile(env.configPath, "utf-8"));
+      expect(saved.budget.customNote).toBe("hi");
+      expect(saved.budget.dailyLimit).toBe(budget.dailyLimit);
+    });
+  });
+
+  test("bake refuses to overwrite a corrupt config file", async () => {
+    await withTempCassHome(async (env) => {
+      const corrupt = "{ this is not json";
+      await writeFile(env.configPath, corrupt);
+
+      const wrote = await bakeBudgetIntoConfig(getDefaultConfig().budget);
+      expect(wrote).toBe(false);
+
+      const { readFile } = await import("node:fs/promises");
+      expect(await readFile(env.configPath, "utf-8")).toBe(corrupt);
     });
   });
 });

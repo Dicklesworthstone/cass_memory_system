@@ -1,4 +1,4 @@
-import { loadConfig } from "../config.js";
+import { loadConfig, isBudgetBakedInConfig, bakeBudgetIntoConfig } from "../config.js";
 import { orchestrateReflection } from "../orchestrator.js";
 import { getUsageStats, formatCostSummary } from "../cost.js";
 import chalk from "chalk";
@@ -9,6 +9,7 @@ import {
   reportError,
   validateNonEmptyString,
   validatePositiveInt,
+  warn,
 } from "../utils.js";
 import { formatKv, formatRule, getOutputStyle, iconPrefix, icon, wrapText } from "../output.js";
 import { createProgress, type ProgressReporter } from "../progress.js";
@@ -149,6 +150,25 @@ export async function reflectCommand(
   const config = await loadConfig();
   const statsBefore = await getUsageStats(config);
 
+  // #68: budget-default transparency. When the effective budget limits come
+  // from code defaults (not present in the user's config file), say so up
+  // front. Emitted as a warning on stderr so `--json` stdout stays clean.
+  // The notice is one-shot in practice: after the first successful reflect
+  // the resolved budget is baked into the config file below, so it never
+  // fires again.
+  const budgetBaked = await isBudgetBakedInConfig();
+  if (!budgetBaked) {
+    const b = config.budget;
+    console.warn(
+      chalk.yellow(
+        `Note: reflect budget limits are code defaults ($${b.dailyLimit.toFixed(2)}/day, ` +
+          `$${b.monthlyLimit.toFixed(2)}/month ${b.currency}) — they are not set in your config file. ` +
+          `They will be saved to your config after the first successful reflect so future ` +
+          `default changes never apply retroactively.`
+      )
+    );
+  }
+
   const maxWidth = Math.min(getOutputStyle().width, 84);
   const divider = chalk.dim(formatRule("─", { maxWidth }));
 
@@ -238,6 +258,19 @@ export async function reflectCommand(
   if (normalizedOptions.json && progressRef.current) {
     progressRef.current.complete("Reflection complete");
     progressRef.current = null;
+  }
+
+  // #68: bake the resolved budget limits into the config file on the first
+  // successful reflect, so future changes to the code defaults never
+  // retroactively raise (or lower) this user's spend ceiling. Dry runs are
+  // excluded — they promise not to write anything. This is a targeted write
+  // of only the budget keys; the rest of the config file is preserved as-is.
+  if (!budgetBaked && !normalizedOptions.dryRun) {
+    try {
+      await bakeBudgetIntoConfig(config.budget);
+    } catch (err: any) {
+      warn(`Failed to save budget limits to config: ${err?.message ?? err}`);
+    }
   }
 
   if (normalizedOptions.dryRun) {
