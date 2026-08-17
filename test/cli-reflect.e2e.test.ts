@@ -773,4 +773,116 @@ describe("E2E: CLI reflect command", () => {
       });
     });
   });
+
+  describe("Budget default notice and bake (#68)", () => {
+    const NOTICE_MARKER = "reflect budget limits are code defaults";
+
+    async function setupNoSessionEnv(env: TestEnv, extraConfig: Record<string, any> = {}) {
+      const playbook = createTestPlaybook([]);
+      await writeFile(env.playbookPath, yaml.stringify(playbook));
+
+      const cassStub = await makeCassStub(env.home, {
+        search: "[]",
+        timeline: '{"groups":[]}'
+      });
+
+      const config = { ...createTestConfig(cassStub), ...extraConfig };
+      await writeFile(env.configPath, JSON.stringify(config, null, 2));
+      return config;
+    }
+
+    it("emits the default-budget notice when budget is unbaked, and bakes it on success", async () => {
+      await withTempCassHome(async (env) => {
+        await setupNoSessionEnv(env); // no budget key in config file
+
+        const capture = captureConsole();
+        try {
+          await reflectCommand({ json: false });
+        } finally {
+          capture.restore();
+        }
+
+        // Notice emitted (to stderr) because the budget came from zod defaults.
+        const stderr = capture.errors.join("\n");
+        expect(stderr).toContain(NOTICE_MARKER);
+
+        // Budget got baked into the config file after the successful reflect.
+        const saved = JSON.parse(await readFile(env.configPath, "utf-8"));
+        expect(saved.budget).toBeDefined();
+        expect(typeof saved.budget.dailyLimit).toBe("number");
+        expect(typeof saved.budget.monthlyLimit).toBe("number");
+        expect(typeof saved.budget.warningThreshold).toBe("number");
+        expect(typeof saved.budget.currency).toBe("string");
+      });
+    });
+
+    it("bake preserves all other config keys and their order", async () => {
+      await withTempCassHome(async (env) => {
+        const config = await setupNoSessionEnv(env);
+        const before = JSON.parse(await readFile(env.configPath, "utf-8"));
+
+        const capture = captureConsole();
+        try {
+          await reflectCommand({ json: false });
+        } finally {
+          capture.restore();
+        }
+
+        const after = JSON.parse(await readFile(env.configPath, "utf-8"));
+        const { budget: _budget, ...rest } = after;
+        expect(rest).toEqual(before);
+        expect(Object.keys(after)).toEqual([...Object.keys(config), "budget"]);
+      });
+    });
+
+    it("already-baked config: no notice and no write", async () => {
+      await withTempCassHome(async (env) => {
+        await setupNoSessionEnv(env, {
+          budget: {
+            dailyLimit: 0.42,
+            monthlyLimit: 4.2,
+            warningThreshold: 80,
+            currency: "USD"
+          }
+        });
+        const contentBefore = await readFile(env.configPath, "utf-8");
+
+        const capture = captureConsole();
+        try {
+          await reflectCommand({ json: false });
+        } finally {
+          capture.restore();
+        }
+
+        // No notice — the budget was explicitly present in the config file.
+        const stderr = capture.errors.join("\n");
+        expect(stderr).not.toContain(NOTICE_MARKER);
+
+        // No write — config file content is byte-for-byte identical.
+        const contentAfter = await readFile(env.configPath, "utf-8");
+        expect(contentAfter).toBe(contentBefore);
+      });
+    });
+
+    it("dry-run: notice still shown but nothing is baked", async () => {
+      await withTempCassHome(async (env) => {
+        await setupNoSessionEnv(env); // unbaked
+        const contentBefore = await readFile(env.configPath, "utf-8");
+
+        const capture = captureConsole();
+        try {
+          await reflectCommand({ json: false, dryRun: true });
+        } finally {
+          capture.restore();
+        }
+
+        const stderr = capture.errors.join("\n");
+        expect(stderr).toContain(NOTICE_MARKER);
+
+        // Dry run promises no writes — config file untouched.
+        const contentAfter = await readFile(env.configPath, "utf-8");
+        expect(contentAfter).toBe(contentBefore);
+      });
+    });
+  });
 });

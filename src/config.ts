@@ -388,3 +388,84 @@ export async function saveConfig(config: Config): Promise<void> {
 
   await atomicWrite(globalConfigPath, JSON.stringify(toSave, null, 2));
 }
+
+// --- Budget baking (#68) ---
+
+/**
+ * Check whether the reflect budget limits are explicitly present ("baked")
+ * in the user's global config file, as opposed to coming from the zod
+ * schema defaults at load time.
+ *
+ * Rationale (#68): `cm init` never calls saveConfig, so most users have no
+ * budget keys on disk — which means any future change to the code defaults
+ * would silently apply to them. We treat the budget as baked only when both
+ * spend ceilings (dailyLimit and monthlyLimit) are present in the file.
+ */
+export async function isBudgetBakedInConfig(): Promise<boolean> {
+  const globalConfigPath = path.join(resolveGlobalDir(), "config.json");
+  if (!(await fileExists(globalConfigPath))) return false;
+
+  try {
+    const raw = JSON.parse(await fs.readFile(globalConfigPath, "utf-8"));
+    const budget = raw?.budget;
+    return (
+      !!budget &&
+      typeof budget === "object" &&
+      !Array.isArray(budget) &&
+      budget.dailyLimit !== undefined &&
+      budget.monthlyLimit !== undefined
+    );
+  } catch {
+    // Unreadable/corrupt config: report unbaked so the default-budget notice
+    // shows; bakeBudgetIntoConfig separately refuses to clobber such a file.
+    return false;
+  }
+}
+
+/**
+ * Persist ONLY the resolved budget keys into the global config file,
+ * preserving all other config content (and key order — JSON.parse/stringify
+ * keep object insertion order, and an existing `budget` key keeps its
+ * position). Unknown extra keys inside an existing `budget` object are
+ * preserved too.
+ *
+ * Unlike saveConfig(), this deliberately does NOT write the full resolved
+ * config: baking every default would freeze all of them, when the goal
+ * (#68) is only to pin the spend ceilings in effect at first reflect.
+ *
+ * @returns true if the file was written, false if baking was skipped
+ *          (existing file is corrupt or not a JSON object).
+ */
+export async function bakeBudgetIntoConfig(budget: BudgetConfig): Promise<boolean> {
+  const globalConfigPath = path.join(resolveGlobalDir(), "config.json");
+
+  let raw: Record<string, unknown> = {};
+  if (await fileExists(globalConfigPath)) {
+    try {
+      const parsed = JSON.parse(await fs.readFile(globalConfigPath, "utf-8"));
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return false;
+      }
+      raw = parsed as Record<string, unknown>;
+    } catch {
+      // Never overwrite a config file we could not parse.
+      return false;
+    }
+  }
+
+  const existingBudget =
+    raw.budget && typeof raw.budget === "object" && !Array.isArray(raw.budget)
+      ? (raw.budget as Record<string, unknown>)
+      : {};
+
+  raw.budget = {
+    ...existingBudget,
+    dailyLimit: budget.dailyLimit,
+    monthlyLimit: budget.monthlyLimit,
+    warningThreshold: budget.warningThreshold,
+    currency: budget.currency,
+  };
+
+  await atomicWrite(globalConfigPath, JSON.stringify(raw, null, 2));
+  return true;
+}
