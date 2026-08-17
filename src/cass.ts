@@ -1043,7 +1043,9 @@ export async function cassStats(
 ): Promise<any | null> {
   const resolvedCassPath = expandPath(cassPath);
   try {
-    const { stdout } = await runner.execFile(resolvedCassPath, ["stats", "--json"]);
+    const { stdout } = await runner.execFile(resolvedCassPath, ["stats", "--json"], {
+      timeout: 30 * 1000
+    });
     const parsed = parseCassJsonOutput(stdout);
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
   } catch {
