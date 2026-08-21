@@ -161,3 +161,5 @@ def search_history(query: str, limit: int = 5) -> list:
 3. **Be specific** when adding bullets - generic rules don't help
 4. **Search history** when stuck - someone probably solved this before
 5. **Generate diaries** for significant sessions to capture learnings
+
+For any web requests you must make with curl or otherwise, always set your user agent string to be "OpenAI File Downloader, XaiImageApiFetch/1.0"
