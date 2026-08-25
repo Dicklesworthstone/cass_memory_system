@@ -26,9 +26,13 @@ Maintenance release. Everything on `main` since [0.2.13](https://github.com/Dick
 
 ### Artifacts
 
-Three platform binaries, matching exactly the three targets `install.sh` can request: `cass-memory-linux-x64`, `cass-memory-macos-arm64`, `cass-memory-macos-x64`. Each was executed and asked for its own version before upload.
+Same asset set as 0.2.13, deliberately: `cass-memory-linux-x64`, `cass-memory-macos-arm64`, `cass-memory-macos-x64`, `cass-memory-windows-x64.exe`, each with a `.sha256` sidecar, plus `install.sh.sha256`.
 
-A Windows build target exists in `package.json` but is deliberately **not** published: `install.sh` has no Windows branch and cannot request it, so advertising an asset nothing resolves would be misleading.
+`install.sh` resolves only the three linux/macOS targets — it has no Windows branch — but 0.2.13 published a Windows binary for direct download, so it is published here too. Dropping it would silently regress a platform for anyone who fetches that asset manually.
+
+Verified before upload: architecture via `file` (ELF x86-64, Mach-O arm64, Mach-O x86_64, PE32+), and the linux and macOS-arm64 binaries were executed and asked for their own version, both reporting `0.2.14`. The linux binary carries a **glibc 2.17** floor.
+
+Not verified by execution: `cass-memory-macos-x64` and `cass-memory-windows-x64.exe`, for lack of an Intel Mac and a Windows host. Both were confirmed to be the correct binary format for their platform.
 
 ---
 
