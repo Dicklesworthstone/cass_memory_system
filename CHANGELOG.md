@@ -8,6 +8,30 @@ All notable changes to **cass-memory** (`cm`) are documented in this file.
 
 ---
 
+## [0.2.14] -- 2026-08-25
+
+Maintenance release. Everything on `main` since [0.2.13](https://github.com/Dicklesworthstone/cass_memory_system/releases/tag/v0.2.13) (2026-07-28): four user-facing fixes, no new features and no behaviour changes to existing commands, so this is a patch bump.
+
+### Fixed
+
+- `cm doctor` can no longer hang: `cass stats --json` is now bounded by a 30s timeout ([`aecd405`](https://github.com/Dicklesworthstone/cass_memory_system/commit/aecd405)).
+- First run now produces working defaults, and `reflect` honours the CLI auto-fallback that `doctor` advertises ([`ad5219c`](https://github.com/Dicklesworthstone/cass_memory_system/commit/ad5219c), #66, #67).
+- The default-budget notice is emitted once, and the budget is baked into the config on the first successful `reflect` instead of being re-derived ([`72199a7`](https://github.com/Dicklesworthstone/cass_memory_system/commit/72199a7), #68).
+- Inline `[cass: ...]` feedback markers now accept hyphenated bullet IDs ([`89977c5`](https://github.com/Dicklesworthstone/cass_memory_system/commit/89977c5), #64).
+
+### Gate
+
+- `tsc --noEmit`: clean
+- `bun test --isolate`: **2636 passed, 4 skipped, 0 failed** across 142 files
+
+### Artifacts
+
+Three platform binaries, matching exactly the three targets `install.sh` can request: `cass-memory-linux-x64`, `cass-memory-macos-arm64`, `cass-memory-macos-x64`. Each was executed and asked for its own version before upload.
+
+A Windows build target exists in `package.json` but is deliberately **not** published: `install.sh` has no Windows branch and cannot request it, so advertising an asset nothing resolves would be misleading.
+
+---
+
 ## [0.2.13] -- 2026-07-28
 
 ### Security
