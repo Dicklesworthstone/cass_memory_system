@@ -958,6 +958,10 @@ cm starters                   # List available starters
 cm doctor --json
 cm doctor --fix               # Auto-fix issues
 
+# Check for / install a newer release
+cm update --check             # Exit code 0 = up to date, 1 = update available
+cm update                     # Re-runs the documented install script (interactive only)
+
 # Export rules for AGENTS.md
 cm project --format agents.md
 

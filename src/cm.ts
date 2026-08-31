@@ -26,6 +26,7 @@ import { privacyCommand } from "./commands/privacy.js";
 import { similarCommand } from "./commands/similar.js";
 import { onboardCommand } from "./commands/onboard.js";
 import { guardCommand } from "./commands/guard.js";
+import { updateCommand } from "./commands/update.js";
 import { traumaCommand } from "./commands/trauma.js";
 import { infoCommand } from "./info.js";
 import { examplesCommand } from "./examples.js";
@@ -464,6 +465,23 @@ program.command("doctor")
       selfTest: Boolean(opts.selfTest || opts.full),
     })
   );
+
+// --- Update ---
+program.command("update")
+  .alias("upgrade")
+  .description("Check for a newer release and update via the documented install script")
+  .option("--check", "Only check for updates (exit code 0 = up to date, 1 = update available)")
+  .option("-j, --json", "Output JSON")
+  .option("--no-interactive", "Never run the installer; print the exact update instructions instead")
+  .addHelpText("after", () =>
+    formatCommandExamples([
+      "update --check",
+      "update --check --json",
+      "update",
+      "update --no-interactive",
+    ])
+  )
+  .action(async (opts: any) => await updateCommand(opts));
 
 // --- Reflect ---
 program.command("reflect")
