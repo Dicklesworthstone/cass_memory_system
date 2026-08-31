@@ -1,5 +1,5 @@
 import { loadConfig, DEFAULT_CONFIG } from "../config.js";
-import { cassAvailable, cassStats, cassSearch, safeCassSearch } from "../cass.js";
+import { cassAvailable, cassNeedsIndex, cassStats, cassSearch, safeCassSearch } from "../cass.js";
 import {
   error as logError,
   fileExists,
@@ -256,6 +256,20 @@ function buildRecommendedActions(params: {
       reason: "cass is required for cross-agent history snippets and validation evidence.",
       urgency: "high",
     });
+  } else if (cassCheck?.status === "warn") {
+    actions.push({
+      label: "Rebuild the cass lexical index",
+      command: "cass index --full",
+      reason: "cass binary is present but its lexical index is unavailable, so history search is degraded.",
+      urgency: "medium",
+    });
+    actions.push({
+      label: "If recovery needs a source build: install rustup + nightly first",
+      command: "rustup toolchain install nightly",
+      reason:
+        "cass's .cargo/config.toml unconditionally passes the nightly-only '-Z threads' rustflag, so building cass from source requires a rustup-managed nightly toolchain. A non-rustup Rust (e.g. Homebrew) fails before compilation with \"the option `Z` is only accepted on the nightly compiler\".",
+      urgency: "low",
+    });
   }
 
   const globalStorage = params.checks.find(
@@ -322,15 +336,30 @@ async function computeDoctorChecks(
 ): Promise<HealthCheck[]> {
   const checks: HealthCheck[] = [];
 
-  // 1) cass integration
+  // 1) cass integration — distinguish three states:
+  //    a) CASS binary missing
+  //    b) binary present but lexical index unavailable
+  //    c) binary present and healthy
   const cassOk = cassAvailable(config.cassPath);
-  checks.push({
-    category: "Cass Integration",
-    item: "cass",
-    status: cassOk ? "pass" : "fail",
-    message: cassOk ? "cass CLI found" : "cass CLI not found",
-    details: cassOk ? await cassStats(config.cassPath) : undefined,
-  });
+  if (!cassOk) {
+    checks.push({
+      category: "Cass Integration",
+      item: "cass",
+      status: "fail",
+      message: "CASS binary missing (cass CLI not found)",
+    });
+  } else {
+    const indexUnavailable = cassNeedsIndex(config.cassPath);
+    checks.push({
+      category: "Cass Integration",
+      item: "cass",
+      status: indexUnavailable ? "warn" : "pass",
+      message: indexUnavailable
+        ? "cass binary present, but lexical index unavailable (history search degraded)"
+        : "cass CLI found",
+      details: await cassStats(config.cassPath),
+    });
+  }
 
   // 2) Global Storage
   const globalDir = resolveGlobalDir();

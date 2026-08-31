@@ -787,6 +787,16 @@ sudo mv ./dist/cass-memory /usr/local/bin/cm
 - **cass CLI**: The episodic memory layer. Install from [cass repo](https://github.com/Dicklesworthstone/coding_agent_session_search)
 - **LLM API Key** (optional): For AI-powered reflection. Set `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GOOGLE_GENERATIVE_AI_API_KEY`
 
+> **Building cass from source requires rustup + nightly.** The cass source tree's
+> `.cargo/config.toml` unconditionally passes the nightly-only `-Z threads` rustflag,
+> and its `rust-toolchain.toml` pins a nightly channel that only a rustup proxy will
+> honor. A non-rustup Rust (e.g. Homebrew's `cargo`/`rustc`) fails before compilation
+> with ``the option `Z` is only accepted on the nightly compiler``. If you need to
+> build a cass fix from source (e.g. a commit not yet in a stable release), install
+> [rustup](https://rustup.rs) and run `rustup toolchain install nightly` first.
+> `cm doctor` reports whether cass is missing entirely or merely has an unavailable
+> lexical index (fix the latter with `cass index --full`).
+
 ### Verify Installation
 
 ```bash
