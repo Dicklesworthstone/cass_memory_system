@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import { findDiaryBySession } from "../src/diary.js";
-import { generateDiaryId } from "../src/utils.js";
+import { generateDiaryId, extractAgentFromPath, canonicalAgentName } from "../src/utils.js";
 import { createTestDiary } from "./helpers/factories.js";
 import { withTempDir } from "./helpers/temp.js";
 import { writeFile } from "node:fs/promises";
@@ -73,5 +73,71 @@ describe("findDiaryBySession", () => {
       const found = await findDiaryBySession("/target/session.jsonl", dir);
       expect(found).toBeNull();
     });
+  });
+});
+
+describe("utils.extractAgentFromPath", () => {
+  it("recognizes the classic agent stores", () => {
+    expect(extractAgentFromPath("/Users/u/.claude/projects/-Users-u-repo/abc.jsonl")).toBe("claude");
+    expect(extractAgentFromPath("/home/u/.cursor/sessions/x.json")).toBe("cursor");
+    expect(extractAgentFromPath("/home/u/.codex/sessions/2025/x.jsonl")).toBe("codex");
+    expect(extractAgentFromPath("/home/u/repo/.aider.chat.history.md")).toBe("aider");
+    expect(extractAgentFromPath("/home/u/.pi/agent/sessions/ws/x.jsonl")).toBe("pi_agent");
+  });
+
+  it("recognizes OMP (Oh My Pi) session stores on POSIX and Windows paths (#73)", () => {
+    expect(extractAgentFromPath("/Users/u/.omp/agent/sessions/--Users-u-repo--/2026-09-01.jsonl")).toBe("omp");
+    expect(extractAgentFromPath("C:\\Users\\u\\.omp\\agent\\sessions\\ws\\s.jsonl")).toBe("omp");
+    expect(extractAgentFromPath("/home/u/.local/share/omp/sessions/ws/s.jsonl")).toBe("omp");
+  });
+
+  it("recognizes Windows separators for every store", () => {
+    expect(extractAgentFromPath("C:\\Users\\u\\.claude\\projects\\p\\s.jsonl")).toBe("claude");
+    expect(extractAgentFromPath("C:\\Users\\u\\.pi\\agent\\sessions\\ws\\s.jsonl")).toBe("pi_agent");
+    expect(extractAgentFromPath("C:\\Users\\u\\.codex\\sessions\\s.jsonl")).toBe("codex");
+  });
+
+  it("recognizes the newer agent stores", () => {
+    expect(extractAgentFromPath("/home/u/.gemini/tmp/x/chats/s.json")).toBe("gemini");
+    expect(extractAgentFromPath("/home/u/.prime/agent/sessions/s.jsonl")).toBe("prime_agent");
+    expect(extractAgentFromPath("/home/u/.kimi-code/sessions/s.jsonl")).toBe("kimi");
+    expect(extractAgentFromPath("/home/u/.local/share/opencode/opencode.db")).toBe("opencode");
+    expect(extractAgentFromPath("/home/u/.grok/sessions/s.json")).toBe("grok");
+  });
+
+  it("falls back to unknown and is case-insensitive", () => {
+    expect(extractAgentFromPath("/tmp/random/session.jsonl")).toBe("unknown");
+    expect(extractAgentFromPath("")).toBe("unknown");
+    expect(extractAgentFromPath("/Users/u/.OMP/agent/sessions/s.jsonl")).toBe("omp");
+  });
+});
+
+describe("utils.canonicalAgentName", () => {
+  it("folds cass and tool aliases onto cm's canonical slugs", () => {
+    expect(canonicalAgentName("claude_code")).toBe("claude");
+    expect(canonicalAgentName("Claude-Code")).toBe("claude");
+    expect(canonicalAgentName("oh-my-pi")).toBe("omp");
+    expect(canonicalAgentName("pi-agent")).toBe("pi_agent");
+    expect(canonicalAgentName("codex-cli")).toBe("codex");
+    expect(canonicalAgentName("gemini-cli")).toBe("gemini");
+  });
+
+  it("trims, lower-cases, and passes unknown names through", () => {
+    expect(canonicalAgentName("  OMP ")).toBe("omp");
+    expect(canonicalAgentName("cursor")).toBe("cursor");
+    expect(canonicalAgentName("some-new-agent")).toBe("some-new-agent");
+  });
+
+  it("does not resolve Object.prototype members as aliases", () => {
+    expect(canonicalAgentName("constructor")).toBe("constructor");
+    expect(canonicalAgentName("__proto__")).toBe("__proto__");
+    expect(canonicalAgentName("toString")).toBe("tostring");
+  });
+
+  it("returns empty string for empty input", () => {
+    expect(canonicalAgentName("")).toBe("");
+    expect(canonicalAgentName("   ")).toBe("");
+    expect(canonicalAgentName(undefined)).toBe("");
+    expect(canonicalAgentName(null)).toBe("");
   });
 });

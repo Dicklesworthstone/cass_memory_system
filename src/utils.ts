@@ -1810,13 +1810,125 @@ export function scoreBulletRelevance(
   return score;
 }
 
+/**
+ * Aliases for agent identifiers as emitted by cass (`claude_code`), by other
+ * tools, or typed by users, mapped onto the canonical short slug cm stores in
+ * diaries/bullets and accepts in `--agent` / `crossAgent.agents`.
+ *
+ * The canonical slugs follow the connector names of the shared agent-detection
+ * vocabulary (claude, codex, cursor, aider, pi_agent, omp, gemini, ...).
+ */
+const AGENT_ALIASES: Record<string, string> = {
+  "claude_code": "claude",
+  "claude-code": "claude",
+  "claudecode": "claude",
+  "codex_cli": "codex",
+  "codex-cli": "codex",
+  "aider-cli": "aider",
+  "gemini_cli": "gemini",
+  "gemini-cli": "gemini",
+  "pi-agent": "pi_agent",
+  "piagent": "pi_agent",
+  "pi": "pi_agent",
+  "oh-my-pi": "omp",
+  "oh_my_pi": "omp",
+  "ohmypi": "omp",
+  "prime-agent": "prime_agent",
+  "primeagent": "prime_agent",
+  "copilot-cli": "copilot_cli",
+  "gh-copilot": "copilot_cli",
+  "github_copilot": "github-copilot",
+  "open-code": "opencode",
+  "open-claw": "openclaw",
+  "open-hands": "openhands",
+  "kimi-code": "kimi",
+  "kimi_code": "kimi",
+  "kiro-cli": "kiro",
+  "grok-cli": "grok",
+  "hermes-agent": "hermes",
+  "goose-ai": "goose",
+  "devin-cli": "devin",
+  "factory-droid": "factory",
+  "amp-cli": "amp",
+  "agy": "antigravity",
+  "antigravity-cli": "antigravity",
+  "chat-gpt": "chatgpt",
+  "chatgpt-desktop": "chatgpt",
+  "qwen-code": "qwen",
+  "qwen-cli": "qwen",
+  "muse-code": "muse",
+  "muse_code": "muse",
+  "vibe-cli": "vibe",
+};
+
+/**
+ * Normalize an agent identifier to cm's canonical slug: trimmed, lower-cased,
+ * with known aliases folded (e.g. cass reports Claude Code sessions as
+ * `claude_code`; cm stores and filters on `claude`). Returns "" for
+ * empty/undefined input; unknown names pass through lower-cased.
+ */
+export function canonicalAgentName(agent: string | undefined | null): string {
+  const key = (agent || "").trim().toLowerCase();
+  if (!key) return "";
+  return Object.hasOwn(AGENT_ALIASES, key) ? AGENT_ALIASES[key]! : key;
+}
+
+/**
+ * Ordered path markers for each agent's on-disk session store. Matched
+ * against a lower-cased path with separators normalized to "/" and a leading
+ * "/" guaranteed, so both POSIX and Windows layouts match. More specific
+ * markers must precede any prefix they share with another agent.
+ */
+const AGENT_PATH_MARKERS: ReadonlyArray<readonly [string, string]> = [
+  ["/.claude/", "claude"],
+  ["/.claude-code/", "claude"],
+  ["/.cursor/", "cursor"],
+  ["/.codex/", "codex"],
+  ["/.aider", "aider"], // ~/.aider/ and repo-local .aider.chat.history.md
+  ["/.pi/agent/", "pi_agent"],
+  ["/.prime/agent/", "prime_agent"],
+  ["/.omp/", "omp"], // Oh My Pi: ~/.omp/agent/sessions, ~/.omp/profiles
+  ["/omp/sessions/", "omp"], // $XDG_DATA_HOME/omp/sessions
+  ["/.gemini/", "gemini"],
+  ["/.kimi-code/", "kimi"],
+  ["/.kimi/", "kimi"],
+  ["/.kiro/", "kiro"],
+  ["/.grok/", "grok"],
+  ["/.hermes/", "hermes"],
+  ["/.goose/", "goose"],
+  ["/.local/share/goose/", "goose"],
+  ["/.qwen/", "qwen"],
+  ["/.vibe/", "vibe"],
+  ["/.windsurf/", "windsurf"],
+  ["/.openhands/", "openhands"],
+  ["/.openclaw/", "openclaw"],
+  ["/.amp/", "amp"],
+  ["/.crush/", "crush"],
+  ["/.continue/", "continue"],
+  ["/.factory/", "factory"],
+  ["/.devin/", "devin"],
+  ["/.antigravity/", "antigravity"],
+  ["/.clawdbot/", "clawdbot"],
+  ["/.local/share/opencode/", "opencode"],
+  ["/.config/opencode/", "opencode"],
+  ["/.local/share/muse/", "muse"],
+  ["/github.copilot-chat/", "github-copilot"],
+  ["/.copilot/", "copilot_cli"],
+  ["/shelley.db", "shelley"],
+];
+
+/**
+ * Infer the source agent from a session file path (lower-confidence fallback
+ * for when cass has not told us which agent produced the session).
+ * Recognizes every agent store cass indexes on both POSIX and Windows paths;
+ * returns "unknown" when nothing matches.
+ */
 export function extractAgentFromPath(sessionPath: string): string {
-  const lower = sessionPath.toLowerCase();
-  if (lower.includes(".claude")) return "claude";
-  if (lower.includes(".cursor")) return "cursor";
-  if (lower.includes(".codex")) return "codex";
-  if (lower.includes(".aider")) return "aider";
-  if (lower.includes(".pi/agent/sessions") || lower.includes(".pi\\agent\\sessions")) return "pi_agent";
+  let normalized = sessionPath.replace(/\\/g, "/").toLowerCase();
+  if (!normalized.startsWith("/")) normalized = `/${normalized}`;
+  for (const [marker, agent] of AGENT_PATH_MARKERS) {
+    if (normalized.includes(marker)) return agent;
+  }
   return "unknown";
 }
 

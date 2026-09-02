@@ -36,14 +36,16 @@ import {
   error as logError,
   atomicWrite,
   resolveRepoDir,
-  resolveGlobalDir
+  resolveGlobalDir,
+  canonicalAgentName,
+  extractAgentFromPath
 } from "./utils.js";
 import { withLock } from "./lock.js";
 
 // --- Helpers ---
 
 function normalizeAgentName(agent: string | undefined): string {
-  return (agent || "").trim().toLowerCase();
+  return canonicalAgentName(agent);
 }
 
 async function appendCrossAgentAuditLog(
@@ -187,19 +189,31 @@ export function formatRawSession(content: string, ext: string): string {
   return `WARNING: Unsupported session format (.${normalizedExt.replace(".", "")})\n${content}`;
 }
 
-function extractSessionMetadata(sessionPath: string): { agent: string; workspace?: string } {
-  const normalized = path.normalize(sessionPath);
-  const lower = normalized.toLowerCase();
-  
-  // Detect agent
-  let agent = "unknown";
-  if (lower.includes(".claude")) agent = "claude";
-  else if (lower.includes(".cursor")) agent = "cursor";
-  else if (lower.includes(".codex")) agent = "codex";
-  else if (lower.includes(".aider")) agent = "aider";
-  else if (lower.includes(".pi/agent/sessions") || lower.includes(".pi\\agent\\sessions")) agent = "pi_agent";
-  
-  return { agent };
+/**
+ * Provenance hints the caller already knows about a session, typically the
+ * agent/workspace cass reported when it discovered the session.
+ */
+export interface SessionMetadataHint {
+  agent?: string;
+  workspace?: string;
+}
+
+/**
+ * Resolve the diary's `agent`/`workspace` for a session.
+ *
+ * The cass-provided agent is authoritative when present (cass ran the real
+ * connector that parsed the file); path inference is only a lower-confidence
+ * fallback for sessions passed directly (`--session <path>`, `cm diary`)
+ * where no cass metadata is available (#73).
+ */
+function extractSessionMetadata(
+  sessionPath: string,
+  hint?: SessionMetadataHint
+): { agent: string; workspace?: string } {
+  const hinted = canonicalAgentName(hint?.agent);
+  const agent = hinted && hinted !== "unknown" ? hinted : extractAgentFromPath(sessionPath);
+  const workspace = hint?.workspace?.trim() || undefined;
+  return workspace ? { agent, workspace } : { agent };
 }
 
 async function enrichWithRelatedSessions(
@@ -358,7 +372,8 @@ function generateQuickSummary(content: string, task?: string): string {
  */
 export async function generateDiaryFast(
   sessionPath: string,
-  config: Config
+  config: Config,
+  hint?: SessionMetadataHint
 ): Promise<DiaryEntry> {
   // 1. Export Session (Sanitized via cassExport)
   const sanitizedContent = await cassExport(sessionPath, "markdown", config.cassPath, config);
@@ -366,7 +381,7 @@ export async function generateDiaryFast(
     throw new Error(`Failed to export session: ${sessionPath}`);
   }
 
-  return generateDiaryFastFromContent(sessionPath, sanitizedContent, config);
+  return generateDiaryFastFromContent(sessionPath, sanitizedContent, config, hint);
 }
 
 // --- Main Generator ---
@@ -374,12 +389,13 @@ export async function generateDiaryFast(
 async function generateDiaryFastFromContent(
   sessionPath: string,
   sanitizedContent: string,
-  config: Config
+  config: Config,
+  hint?: SessionMetadataHint
 ): Promise<DiaryEntry> {
   log(`Generating diary (fast mode) for ${sessionPath}...`);
 
   // 1. Extract Metadata
-  const metadata = extractSessionMetadata(sessionPath);
+  const metadata = extractSessionMetadata(sessionPath, hint);
 
   // 2. Fast Extraction (no LLM)
   const task = extractFirstUserMessage(sanitizedContent);
@@ -415,7 +431,8 @@ async function generateDiaryFastFromContent(
 export async function generateDiaryFromContent(
   sessionPath: string,
   sanitizedContent: string,
-  config: Config
+  config: Config,
+  hint?: SessionMetadataHint
 ): Promise<DiaryEntry> {
   if (!sanitizedContent || sanitizedContent.trim().length === 0) {
     throw new Error(`Session content is empty after sanitization: ${sessionPath}`);
@@ -423,7 +440,7 @@ export async function generateDiaryFromContent(
 
   // Fast path when LLMs are disabled or unavailable
   if (process.env.CASS_MEMORY_LLM === "none") {
-    return generateDiaryFastFromContent(sessionPath, sanitizedContent, config);
+    return generateDiaryFastFromContent(sessionPath, sanitizedContent, config, hint);
   }
 
   log(`Generating diary for ${sessionPath}...`);
@@ -434,7 +451,7 @@ export async function generateDiaryFromContent(
   }
 
   // 1. Extract Metadata
-  const metadata = extractSessionMetadata(sessionPath);
+  const metadata = extractSessionMetadata(sessionPath, hint);
 
   // 2. LLM Extraction
   // `agent` is derived from the session path by extractSessionMetadata() and
@@ -499,11 +516,12 @@ export async function generateDiaryFromContent(
 
 export async function generateDiary(
   sessionPath: string,
-  config: Config
+  config: Config,
+  hint?: SessionMetadataHint
 ): Promise<DiaryEntry> {
   // Fast path when LLMs are disabled or unavailable
   if (process.env.CASS_MEMORY_LLM === "none") {
-    return generateDiaryFast(sessionPath, config);
+    return generateDiaryFast(sessionPath, config, hint);
   }
 
   // 1. Export Session (Sanitized via cassExport)
@@ -512,7 +530,7 @@ export async function generateDiary(
     throw new Error(`Failed to export session: ${sessionPath}`);
   }
   
-  return generateDiaryFromContent(sessionPath, sanitizedContent, config);
+  return generateDiaryFromContent(sessionPath, sanitizedContent, config, hint);
 }
 
 // --- Persistence ---

@@ -325,7 +325,56 @@ describe("cass.ts core functions (runner stubbed)", () => {
     const result = await findUnprocessedSessions(processed, {}, "cass", runner);
 
     expect(result).toHaveLength(1);
-    expect(result[0]).toBe("s2.jsonl");
+    expect(result[0]).toEqual({ path: "s2.jsonl", agent: "claude" });
+  });
+
+  it("findUnprocessedSessions returns cass's agent attribution per session (#73)", async () => {
+    const output = JSON.stringify({
+      groups: [
+        {
+          date: "2025-01-01",
+          sessions: [
+            { path: "/home/u/.omp/agent/sessions/ws/s1.jsonl", agent: "omp", messageCount: 10, startTime: "10:00", endTime: "11:00" },
+            { path: "/home/u/.claude/projects/p/s2.jsonl", agent: "claude_code", messageCount: 5, startTime: "12:00", endTime: "13:00" },
+            { path: "/home/u/somewhere/s3.jsonl", messageCount: 5, startTime: "12:00", endTime: "13:00" },
+          ],
+        },
+      ],
+    });
+
+    const runner = createCassRunnerStub({ execStdout: { timeline: output } });
+    const result = await findUnprocessedSessions(new Set(), {}, "cass", runner);
+
+    expect(result).toEqual([
+      { path: "/home/u/.omp/agent/sessions/ws/s1.jsonl", agent: "omp" },
+      { path: "/home/u/.claude/projects/p/s2.jsonl", agent: "claude_code" },
+      { path: "/home/u/somewhere/s3.jsonl", agent: "unknown" },
+    ]);
+  });
+
+  it("findUnprocessedSessions agent filter folds aliases (claude matches cass's claude_code)", async () => {
+    const output = JSON.stringify({
+      groups: [
+        {
+          date: "2025-01-01",
+          sessions: [
+            { path: "s1.jsonl", agent: "claude_code", messageCount: 10, startTime: "10:00", endTime: "11:00" },
+            { path: "s2.jsonl", agent: "omp", messageCount: 5, startTime: "12:00", endTime: "13:00" },
+          ],
+        },
+      ],
+    });
+
+    const runner = createCassRunnerStub({ execStdout: { timeline: output } });
+
+    const claude = await findUnprocessedSessions(new Set(), { agent: "claude" }, "cass", runner);
+    expect(claude.map((s) => s.path)).toEqual(["s1.jsonl"]);
+
+    const claudeCode = await findUnprocessedSessions(new Set(), { agent: "claude_code" }, "cass", runner);
+    expect(claudeCode.map((s) => s.path)).toEqual(["s1.jsonl"]);
+
+    const omp = await findUnprocessedSessions(new Set(), { agent: "oh-my-pi" }, "cass", runner);
+    expect(omp.map((s) => s.path)).toEqual(["s2.jsonl"]);
   });
 
   it("findUnprocessedSessions normalizes agent filter (trim + case-insensitive)", async () => {
@@ -346,7 +395,7 @@ describe("cass.ts core functions (runner stubbed)", () => {
 
     const result = await findUnprocessedSessions(processed, { agent: "  cLaUdE  " }, "cass", runner);
 
-    expect(result).toEqual(["s1.jsonl"]);
+    expect(result.map((s) => s.path)).toEqual(["s1.jsonl"]);
   });
 
   it("findUnprocessedSessions ignores invalid maxSessions (e.g. negative) instead of slicing from end", async () => {
@@ -369,7 +418,7 @@ describe("cass.ts core functions (runner stubbed)", () => {
     const result = await findUnprocessedSessions(processed, { maxSessions: -1 }, "cass", runner);
 
     expect(result).toHaveLength(3);
-    expect(result).toEqual(["s1.jsonl", "s2.jsonl", "s3.jsonl"]);
+    expect(result.map((s) => s.path)).toEqual(["s1.jsonl", "s2.jsonl", "s3.jsonl"]);
   });
 
   it("safeCassSearch(force) parses output even when cass exits non-zero (leading logs)", async () => {

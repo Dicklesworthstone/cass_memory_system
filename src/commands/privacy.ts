@@ -16,10 +16,11 @@ import {
   printJsonResult,
   reportError,
   validatePositiveInt,
+  canonicalAgentName,
 } from "../utils.js";
 
 function normalizeAgentName(agent: string): string {
-  return agent.trim().toLowerCase();
+  return canonicalAgentName(agent);
 }
 
 function migrateDeprecatedLlmConfig(raw: Partial<Config>): Partial<Config> {

@@ -10,6 +10,7 @@ import {
   appendBlockedLog,
   computeFullStats,
   createEmptyPlaybook,
+  recordReflectionRun,
   deprecateBullet,
   exportToMarkdown,
   findBullet,
@@ -1096,5 +1097,36 @@ describe("computeFullStats", () => {
            stats.scoreDistribution.good +
            stats.scoreDistribution.neutral +
            stats.scoreDistribution.atRisk).toBe(3);
+  });
+});
+
+describe("recordReflectionRun (#72)", () => {
+  it("increments totalReflections once per run and totalSessionsProcessed by the committed count", () => {
+    const pb = createEmptyPlaybook();
+    recordReflectionRun(pb, 3);
+    expect(pb.metadata.totalReflections).toBe(1);
+    expect(pb.metadata.totalSessionsProcessed).toBe(3);
+
+    recordReflectionRun(pb, 1);
+    expect(pb.metadata.totalReflections).toBe(2);
+    expect(pb.metadata.totalSessionsProcessed).toBe(4);
+  });
+
+  it("ignores runs that committed no sessions", () => {
+    const pb = createEmptyPlaybook();
+    recordReflectionRun(pb, 0);
+    recordReflectionRun(pb, -2);
+    recordReflectionRun(pb, Number.NaN);
+    expect(pb.metadata.totalReflections).toBe(0);
+    expect(pb.metadata.totalSessionsProcessed).toBe(0);
+  });
+
+  it("tolerates legacy playbooks whose counters are missing", () => {
+    const pb = createEmptyPlaybook();
+    delete (pb.metadata as any).totalReflections;
+    delete (pb.metadata as any).totalSessionsProcessed;
+    recordReflectionRun(pb, 2);
+    expect(pb.metadata.totalReflections).toBe(1);
+    expect(pb.metadata.totalSessionsProcessed).toBe(2);
   });
 });

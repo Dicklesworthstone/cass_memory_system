@@ -104,6 +104,22 @@ export async function savePlaybook(
   await atomicWrite(filePath, yamlStr);
 }
 
+/**
+ * Record one completed reflection run on the playbook's metadata counters.
+ *
+ * `totalReflections` counts reflection runs that committed at least one
+ * session to the processed log; `totalSessionsProcessed` counts the sessions
+ * those runs committed. Callers must invoke this once per run, only for
+ * sessions that were not already in the processed log, so re-running an
+ * already-processed session never inflates either counter (#72).
+ */
+export function recordReflectionRun(playbook: Playbook, sessionsProcessed: number): void {
+  if (!Number.isInteger(sessionsProcessed) || sessionsProcessed <= 0) return;
+  playbook.metadata.totalReflections = (playbook.metadata.totalReflections || 0) + 1;
+  playbook.metadata.totalSessionsProcessed =
+    (playbook.metadata.totalSessionsProcessed || 0) + sessionsProcessed;
+}
+
 // --- Error Recovery ---
 
 export interface PlaybookRecoveryResult {

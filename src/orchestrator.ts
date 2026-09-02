@@ -1,5 +1,5 @@
 import { Config, CurationResult, Playbook, PlaybookDelta, DecisionLogEntry, PlaybookBullet, ProcessedEntry } from "./types.js";
-import { loadMergedPlaybook, loadPlaybook, savePlaybook, findBullet, mergePlaybooks } from "./playbook.js";
+import { loadMergedPlaybook, loadPlaybook, savePlaybook, findBullet, mergePlaybooks, recordReflectionRun } from "./playbook.js";
 import { ProcessedLog, getProcessedLogPath } from "./tracking.js";
 import { findUnprocessedSessions, cassExport } from "./cass.js";
 import { generateDiary } from "./diary.js";
@@ -105,13 +105,16 @@ export async function orchestrateReflection(
 
     // 3. Discovery Phase
     let sessions: string[] = [];
+    // Agent attribution cass reported per session; the diary uses it as the
+    // authoritative provenance instead of re-inferring from the path (#73).
+    const agentHints = new Map<string, string>();
     const errors: string[] = [];
 
     if (options.session) {
       sessions = [options.session];
     } else {
       try {
-        sessions = await findUnprocessedSessions(
+        const discovered = await findUnprocessedSessions(
           processedLog.getProcessedPaths(),
           {
             days: options.days || config.sessionLookbackDays,
@@ -122,6 +125,10 @@ export async function orchestrateReflection(
           },
           config.cassPath
         );
+        sessions = discovered.map((s) => s.path);
+        for (const s of discovered) {
+          if (s.agent) agentHints.set(s.path, s.agent);
+        }
       } catch (err: any) {
         errors.push(`Session discovery failed: ${err.message}`);
         return { sessionsProcessed: 0, deltasGenerated: 0, errors };
@@ -152,7 +159,7 @@ export async function orchestrateReflection(
       });
 
       try {
-        const diary = await generateDiary(sessionPath, config);
+        const diary = await generateDiary(sessionPath, config, { agent: agentHints.get(sessionPath) });
 
         // Quick check for empty sessions to save tokens
         const content = await cassExport(sessionPath, "text", config.cassPath, config) || "";
@@ -261,14 +268,16 @@ export async function orchestrateReflection(
       };
     }
 
-    if (allDeltas.length === 0) {
-      // Even if no deltas were generated, we should still mark sessions as processed
-      // (e.g., empty sessions or sessions with no insights) to avoid infinite loops.
-      if (pendingProcessedEntries.length > 0) {
-        await processedLog.appendBatch(pendingProcessedEntries);
-      }
+    if (allDeltas.length === 0 && pendingProcessedEntries.length === 0) {
+      // Every session failed: nothing to persist, nothing to count.
       return { sessionsProcessed, deltasGenerated: 0, errors };
     }
+
+    // Sessions that will be committed to the processed log by this run. Even
+    // when no deltas were generated (empty sessions, no insights) we still
+    // mark them processed to avoid infinite loops, and the global playbook's
+    // reflection counters advance by exactly this many (#72).
+    const committedSessionCount = pendingProcessedEntries.length;
 
     // 5. Merge Phase: Lock Playbooks, Reload, Curate, Save
     // We lock Global first, then Repo (if exists) to prevent deadlocks.
@@ -383,13 +392,18 @@ export async function orchestrateReflection(
       // Apply Curation
       if (globalDeltas.length > 0) {
         globalResult = curatePlaybook(globalPlaybook, globalDeltas, config, freshMerged);
-        await savePlaybook(globalResult.playbook, globalPath, { updateLastReflection: true });
       }
 
       if (repoDeltas.length > 0 && repoPlaybook && repoPath) {
         repoResult = curatePlaybook(repoPlaybook, repoDeltas, config, freshMerged);
         await savePlaybook(repoResult.playbook, repoPath, { updateLastReflection: true });
       }
+
+      // The global playbook owns the run-level counters, so it is saved on
+      // every committing run, delta or not (#72).
+      const globalToSave = globalResult ? globalResult.playbook : globalPlaybook;
+      recordReflectionRun(globalToSave, committedSessionCount);
+      await savePlaybook(globalToSave, globalPath, { updateLastReflection: true });
     };
 
     // Execute Merge with Locking

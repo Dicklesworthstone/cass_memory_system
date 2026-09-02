@@ -10,7 +10,7 @@ import {
   Config,
   RemoteCassHost
 } from "./types.js";
-import { log, warn, error, expandPath, validatePositiveInt } from "./utils.js";
+import { log, warn, error, expandPath, validatePositiveInt, canonicalAgentName } from "./utils.js";
 import { sanitize, compileExtraPatterns } from "./sanitize.js";
 import { loadConfig, getSanitizeConfig } from "./config.js";
 
@@ -1108,6 +1108,13 @@ export async function cassTimeline(
   }
 }
 
+/** A session cass discovered, with the agent cass attributed it to. */
+export interface DiscoveredSession {
+  path: string;
+  /** cass's agent slug for the session (e.g. `claude_code`, `omp`); may be "unknown". */
+  agent: string;
+}
+
 export async function findUnprocessedSessions(
   processed: Set<string>,
   options: {
@@ -1119,7 +1126,7 @@ export async function findUnprocessedSessions(
   },
   cassPath = "cass",
   runner: CassRunner = DEFAULT_CASS_RUNNER
-): Promise<string[]> {
+): Promise<DiscoveredSession[]> {
   const daysCheck = validatePositiveInt(options.days, "days", { min: 1, allowUndefined: true });
   const days = daysCheck.ok ? (daysCheck.value ?? 7) : 7;
 
@@ -1129,7 +1136,8 @@ export async function findUnprocessedSessions(
   });
   const maxSessions = maxSessionsCheck.ok ? (maxSessionsCheck.value ?? 20) : 20;
 
-  const agentFilter = typeof options.agent === "string" ? options.agent.trim().toLowerCase() : undefined;
+  // Canonicalize both sides so `--agent claude` matches cass's `claude_code`.
+  const agentFilter = typeof options.agent === "string" ? canonicalAgentName(options.agent) : "";
   const agentNormalized = agentFilter ? agentFilter : undefined;
 
   // Session type exclusion filtering
@@ -1140,7 +1148,7 @@ export async function findUnprocessedSessions(
   const timeline = await cassTimeline(days, cassPath, runner);
   const groups = timeline.groups || [];
 
-  let allSessions: Array<{ path: string; agent: string }> = [];
+  let allSessions: DiscoveredSession[] = [];
 
   if (Array.isArray(groups) && groups.length > 0) {
     // Use timeline groups if available
@@ -1179,8 +1187,8 @@ export async function findUnprocessedSessions(
 
   return allSessions
     .filter((s) => !processed.has(s.path))
-    .filter((s) => !agentNormalized || (s.agent || "").trim().toLowerCase() === agentNormalized)
+    .filter((s) => !agentNormalized || canonicalAgentName(s.agent) === agentNormalized)
     .filter((s) => !matchesExcludePattern(s.path))
-    .map((s) => s.path)
+    .map((s) => ({ path: s.path, agent: s.agent || "unknown" }))
     .slice(0, maxSessions);
 }

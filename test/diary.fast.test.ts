@@ -70,6 +70,91 @@ describe("Fast Diary Extraction", () => {
           .toThrow("Session content is empty after sanitization");
       });
     });
+
+    describe("agent provenance (#73)", () => {
+      const content = "**user**: Please fix the failing build.\n\n**assistant**: Done, the build passes now.";
+
+      async function withFastDiary<T>(fn: (config: ReturnType<typeof createTestConfig>) => Promise<T>): Promise<T> {
+        const prev = process.env.CASS_MEMORY_LLM;
+        process.env.CASS_MEMORY_LLM = "none";
+        try {
+          return await withTempDir("diary-agent", async (tmp) => fn(createTestConfig({ diaryDir: tmp })));
+        } finally {
+          if (prev === undefined) delete process.env.CASS_MEMORY_LLM;
+          else process.env.CASS_MEMORY_LLM = prev;
+        }
+      }
+
+      test("infers omp from an OMP session path when cass gave no hint", async () => {
+        await withFastDiary(async (config) => {
+          const diary = await generateDiaryFromContent(
+            "/Users/u/.omp/agent/sessions/--Users-u-repo--/2026-09-01T10-00-00.jsonl",
+            content,
+            config
+          );
+          expect(diary.agent).toBe("omp");
+        });
+      });
+
+      test("prefers the cass-provided agent over path inference", async () => {
+        await withFastDiary(async (config) => {
+          const diary = await generateDiaryFromContent(
+            "/tmp/exported/session.jsonl",
+            content,
+            config,
+            { agent: "omp" }
+          );
+          expect(diary.agent).toBe("omp");
+        });
+      });
+
+      test("canonicalizes the cass-provided agent (claude_code -> claude)", async () => {
+        await withFastDiary(async (config) => {
+          const diary = await generateDiaryFromContent(
+            "/Users/u/.claude/projects/p/s.jsonl",
+            content,
+            config,
+            { agent: "claude_code" }
+          );
+          expect(diary.agent).toBe("claude");
+        });
+      });
+
+      test("falls back to path inference when the cass hint is unknown or empty", async () => {
+        await withFastDiary(async (config) => {
+          const fromUnknown = await generateDiaryFromContent(
+            "C:\\Users\\u\\.omp\\agent\\sessions\\ws\\s.jsonl",
+            content,
+            config,
+            { agent: "unknown" }
+          );
+          expect(fromUnknown.agent).toBe("omp");
+
+          const fromEmpty = await generateDiaryFromContent(
+            "/Users/u/.codex/sessions/s.jsonl",
+            content,
+            config,
+            { agent: "  " }
+          );
+          expect(fromEmpty.agent).toBe("codex");
+
+          const nothing = await generateDiaryFromContent("/tmp/nowhere/s.jsonl", content, config);
+          expect(nothing.agent).toBe("unknown");
+        });
+      });
+
+      test("records the cass-provided workspace", async () => {
+        await withFastDiary(async (config) => {
+          const diary = await generateDiaryFromContent(
+            "/tmp/exported/session.jsonl",
+            content,
+            config,
+            { agent: "omp", workspace: "/Users/u/repo" }
+          );
+          expect(diary.workspace).toBe("/Users/u/repo");
+        });
+      });
+    });
   });
 
   describe("formatRawSession", () => {

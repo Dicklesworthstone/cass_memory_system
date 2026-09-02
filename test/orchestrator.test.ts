@@ -8,7 +8,7 @@
  * - Pointing `config.cassPath` at a non-existent binary so `cassExport` uses fallback parsing
  */
 import { describe, test, expect } from "bun:test";
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import path from "node:path";
 import yaml from "yaml";
 
@@ -360,6 +360,153 @@ describe("orchestrateReflection (unit)", () => {
           expect(existsSync(reflectionsDir)).toBe(true);
         });
       });
+    });
+  });
+});
+
+describe("orchestrateReflection playbook metadata counters (#72)", () => {
+  const longSession = [
+    { role: "user", content: "I need help writing reliable unit tests for my CLI tool, with fixtures." },
+    { role: "assistant", content: "Sure. Let's start by identifying seams and adding deterministic fixtures." },
+  ];
+
+  const addDelta = (content: string) => ({
+    reflector: {
+      deltas: [{
+        type: "add" as const,
+        bullet: { content, category: "testing", tags: [] },
+        reason: "Counter test",
+        sourceSession: "stub",
+      }]
+    }
+  });
+
+  test("advance per committed run and never for an already-processed session", async () => {
+    await withIsolatedHome(async (env) => {
+      writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])), "utf-8");
+
+      const s1 = path.join(env.home, "sessions", "s1.jsonl");
+      const s2 = path.join(env.home, "sessions", "s2.jsonl");
+      const short = path.join(env.home, "sessions", "short.jsonl");
+      writeJsonlSession(s1, longSession);
+      writeJsonlSession(s2, longSession);
+      writeJsonlSession(short, [{ role: "user", content: "hi" }]);
+
+      const config = createTestConfig({
+        playbookPath: env.playbookPath,
+        diaryDir: env.diaryDir,
+        cassPath: "/__missing__/cass",
+        validationEnabled: false,
+      });
+
+      await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
+        // Run 1: one session, one delta.
+        await withLlmShim(addDelta("Rule one from session one."), async (io) => {
+          const outcome = await orchestrateReflection(config, { session: s1, io });
+          expect(outcome.errors).toEqual([]);
+          expect(outcome.sessionsProcessed).toBe(1);
+        });
+        let saved = readPlaybook(env.playbookPath);
+        expect(saved.metadata.totalReflections).toBe(1);
+        expect(saved.metadata.totalSessionsProcessed).toBe(1);
+        expect(saved.metadata.lastReflection).toBeTruthy();
+
+        // Run 2: a different session.
+        await withLlmShim(addDelta("Rule two from session two."), async (io) => {
+          const outcome = await orchestrateReflection(config, { session: s2, io });
+          expect(outcome.errors).toEqual([]);
+          expect(outcome.sessionsProcessed).toBe(1);
+        });
+        saved = readPlaybook(env.playbookPath);
+        expect(saved.metadata.totalReflections).toBe(2);
+        expect(saved.metadata.totalSessionsProcessed).toBe(2);
+
+        // Run 3: re-running an already-processed session must not inflate anything.
+        await withLlmShim(addDelta("Should never be reached."), async (io) => {
+          const outcome = await orchestrateReflection(config, { session: s1, io });
+          expect(outcome.sessionsProcessed).toBe(0);
+        });
+        saved = readPlaybook(env.playbookPath);
+        expect(saved.metadata.totalReflections).toBe(2);
+        expect(saved.metadata.totalSessionsProcessed).toBe(2);
+
+        // Run 4: a short session is committed to the processed log with zero deltas,
+        // so it still counts as a processed session and a completed run.
+        const outcome = await orchestrateReflection(config, { session: short });
+        expect(outcome.errors).toEqual([]);
+        expect(outcome.deltasGenerated).toBe(0);
+        saved = readPlaybook(env.playbookPath);
+        expect(saved.metadata.totalReflections).toBe(3);
+        expect(saved.metadata.totalSessionsProcessed).toBe(3);
+        expect((saved.bullets || []).length).toBe(2);
+
+        // Run 5: a dry run changes nothing.
+        const s3 = path.join(env.home, "sessions", "s3.jsonl");
+        writeJsonlSession(s3, longSession);
+        await withLlmShim(addDelta("Dry-run rule."), async (io) => {
+          await orchestrateReflection(config, { session: s3, dryRun: true, io });
+        });
+        saved = readPlaybook(env.playbookPath);
+        expect(saved.metadata.totalReflections).toBe(3);
+        expect(saved.metadata.totalSessionsProcessed).toBe(3);
+      });
+    });
+  });
+
+  test("do not advance when every session fails", async () => {
+    await withIsolatedHome(async (env) => {
+      writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])), "utf-8");
+
+      const config = createTestConfig({
+        playbookPath: env.playbookPath,
+        diaryDir: env.diaryDir,
+        cassPath: "/__missing__/cass",
+        validationEnabled: false,
+      });
+
+      await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
+        const missing = path.join(env.home, "sessions", "does-not-exist.jsonl");
+        const outcome = await orchestrateReflection(config, { session: missing });
+        expect(outcome.sessionsProcessed).toBe(0);
+        expect(outcome.errors.length).toBeGreaterThan(0);
+      });
+
+      const saved = readPlaybook(env.playbookPath);
+      expect(saved.metadata.totalReflections).toBe(0);
+      expect(saved.metadata.totalSessionsProcessed).toBe(0);
+    });
+  });
+});
+
+describe("orchestrateReflection diary agent provenance (#73)", () => {
+  test("records omp for a session under ~/.omp/agent/sessions", async () => {
+    await withIsolatedHome(async (env) => {
+      writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])), "utf-8");
+
+      const sessionPath = path.join(env.home, ".omp", "agent", "sessions", "--repo--", "2026-09-01T10-00-00.jsonl");
+      writeJsonlSession(sessionPath, [
+        { role: "user", content: "Please fix the failing build in this repository for me today." },
+        { role: "assistant", content: "Done. The build passes now and all tests are green." },
+      ]);
+
+      const config = createTestConfig({
+        playbookPath: env.playbookPath,
+        diaryDir: env.diaryDir,
+        cassPath: "/__missing__/cass",
+        validationEnabled: false,
+      });
+
+      await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
+        const outcome = await orchestrateReflection(config, { session: sessionPath });
+        expect(outcome.errors).toEqual([]);
+        expect(outcome.sessionsProcessed).toBe(1);
+      });
+
+      const diaryFiles = readdirSync(env.diaryDir).filter((f) => f.endsWith(".json"));
+      expect(diaryFiles.length).toBe(1);
+      const diary = JSON.parse(readFileSync(path.join(env.diaryDir, diaryFiles[0]!), "utf-8"));
+      expect(diary.agent).toBe("omp");
+      expect(diary.sessionPath).toBe(sessionPath);
     });
   });
 });
