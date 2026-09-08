@@ -446,7 +446,12 @@ export const ConfigSchema = z.object({
   maxRelatedSessions: z.number().default(5),
   validationEnabled: z.boolean().default(true),
   crossAgent: CrossAgentConfigSchema.default({}),
-  semanticSearchEnabled: z.boolean().default(false),
+  // Tri-state on purpose (#75): `true`/`false` are explicit and always win;
+  // unset means "automatic" — semantic search runs when the configured
+  // embedding backend is already ready offline (local model cached, or the
+  // Ollama daemon reachable) and stays keyword-only otherwise. Resolve it via
+  // `resolveSemanticEnabled()` in semantic.ts, never by truthiness.
+  semanticSearchEnabled: z.boolean().optional(),
   semanticWeight: z.number().min(0).max(1).default(0.6),
   embeddingBackend: z.enum(["xenova", "ollama"]).default("xenova"),
   embeddingModel: z.string().default("Xenova/all-MiniLM-L6-v2"),
@@ -587,6 +592,13 @@ export const ContextResultSchema = z.object({
    * `semanticSearchEnabled: true`.
    */
   semanticError: z.string().optional(),
+  /**
+   * Why semantic search did not run when the user never asked for it
+   * explicitly (`semanticSearchEnabled` unset and the backend is not ready
+   * offline yet). Present iff `semanticMode === "keyword"` and the posture is
+   * automatic; never set alongside `semanticError`.
+   */
+  semanticNotice: z.string().optional(),
   traumaWarning: z.object({
     pattern: z.string(),
     reason: z.string(),

@@ -78,6 +78,19 @@ export function configureEmbeddingBackend(config: {
 
   if (backend !== "ollama") return;
 
+  const { baseUrl, model } = resolveOllamaSettings(config);
+  configureOllamaEmbedding(baseUrl, model);
+}
+
+/**
+ * Translate the generic embedding config into the Ollama daemon address and
+ * model tag that the Ollama backend will actually call. Shared by
+ * {@link configureEmbeddingBackend} and the readiness probe so both agree.
+ */
+export function resolveOllamaSettings(config: {
+  embeddingModel?: string;
+  ollamaBaseUrl?: string;
+}): { baseUrl: string; model: string } {
   const rawModel =
     typeof config.embeddingModel === "string" && config.embeddingModel.trim() !== ""
       ? config.embeddingModel.trim()
@@ -88,12 +101,13 @@ export function configureEmbeddingBackend(config: {
       : rawModel.startsWith("Xenova/")
         ? rawModel.slice("Xenova/".length).toLowerCase()
         : rawModel;
-  const baseUrl =
+  const baseUrl = (
     typeof config.ollamaBaseUrl === "string" && config.ollamaBaseUrl.trim() !== ""
       ? config.ollamaBaseUrl.trim()
-      : "http://localhost:11434";
+      : "http://localhost:11434"
+  ).replace(/\/+$/, "");
 
-  configureOllamaEmbedding(baseUrl, model);
+  return { baseUrl, model };
 }
 
 /**
@@ -903,25 +917,154 @@ export interface SemanticStatus {
   enableHint?: string;
   /** The embedding model being used */
   model: string;
+  /**
+   * How `enabled` was decided (#75):
+   * - `explicit-on` / `explicit-off`: `semanticSearchEnabled` is set in config.
+   * - `model-none`: `embeddingModel: "none"` opts out regardless of the flag.
+   * - `auto-on`: flag unset and the backend is ready without any network
+   *   download (local model cached, or the Ollama daemon is reachable).
+   * - `auto-off`: flag unset and the backend is not ready yet.
+   */
+  posture: SemanticPosture;
+}
+
+export type SemanticPosture = "explicit-on" | "explicit-off" | "model-none" | "auto-on" | "auto-off";
+
+/** The subset of `Config` that decides whether semantic search runs. */
+export interface SemanticConfigInput {
+  semanticSearchEnabled?: boolean;
+  embeddingModel?: string;
+  embeddingBackend?: EmbeddingBackend;
+  ollamaBaseUrl?: string;
+}
+
+const OLLAMA_PROBE_TIMEOUT_MS = 1_500;
+
+/**
+ * Cheap, network-local check that an Ollama daemon is up and (when the tag
+ * list is available) has the configured model pulled. Never throws.
+ */
+async function probeOllamaReady(config: SemanticConfigInput): Promise<boolean> {
+  const { baseUrl, model } = resolveOllamaSettings(config);
+  try {
+    const response = await fetch(`${baseUrl}/api/tags`, {
+      method: "GET",
+      signal: AbortSignal.timeout(OLLAMA_PROBE_TIMEOUT_MS),
+    });
+    if (!response.ok) return false;
+    let json: unknown;
+    try {
+      json = await response.json();
+    } catch {
+      // Reachable but not a tag list we understand (proxy, older daemon):
+      // reachability is enough; the embed call reports a missing model itself.
+      return true;
+    }
+    const models = (json as { models?: unknown })?.models;
+    if (!Array.isArray(models)) return true;
+    const wanted = model.includes(":") ? model : `${model}:latest`;
+    return models.some((entry) => {
+      const name =
+        typeof (entry as { name?: unknown })?.name === "string"
+          ? (entry as { name: string }).name
+          : typeof (entry as { model?: unknown })?.model === "string"
+            ? (entry as { model: string }).model
+            : "";
+      return name === wanted || name === model;
+    });
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Readiness probes per backend, answering "can this backend embed right now
+ * without downloading anything?". Exposed as a mutable table so tests can
+ * substitute deterministic probes; production code never reassigns it.
+ */
+export const semanticReadinessProbes: {
+  xenova: (model: string) => Promise<boolean>;
+  ollama: (config: SemanticConfigInput) => Promise<boolean>;
+} = {
+  xenova: (model) => isModelCached(model),
+  ollama: probeOllamaReady,
+};
+
+let semanticResolutionCache: { key: string; ready: boolean } | null = null;
+
+/** Forget the memoized readiness probe result (tests, or after `doctor --fix`). */
+export function resetSemanticResolutionCache(): void {
+  semanticResolutionCache = null;
+}
+
+function normalizeEmbeddingModel(config: SemanticConfigInput): string {
+  return typeof config.embeddingModel === "string" && config.embeddingModel.trim() !== ""
+    ? config.embeddingModel.trim()
+    : DEFAULT_EMBEDDING_MODEL;
+}
+
+/**
+ * Decide whether semantic search runs for this process (#75).
+ *
+ * `semanticSearchEnabled: true|false` always wins. When it is left unset,
+ * semantic search is on exactly when the configured backend is already ready
+ * offline — the local model is cached, or the Ollama daemon is reachable — so
+ * a fresh install never triggers a surprise download from a session-start
+ * hook, yet stops being keyword-only the moment the model exists. The probe
+ * runs once per process (memoized on the config fields it depends on).
+ *
+ * This is the single source of truth: every command (context, similar,
+ * stats, onboard, doctor) must go through here instead of reading the flag.
+ */
+export async function resolveSemanticEnabled(config: SemanticConfigInput): Promise<SemanticStatus> {
+  if (config.semanticSearchEnabled !== undefined || normalizeEmbeddingModel(config) === "none") {
+    return getSemanticStatus(config);
+  }
+  const backend = config.embeddingBackend ?? "xenova";
+  const model = normalizeEmbeddingModel(config);
+  const key = JSON.stringify(
+    backend === "ollama"
+      ? ["ollama", resolveOllamaSettings(config)]
+      : ["xenova", model, getTransformersCacheDir()]
+  );
+  if (!semanticResolutionCache || semanticResolutionCache.key !== key) {
+    let ready = false;
+    try {
+      ready =
+        backend === "ollama"
+          ? await semanticReadinessProbes.ollama(config)
+          : await semanticReadinessProbes.xenova(model);
+    } catch {
+      ready = false;
+    }
+    semanticResolutionCache = { key, ready };
+  }
+  return getSemanticStatus(config, { autoReady: semanticResolutionCache.ready });
 }
 
 /**
  * Get the current semantic search status for messaging and diagnostics.
  *
  * This helper consolidates semantic state checks for consistent messaging
- * across commands (context, similar, stats, doctor).
+ * across commands (context, similar, stats, doctor). It is synchronous, so
+ * when `semanticSearchEnabled` is unset the caller must supply the backend
+ * readiness via `options.autoReady` (see {@link resolveSemanticEnabled},
+ * which performs the probe); without it, an unset flag reports `auto-off`.
  *
  * @param config - The loaded Config object (or just the relevant fields)
- * @returns SemanticStatus with enabled, available, reason, and enableHint
+ * @returns SemanticStatus with enabled, available, reason, posture and enableHint
  */
-export function getSemanticStatus(config: {
-  semanticSearchEnabled?: boolean;
-  embeddingModel?: string;
-  embeddingBackend?: EmbeddingBackend;
-}): SemanticStatus {
-  const model = typeof config.embeddingModel === "string" && config.embeddingModel.trim() !== ""
-    ? config.embeddingModel.trim()
-    : DEFAULT_EMBEDDING_MODEL;
+export function getSemanticStatus(
+  config: SemanticConfigInput,
+  options: { autoReady?: boolean } = {}
+): SemanticStatus {
+  const model = normalizeEmbeddingModel(config);
+  const cli = getCliName();
+  // Name the file the global loader actually reads (#75): config.json is
+  // what `cm init` creates; config.yaml/.yml are accepted too.
+  const enableHint =
+    `Set semanticSearchEnabled: true in ~/.cass-memory/config.json (or config.yaml), ` +
+    `or run \`${cli} doctor --fix\``;
 
   // Check if explicitly disabled via config
   if (config.semanticSearchEnabled === false) {
@@ -929,12 +1072,9 @@ export function getSemanticStatus(config: {
       enabled: false,
       available: false,
       reason: "Semantic search is disabled in config",
-      // Name the file the global loader actually reads (#75): config.json is
-      // what `cm init` creates; config.yaml/.yml are accepted too.
-      enableHint:
-        `Set semanticSearchEnabled: true in ~/.cass-memory/config.json (or config.yaml), ` +
-        `or run \`${getCliName()} doctor --fix\``,
+      enableHint,
       model,
+      posture: "explicit-off",
     };
   }
 
@@ -946,17 +1086,52 @@ export function getSemanticStatus(config: {
       reason: "Embedding model is set to 'none'",
       enableHint: "Remove embeddingModel: none from config or set a valid model",
       model,
+      posture: "model-none",
+    };
+  }
+
+  const backend = config.embeddingBackend ?? "xenova";
+  const modelLabel = backend === "ollama" ? `ollama:${resolveOllamaSettings(config).model}` : model;
+
+  // Flag unset: automatic, but only when the backend is ready without network.
+  if (config.semanticSearchEnabled === undefined) {
+    if (options.autoReady === true) {
+      return {
+        enabled: true,
+        available: true,
+        reason:
+          backend === "ollama"
+            ? "Semantic search enabled automatically (Ollama daemon reachable)"
+            : "Semantic search enabled automatically (embedding model cached locally)",
+        model: modelLabel,
+        posture: "auto-on",
+      };
+    }
+    return {
+      enabled: false,
+      available: false,
+      reason:
+        backend === "ollama"
+          ? `Semantic search is off until the Ollama daemon at ${resolveOllamaSettings(config).baseUrl} is reachable`
+          : "Semantic search is off until the embedding model is cached locally",
+      enableHint:
+        backend === "ollama"
+          ? `Start Ollama (ollama serve) and pull the model (ollama pull ${resolveOllamaSettings(config).model}); ` +
+            `it turns on automatically, or force it with semanticSearchEnabled: true`
+          : `Run \`${cli} doctor --fix\` to download the model once (~23 MB); it turns on automatically ` +
+            `afterwards, or set semanticSearchEnabled: true in ~/.cass-memory/config.json (or config.yaml)`,
+      model: modelLabel,
+      posture: "auto-off",
     };
   }
 
   // Semantic is enabled in config - model availability is determined at runtime
-  const backend = config.embeddingBackend ?? "xenova";
-  const modelLabel = backend === "ollama" ? `ollama:${ollamaConfig.model}` : model;
   return {
     enabled: true,
     available: true, // Assume available; actual check happens during embedding
     reason: `Semantic search enabled (${backend} backend)`,
     model: modelLabel,
+    posture: "explicit-on",
   };
 }
 
