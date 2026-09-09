@@ -42,7 +42,7 @@ import {
   type PlaybookGapAnalysis,
   type RuleCategory,
 } from "../gap-analysis.js";
-import { findSimilarBulletsSemantic } from "../semantic.js";
+import { findSimilarBulletsSemantic, resolveSemanticEnabled } from "../semantic.js";
 import { ProcessedLog, getProcessedLogPath } from "../tracking.js";
 import path from "node:path";
 import fs from "node:fs/promises";
@@ -885,7 +885,9 @@ export async function onboardCommand(
       // Find related rules using semantic search (if enabled)
       let relatedRules: Array<{ id: string; content: string; similarity: number }> = [];
       const activeBullets = getActiveBullets(playbook);
-      if (config.semanticSearchEnabled && activeBullets.length > 0) {
+      // Unset `semanticSearchEnabled` means "automatic" (#75) — resolve it,
+      // and only pay for the probe when there is something to compare against.
+      if (activeBullets.length > 0 && (await resolveSemanticEnabled(config)).enabled) {
         const relatedProgress = createProgress({
           message: "Searching for related rules...",
           format: progressFormat,

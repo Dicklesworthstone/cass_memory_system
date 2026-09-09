@@ -5,7 +5,7 @@ import {
   getEffectiveScore,
   isStale
 } from "../scoring.js";
-import { findSemanticDuplicates } from "../semantic.js";
+import { findSemanticDuplicates, resolveSemanticEnabled } from "../semantic.js";
 import { isJsonOutput, isToonOutput, tokenize, printStructuredResult, reportError, validateOneOf } from "../utils.js";
 import chalk from "chalk";
 import { iconPrefix } from "../output.js";
@@ -78,7 +78,9 @@ export async function statsCommand(options: { json?: boolean; format?: "json" | 
   const mergeCandidates = findMergeCandidates([...activeBullets].reverse(), 0.8, 10);
 
   let semanticMergeCandidates: Array<{ a: string; b: string; similarity: number }> = [];
-  if (config.semanticSearchEnabled && config.embeddingModel !== "none") {
+  // Unset `semanticSearchEnabled` means "automatic" (#75); the resolver also
+  // folds in the embeddingModel: "none" opt-out.
+  if ((await resolveSemanticEnabled(config)).enabled) {
     try {
       const dupes = await findSemanticDuplicates(activeBullets, 0.85, {
         model: config.embeddingModel,

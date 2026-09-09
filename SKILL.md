@@ -591,11 +591,19 @@ Config lives at `~/.cass-memory/config.json` (global) and `.cass/config.json` (r
     "enabled": false,
     "hosts": [{"host": "workstation", "label": "work"}]
   },
-  "semanticSearchEnabled": false,
   "embeddingModel": "Xenova/all-MiniLM-L6-v2",
   "dedupSimilarityThreshold": 0.85
 }
 ```
+
+`semanticSearchEnabled` is deliberately absent above: it is tri-state. Left
+unset (the default), semantic search runs whenever the embedding backend can
+already embed offline — the local model is cached, or `embeddingBackend:
+"ollama"` and the daemon answers with the model pulled — and stays keyword-only
+otherwise. Set it to `true` or `false` to pin the answer either way. `cm doctor`
+reports which of those states applies, and `cm context --json` explains a
+keyword result via `semanticError` (a failure) or `semanticNotice` (backend not
+ready yet).
 
 ### Environment Variables
 

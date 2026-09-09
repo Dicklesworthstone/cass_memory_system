@@ -2827,7 +2827,7 @@ function defaultRecoveryForCode(code: string, cli: string): string[] | undefined
     case ErrorCode.SEMANTIC_SEARCH_UNAVAILABLE:
       return [
         "Run a semantic-search command while online once to download/cache the embedding model.",
-        "Verify semanticSearchEnabled is true in config (and embeddingModel is not 'none').",
+        "Check config: semanticSearchEnabled must not be false (unset means automatic) and embeddingModel must not be 'none'.",
         "Re-run the command, or use keyword-only mode if available.",
       ];
     case ErrorCode.LLM_RATE_LIMITED:

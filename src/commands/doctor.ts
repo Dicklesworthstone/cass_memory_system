@@ -27,7 +27,7 @@ import { loadPlaybook, savePlaybook, createEmptyPlaybook } from "../playbook.js"
 import { withLock } from "../lock.js";
 import { Config, Playbook, ErrorCode } from "../types.js";
 import { loadTraumas } from "../trauma.js";
-import { getSemanticStatus, warmupEmbeddings } from "../semantic.js";
+import { resetSemanticResolutionCache, resolveSemanticEnabled, warmupEmbeddings } from "../semantic.js";
 import chalk from "chalk";
 import yaml from "yaml";
 import path from "node:path";
@@ -310,16 +310,22 @@ function buildRecommendedActions(params: {
     (c) => c.category === "Semantic Search" && c.item === "Status"
   );
   if (semanticCheck?.status === "warn") {
-    const configPath =
-      (semanticCheck.details as { configPath?: string } | undefined)?.configPath ??
-      "~/.cass-memory/config.json";
+    const semanticDetails = semanticCheck.details as
+      | { configPath?: string; posture?: string }
+      | undefined;
+    const configPath = semanticDetails?.configPath ?? "~/.cass-memory/config.json";
+    const why =
+      semanticDetails?.posture === "explicit-off"
+        ? `Search is keyword-only because "semanticSearchEnabled": false is set in ${configPath}.`
+        : `Search is keyword-only until the embedding backend can run offline; with the key unset it ` +
+          `switches on by itself as soon as it can.`;
     actions.push({
       label: "Enable semantic search (optional, recommended)",
       command: `${cli} doctor --fix`,
       reason:
-        `Search is keyword-only until semanticSearchEnabled is true. The fix verifies the embedding backend ` +
-        `first (the local model is a one-time ~23 MB download) and only then writes ` +
-        `"semanticSearchEnabled": true to ${configPath}; you can also set it there by hand.`,
+        `${why} The fix verifies the embedding backend first (the local model is a one-time ~23 MB ` +
+        `download) and only then writes "semanticSearchEnabled": true to ${configPath}, pinning it on; ` +
+        `you can also set it there by hand.`,
       urgency: "low",
     });
   }
@@ -520,25 +526,38 @@ async function computeDoctorChecks(
     details: { configuredProvider: config.provider, availableProviders },
   });
 
-  // 3.5) Semantic search posture (#75). Keyword-only search is the silent
-  // default, so say so explicitly and name the file that actually controls it.
+  // 3.5) Semantic search posture (#75). `semanticSearchEnabled` is tri-state:
+  // true/false are explicit and always win, unset means "on as soon as the
+  // configured backend can embed offline". Report which of those five states
+  // this machine is actually in, and name the file that controls it.
   {
-    const semantic = getSemanticStatus(config);
+    const semantic = await resolveSemanticEnabled(config);
     const semanticDetails = {
       semanticSearchEnabled: config.semanticSearchEnabled,
+      posture: semantic.posture,
       embeddingBackend: config.embeddingBackend,
       embeddingModel: config.embeddingModel,
       configPath: globalConfigPath,
     };
-    if (semantic.enabled) {
+    if (semantic.posture === "auto-on") {
       checks.push({
         category: "Semantic Search",
         item: "Status",
         status: "pass",
-        message: `Enabled (${config.embeddingBackend} backend, model ${semantic.model})`,
+        message:
+          `Enabled automatically — ${config.embeddingBackend} backend is ready offline ` +
+          `(model ${semantic.model}). Set semanticSearchEnabled: false to force keyword-only.`,
         details: semanticDetails,
       });
-    } else if (config.embeddingModel.trim() === "none") {
+    } else if (semantic.enabled) {
+      checks.push({
+        category: "Semantic Search",
+        item: "Status",
+        status: "pass",
+        message: `Enabled explicitly in config (${config.embeddingBackend} backend, model ${semantic.model})`,
+        details: semanticDetails,
+      });
+    } else if (semantic.posture === "model-none") {
       // Explicitly opted out via embeddingModel: "none" — respected, not nagged.
       checks.push({
         category: "Semantic Search",
@@ -547,12 +566,24 @@ async function computeDoctorChecks(
         message: "Disabled explicitly (embeddingModel: none)",
         details: semanticDetails,
       });
+    } else if (semantic.posture === "explicit-off") {
+      checks.push({
+        category: "Semantic Search",
+        item: "Status",
+        status: "warn",
+        message:
+          `Disabled by semanticSearchEnabled: false — context/similar use keyword-only search. ` +
+          `Remove that key to let it turn on automatically once the backend is ready. ${semantic.enableHint}`,
+        details: semanticDetails,
+      });
     } else {
       checks.push({
         category: "Semantic Search",
         item: "Status",
         status: "warn",
-        message: `Disabled — context/similar use keyword-only search. ${semantic.enableHint}`,
+        message:
+          `Automatic, but not active yet — context/similar use keyword-only search until the ` +
+          `${config.embeddingBackend} backend is ready. ${semantic.enableHint}`,
         details: semanticDetails,
       });
     }
@@ -1243,6 +1274,11 @@ function createResetConfigFix(configFile: ResolvedConfigFile): FixableIssue {
  * for Ollama it needs a reachable daemon with the model pulled) and only
  * flips `semanticSearchEnabled` when that check succeeds, so the fix can
  * never leave a user with "enabled" config and a broken backend.
+ *
+ * It writes `true` rather than leaving the key unset even when the automatic
+ * posture would now turn semantic search on by itself: running `doctor --fix`
+ * is an explicit request, and pinning it keeps the answer stable if the model
+ * cache is later cleared.
  */
 function createEnableSemanticSearchFix(config: Config, configPath: string): FixableIssue {
   const backendLabel =
@@ -1251,7 +1287,7 @@ function createEnableSemanticSearchFix(config: Config, configPath: string): Fixa
       : `local model ${config.embeddingModel}`;
   return {
     id: "enable-semantic-search",
-    description: `Enable semantic search in ${configPath} (verifies ${backendLabel} first; downloads it if needed)`,
+    description: `Pin semantic search on in ${configPath} (verifies ${backendLabel} first; downloads it if needed)`,
     category: "config",
     severity: "warn",
     safety: "cautious",
@@ -1266,6 +1302,9 @@ function createEnableSemanticSearchFix(config: Config, configPath: string): Fixa
       if (!written) {
         throw new Error(`Could not update ${configPath}: file is not a valid config object`);
       }
+      // The warmup may have just populated the model cache, so any memoized
+      // "backend not ready" answer from earlier in this process is now stale.
+      resetSemanticResolutionCache();
     },
   };
 }
@@ -1312,18 +1351,17 @@ export async function detectFixableIssues(
     }
   }
 
-  // Semantic search disabled (the default) — offer a verified one-shot enable
-  // (#75). Skipped until the global directory exists (initialize first), when
-  // the config is broken (reset first), or when the user explicitly opted out
-  // with embeddingModel: "none".
-  if (
-    globalDirExists &&
-    configIsValid &&
-    options.config &&
-    options.config.semanticSearchEnabled === false &&
-    options.config.embeddingModel.trim() !== "none"
-  ) {
-    issues.push(createEnableSemanticSearchFix(options.config, globalConfigFile.path));
+  // Semantic search not running — offer a verified one-shot enable (#75).
+  // Covers both keyword-only postures: `semanticSearchEnabled: false`, and the
+  // automatic default on a machine whose backend is not ready yet. Skipped
+  // until the global directory exists (initialize first), when the config is
+  // broken (reset first), and when the user opted out with
+  // embeddingModel: "none" (posture "model-none").
+  if (globalDirExists && configIsValid && options.config) {
+    const semantic = await resolveSemanticEnabled(options.config);
+    if (!semantic.enabled && semantic.posture !== "model-none") {
+      issues.push(createEnableSemanticSearchFix(options.config, globalConfigFile.path));
+    }
   }
 
   // Check global playbook

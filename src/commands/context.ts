@@ -33,7 +33,7 @@ import {
 import { withLock } from "../lock.js";
 import { getEffectiveScore } from "../scoring.js";
 import { ContextResult, ScoredBullet, Config, CassSearchHit, PlaybookBullet, ErrorCode } from "../types.js";
-import { cosineSimilarity, embedText, loadOrComputeEmbeddingsForBullets } from "../semantic.js";
+import { cosineSimilarity, embedText, loadOrComputeEmbeddingsForBullets, resolveSemanticEnabled } from "../semantic.js";
 import chalk from "chalk";
 import { agentIconPrefix, formatRule, formatTipPrefix, getOutputStyle, iconPrefix, wrapText } from "../output.js";
 import { createProgress, type ProgressReporter } from "../progress.js";
@@ -248,6 +248,12 @@ export interface ScoreBulletsMeta {
   semanticMode: "semantic" | "keyword";
   /** If the user asked for semantic but we fell back, this holds the underlying error message. */
   semanticError?: string;
+  /**
+   * Why semantic search never ran in *automatic* mode (`semanticSearchEnabled`
+   * unset, backend not ready offline). Mutually exclusive with
+   * `semanticError`, which only ever describes a failure of a run we attempted.
+   */
+  semanticNotice?: string;
 }
 
 export async function scoreBulletsEnhanced(
@@ -283,7 +289,10 @@ export async function scoreBulletsEnhanced(
     typeof config.embeddingModel === "string" && config.embeddingModel.trim() !== ""
       ? config.embeddingModel.trim()
       : undefined;
-  const semanticEnabled = config.semanticSearchEnabled && embeddingModel !== "none";
+  // Never read `semanticSearchEnabled` by truthiness: unset means "automatic"
+  // (#75), which only the resolver can settle (it probes backend readiness).
+  const semanticStatus = await resolveSemanticEnabled(config);
+  const semanticEnabled = semanticStatus.enabled;
 
   const semanticWeight = clamp01(
     typeof config.semanticWeight === "number" ? config.semanticWeight : 0.6
@@ -339,6 +348,13 @@ export async function scoreBulletsEnhanced(
     if (semanticEnabled && ran === "keyword") {
       options.meta.semanticError =
         semanticError || "Semantic search requested but no query embedding produced";
+    } else if (semanticStatus.posture === "auto-off") {
+      // Nobody asked for semantic search, so this is not an error — but it
+      // must still be visible, or "keyword-only" looks like a deliberate
+      // choice the user never made (#75).
+      options.meta.semanticNotice = semanticStatus.enableHint
+        ? `${semanticStatus.reason}. ${semanticStatus.enableHint}`
+        : semanticStatus.reason;
     }
   }
 
@@ -502,6 +518,8 @@ export async function generateContextResult(
   result.semanticMode = scoringMeta.semanticMode;
   if (scoringMeta.semanticError) {
     result.semanticError = scoringMeta.semanticError;
+  } else if (scoringMeta.semanticNotice) {
+    result.semanticNotice = scoringMeta.semanticNotice;
   }
 
   const shouldLog =
@@ -966,6 +984,12 @@ export async function contextCommand(
           `or build from source (install.sh --from-source), ` +
           `or disable: semanticSearchEnabled: false`
       )
+    );
+    console.log("");
+  } else if (result.semanticNotice) {
+    // Automatic mode, backend not ready: informational, not a failure.
+    console.log(
+      chalk.dim(`${iconPrefix("tip")}Keyword-only search. ${result.semanticNotice}`)
     );
     console.log("");
   }

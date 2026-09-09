@@ -1486,7 +1486,8 @@ back to whichever file is active, in its own format.
   },
 
   // Semantic Search Settings
-  "semanticSearchEnabled": false,
+  // (omit semanticSearchEnabled entirely for the automatic default; set it to
+  //  true or false only when you want to pin the answer)
   "semanticWeight": 0.6,
   "embeddingModel": "Xenova/all-MiniLM-L6-v2",
   "dedupSimilarityThreshold": 0.85,
@@ -1557,41 +1558,73 @@ Remote cass is **opt-in** and queries other machines via SSH (using your existin
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `semanticSearchEnabled` | `false` | Enable embedding-based search. Off by default, so fresh installs run keyword-only search; `cm doctor` reports this as a warning and `cm doctor --fix` offers a one-shot enable that verifies the embedding backend (downloading the local model if needed) before writing the flag |
+| `semanticSearchEnabled` | *(unset — automatic)* | Tri-state. Leave it out and semantic search runs whenever the configured embedding backend can already embed **offline**: the local model is cached in `~/.cache/cass-memory/transformers/`, or `embeddingBackend: "ollama"` and the daemon answers `/api/tags` with the model pulled. Otherwise it stays keyword-only. Setting it to `true` or `false` always wins over the probe |
 | `semanticWeight` | `0.6` | Weight of semantic vs keyword (0-1) |
 | `embeddingModel` | `Xenova/all-MiniLM-L6-v2` | Transformer model |
 | `embeddingBackend` | `xenova` | Embedding backend: `xenova` (local WASM) or `ollama` |
 | `ollamaBaseUrl` | `http://localhost:11434` | Base URL when `embeddingBackend: "ollama"` |
 | `dedupSimilarityThreshold` | `0.85` | Threshold for duplicate detection |
 
+##### When does semantic search turn itself on?
+
+`semanticSearchEnabled` is a **tri-state** setting, and the default is *unset*:
+
+| `semanticSearchEnabled` | Behaviour | `cm doctor` posture |
+|---|---|---|
+| *(absent — the default)* | Automatic: semantic when the backend is ready offline, keyword-only otherwise | `auto-on` / `auto-off` |
+| `true` | Always attempts semantic, and says so loudly if the backend fails | `explicit-on` |
+| `false` | Always keyword-only, even on a machine that could embed | `explicit-off` |
+| any, with `embeddingModel: "none"` | Always keyword-only (the strongest opt-out) | `model-none` |
+
+"Ready offline" means the check costs nothing and downloads nothing:
+
+- **`xenova` (default):** the MiniLM model is already cached in
+  `~/.cache/cass-memory/transformers/`. So a fresh install is keyword-only —
+  no surprise 23 MB download from a session-start hook — and the first
+  `cm context` after the model lands is semantic, with no config edit.
+- **`ollama`:** the daemon at `ollamaBaseUrl` answers `GET /api/tags` within
+  1.5 s and the configured model is in the list.
+
+A one-shot `cm` command runs the probe at most once. A long-lived process
+(`cm serve`, the MCP server) re-checks lazily — within a minute of a
+"not ready" answer — so starting Ollama or finishing a model download takes
+effect without a restart.
+
 ##### How do I tell whether semantic search actually ran?
 
 The `cm context` command emits a `semanticMode` field in JSON/TOON output
-(one of `"semantic"` or `"keyword"`). When the user asked for semantic
-but the runtime could not provide it, `semanticError` explains why:
+(one of `"semantic"` or `"keyword"`). The reason for a keyword result is
+never left implicit:
+
+- `semanticError` — you asked for semantic (explicitly or automatically) and
+  the runtime failed. Human output prints a yellow banner.
+- `semanticNotice` — nobody asked; the backend is simply not ready yet, and
+  this says what would make it ready. Human output prints a dim one-liner.
+
+The two are mutually exclusive:
 
 ```bash
-$ cm context "optimize API latency" --json | jq '.data | {semanticMode, semanticError}'
-{ "semanticMode": "semantic", "semanticError": null }
+$ cm context "optimize API latency" --json | jq '.data | {semanticMode, semanticError, semanticNotice}'
+{ "semanticMode": "semantic", "semanticError": null, "semanticNotice": null }
 ```
 
-In human output, a yellow warning banner is printed whenever semantic
-was requested but unavailable — no more silent fallback.
+##### Pinning semantic search on
 
-##### Enabling semantic search
-
-Set it in the global config the loader actually reads (`~/.cass-memory/config.json`,
-or `config.yaml` if that is what you use), or let the doctor do it:
+If you would rather not depend on the probe, set it in the global config the
+loader actually reads (`~/.cass-memory/config.json`, or `config.yaml` if that
+is what you use), or let the doctor do it:
 
 ```bash
-cm doctor            # "Semantic Search: Status" warns while search is keyword-only
-cm doctor --fix      # cautious fix: verifies the embedding backend, then sets semanticSearchEnabled: true
+cm doctor            # "Semantic Search: Status" reports the posture above
+cm doctor --fix      # cautious fix: verifies the embedding backend, then pins semanticSearchEnabled: true
 ```
 
 The fix is deliberately *cautious* (it needs confirmation, or `--force` when
 non-interactive) because it may download the ~23 MB MiniLM model on first use
 and it refuses to flip the flag when the backend does not actually work — so you
-never end up with "enabled" config and a silent keyword fallback.
+never end up with "enabled" config and a silent keyword fallback. It writes
+`true` rather than leaving the key unset, so the answer stays stable even if
+the model cache is later cleared.
 
 ##### Sharing an embedding backend with other tools
 
@@ -1612,12 +1645,14 @@ comparable with the other. What *can* be shared:
 
   ```json
   {
-    "semanticSearchEnabled": true,
     "embeddingBackend": "ollama",
     "embeddingModel": "all-minilm",
     "ollamaBaseUrl": "http://localhost:11434"
   }
   ```
+
+  No `semanticSearchEnabled` needed: with the daemon up and `all-minilm`
+  pulled, the readiness probe sees it and semantic search turns on by itself.
 
   `OLLAMA_BASE_URL` overrides `ollamaBaseUrl`, which is handy when the daemon
   runs on another host. The bullet embedding cache
@@ -1649,7 +1684,6 @@ Alternatively, point cass-memory at a local Ollama daemon (no WASM):
 
 ```json
 {
-  "semanticSearchEnabled": true,
   "embeddingBackend": "ollama",
   "embeddingModel": "all-minilm"
 }
@@ -1884,15 +1918,20 @@ function scoreRelevance(bullet: PlaybookBullet, task: string): number {
   const categoryBonus = taskCategories.includes(bullet.category) ? 0.2 : 0;
 
   // 3. Semantic similarity (optional, if enabled)
+  //    `semanticSearchEnabled` is tri-state, so never read it by truthiness:
+  //    resolveSemanticEnabled() settles explicit true/false and, when it is
+  //    unset, probes whether the backend can embed offline.
+  const { enabled: semanticEnabled } = await resolveSemanticEnabled(config);
+
   let semanticScore = 0;
-  if (config.semanticSearchEnabled && bullet.embedding) {
+  if (semanticEnabled && bullet.embedding) {
     const taskEmbedding = await embed(task);
     semanticScore = cosineSimilarity(taskEmbedding, bullet.embedding);
   }
 
   // 4. Combined score
-  const keywordWeight = config.semanticSearchEnabled ? (1 - config.semanticWeight) : 1;
-  const semanticWeight = config.semanticSearchEnabled ? config.semanticWeight : 0;
+  const keywordWeight = semanticEnabled ? (1 - config.semanticWeight) : 1;
+  const semanticWeight = semanticEnabled ? config.semanticWeight : 0;
 
   return (keywordOverlap * keywordWeight)
        + (semanticScore * semanticWeight)
@@ -1926,7 +1965,9 @@ function findDuplicate(playbook: Playbook, newRule: ProposedRule): PlaybookBulle
   }
 
   // 2. Semantic similarity (if embeddings available)
-  if (config.semanticSearchEnabled && newRule.embedding) {
+  //    `semanticEnabled` is the resolveSemanticEnabled(config) answer, not the
+  //    raw tri-state flag.
+  if (semanticEnabled && newRule.embedding) {
     for (const bullet of playbook.bullets) {
       if (bullet.embedding) {
         const similarity = cosineSimilarity(newRule.embedding, bullet.embedding);
@@ -1970,8 +2011,8 @@ function findConflicts(playbook: Playbook, newRule: ProposedRule): PlaybookBulle
       continue;
     }
 
-    // Semantic contradiction check
-    if (config.semanticSearchEnabled) {
+    // Semantic contradiction check (same resolved posture as above)
+    if (semanticEnabled) {
       const contradictionScore = await checkSemanticContradiction(newRule, bullet);
       if (contradictionScore > 0.8) {
         conflicts.push(bullet);

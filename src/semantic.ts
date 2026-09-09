@@ -990,7 +990,28 @@ export const semanticReadinessProbes: {
   ollama: probeOllamaReady,
 };
 
-let semanticResolutionCache: { key: string; ready: boolean } | null = null;
+/**
+ * How long a probe answer is trusted.
+ *
+ * A one-shot `cm` invocation only ever probes once either way. These matter
+ * for long-lived processes (`cm serve`, the MCP server): a "not ready" answer
+ * must not pin a whole server session to keyword-only just because the user
+ * had not yet run `ollama serve` or finished downloading the model, so it
+ * expires quickly. A "ready" answer is re-checked lazily — if the backend
+ * disappears mid-process the embed call fails loudly on its own.
+ */
+const SEMANTIC_READY_TTL_MS = 5 * 60_000;
+const SEMANTIC_NOT_READY_TTL_MS = 60_000;
+
+/**
+ * Single-slot memo of the readiness probe. Holds the in-flight promise rather
+ * than the settled value so concurrent resolvers share one probe instead of
+ * racing to run (and pay for) the same check. `expiresAt` is `Infinity` while
+ * the probe is in flight and is set from the TTLs above once it settles.
+ */
+let semanticResolutionCache:
+  | { key: string; ready: Promise<boolean>; expiresAt: number }
+  | null = null;
 
 /** Forget the memoized readiness probe result (tests, or after `doctor --fix`). */
 export function resetSemanticResolutionCache(): void {
@@ -1011,7 +1032,8 @@ function normalizeEmbeddingModel(config: SemanticConfigInput): string {
  * offline — the local model is cached, or the Ollama daemon is reachable — so
  * a fresh install never triggers a surprise download from a session-start
  * hook, yet stops being keyword-only the moment the model exists. The probe
- * runs once per process (memoized on the config fields it depends on).
+ * is memoized on the config fields it depends on, so a one-shot command runs
+ * it at most once; a long-lived process re-checks on the TTLs above.
  *
  * This is the single source of truth: every command (context, similar,
  * stats, onboard, doctor) must go through here instead of reading the flag.
@@ -1027,19 +1049,33 @@ export async function resolveSemanticEnabled(config: SemanticConfigInput): Promi
       ? ["ollama", resolveOllamaSettings(config)]
       : ["xenova", model, getTransformersCacheDir()]
   );
-  if (!semanticResolutionCache || semanticResolutionCache.key !== key) {
-    let ready = false;
-    try {
-      ready =
-        backend === "ollama"
-          ? await semanticReadinessProbes.ollama(config)
-          : await semanticReadinessProbes.xenova(model);
-    } catch {
-      ready = false;
-    }
-    semanticResolutionCache = { key, ready };
+  // Capture the entry locally: another resolver with a different key may
+  // replace the single cache slot while we are awaiting this probe.
+  let entry = semanticResolutionCache;
+  if (!entry || entry.key !== key || Date.now() >= entry.expiresAt) {
+    const probe = Promise.resolve().then(() =>
+      backend === "ollama"
+        ? semanticReadinessProbes.ollama(config)
+        : semanticReadinessProbes.xenova(model)
+    );
+    const created: { key: string; ready: Promise<boolean>; expiresAt: number } = {
+      key,
+      // A probe must never take down the caller: any throw means "not ready".
+      ready: probe.then(
+        (ready) => ready === true,
+        () => false
+      ),
+      expiresAt: Number.POSITIVE_INFINITY,
+    };
+    created.ready = created.ready.then((ready) => {
+      created.expiresAt =
+        Date.now() + (ready ? SEMANTIC_READY_TTL_MS : SEMANTIC_NOT_READY_TTL_MS);
+      return ready;
+    });
+    entry = created;
+    semanticResolutionCache = entry;
   }
-  return getSemanticStatus(config, { autoReady: semanticResolutionCache.ready });
+  return getSemanticStatus(config, { autoReady: await entry.ready });
 }
 
 /**
@@ -1066,19 +1102,11 @@ export function getSemanticStatus(
     `Set semanticSearchEnabled: true in ~/.cass-memory/config.json (or config.yaml), ` +
     `or run \`${cli} doctor --fix\``;
 
-  // Check if explicitly disabled via config
-  if (config.semanticSearchEnabled === false) {
-    return {
-      enabled: false,
-      available: false,
-      reason: "Semantic search is disabled in config",
-      enableHint,
-      model,
-      posture: "explicit-off",
-    };
-  }
-
-  // Check if disabled via model="none"
+  // `embeddingModel: "none"` is the strongest opt-out — it says there is no
+  // embedding model at all — so it is checked first and wins over both
+  // `semanticSearchEnabled: true` and `false`, exactly as SemanticPosture
+  // documents. (Checking it first also lets callers switch on `posture`
+  // alone instead of re-testing the model name.)
   if (model === "none") {
     return {
       enabled: false,
@@ -1092,6 +1120,18 @@ export function getSemanticStatus(
 
   const backend = config.embeddingBackend ?? "xenova";
   const modelLabel = backend === "ollama" ? `ollama:${resolveOllamaSettings(config).model}` : model;
+
+  // Check if explicitly disabled via config
+  if (config.semanticSearchEnabled === false) {
+    return {
+      enabled: false,
+      available: false,
+      reason: "Semantic search is disabled in config",
+      enableHint,
+      model: modelLabel,
+      posture: "explicit-off",
+    };
+  }
 
   // Flag unset: automatic, but only when the backend is ready without network.
   if (config.semanticSearchEnabled === undefined) {
@@ -1117,7 +1157,8 @@ export function getSemanticStatus(
       enableHint:
         backend === "ollama"
           ? `Start Ollama (ollama serve) and pull the model (ollama pull ${resolveOllamaSettings(config).model}); ` +
-            `it turns on automatically, or force it with semanticSearchEnabled: true`
+            `it turns on automatically, or force it with semanticSearchEnabled: true in ` +
+            `~/.cass-memory/config.json (or config.yaml)`
           : `Run \`${cli} doctor --fix\` to download the model once (~23 MB); it turns on automatically ` +
             `afterwards, or set semanticSearchEnabled: true in ~/.cass-memory/config.json (or config.yaml)`,
       model: modelLabel,

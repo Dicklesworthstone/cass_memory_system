@@ -5,6 +5,7 @@ import { withLock } from "../lock.js";
 import { getEffectiveScore, getDecayedCounts } from "../scoring.js";
 import { PlaybookBullet, Playbook, PlaybookSchema, PlaybookBulletSchema, ErrorCode } from "../types.js";
 import { validateRule, formatValidationResult, hasIssues, type ValidationResult } from "../rule-validation.js";
+import { resolveSemanticEnabled } from "../semantic.js";
 import { readFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import chalk from "chalk";
@@ -250,6 +251,12 @@ async function handleBatchAdd(
 
   result.summary.total = rules.length;
 
+  // The similarity half of --check embeds, so it must respect the same
+  // posture as every other semantic path (#75) — otherwise --check would
+  // download the model behind the back of a user who opted out. Resolved once
+  // for the whole batch.
+  const semanticEnabled = flags.check ? (await resolveSemanticEnabled(config)).enabled : false;
+
   // Process rules within a single lock
   await withLock(targetPath, async () => {
     const { loadPlaybook } = await import("../playbook.js");
@@ -279,7 +286,10 @@ async function handleBatchAdd(
       // Validate if --check flag is set
       let validation: ValidationResult | undefined;
       if (flags.check) {
-        validation = await validateRule(rule.content, category, playbook);
+        validation = await validateRule(rule.content, category, playbook, {
+          skipSimilarity: !semanticEnabled,
+          model: config.embeddingModel,
+        });
 
         // In strict mode, skip rules with issues
         if (flags.strict && hasIssues(validation)) {
@@ -877,7 +887,11 @@ export async function playbookCommand(
       // Validate if --check flag is set
       let validation: ValidationResult | undefined;
       if (flags.check) {
-        validation = await validateRule(content, category, playbook);
+        validation = await validateRule(content, category, playbook, {
+          // Same posture gate as the batch path above (#75).
+          skipSimilarity: !(await resolveSemanticEnabled(config)).enabled,
+          model: config.embeddingModel,
+        });
 
         // In strict mode, fail on warnings
         if (flags.strict && hasIssues(validation)) {

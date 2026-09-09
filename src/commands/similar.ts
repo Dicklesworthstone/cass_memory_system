@@ -1,7 +1,7 @@
 import chalk from "chalk";
 import { loadConfig } from "../config.js";
 import { loadMergedPlaybook, getActiveBullets } from "../playbook.js";
-import { findSimilarBulletsSemantic, getSemanticStatus, formatSemanticModeMessage } from "../semantic.js";
+import { findSimilarBulletsSemantic, resolveSemanticEnabled, formatSemanticModeMessage } from "../semantic.js";
 import { getEffectiveScore } from "../scoring.js";
 import { isJsonOutput, isToonOutput, jaccardSimilarity, truncate, getCliName, printStructuredResult, reportError, validateOneOf, warn } from "../utils.js";
 import { ErrorCode, PlaybookBullet } from "../types.js";
@@ -93,7 +93,9 @@ export async function generateSimilarResults(
     typeof config.embeddingModel === "string" && config.embeddingModel.trim() !== ""
       ? config.embeddingModel.trim()
       : undefined;
-  const semanticEnabled = config.semanticSearchEnabled && embeddingModel !== "none";
+  // Unset `semanticSearchEnabled` means "automatic" (#75) — ask the resolver,
+  // never the raw flag.
+  const semanticEnabled = (await resolveSemanticEnabled(config)).enabled;
 
   if (semanticEnabled) {
     try {
@@ -174,7 +176,9 @@ export async function similarCommand(query: string, flags: SimilarFlags): Promis
     }
 
     const config = await loadConfig();
-    const semanticStatus = getSemanticStatus(config);
+    // Memoized inside the resolver, so this re-uses the probe from
+    // generateSimilarResults rather than repeating it.
+    const semanticStatus = await resolveSemanticEnabled(config);
     const style = getOutputStyle();
     const modeMessage = formatSemanticModeMessage(result.mode, semanticStatus);
 

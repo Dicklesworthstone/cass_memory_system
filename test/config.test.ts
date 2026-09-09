@@ -1072,7 +1072,11 @@ describe("Config Defaults Snapshot", () => {
 
     // Feature flags
     expect(defaults.validationEnabled).toBe(true);
-    expect(defaults.semanticSearchEnabled).toBe(false);
+    // Tri-state by design (#75): the default is *absent*, not false, so an
+    // unconfigured install runs semantic search as soon as the embedding
+    // backend is ready offline. Only an explicit true/false pins it.
+    expect(defaults.semanticSearchEnabled).toBeUndefined();
+    expect("semanticSearchEnabled" in defaults).toBe(false);
     expect(defaults.autoReflect).toBe(false);
     expect(defaults.crossAgent.enabled).toBe(false);
   });

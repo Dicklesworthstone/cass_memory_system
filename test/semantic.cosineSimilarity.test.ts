@@ -224,6 +224,7 @@ describe("semantic: formatSemanticModeMessage", () => {
       available: true,
       reason: "Semantic search enabled",
       model: "Xenova/all-MiniLM-L6-v2",
+      posture: "explicit-on",
     };
     const message = formatSemanticModeMessage("semantic", status);
     expect(message).toContain("semantic search");
@@ -237,6 +238,7 @@ describe("semantic: formatSemanticModeMessage", () => {
       reason: "Semantic search is disabled in config",
       enableHint: "Set semanticSearchEnabled: true in ~/.cass-memory/config.json (or config.yaml)",
       model: "Xenova/all-MiniLM-L6-v2",
+      posture: "explicit-off",
     };
     const message = formatSemanticModeMessage("keyword", status);
     expect(message).toContain("keyword search");
@@ -249,6 +251,7 @@ describe("semantic: formatSemanticModeMessage", () => {
       available: false,
       reason: "Model not available",
       model: "Xenova/all-MiniLM-L6-v2",
+      posture: "explicit-on",
     };
     const message = formatSemanticModeMessage("keyword", status);
     expect(message).toContain("keyword search");
