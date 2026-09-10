@@ -1513,6 +1513,7 @@ back to whichever file is active, in its own format.
 | `model` | `"claude-sonnet-5"` | Model for reflection |
 | `baseUrl` | _(unset)_ | Custom base URL for OpenAI-compatible gateways (OpenRouter, Z.AI, Azure, etc.) |
 | `disableStructuredOutputs` | `false` | Opt-in escape hatch for OpenAI strict structured-outputs mode. The reflect/audit/validate Zod schemas are written to be strict-compliant, but if you hit `cm reflect` returning zero deltas with "Invalid JSON response" warnings on a particular gateway/model combination (see #47), flipping this to `true` falls back to plain JSON mode while still applying the schemas as a post-hoc validator. Leave `false` unless you've confirmed strict-mode is the failure surface. |
+| `cliSubprocessCwd` | `"~/.cass-memory/llm-subprocess-cwd"` | Working directory for cm's own LLM subprocesses on `provider: "cli"`. Agent CLIs name their per-project transcript folder after the working directory, so running cm's `claude -p` / `codex` / `gemini` calls in one cm-owned directory keeps every transcript cm generates in a single place that `cm reflect` skips — otherwise cm reads its own prompts back as work sessions and grades its own rules (#76). Must be absolute or `~`-rooted; set to `""` to inherit cm's own working directory (the prompt still carries an internal marker that `reflect` recognises). |
 | `budget.dailyLimit` | `1.00` | Max daily LLM spend (USD) |
 | `budget.monthlyLimit` | `20.00` | Max monthly LLM spend (USD) |
 | `budget.warningThreshold` | `80` | Percentage before warning |

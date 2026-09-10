@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DEFAULT_CLI_SUBPROCESS_CWD, isValidCliSubprocessCwd } from "./subprocess-tag.js";
 
 // ============================================================================
 // ENUMS & CONSTANTS
@@ -431,6 +432,14 @@ export const ConfigSchema = z.object({
     "inline-completion",
     "/subagents/agent-a",     // Claude Code subagent internal sessions (agent-a* pattern)
     "/subagents/workflows/",  // Claude Code workflow-subagent transcripts (large internal logs that flood reflect batches, #66)
+    // Transcripts of cm's own `claude -p` / codex / gemini calls (#76). Listed
+    // here for discoverability, but session discovery ALSO excludes them
+    // unconditionally — an existing config file that pins its own
+    // sessionExcludePatterns must not be able to re-open the self-grading loop,
+    // and neither must `sessionIncludeAll`. The unconditional check derives the
+    // real slug from `cliSubprocessCwd`, so it stays correct if that is moved;
+    // this literal only covers the default location.
+    "-cass-memory-llm-subprocess-cwd/",
   ]),
   // Set to true to include all sessions (ignore exclusion patterns)
   sessionIncludeAll: z.boolean().default(false),
@@ -475,6 +484,24 @@ export const ConfigSchema = z.object({
   budget: BudgetConfigSchema.default({}),
   serve: ServeConfigSchema.default({}),
   cliCommand: z.string().min(1).max(256).optional(),
+  // Working directory for cm's own LLM subprocesses on `provider: cli` (#76).
+  // Agent CLIs name their per-project transcript folder after the cwd, so
+  // running in one cm-owned directory keeps every transcript cm generates in a
+  // single deterministic location that session discovery excludes. Defaults to
+  // `~/.cass-memory/llm-subprocess-cwd`; set to "" to inherit cm's own cwd
+  // (pre-0.2.15 behaviour — the prompt payload marker still tags the call).
+  // Must be absolute or `~`-rooted: a relative path would resolve against
+  // whatever directory cm was launched from, so the transcript slug it produces
+  // would differ between a cron run and an interactive run and the exclusion
+  // would quietly stop matching.
+  cliSubprocessCwd: z
+    .string()
+    .max(4096)
+    .refine(isValidCliSubprocessCwd, {
+      message:
+        "cliSubprocessCwd must be an absolute path, a ~-rooted path, or \"\" to inherit cm's working directory",
+    })
+    .default(DEFAULT_CLI_SUBPROCESS_CWD),
 });
 export type Config = z.infer<typeof ConfigSchema>;
 

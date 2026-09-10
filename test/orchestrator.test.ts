@@ -18,6 +18,7 @@ import { expandPath, now } from "../src/utils.js";
 import { cleanupEnvironment, createIsolatedEnvironment, TestEnv } from "./helpers/temp.js";
 import { createTestConfig, createTestPlaybook, createBullet } from "./helpers/factories.js";
 import { withLlmShim, type LlmShimConfig } from "./helpers/llm-shim.js";
+import { tagCmSubprocessPrompt } from "../src/subprocess-tag.js";
 
 async function withEnv<T>(
   overrides: Record<string, string | undefined>,
@@ -177,6 +178,99 @@ describe("orchestrateReflection (unit)", () => {
         const logPath = expandPath(getProcessedLogPath());
         const content = readFileSync(logPath, "utf-8");
         expect(content).toContain(sessionPath);
+      });
+    });
+  });
+
+  test("#76 skips a transcript of cm's own LLM subprocess call and marks it processed", async () => {
+    await withIsolatedHome(async (env) => {
+      writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])), "utf-8");
+
+      // A recording of one of cm's own `claude -p` calls: the piped prompt is
+      // stored verbatim, so it carries the payload marker cm wraps it in.
+      const sessionPath = path.join(env.home, "sessions", "cm-own-call.jsonl");
+      writeJsonlSession(sessionPath, [
+        {
+          role: "user",
+          content: tagCmSubprocessPrompt(
+            "You are a reflector. Existing playbook:\n- b-aaa111 always run the linter\n" +
+              "- b-bbb222 prefer explicit imports\nEmit deltas as JSON."
+          ),
+        },
+        { role: "assistant", content: '{"deltas":[]}' },
+      ]);
+
+      const config = createTestConfig({
+        playbookPath: env.playbookPath,
+        diaryDir: env.diaryDir,
+        cassPath: "/__missing__/cass",
+        validationEnabled: false,
+      });
+
+      await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
+        const skips: string[] = [];
+        const outcome = await orchestrateReflection(config, {
+          session: sessionPath,
+          onProgress: (e) => {
+            if (e.phase === "session_skip") skips.push(e.reason);
+          },
+        });
+
+        expect(outcome.errors).toEqual([]);
+        expect(outcome.sessionsProcessed).toBe(0);
+        expect(outcome.deltasGenerated).toBe(0);
+        // No rule ids scraped from cm's own prompt → no auto-graded outcomes.
+        expect(outcome.autoOutcome).toBeUndefined();
+        expect(skips).toEqual(["Transcript of cm's own LLM subprocess call"]);
+
+        // Marked processed so it can never consume the discovery budget again.
+        const logContent = readFileSync(expandPath(getProcessedLogPath()), "utf-8");
+        expect(logContent).toContain(sessionPath);
+      });
+    });
+  });
+
+  test("#76 an ordinary session beside cm's own transcripts is still reflected on and still graded", async () => {
+    // Guards the other half of the fix: excluding cm's own calls must not cost
+    // real sessions their reflection or their auto-recorded outcomes.
+    await withIsolatedHome(async (env) => {
+      writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])), "utf-8");
+
+      const sessionPath = path.join(env.home, "sessions", "real-work.jsonl");
+      writeJsonlSession(sessionPath, [
+        {
+          role: "user",
+          content:
+            "Following b-ccc333 I refactored the exporter, then debugged why reflect grades everything.",
+        },
+        {
+          role: "assistant",
+          content:
+            "Applied the rule, the refactor is done and the whole suite is green now.",
+        },
+      ]);
+
+      const config = createTestConfig({
+        playbookPath: env.playbookPath,
+        diaryDir: env.diaryDir,
+        cassPath: "/__missing__/cass",
+        validationEnabled: false,
+      });
+
+      await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
+        await withLlmShim({ reflector: { deltas: [] } }, async (io) => {
+          const outcome = await orchestrateReflection(config, { session: sessionPath, io });
+
+          expect(outcome.errors).toEqual([]);
+          expect(outcome.sessionsProcessed).toBe(1);
+          expect(outcome.autoOutcome?.outcomesRecorded ?? 0).toBeGreaterThan(0);
+
+          const outcomeLog = readFileSync(
+            path.join(env.home, ".cass-memory", "outcomes.jsonl"),
+            "utf-8"
+          );
+          expect(outcomeLog).toContain("b-ccc333");
+        });
       });
     });
   });

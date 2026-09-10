@@ -7,6 +7,7 @@ import {
   PlaybookBulletSchema
 } from "../../src/types.js";
 import { generateBulletId, generateDiaryId, now } from "../../src/utils.js";
+import { DEFAULT_CLI_SUBPROCESS_CWD } from "../../src/subprocess-tag.js";
 
 /**
  * Helper to create an ISO timestamp for N days ago.
@@ -41,6 +42,7 @@ export function createTestConfig(overrides: Partial<Config> = {}): Config {
       "/subagents/agent-a",
     ],
     sessionIncludeAll: false,
+    cliSubprocessCwd: DEFAULT_CLI_SUBPROCESS_CWD,
     dedupSimilarityThreshold: 0.85,
     pruneHarmfulThreshold: 3,
     defaultDecayHalfLife: 90,

@@ -218,6 +218,9 @@ export async function loadConfig(cliOverrides: Partial<Config> = {}): Promise<Co
     delete repoConfig.baseUrl; // Prevent repo from redirecting API calls to exfiltration endpoints
     delete repoConfig.ollamaBaseUrl; // Same concern — controls where model calls are sent
     delete repoConfig.cliCommand; // Prevent repo from redirecting CLI calls to arbitrary executables
+    // Same class of concern: this is the directory cm runs an agent CLI in, and
+    // clearing it would also re-open the #76 self-reflection loop.
+    delete (repoConfig as any).cliSubprocessCwd;
     delete (repoConfig as any).budget;
     delete (repoConfig as any).sanitization;
     // `serve` is a deployment concern (bounds a shared `cm serve` process); a

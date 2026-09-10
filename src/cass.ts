@@ -11,6 +11,7 @@ import {
   RemoteCassHost
 } from "./types.js";
 import { log, warn, error, expandPath, validatePositiveInt, canonicalAgentName } from "./utils.js";
+import { isCmSubprocessTranscriptPath } from "./subprocess-tag.js";
 import { sanitize, compileExtraPatterns } from "./sanitize.js";
 import { loadConfig, getSanitizeConfig } from "./config.js";
 
@@ -1123,6 +1124,12 @@ export async function findUnprocessedSessions(
     agent?: string;
     excludePatterns?: string[];
     includeAll?: boolean;
+    /**
+     * Working directory cm runs its own LLM subprocesses in (`config.cliSubprocessCwd`).
+     * Transcripts under the matching agent-CLI project folder are cm's own
+     * calls and are dropped unconditionally — see the #76 note below.
+     */
+    cliSubprocessCwd?: string;
   },
   cassPath = "cass",
   runner: CassRunner = DEFAULT_CASS_RUNNER
@@ -1185,8 +1192,19 @@ export async function findUnprocessedSessions(
     return excludePatterns.some((pattern) => pathLower.includes(pattern.toLowerCase()));
   };
 
+  // #76: transcripts of cm's OWN LLM subprocess calls are dropped before any
+  // user-controlled filter runs. This is deliberately not expressed as an entry
+  // in `excludePatterns`: `sessionIncludeAll`, or a config file that pins its
+  // own pattern list, would otherwise re-open the self-grading loop where cm
+  // reflects on its own reflector prompts. The path is derived from the cwd cm
+  // actually spawns those subprocesses in, so it is exact rather than a guess
+  // at what an internal session "looks like".
+  const isOwnSubprocess = (sessionPath: string): boolean =>
+    isCmSubprocessTranscriptPath(sessionPath, options.cliSubprocessCwd);
+
   return allSessions
     .filter((s) => !processed.has(s.path))
+    .filter((s) => !isOwnSubprocess(s.path))
     .filter((s) => !agentNormalized || canonicalAgentName(s.agent) === agentNormalized)
     .filter((s) => !matchesExcludePattern(s.path))
     .map((s) => ({ path: s.path, agent: s.agent || "unknown" }))

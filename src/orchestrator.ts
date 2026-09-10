@@ -10,6 +10,7 @@ import { curatePlaybook } from "./curate.js";
 import { expandPath, log, warn, error, now, fileExists, resolveRepoDir, generateBulletId, hashContent, jaccardSimilarity, ensureDir, parseInlineFeedback } from "./utils.js";
 import { withLock } from "./lock.js";
 import { extractRuleIdsFromTranscript, classifySessionOutcome, recordOutcome, applyOutcomeFeedback, type OutcomeInput } from "./outcome.js";
+import { containsCmSubprocessPayload, stripCmSubprocessPayloads } from "./subprocess-tag.js";
 import path from "node:path";
 
 export interface ReflectionOptions {
@@ -121,7 +122,8 @@ export async function orchestrateReflection(
             maxSessions: options.maxSessions || 5,
             agent: options.agent,
             excludePatterns: config.sessionExcludePatterns,
-            includeAll: config.sessionIncludeAll
+            includeAll: config.sessionIncludeAll,
+            cliSubprocessCwd: config.cliSubprocessCwd
           },
           config.cassPath
         );
@@ -159,10 +161,45 @@ export async function orchestrateReflection(
       });
 
       try {
+        const content = await cassExport(sessionPath, "text", config.cassPath, config) || "";
+
+        // #76: a transcript carrying cm's private payload marker is a recording
+        // of one of cm's OWN `claude -p` / codex / gemini calls, not a work
+        // session. Reflecting on it feeds cm's reflector prompt back into the
+        // playbook and auto-grades every bullet id that prompt embedded.
+        //
+        // Path exclusion in findUnprocessedSessions is the primary defence;
+        // this catches the cases it cannot see — CLI tools that do not key
+        // their transcript directory on the cwd (codex, gemini), an explicit
+        // `--session <path>`, and transcripts written before the cwd tag
+        // existed. Marked processed so it never consumes the discovery budget
+        // again, exactly like the empty-session path below.
+        //
+        // This errs on the safe side on purpose: a genuine session that quotes
+        // one of cm's prompts verbatim is skipped too. cm never writes this
+        // marker to stdout, a log or a playbook, so that requires someone to
+        // paste cm's internal prompt into their own transcript. Losing one
+        // session's insights is much cheaper than re-opening the loop, and the
+        // skip is reported with an explicit reason rather than silently.
+        if (containsCmSubprocessPayload(content)) {
+          options.onProgress?.({
+            phase: "session_skip",
+            index: i + 1,
+            totalSessions: unprocessed.length,
+            sessionPath,
+            reason: "Transcript of cm's own LLM subprocess call",
+          });
+          pendingProcessedEntries.push({
+            sessionPath,
+            processedAt: now(),
+            deltasGenerated: 0
+          });
+          continue;
+        }
+
         const diary = await generateDiary(sessionPath, config, { agent: agentHints.get(sessionPath) });
 
         // Quick check for empty sessions to save tokens
-        const content = await cassExport(sessionPath, "text", config.cassPath, config) || "";
         if (content.length < 50) {
           options.onProgress?.({
             phase: "session_skip",
@@ -202,9 +239,21 @@ export async function orchestrateReflection(
         }
 
         // 4b. Auto-outcome: extract rule IDs, inline feedback, and classify session
-        if (content) {
+        //
+        // Grading reads a payload-stripped copy (#76). A bullet id or inline
+        // feedback comment that only ever appears inside a prompt cm itself
+        // wrote was never used or judged by an agent, so it must not earn a
+        // helpful/harmful event.
+        //
+        // Defence in depth: the skip above means no payload should reach this
+        // point today. It stays because grading is the step that actually
+        // corrupted playbooks in #76 — if the skip is ever narrowed, or a
+        // future caller reaches the auto-outcome block another way, cm's own
+        // prompts must still be unable to award themselves helpful counts.
+        const gradableContent = stripCmSubprocessPayloads(content);
+        if (gradableContent) {
           // Parse inline feedback comments (// [cass: helpful b-xyz] - reason)
-          const inlineFeedback = parseInlineFeedback(content);
+          const inlineFeedback = parseInlineFeedback(gradableContent);
           if (inlineFeedback.length > 0) {
             for (const fb of inlineFeedback) {
               const delta: PlaybookDelta = fb.type === "harmful"
@@ -219,10 +268,10 @@ export async function orchestrateReflection(
           // Exclude IDs that already have explicit inline feedback to avoid
           // double-counting (they get direct signal from the delta above).
           const inlineFeedbackIds = new Set(inlineFeedback.map(fb => fb.bulletId.toLowerCase()));
-          const ruleIds = extractRuleIdsFromTranscript(content)
+          const ruleIds = extractRuleIdsFromTranscript(gradableContent)
             .filter(id => !inlineFeedbackIds.has(id));
           if (ruleIds.length > 0) {
-            const outcomeInput = classifySessionOutcome(content, diary, ruleIds);
+            const outcomeInput = classifySessionOutcome(gradableContent, diary, ruleIds);
             if (outcomeInput) {
               pendingOutcomes.push(outcomeInput);
             }

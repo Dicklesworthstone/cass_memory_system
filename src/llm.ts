@@ -13,6 +13,12 @@ import type { Config, DiaryEntry, LLMProvider } from "./types.js";
 import { DEFAULT_ANTHROPIC_MODEL } from "./types.js";
 import { checkBudget, recordCost } from "./cost.js";
 import { truncateForContext, warn } from "./utils.js";
+import {
+  CM_SUBPROCESS_ENV_VALUE,
+  CM_SUBPROCESS_ENV_VAR,
+  resolveCliSubprocessCwd,
+  tagCmSubprocessPrompt,
+} from "./subprocess-tag.js";
 
 // Re-export LLMProvider from types.ts (single source of truth)
 export type { LLMProvider } from "./types.js";
@@ -353,6 +359,7 @@ export async function cliGenerateObject<T>(
   prompt: string,
   cliCommand?: string,
   timeoutMs?: number,
+  cliSubprocessCwd?: string,
 ): Promise<{ object: T; usage: LLMUsage }> {
   const cmd = resolveCliCommand(cliCommand);
   if (!cmd) {
@@ -372,8 +379,14 @@ export async function cliGenerateObject<T>(
     }
   } catch { /* non-critical — use generic hint */ }
 
+  // The caller's prompt is bracketed with cm's private payload markers (#76).
+  // Claude Code persists a `-p` call as an ordinary session transcript, so
+  // without this tag the next `cm reflect` reads cm's own reflector prompt back
+  // as a real work session and auto-grades every bullet id the prompt embedded.
+  // The markers wrap only `prompt`; the JSON instructions below stay outside so
+  // the last thing the model reads is still "output ONLY the JSON object".
   const enhancedPrompt = [
-    prompt,
+    tagCmSubprocessPrompt(prompt),
     "",
     "CRITICAL: You MUST respond with ONLY valid JSON (no markdown, no explanation, no prose).",
     `The JSON must conform to this schema: ${schemaHint}`,
@@ -398,11 +411,36 @@ export async function cliGenerateObject<T>(
         ? envTimeout
         : 120_000; // 2 minutes — generous for large prompts
 
+  // Run in a dedicated cm-owned directory (#76). Agent CLIs key their
+  // per-project transcript folder on the cwd, so this puts every transcript cm
+  // generates into one deterministic `~/.claude/projects/<slug>/` that session
+  // discovery excludes unconditionally. Set `cliSubprocessCwd: ""` in config to
+  // inherit cm's own cwd instead (pre-0.2.15 behaviour); the payload marker
+  // still tags the call in that mode.
+  let subprocessCwd = resolveCliSubprocessCwd(cliSubprocessCwd);
+  if (subprocessCwd) {
+    try {
+      const { mkdir } = await import("node:fs/promises");
+      await mkdir(subprocessCwd, { recursive: true });
+    } catch (err: any) {
+      // A cwd we cannot create is not worth failing the call over — fall back
+      // to inheriting cm's cwd and rely on the payload marker.
+      warn(`[CLI] Could not create LLM subprocess directory ${subprocessCwd}: ${err?.message || err}`);
+      subprocessCwd = null;
+    }
+  }
+
   const proc = Bun.spawn(spawnArgs, {
     stdin: new Response(enhancedPrompt).body!,
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0" },
+    cwd: subprocessCwd ?? undefined,
+    env: {
+      ...process.env,
+      NO_COLOR: "1",
+      FORCE_COLOR: "0",
+      [CM_SUBPROCESS_ENV_VAR]: CM_SUBPROCESS_ENV_VALUE,
+    },
   });
 
   // Race the process against a timeout to prevent indefinite hangs
@@ -938,7 +976,7 @@ export async function generateObjectSafe<T>(
         const retryPrompt = attempt > 1 && lastCliError
           ? `[PREVIOUS ATTEMPT FAILED: ${lastCliError}]\nYou MUST output valid JSON this time.\n\n${prompt}`
           : prompt;
-        const result = await cliGenerateObject(schema, retryPrompt, config.cliCommand, config.llmTimeoutMs);
+        const result = await cliGenerateObject(schema, retryPrompt, config.cliCommand, config.llmTimeoutMs, config.cliSubprocessCwd);
         return result.object;
       } catch (err: any) {
         lastCliError = err.message?.slice(0, 200);
@@ -1348,7 +1386,7 @@ export async function llmWithFallback<T>(
     try {
       // CLI provider: bypass AI SDK, shell out directly
       if (provider === "cli") {
-        const result = await cliGenerateObject<T>(schema, prompt, config.cliCommand, config.llmTimeoutMs);
+        const result = await cliGenerateObject<T>(schema, prompt, config.cliCommand, config.llmTimeoutMs, config.cliSubprocessCwd);
         return result.object;
       }
 
