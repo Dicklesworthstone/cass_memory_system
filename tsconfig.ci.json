@@ -1,1 +1,5 @@
-{"extends":"./tsconfig.json","include":["src","test","bun.d.ts","types.d.ts","tsconfig.tsbuildinfo"],"exclude":["node_modules","dist","coverage"]}
+{
+  "extends": "./tsconfig.json",
+  "include": ["src", "test", "bun.d.ts", "types.d.ts", "tsconfig.tsbuildinfo"],
+  "exclude": ["node_modules", "dist", "coverage"]
+}
