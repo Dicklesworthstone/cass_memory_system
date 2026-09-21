@@ -10,12 +10,9 @@
  * - Global test configuration
  * - Cleanup handlers
  */
-import { beforeAll, afterAll, beforeEach, afterEach } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach } from "bun:test";
+import { configureOllamaEmbedding, setEmbeddingBackend } from "../src/semantic.js";
 import { __setStdoutSinkForTests } from "../src/utils.js";
-import {
-  configureOllamaEmbedding,
-  setEmbeddingBackend,
-} from "../src/semantic.js";
 
 // Store original environment to restore after tests
 const originalEnv: Record<string, string | undefined> = {};
@@ -90,7 +87,7 @@ afterEach(() => {
 // Global timeout for tests (can be overridden per-test)
 // Bun default is 5000ms, increase for E2E tests
 if (typeof globalThis.Bun !== "undefined") {
-  // @ts-ignore - Bun-specific test configuration
+  // @ts-expect-error - Bun-specific test configuration
   globalThis.testTimeout = 30000;
 }
 

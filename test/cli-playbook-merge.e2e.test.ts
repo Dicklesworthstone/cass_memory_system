@@ -5,14 +5,14 @@
  * - Global playbook (~/.cass-memory/playbook.yaml)
  * - Repo playbook (.cass/playbook.yaml)
  */
-import { describe, it, expect } from "bun:test";
-import { writeFile, readFile, rm, mkdir } from "node:fs/promises";
-import path from "node:path";
+import { describe, expect, it } from "bun:test";
 import { execSync } from "node:child_process";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import path from "node:path";
 import yaml from "yaml";
-import { loadMergedPlaybook } from "../src/playbook.js";
 import { loadConfig } from "../src/config.js";
-import { withTempCassHome, TestEnv } from "./helpers/temp.js";
+import { loadMergedPlaybook } from "../src/playbook.js";
+import { TestEnv, withTempCassHome } from "./helpers/temp.js";
 
 // Helper to initialize a git repo so resolveRepoDir() can find it
 function initGitRepo(dir: string): void {
@@ -29,28 +29,30 @@ function createTestPlaybook(bullets: any[] = [], deprecatedPatterns: any[] = [])
     metadata: {
       createdAt: now,
       totalReflections: 0,
-      totalSessionsProcessed: 0
+      totalSessionsProcessed: 0,
     },
     bullets: bullets,
-    deprecatedPatterns: deprecatedPatterns
+    deprecatedPatterns: deprecatedPatterns,
   };
 }
 
 // Helper to create a valid test bullet
-function createTestBullet(overrides: Partial<{
-  id: string;
-  content: string;
-  kind: string;
-  category: string;
-  scope: string;
-  workspace?: string;
-  tags: string[];
-  maturity: string;
-  isNegative?: boolean;
-  effectiveScore?: number;
-  helpfulCount?: number;
-  harmfulCount?: number;
-}> = {}) {
+function createTestBullet(
+  overrides: Partial<{
+    id: string;
+    content: string;
+    kind: string;
+    category: string;
+    scope: string;
+    workspace?: string;
+    tags: string[];
+    maturity: string;
+    isNegative?: boolean;
+    effectiveScore?: number;
+    helpfulCount?: number;
+    harmfulCount?: number;
+  }> = {},
+) {
   const now = new Date().toISOString();
   return {
     id: overrides.id || `test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -68,7 +70,7 @@ function createTestBullet(overrides: Partial<{
     helpfulCount: overrides.helpfulCount ?? 0,
     harmfulCount: overrides.harmfulCount ?? 0,
     createdAt: now,
-    updatedAt: now
+    updatedAt: now,
   };
 }
 
@@ -79,7 +81,7 @@ describe("E2E: Playbook Merge - Global plus Repo", () => {
         const globalPlaybook = createTestPlaybook([
           createTestBullet({ id: "global-1", content: "Global rule 1", category: "global" }),
           createTestBullet({ id: "global-2", content: "Global rule 2", category: "global" }),
-          createTestBullet({ id: "global-3", content: "Global rule 3", category: "global" })
+          createTestBullet({ id: "global-3", content: "Global rule 3", category: "global" }),
         ]);
         await writeFile(env.playbookPath, yaml.stringify(globalPlaybook));
 
@@ -87,7 +89,7 @@ describe("E2E: Playbook Merge - Global plus Repo", () => {
         const merged = await loadMergedPlaybook(config);
 
         expect(merged.bullets.length).toBe(3);
-        expect(merged.bullets.every(b => b.id.startsWith("global-"))).toBe(true);
+        expect(merged.bullets.every((b) => b.id.startsWith("global-"))).toBe(true);
       });
     });
 
@@ -97,7 +99,7 @@ describe("E2E: Playbook Merge - Global plus Repo", () => {
         const globalPlaybook = createTestPlaybook([
           createTestBullet({ id: "global-1", content: "Global rule 1", category: "global" }),
           createTestBullet({ id: "global-2", content: "Global rule 2", category: "global" }),
-          createTestBullet({ id: "global-3", content: "Global rule 3", category: "global" })
+          createTestBullet({ id: "global-3", content: "Global rule 3", category: "global" }),
         ]);
         await writeFile(env.playbookPath, yaml.stringify(globalPlaybook));
 
@@ -107,7 +109,7 @@ describe("E2E: Playbook Merge - Global plus Repo", () => {
 
         const repoPlaybook = createTestPlaybook([
           createTestBullet({ id: "repo-1", content: "Repo rule 1", category: "repo" }),
-          createTestBullet({ id: "repo-2", content: "Repo rule 2", category: "repo" })
+          createTestBullet({ id: "repo-2", content: "Repo rule 2", category: "repo" }),
         ]);
         await writeFile(path.join(repoDir, "playbook.yaml"), yaml.stringify(repoPlaybook));
 
@@ -125,8 +127,8 @@ describe("E2E: Playbook Merge - Global plus Repo", () => {
           // Should have all 5 bullets
           expect(merged.bullets.length).toBe(5);
 
-          const globalBullets = merged.bullets.filter(b => b.id.startsWith("global-"));
-          const repoBullets = merged.bullets.filter(b => b.id.startsWith("repo-"));
+          const globalBullets = merged.bullets.filter((b) => b.id.startsWith("global-"));
+          const repoBullets = merged.bullets.filter((b) => b.id.startsWith("repo-"));
 
           expect(globalBullets.length).toBe(3);
           expect(repoBullets.length).toBe(2);
@@ -144,8 +146,8 @@ describe("E2E: Playbook Merge - Global plus Repo", () => {
             id: "shared-bullet",
             content: "Global version of the rule",
             category: "global",
-            helpfulCount: 5
-          })
+            helpfulCount: 5,
+          }),
         ]);
         await writeFile(env.playbookPath, yaml.stringify(globalPlaybook));
 
@@ -158,8 +160,8 @@ describe("E2E: Playbook Merge - Global plus Repo", () => {
             id: "shared-bullet",
             content: "Repo version of the rule (takes precedence)",
             category: "repo",
-            helpfulCount: 10
-          })
+            helpfulCount: 10,
+          }),
         ]);
         await writeFile(path.join(repoDir, "playbook.yaml"), yaml.stringify(repoPlaybook));
 
@@ -194,19 +196,23 @@ describe("E2E: Playbook Merge - Global plus Repo", () => {
         const now = new Date().toISOString();
 
         // Create global playbook with deprecated patterns
-        const globalPlaybook = createTestPlaybook([], [
-          { pattern: "eval\\(", reason: "Security risk", deprecatedAt: now },
-          { pattern: "\\bany\\b", reason: "Type safety", deprecatedAt: now }
-        ]);
+        const globalPlaybook = createTestPlaybook(
+          [],
+          [
+            { pattern: "eval\\(", reason: "Security risk", deprecatedAt: now },
+            { pattern: "\\bany\\b", reason: "Type safety", deprecatedAt: now },
+          ],
+        );
         await writeFile(env.playbookPath, yaml.stringify(globalPlaybook));
 
         // Create repo playbook with additional deprecated patterns
         const repoDir = path.join(env.home, "test-repo", ".cass");
         await mkdir(repoDir, { recursive: true });
 
-        const repoPlaybook = createTestPlaybook([], [
-          { pattern: "console\\.log", reason: "Use logger instead", deprecatedAt: now }
-        ]);
+        const repoPlaybook = createTestPlaybook(
+          [],
+          [{ pattern: "console\\.log", reason: "Use logger instead", deprecatedAt: now }],
+        );
         await writeFile(path.join(repoDir, "playbook.yaml"), yaml.stringify(repoPlaybook));
 
         // Initialize git repo so resolveRepoDir() can find it
@@ -222,7 +228,7 @@ describe("E2E: Playbook Merge - Global plus Repo", () => {
           // Should have all 3 deprecated patterns
           expect(merged.deprecatedPatterns.length).toBe(3);
 
-          const patterns = merged.deprecatedPatterns.map(p => p.pattern);
+          const patterns = merged.deprecatedPatterns.map((p) => p.pattern);
           expect(patterns).toContain("eval\\(");
           expect(patterns).toContain("\\bany\\b");
           expect(patterns).toContain("console\\.log");
@@ -241,8 +247,8 @@ describe("E2E: Playbook Merge - Global plus Repo", () => {
           createTestBullet({
             id: "global-scoped",
             content: "Applies everywhere",
-            scope: "global"
-          })
+            scope: "global",
+          }),
         ]);
         await writeFile(env.playbookPath, yaml.stringify(globalPlaybook));
 
@@ -255,8 +261,8 @@ describe("E2E: Playbook Merge - Global plus Repo", () => {
             id: "workspace-scoped",
             content: "Only for frontend workspace",
             scope: "workspace",
-            workspace: "frontend"
-          })
+            workspace: "frontend",
+          }),
         ]);
         await writeFile(path.join(repoDir, "playbook.yaml"), yaml.stringify(repoPlaybook));
 
@@ -272,8 +278,8 @@ describe("E2E: Playbook Merge - Global plus Repo", () => {
 
           expect(merged.bullets.length).toBe(2);
 
-          const globalBullet = merged.bullets.find(b => b.id === "global-scoped");
-          const workspaceBullet = merged.bullets.find(b => b.id === "workspace-scoped");
+          const globalBullet = merged.bullets.find((b) => b.id === "global-scoped");
+          const workspaceBullet = merged.bullets.find((b) => b.id === "workspace-scoped");
 
           expect(globalBullet?.scope).toBe("global");
           expect(workspaceBullet?.scope).toBe("workspace");
@@ -299,10 +305,10 @@ describe("E2E: Playbook Merge - Global plus Repo", () => {
           metadata: {
             createdAt: earlyDate,
             totalReflections: 100,
-            totalSessionsProcessed: 50
+            totalSessionsProcessed: 50,
           },
           bullets: [],
-          deprecatedPatterns: []
+          deprecatedPatterns: [],
         };
         await writeFile(env.playbookPath, yaml.stringify(globalPlaybook));
 
@@ -317,10 +323,10 @@ describe("E2E: Playbook Merge - Global plus Repo", () => {
           metadata: {
             createdAt: lateDate,
             totalReflections: 10,
-            totalSessionsProcessed: 5
+            totalSessionsProcessed: 5,
           },
           bullets: [],
-          deprecatedPatterns: []
+          deprecatedPatterns: [],
         };
         await writeFile(path.join(repoDir, "playbook.yaml"), yaml.stringify(repoPlaybook));
 
@@ -353,8 +359,8 @@ describe("E2E: Playbook Merge - Global plus Repo", () => {
           createTestBullet({
             id: `global-${i}`,
             content: `Global rule ${i}`,
-            category: "global"
-          })
+            category: "global",
+          }),
         );
         const globalPlaybook = createTestPlaybook(globalBullets);
         await writeFile(env.playbookPath, yaml.stringify(globalPlaybook));
@@ -367,8 +373,8 @@ describe("E2E: Playbook Merge - Global plus Repo", () => {
           createTestBullet({
             id: `repo-${i}`,
             content: `Repo rule ${i}`,
-            category: "repo"
-          })
+            category: "repo",
+          }),
         );
         const repoPlaybook = createTestPlaybook(repoBullets);
         await writeFile(path.join(repoDir, "playbook.yaml"), yaml.stringify(repoPlaybook));
@@ -397,7 +403,7 @@ describe("E2E: Playbook Merge - Global plus Repo", () => {
         const globalPlaybook = createTestPlaybook([
           createTestBullet({ id: "shared-1", content: "Global shared 1", category: "global" }),
           createTestBullet({ id: "shared-2", content: "Global shared 2", category: "global" }),
-          createTestBullet({ id: "global-unique", content: "Global unique", category: "global" })
+          createTestBullet({ id: "global-unique", content: "Global unique", category: "global" }),
         ]);
         await writeFile(env.playbookPath, yaml.stringify(globalPlaybook));
 
@@ -406,9 +412,17 @@ describe("E2E: Playbook Merge - Global plus Repo", () => {
         await mkdir(repoDir, { recursive: true });
 
         const repoPlaybook = createTestPlaybook([
-          createTestBullet({ id: "shared-1", content: "Repo shared 1 (override)", category: "repo" }),
-          createTestBullet({ id: "shared-2", content: "Repo shared 2 (override)", category: "repo" }),
-          createTestBullet({ id: "repo-unique", content: "Repo unique", category: "repo" })
+          createTestBullet({
+            id: "shared-1",
+            content: "Repo shared 1 (override)",
+            category: "repo",
+          }),
+          createTestBullet({
+            id: "shared-2",
+            content: "Repo shared 2 (override)",
+            category: "repo",
+          }),
+          createTestBullet({ id: "repo-unique", content: "Repo unique", category: "repo" }),
         ]);
         await writeFile(path.join(repoDir, "playbook.yaml"), yaml.stringify(repoPlaybook));
 
@@ -426,15 +440,15 @@ describe("E2E: Playbook Merge - Global plus Repo", () => {
           expect(merged.bullets.length).toBe(4);
 
           // Verify repo versions won for shared IDs
-          const shared1 = merged.bullets.find(b => b.id === "shared-1");
-          const shared2 = merged.bullets.find(b => b.id === "shared-2");
+          const shared1 = merged.bullets.find((b) => b.id === "shared-1");
+          const shared2 = merged.bullets.find((b) => b.id === "shared-2");
 
           expect(shared1?.content).toBe("Repo shared 1 (override)");
           expect(shared2?.content).toBe("Repo shared 2 (override)");
 
           // Verify unique bullets exist
-          expect(merged.bullets.some(b => b.id === "global-unique")).toBe(true);
-          expect(merged.bullets.some(b => b.id === "repo-unique")).toBe(true);
+          expect(merged.bullets.some((b) => b.id === "global-unique")).toBe(true);
+          expect(merged.bullets.some((b) => b.id === "repo-unique")).toBe(true);
         } finally {
           process.chdir(originalCwd);
         }
@@ -454,7 +468,7 @@ describe("E2E: Playbook Merge - Global plus Repo", () => {
         await mkdir(repoDir, { recursive: true });
 
         const repoPlaybook = createTestPlaybook([
-          createTestBullet({ id: "repo-only", content: "Only in repo", category: "repo" })
+          createTestBullet({ id: "repo-only", content: "Only in repo", category: "repo" }),
         ]);
         await writeFile(path.join(repoDir, "playbook.yaml"), yaml.stringify(repoPlaybook));
 
@@ -480,7 +494,7 @@ describe("E2E: Playbook Merge - Global plus Repo", () => {
       await withTempCassHome(async (env) => {
         // Create global playbook with bullets
         const globalPlaybook = createTestPlaybook([
-          createTestBullet({ id: "global-only", content: "Only in global", category: "global" })
+          createTestBullet({ id: "global-only", content: "Only in global", category: "global" }),
         ]);
         await writeFile(env.playbookPath, yaml.stringify(globalPlaybook));
 

@@ -13,13 +13,19 @@
  * - Test error cases: no sessions, invalid session format
  * - Detailed logging: sessions processed, deltas generated, playbook changes
  */
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { writeFile, readFile, rm, mkdir, stat } from "node:fs/promises";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
 import { reflectCommand } from "../src/commands/reflect.js";
-import { withTempCassHome, TestEnv, makeCassStub, createIsolatedEnvironment, cleanupEnvironment } from "./helpers/temp.js";
-import { createTestLogger, TestLogger } from "./helpers/logger.js";
+import { createTestLogger, type TestLogger } from "./helpers/logger.js";
+import {
+  cleanupEnvironment,
+  createIsolatedEnvironment,
+  makeCassStub,
+  type TestEnv,
+  withTempCassHome,
+} from "./helpers/temp.js";
 
 // Helper to check if a file exists
 async function exists(filePath: string): Promise<boolean> {
@@ -57,7 +63,7 @@ function captureConsole() {
       console.log = originalLog;
       console.error = originalError;
       console.warn = originalWarn;
-    }
+    },
   };
 }
 
@@ -71,10 +77,10 @@ function createTestPlaybook(bullets: any[] = []) {
     metadata: {
       createdAt: now,
       totalReflections: 0,
-      totalSessionsProcessed: 0
+      totalSessionsProcessed: 0,
     },
     bullets: bullets,
-    deprecatedPatterns: []
+    deprecatedPatterns: [],
   };
 }
 
@@ -89,12 +95,12 @@ function createTestConfig(cassPath: string = "cass") {
     maxReflectorIterations: 1,
     validation: {
       enabled: false, // Disable validation for tests to avoid LLM calls
-      minEvidenceCount: 1
+      minEvidenceCount: 1,
     },
     scoring: {
       decayHalfLifeDays: 90,
-      harmfulMultiplier: 4
-    }
+      harmfulMultiplier: 4,
+    },
   };
 }
 
@@ -105,7 +111,7 @@ function createMockSession(sessionPath: string, agent: string = "claude") {
     line_number: 1,
     agent: agent,
     snippet: "User asked about TypeScript configuration",
-    score: 0.9
+    score: 0.9,
   };
 }
 
@@ -138,7 +144,7 @@ describe("E2E: CLI reflect command", () => {
         // Create cass stub that returns empty timeline
         const cassStub = await makeCassStub(env.home, {
           search: "[]",
-          timeline: '{"groups":[]}'
+          timeline: '{"groups":[]}',
         });
         logger.info("Created cass stub", { stubPath: cassStub });
 
@@ -157,15 +163,15 @@ describe("E2E: CLI reflect command", () => {
 
         logger.info("Reflect completed", {
           logs: capture.logs,
-          errors: capture.errors
+          errors: capture.errors,
         });
 
         // Should report no sessions
         const output = capture.logs.join("\n");
         expect(
           output.includes("No new sessions") ||
-          output.includes("0 sessions") ||
-          capture.logs.length === 0
+            output.includes("0 sessions") ||
+            capture.logs.length === 0,
         ).toBe(true);
 
         logger.endStep("no-sessions-test", true);
@@ -194,7 +200,7 @@ describe("E2E: CLI reflect command", () => {
           helpfulCount: 5,
           harmfulCount: 0,
           createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
+          updatedAt: new Date().toISOString(),
         };
         const playbook = createTestPlaybook([initialBullet]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
@@ -207,12 +213,15 @@ describe("E2E: CLI reflect command", () => {
         const cassStub = await makeCassStub(env.home, {
           search: JSON.stringify([createMockSession(mockSessionPath)]),
           timeline: JSON.stringify({
-            groups: [{
-              date: "2025-01-01",
-              sessions: [{ path: mockSessionPath, agent: "claude" }]
-            }]
+            groups: [
+              {
+                date: "2025-01-01",
+                sessions: [{ path: mockSessionPath, agent: "claude" }],
+              },
+            ],
           }),
-          export: "# Test Session\n\nUser: How do I handle errors?\nAssistant: Use try-catch blocks."
+          export:
+            "# Test Session\n\nUser: How do I handle errors?\nAssistant: Use try-catch blocks.",
         });
         logger.info("Created cass stub with mock session", { sessionPath: mockSessionPath });
 
@@ -237,7 +246,7 @@ describe("E2E: CLI reflect command", () => {
 
         logger.info("Dry-run completed", {
           logs: capture.logs.length,
-          errors: capture.errors.length
+          errors: capture.errors.length,
         });
 
         // Read playbook after reflect
@@ -266,7 +275,7 @@ describe("E2E: CLI reflect command", () => {
         // Create cass stub with empty results
         const cassStub = await makeCassStub(env.home, {
           search: "[]",
-          timeline: '{"groups":[]}'
+          timeline: '{"groups":[]}',
         });
 
         // Create config
@@ -316,7 +325,7 @@ describe("E2E: CLI reflect command", () => {
         // Create cass stub
         const cassStub = await makeCassStub(env.home, {
           search: "[]",
-          timeline: '{"groups":[]}'
+          timeline: '{"groups":[]}',
         });
 
         // Create config
@@ -342,7 +351,7 @@ describe("E2E: CLI reflect command", () => {
             logger.info("JSON structure verified", {
               hasGlobal: !!parsed.global,
               hasRepo: !!parsed.repo,
-              errorCount: parsed.errors?.length
+              errorCount: parsed.errors?.length,
             });
           }
         }
@@ -366,7 +375,7 @@ describe("E2E: CLI reflect command", () => {
         // but we can verify the command runs successfully
         const cassStub = await makeCassStub(env.home, {
           search: "[]",
-          timeline: '{"groups":[]}'
+          timeline: '{"groups":[]}',
         });
 
         const config = createTestConfig(cassStub);
@@ -383,7 +392,7 @@ describe("E2E: CLI reflect command", () => {
         logger.info("Days option test completed", { logs: capture.logs });
 
         // Should complete without error
-        expect(capture.errors.filter(e => !e.includes("[WARN]")).length).toBe(0);
+        expect(capture.errors.filter((e) => !e.includes("[WARN]")).length).toBe(0);
 
         logger.endStep("days-option-test", true);
       });
@@ -400,7 +409,7 @@ describe("E2E: CLI reflect command", () => {
         // Create cass stub
         const cassStub = await makeCassStub(env.home, {
           search: "[]",
-          timeline: '{"groups":[]}'
+          timeline: '{"groups":[]}',
         });
 
         const config = createTestConfig(cassStub);
@@ -417,7 +426,7 @@ describe("E2E: CLI reflect command", () => {
         logger.info("Max sessions test completed", { logs: capture.logs });
 
         // Should complete without error
-        expect(capture.errors.filter(e => !e.includes("[WARN]")).length).toBe(0);
+        expect(capture.errors.filter((e) => !e.includes("[WARN]")).length).toBe(0);
 
         logger.endStep("max-sessions-test", true);
       });
@@ -434,7 +443,7 @@ describe("E2E: CLI reflect command", () => {
         // Create cass stub
         const cassStub = await makeCassStub(env.home, {
           search: "[]",
-          timeline: '{"groups":[]}'
+          timeline: '{"groups":[]}',
         });
 
         const config = createTestConfig(cassStub);
@@ -451,7 +460,7 @@ describe("E2E: CLI reflect command", () => {
         logger.info("Agent filter test completed", { logs: capture.logs });
 
         // Should complete without error
-        expect(capture.errors.filter(e => !e.includes("[WARN]")).length).toBe(0);
+        expect(capture.errors.filter((e) => !e.includes("[WARN]")).length).toBe(0);
 
         logger.endStep("agent-filter-test", true);
       });
@@ -483,7 +492,7 @@ describe("E2E: CLI reflect command", () => {
 
         logger.info("Missing cass test completed", {
           logs: capture.logs,
-          errors: capture.errors
+          errors: capture.errors,
         });
 
         // Should have warning about cass not being available
@@ -512,7 +521,7 @@ describe("E2E: CLI reflect command", () => {
         // Create cass stub
         const cassStub = await makeCassStub(env.home, {
           search: "[]",
-          timeline: '{"groups":[]}'
+          timeline: '{"groups":[]}',
         });
 
         const config = createTestConfig(cassStub);
@@ -532,7 +541,7 @@ describe("E2E: CLI reflect command", () => {
 
         logger.info("Corrupted playbook test completed", {
           errorThrown,
-          errors: capture.errors
+          errors: capture.errors,
         });
 
         // Should either throw error or report error in output
@@ -554,7 +563,7 @@ describe("E2E: CLI reflect command", () => {
         const cassStub = await makeCassStub(env.home, {
           exitCode: 1,
           search: '{"error": "search failed"}',
-          timeline: '{"error": "timeline failed"}'
+          timeline: '{"error": "timeline failed"}',
         });
 
         const config = createTestConfig(cassStub);
@@ -572,7 +581,7 @@ describe("E2E: CLI reflect command", () => {
 
         logger.info("Cass error test completed", {
           logs: capture.logs,
-          errors: capture.errors
+          errors: capture.errors,
         });
 
         // Should handle gracefully (either warns or reports 0 sessions)
@@ -593,7 +602,7 @@ describe("E2E: CLI reflect command", () => {
         // Create cass stub
         const cassStub = await makeCassStub(env.home, {
           search: "[]",
-          timeline: '{"groups":[]}'
+          timeline: '{"groups":[]}',
         });
 
         const config = createTestConfig(cassStub);
@@ -610,7 +619,7 @@ describe("E2E: CLI reflect command", () => {
         logger.info("Workspace test completed", { logs: capture.logs });
 
         // Should complete without error
-        expect(capture.errors.filter(e => !e.includes("[WARN]")).length).toBe(0);
+        expect(capture.errors.filter((e) => !e.includes("[WARN]")).length).toBe(0);
 
         logger.endStep("workspace-test", true);
       });
@@ -630,20 +639,25 @@ describe("E2E: CLI reflect command", () => {
         const sessionDir = path.join(env.home, "sessions");
         await mkdir(sessionDir, { recursive: true });
         const sessionPath = path.join(sessionDir, "test-session.jsonl");
-        await writeFile(sessionPath, JSON.stringify({
-          role: "user",
-          content: "How do I implement error handling?"
-        }) + "\n" + JSON.stringify({
-          role: "assistant",
-          content: "Use try-catch blocks and proper error boundaries."
-        }));
+        await writeFile(
+          sessionPath,
+          JSON.stringify({
+            role: "user",
+            content: "How do I implement error handling?",
+          }) +
+            "\n" +
+            JSON.stringify({
+              role: "assistant",
+              content: "Use try-catch blocks and proper error boundaries.",
+            }),
+        );
         logger.info("Created mock session file", { path: sessionPath });
 
         // Create cass stub that handles export
         const cassStub = await makeCassStub(env.home, {
           search: "[]",
           timeline: '{"groups":[]}',
-          export: "User: How do I implement error handling?\nAssistant: Use try-catch blocks."
+          export: "User: How do I implement error handling?\nAssistant: Use try-catch blocks.",
         });
 
         const config = createTestConfig(cassStub);
@@ -662,7 +676,7 @@ describe("E2E: CLI reflect command", () => {
 
         logger.info("Specific session test completed", {
           logs: capture.logs,
-          errors: capture.errors
+          errors: capture.errors,
         });
 
         logger.endStep("specific-session-test", true);
@@ -689,7 +703,7 @@ describe("E2E: CLI reflect command", () => {
           helpfulCount: 10,
           harmfulCount: 0,
           createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
+          updatedAt: new Date().toISOString(),
         };
         const playbook = createTestPlaybook([existingBullet]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
@@ -698,7 +712,7 @@ describe("E2E: CLI reflect command", () => {
         // Create cass stub with no new sessions
         const cassStub = await makeCassStub(env.home, {
           search: "[]",
-          timeline: '{"groups":[]}'
+          timeline: '{"groups":[]}',
         });
 
         const config = createTestConfig(cassStub);
@@ -717,11 +731,11 @@ describe("E2E: CLI reflect command", () => {
 
         // Existing bullet should still be there
         const bulletStillExists = playbookAfter.bullets.some(
-          (b: any) => b.id === existingBullet.id
+          (b: any) => b.id === existingBullet.id,
         );
         expect(bulletStillExists).toBe(true);
         logger.info("Verified existing bullet preserved", {
-          bulletCount: playbookAfter.bullets.length
+          bulletCount: playbookAfter.bullets.length,
         });
 
         logger.endStep("preserve-bullets-test", true);
@@ -741,7 +755,7 @@ describe("E2E: CLI reflect command", () => {
         // Create cass stub
         const cassStub = await makeCassStub(env.home, {
           search: "[]",
-          timeline: '{"groups":[]}'
+          timeline: '{"groups":[]}',
         });
 
         const config = createTestConfig(cassStub);
@@ -764,7 +778,7 @@ describe("E2E: CLI reflect command", () => {
 
         logger.info("Ran reflect twice", {
           firstLogs: capture1.logs,
-          secondLogs: capture2.logs
+          secondLogs: capture2.logs,
         });
 
         // Both runs should report no sessions (none found, and tracking prevents re-processing)
@@ -783,7 +797,7 @@ describe("E2E: CLI reflect command", () => {
 
       const cassStub = await makeCassStub(env.home, {
         search: "[]",
-        timeline: '{"groups":[]}'
+        timeline: '{"groups":[]}',
       });
 
       const config = { ...createTestConfig(cassStub), ...extraConfig };
@@ -842,8 +856,8 @@ describe("E2E: CLI reflect command", () => {
             dailyLimit: 0.42,
             monthlyLimit: 4.2,
             warningThreshold: 80,
-            currency: "USD"
-          }
+            currency: "USD",
+          },
         });
         const contentBefore = await readFile(env.configPath, "utf-8");
 

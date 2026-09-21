@@ -1,37 +1,25 @@
-import { describe, test, expect } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import {
   categorizeError,
-  ErrorCategory,
   ERROR_CATEGORY_EXIT_CODES,
-  getErrorCategoryDescription,
+  type ErrorCategory,
   getErrorCategoryAction,
-  shouldRetry,
+  getErrorCategoryDescription,
   InputValidationError,
   PermissionError,
+  shouldRetry,
 } from "../src/utils.js";
 
 describe("Error Categorization", () => {
   describe("categorizeError", () => {
     describe("custom error types", () => {
       test("categorizes InputValidationError as user_input", () => {
-        const error = new InputValidationError(
-          "bulletId",
-          "invalid",
-          "format",
-          "example"
-        );
+        const error = new InputValidationError("bulletId", "invalid", "format", "example");
         expect(categorizeError(error)).toBe("user_input");
       });
 
       test("categorizes PermissionError as filesystem", () => {
-        const error = new PermissionError(
-          "/path",
-          "read",
-          "644",
-          "chmod 644",
-          "EACCES",
-          "error"
-        );
+        const error = new PermissionError("/path", "read", "644", "chmod 644", "EACCES", "error");
         expect(categorizeError(error)).toBe("filesystem");
       });
     });

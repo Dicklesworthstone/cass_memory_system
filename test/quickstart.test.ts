@@ -1,10 +1,10 @@
-import { describe, test, expect } from "bun:test";
+import { describe, expect, test } from "bun:test";
 
 import { quickstartCommand } from "../src/commands/quickstart.js";
 
 async function withEnvAsync<T>(
   overrides: Record<string, string | undefined>,
-  fn: () => Promise<T>
+  fn: () => Promise<T>,
 ): Promise<T> {
   const previous: Record<string, string | undefined> = {};
   for (const [key, value] of Object.entries(overrides)) {
@@ -23,17 +23,15 @@ async function withEnvAsync<T>(
   }
 }
 
-async function captureConsoleLog<T>(fn: () => Promise<T> | T): Promise<{ result: T; output: string }> {
+async function captureConsoleLog<T>(
+  fn: () => Promise<T> | T,
+): Promise<{ result: T; output: string }> {
   const original = console.log;
   const lines: string[] = [];
 
   // eslint-disable-next-line no-console
   console.log = (...args: unknown[]) => {
-    lines.push(
-      args
-        .map((arg) => (typeof arg === "string" ? arg : JSON.stringify(arg)))
-        .join(" ")
-    );
+    lines.push(args.map((arg) => (typeof arg === "string" ? arg : JSON.stringify(arg))).join(" "));
   };
 
   try {
@@ -92,7 +90,7 @@ describe("quickstart command", () => {
   test("prints JSON envelope with deterministic content", async () => {
     const { output } = await withEnvAsync(
       { CASS_MEMORY_CLI_NAME: "cm", NO_COLOR: "1", FORCE_COLOR: "0" },
-      () => captureConsoleLog(() => quickstartCommand({ json: true }))
+      () => captureConsoleLog(() => quickstartCommand({ json: true })),
     );
 
     const parsed = JSON.parse(output) as JsonEnvelope<QuickstartJson>;
@@ -124,7 +122,7 @@ describe("quickstart command", () => {
   test("prints human-readable markdown with valid repo URL and examples", async () => {
     const { output } = await withEnvAsync(
       { CASS_MEMORY_CLI_NAME: "cm", NO_COLOR: "1", FORCE_COLOR: "0" },
-      () => captureConsoleLog(() => quickstartCommand({ json: false }))
+      () => captureConsoleLog(() => quickstartCommand({ json: false })),
     );
 
     expect(output).toContain("# cass-memory Quick Start");

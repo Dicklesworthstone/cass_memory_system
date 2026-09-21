@@ -4,11 +4,11 @@ import { writeFile } from "node:fs/promises";
 import yaml from "yaml";
 
 import { contextCommand } from "../src/commands/context.js";
-import { statsCommand } from "../src/commands/stats.js";
-import { playbookCommand } from "../src/commands/playbook.js";
 import { doctorCommand } from "../src/commands/doctor.js";
+import { playbookCommand } from "../src/commands/playbook.js";
+import { statsCommand } from "../src/commands/stats.js";
 import { isToonAvailable } from "../src/utils.js";
-import { TestEnv, withTempCassHome } from "./helpers/temp.js";
+import { type TestEnv, withTempCassHome } from "./helpers/temp.js";
 
 const envKeys = [
   "CM_OUTPUT_FORMAT",
@@ -55,17 +55,19 @@ function createTestPlaybook(bullets: any[] = []) {
   };
 }
 
-function createTestBullet(overrides: Partial<{
-  id: string;
-  content: string;
-  kind: string;
-  category: string;
-  scope: string;
-  state: string;
-  maturity: string;
-  helpfulCount: number;
-  harmfulCount: number;
-}> = {}) {
+function createTestBullet(
+  overrides: Partial<{
+    id: string;
+    content: string;
+    kind: string;
+    category: string;
+    scope: string;
+    state: string;
+    maturity: string;
+    helpfulCount: number;
+    harmfulCount: number;
+  }> = {},
+) {
   const now = new Date().toISOString();
   return {
     id: overrides.id || `test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -131,7 +133,9 @@ function withTruUnavailable(): () => void {
   };
 }
 
-async function captureOutput<T>(fn: () => Promise<T>): Promise<{ result: T; stdout: string; stderr: string }> {
+async function captureOutput<T>(
+  fn: () => Promise<T>,
+): Promise<{ result: T; stdout: string; stderr: string }> {
   let stdout = "";
   let stderr = "";
 
@@ -192,14 +196,14 @@ describe("TOON output (CLI commands)", () => {
 
         const restoreTru = withTruUnavailable();
         try {
-        const { stdout, stderr } = await captureOutput(() =>
-          contextCommand("test task", { format: "toon" })
-        );
+          const { stdout, stderr } = await captureOutput(() =>
+            contextCommand("test task", { format: "toon" }),
+          );
 
-        expect(stderr).toContain("tru binary not found");
-        expect(() => JSON.parse(stdout)).not.toThrow();
-        const payload = JSON.parse(stdout);
-        expect(payload.command).toBe("context");
+          expect(stderr).toContain("tru binary not found");
+          expect(() => JSON.parse(stdout)).not.toThrow();
+          const payload = JSON.parse(stdout);
+          expect(payload.command).toBe("context");
         } finally {
           restoreTru();
         }
@@ -215,14 +219,12 @@ describe("TOON output (CLI commands)", () => {
 
         const restoreTru = withTruUnavailable();
         try {
-        const { stdout, stderr } = await captureOutput(() =>
-          statsCommand({ format: "toon" })
-        );
+          const { stdout, stderr } = await captureOutput(() => statsCommand({ format: "toon" }));
 
-        expect(stderr).toContain("tru binary not found");
-        expect(() => JSON.parse(stdout)).not.toThrow();
-        const payload = JSON.parse(stdout);
-        expect(payload.command).toBe("stats");
+          expect(stderr).toContain("tru binary not found");
+          expect(() => JSON.parse(stdout)).not.toThrow();
+          const payload = JSON.parse(stdout);
+          expect(payload.command).toBe("stats");
         } finally {
           restoreTru();
         }
@@ -238,14 +240,14 @@ describe("TOON output (CLI commands)", () => {
 
         const restoreTru = withTruUnavailable();
         try {
-        const { stdout, stderr } = await captureOutput(() =>
-          playbookCommand("list", [], { format: "toon" })
-        );
+          const { stdout, stderr } = await captureOutput(() =>
+            playbookCommand("list", [], { format: "toon" }),
+          );
 
-        expect(stderr).toContain("tru binary not found");
-        expect(() => JSON.parse(stdout)).not.toThrow();
-        const payload = JSON.parse(stdout);
-        expect(payload.command).toBe("playbook:list");
+          expect(stderr).toContain("tru binary not found");
+          expect(() => JSON.parse(stdout)).not.toThrow();
+          const payload = JSON.parse(stdout);
+          expect(payload.command).toBe("playbook:list");
         } finally {
           restoreTru();
         }
@@ -261,14 +263,12 @@ describe("TOON output (CLI commands)", () => {
 
         const restoreTru = withTruUnavailable();
         try {
-        const { stdout, stderr } = await captureOutput(() =>
-          doctorCommand({ format: "toon" })
-        );
+          const { stdout, stderr } = await captureOutput(() => doctorCommand({ format: "toon" }));
 
-        expect(stderr).toContain("tru binary not found");
-        expect(() => JSON.parse(stdout)).not.toThrow();
-        const payload = JSON.parse(stdout);
-        expect(payload.command).toBe("doctor");
+          expect(stderr).toContain("tru binary not found");
+          expect(() => JSON.parse(stdout)).not.toThrow();
+          const payload = JSON.parse(stdout);
+          expect(payload.command).toBe("doctor");
         } finally {
           restoreTru();
         }
@@ -289,26 +289,22 @@ describe("TOON output (CLI commands)", () => {
         process.env.TOON_TRU_BIN = "tru";
 
         const contextOut = await captureOutput(() =>
-          contextCommand("test task", { format: "toon" })
+          contextCommand("test task", { format: "toon" }),
         );
         const contextPayload = decodeToJson(contextOut.stdout);
         expect(contextPayload.command).toBe("context");
 
-        const statsOut = await captureOutput(() =>
-          statsCommand({ format: "toon" })
-        );
+        const statsOut = await captureOutput(() => statsCommand({ format: "toon" }));
         const statsPayload = decodeToJson(statsOut.stdout);
         expect(statsPayload.command).toBe("stats");
 
         const playbookOut = await captureOutput(() =>
-          playbookCommand("list", [], { format: "toon" })
+          playbookCommand("list", [], { format: "toon" }),
         );
         const playbookPayload = decodeToJson(playbookOut.stdout);
         expect(playbookPayload.command).toBe("playbook:list");
 
-        const doctorOut = await captureOutput(() =>
-          doctorCommand({ format: "toon" })
-        );
+        const doctorOut = await captureOutput(() => doctorCommand({ format: "toon" }));
         const doctorPayload = decodeToJson(doctorOut.stdout);
         expect(doctorPayload.command).toBe("doctor");
       });

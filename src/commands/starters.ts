@@ -17,7 +17,9 @@ export async function startersCommand(options: StartersOptions = {}) {
   }
 
   if (starters.length === 0) {
-    console.log(chalk.yellow("No starters found. Add custom starters under ~/.cass-memory/starters/."));
+    console.log(
+      chalk.yellow("No starters found. Add custom starters under ~/.cass-memory/starters/."),
+    );
     return;
   }
 
@@ -27,7 +29,9 @@ export async function startersCommand(options: StartersOptions = {}) {
   if (builtins.length > 0) {
     console.log(chalk.bold("\nBuilt-in starters:\n"));
     for (const starter of builtins) {
-      console.log(`• ${chalk.cyan(starter.name)} - ${starter.description} (${starter.bulletCount} rules)`);
+      console.log(
+        `• ${chalk.cyan(starter.name)} - ${starter.description} (${starter.bulletCount} rules)`,
+      );
     }
   }
 
@@ -35,7 +39,9 @@ export async function startersCommand(options: StartersOptions = {}) {
     console.log(chalk.bold("\nCustom starters:\n"));
     for (const starter of customs) {
       const location = starter.path ? ` [${starter.path}]` : "";
-      console.log(`• ${chalk.green(starter.name)} - ${starter.description} (${starter.bulletCount} rules)${location}`);
+      console.log(
+        `• ${chalk.green(starter.name)} - ${starter.description} (${starter.bulletCount} rules)${location}`,
+      );
     }
   }
 

@@ -1,12 +1,12 @@
-import { describe, it, expect, afterEach } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import fs from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
 
 import { reflectCommand } from "../src/commands/reflect.js";
-import { withTempCassHome, writeFileInDir } from "./helpers/temp.js";
 import { createEmptyPlaybook } from "../src/playbook.js";
 import { getProcessedLogPath } from "../src/tracking.js";
+import { withTempCassHome, writeFileInDir } from "./helpers/temp.js";
 
 describe("reflectCommand integration (real modules, stubbed via env)", () => {
   const originalEnv = { ...process.env };
@@ -35,21 +35,30 @@ describe("reflectCommand integration (real modules, stubbed via env)", () => {
         validationEnabled: false,
         provider: "anthropic",
         model: "test-model",
-        sessionLookbackDays: 1
+        sessionLookbackDays: 1,
       };
       await fs.writeFile(env.configPath, JSON.stringify(testConfig, null, 2));
 
       // Create a fake session file with enough content for reflection
-      const sessionContent = "coding session content with plenty of detail to exceed the 50 character threshold used by the reflector";
-      const sessionPath = await writeFileInDir(env.home, "sessions/session-1.jsonl", sessionContent);
+      const sessionContent =
+        "coding session content with plenty of detail to exceed the 50 character threshold used by the reflector";
+      const sessionPath = await writeFileInDir(
+        env.home,
+        "sessions/session-1.jsonl",
+        sessionContent,
+      );
 
       // Stub reflector output so no LLM call occurs
       process.env.CM_REFLECTOR_STUBS = JSON.stringify([
         {
           deltas: [
-            { type: "add", bullet: { content: "Reflect Rule", category: "testing" }, reason: "stubbed reflection" }
-          ]
-        }
+            {
+              type: "add",
+              bullet: { content: "Reflect Rule", category: "testing" },
+              reason: "stubbed reflection",
+            },
+          ],
+        },
       ]);
       process.env.CASS_MEMORY_LLM = "none";
 

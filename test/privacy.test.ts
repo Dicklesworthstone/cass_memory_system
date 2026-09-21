@@ -1,11 +1,10 @@
-import { describe, test, expect } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { readFile, writeFile } from "node:fs/promises";
-
-import { privacyCommand } from "../src/commands/privacy.js";
 import type { CassRunner } from "../src/cass.js";
+import { privacyCommand } from "../src/commands/privacy.js";
 import { getDefaultConfig } from "../src/config.js";
 import type { Config } from "../src/types.js";
-import { withTempCassHome, type TestEnv } from "./helpers/temp.js";
+import { type TestEnv, withTempCassHome } from "./helpers/temp.js";
 
 function createCassRunnerForTimeline(stdout: string): CassRunner {
   return {
@@ -55,7 +54,9 @@ async function seedGlobalConfig(env: TestEnv, overrides: Partial<Config>): Promi
   await writeFile(env.configPath, JSON.stringify(next, null, 2));
 }
 
-async function captureConsoleOutput<T>(fn: () => Promise<T>): Promise<{ result: T; stdout: string; stderr: string }> {
+async function captureConsoleOutput<T>(
+  fn: () => Promise<T>,
+): Promise<{ result: T; stdout: string; stderr: string }> {
   const stdoutLines: string[] = [];
   const stderrLines: string[] = [];
 
@@ -83,7 +84,9 @@ describe("privacy command (unit)", () => {
     await withTempCassHome(async (env) => {
       await seedGlobalConfig(env, { cassPath: "/__missing__/cass" });
 
-      const { stdout } = await captureConsoleOutput(() => privacyCommand("status", [], { json: true, days: 30 }));
+      const { stdout } = await captureConsoleOutput(() =>
+        privacyCommand("status", [], { json: true, days: 30 }),
+      );
       const parsed = JSON.parse(stdout) as any;
 
       expect(parsed.success).toBeTrue();
@@ -99,18 +102,32 @@ describe("privacy command (unit)", () => {
     await withTempCassHome(async (env) => {
       await seedGlobalConfig(env, { cassPath: "/__missing__/cass" });
 
-      const { stdout } = await captureConsoleOutput(() => privacyCommand("enable", [], { json: true, days: 7 }));
+      const { stdout } = await captureConsoleOutput(() =>
+        privacyCommand("enable", [], { json: true, days: 7 }),
+      );
       const parsed = JSON.parse(stdout) as any;
 
       expect(parsed.success).toBeTrue();
       expect(parsed.data.crossAgent.enabled).toBeTrue();
       expect(parsed.data.crossAgent.consentGiven).toBeTrue();
       expect(typeof parsed.data.crossAgent.consentDate).toBe("string");
-      expect(parsed.data.crossAgent.agents).toEqual(["claude", "cursor", "codex", "aider", "pi_agent"]);
+      expect(parsed.data.crossAgent.agents).toEqual([
+        "claude",
+        "cursor",
+        "codex",
+        "aider",
+        "pi_agent",
+      ]);
 
       const persisted = JSON.parse(await readFile(env.configPath, "utf-8"));
       expect(persisted.crossAgent.enabled).toBeTrue();
-      expect(persisted.crossAgent.agents).toEqual(["claude", "cursor", "codex", "aider", "pi_agent"]);
+      expect(persisted.crossAgent.agents).toEqual([
+        "claude",
+        "cursor",
+        "codex",
+        "aider",
+        "pi_agent",
+      ]);
     }, "privacy-enable-default");
   });
 
@@ -119,7 +136,7 @@ describe("privacy command (unit)", () => {
       await seedGlobalConfig(env, { cassPath: "/__missing__/cass" });
 
       const { stdout } = await captureConsoleOutput(() =>
-        privacyCommand("enable", [" Cursor ", "claude", "CODEX", "claude"], { json: true })
+        privacyCommand("enable", [" Cursor ", "claude", "CODEX", "claude"], { json: true }),
       );
       const parsed = JSON.parse(stdout) as any;
 
@@ -131,14 +148,23 @@ describe("privacy command (unit)", () => {
     await withTempCassHome(async (env) => {
       await seedGlobalConfig(env, {
         cassPath: "/__missing__/cass",
-        crossAgent: { enabled: true, consentGiven: true, agents: ["Codex", "claude"], auditLog: true },
+        crossAgent: {
+          enabled: true,
+          consentGiven: true,
+          agents: ["Codex", "claude"],
+          auditLog: true,
+        },
       });
 
-      const allowOut = await captureConsoleOutput(() => privacyCommand("allow", [" Cursor "], { json: true }));
+      const allowOut = await captureConsoleOutput(() =>
+        privacyCommand("allow", [" Cursor "], { json: true }),
+      );
       const allowed = JSON.parse(allowOut.stdout) as any;
       expect(allowed.data.crossAgent.agents).toEqual(["claude", "codex", "cursor"]);
 
-      const denyOut = await captureConsoleOutput(() => privacyCommand("deny", ["codex"], { json: true }));
+      const denyOut = await captureConsoleOutput(() =>
+        privacyCommand("deny", ["codex"], { json: true }),
+      );
       const denied = JSON.parse(denyOut.stdout) as any;
       expect(denied.data.crossAgent.agents).toEqual(["claude", "cursor"]);
 
@@ -166,7 +192,7 @@ describe("privacy command (unit)", () => {
       await seedGlobalConfig(env, { cassPath: "cass" });
 
       const { stdout } = await captureConsoleOutput(() =>
-        privacyCommand("status", [], { json: true, days: 14 }, { cassRunner: runner })
+        privacyCommand("status", [], { json: true, days: 14 }, { cassRunner: runner }),
       );
       const parsed = JSON.parse(stdout) as any;
 

@@ -1,14 +1,14 @@
 import { describe, expect, it } from "bun:test";
 import {
-  hashContent,
-  tokenize,
-  jaccardSimilarity,
-  truncate,
-  truncateWithIndicator,
-  truncateForContext,
   extractKeywords,
   generateBulletId,
   generateDiaryId,
+  hashContent,
+  jaccardSimilarity,
+  tokenize,
+  truncate,
+  truncateForContext,
+  truncateWithIndicator,
 } from "../src/utils.js";
 
 // =============================================================================
@@ -283,8 +283,9 @@ describe("extractKeywords", () => {
   });
 
   it("returns top 10 keywords max", () => {
-    const text = "apple banana cherry date elderberry fig grape honeydew " +
-                 "kiwi lemon mango nectarine orange papaya quince raspberry";
+    const text =
+      "apple banana cherry date elderberry fig grape honeydew " +
+      "kiwi lemon mango nectarine orange papaya quince raspberry";
     const keywords = extractKeywords(text);
     expect(keywords.length).toBeLessThanOrEqual(10);
   });

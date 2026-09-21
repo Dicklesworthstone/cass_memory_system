@@ -7,13 +7,13 @@
  * - Hard deletes a bullet permanently (--hard)
  * - Supports dry-run mode (--dry-run)
  */
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { undoCommand } from "../src/commands/undo.js";
-import { withTempCassHome } from "./helpers/temp.js";
-import { createTestBullet, createTestPlaybook } from "./helpers/factories.js";
-import { savePlaybook, loadPlaybook, findBullet } from "../src/playbook.js";
+import { findBullet, loadPlaybook, savePlaybook } from "../src/playbook.js";
+import type { FeedbackEvent } from "../src/types.js";
 import { createE2ELogger } from "./helpers/e2e-logger.js";
-import { FeedbackEvent } from "../src/types.js";
+import { createTestBullet, createTestPlaybook } from "./helpers/factories.js";
+import { withTempCassHome } from "./helpers/temp.js";
 
 // Helper to capture console output
 function captureConsole() {
@@ -35,7 +35,7 @@ function captureConsole() {
     restore: () => {
       console.log = originalLog;
       console.error = originalError;
-    }
+    },
   };
 }
 
@@ -59,7 +59,7 @@ describe("E2E: CLI undo command", () => {
               deprecatedAt: "2025-01-01T00:00:00Z",
               deprecationReason: "Testing deprecation",
               state: "retired",
-              maturity: "deprecated"
+              maturity: "deprecated",
             });
             const playbook = createTestPlaybook([bullet]);
             await savePlaybook(playbook, env.playbookPath);
@@ -112,7 +112,7 @@ describe("E2E: CLI undo command", () => {
               id: "active-bullet",
               content: "This bullet is active",
               deprecated: false,
-              state: "active"
+              state: "active",
             });
             const playbook = createTestPlaybook([bullet]);
             await savePlaybook(playbook, env.playbookPath);
@@ -151,14 +151,14 @@ describe("E2E: CLI undo command", () => {
             // Create a bullet with feedback events
             const feedbackEvents: FeedbackEvent[] = [
               { type: "helpful", timestamp: "2025-01-01T10:00:00Z" },
-              { type: "harmful", timestamp: "2025-01-02T10:00:00Z", reason: "caused_bug" }
+              { type: "harmful", timestamp: "2025-01-02T10:00:00Z", reason: "caused_bug" },
             ];
             const bullet = createTestBullet({
               id: "feedback-bullet",
               content: "Bullet with feedback",
               feedbackEvents,
               helpfulCount: 1,
-              harmfulCount: 1
+              harmfulCount: 1,
             });
             const playbook = createTestPlaybook([bullet]);
             await savePlaybook(playbook, env.playbookPath);
@@ -211,7 +211,7 @@ describe("E2E: CLI undo command", () => {
               content: "Bullet without feedback",
               feedbackEvents: [],
               helpfulCount: 0,
-              harmfulCount: 0
+              harmfulCount: 0,
             });
             const playbook = createTestPlaybook([bullet]);
             await savePlaybook(playbook, env.playbookPath);
@@ -250,7 +250,7 @@ describe("E2E: CLI undo command", () => {
             // Create a bullet to delete
             const bullet = createTestBullet({
               id: "delete-bullet",
-              content: "This bullet will be deleted"
+              content: "This bullet will be deleted",
             });
             const playbook = createTestPlaybook([bullet]);
             await savePlaybook(playbook, env.playbookPath);
@@ -297,7 +297,7 @@ describe("E2E: CLI undo command", () => {
             // Create a bullet
             const bullet = createTestBullet({
               id: "confirm-delete-bullet",
-              content: "This needs confirmation"
+              content: "This needs confirmation",
             });
             const playbook = createTestPlaybook([bullet]);
             await savePlaybook(playbook, env.playbookPath);
@@ -347,7 +347,7 @@ describe("E2E: CLI undo command", () => {
               deprecatedAt: "2025-01-01T00:00:00Z",
               deprecationReason: "Test reason",
               state: "retired",
-              maturity: "deprecated"
+              maturity: "deprecated",
             });
             const playbook = createTestPlaybook([bullet]);
             await savePlaybook(playbook, env.playbookPath);
@@ -390,13 +390,13 @@ describe("E2E: CLI undo command", () => {
           try {
             // Create a bullet with feedback
             const feedbackEvents: FeedbackEvent[] = [
-              { type: "helpful", timestamp: "2025-01-01T10:00:00Z" }
+              { type: "helpful", timestamp: "2025-01-01T10:00:00Z" },
             ];
             const bullet = createTestBullet({
               id: "dry-run-feedback-bullet",
               content: "Dry run feedback test",
               feedbackEvents,
-              helpfulCount: 1
+              helpfulCount: 1,
             });
             const playbook = createTestPlaybook([bullet]);
             await savePlaybook(playbook, env.playbookPath);
@@ -439,7 +439,7 @@ describe("E2E: CLI undo command", () => {
             // Create a bullet
             const bullet = createTestBullet({
               id: "dry-run-delete-bullet",
-              content: "Dry run delete test"
+              content: "Dry run delete test",
             });
             const playbook = createTestPlaybook([bullet]);
             await savePlaybook(playbook, env.playbookPath);
@@ -489,7 +489,7 @@ describe("E2E: CLI undo command", () => {
               deprecatedAt: "2025-01-01T00:00:00Z",
               deprecationReason: "Test",
               state: "retired",
-              maturity: "deprecated"
+              maturity: "deprecated",
             });
             const playbook = createTestPlaybook([bullet]);
             await savePlaybook(playbook, env.playbookPath);
@@ -504,7 +504,7 @@ describe("E2E: CLI undo command", () => {
             log.snapshot("output", { logs: capture.logs, errors: capture.errors });
 
             // Find and parse JSON output
-            const jsonOutput = capture.logs.find(l => l.startsWith("{"));
+            const jsonOutput = capture.logs.find((l) => l.startsWith("{"));
             expect(jsonOutput).toBeDefined();
 
             const parsed = JSON.parse(jsonOutput!);
@@ -534,12 +534,12 @@ describe("E2E: CLI undo command", () => {
           try {
             // Create a bullet with feedback
             const feedbackEvents: FeedbackEvent[] = [
-              { type: "helpful", timestamp: "2025-01-01T10:00:00Z" }
+              { type: "helpful", timestamp: "2025-01-01T10:00:00Z" },
             ];
             const bullet = createTestBullet({
               id: "json-feedback-bullet",
               feedbackEvents,
-              helpfulCount: 1
+              helpfulCount: 1,
             });
             const playbook = createTestPlaybook([bullet]);
             await savePlaybook(playbook, env.playbookPath);
@@ -554,7 +554,7 @@ describe("E2E: CLI undo command", () => {
             log.snapshot("output", { logs: capture.logs, errors: capture.errors });
 
             // Find and parse JSON output
-            const jsonOutput = capture.logs.find(l => l.startsWith("{"));
+            const jsonOutput = capture.logs.find((l) => l.startsWith("{"));
             expect(jsonOutput).toBeDefined();
 
             const parsed = JSON.parse(jsonOutput!);
@@ -583,7 +583,7 @@ describe("E2E: CLI undo command", () => {
           try {
             // Create a bullet
             const bullet = createTestBullet({
-              id: "json-delete-bullet"
+              id: "json-delete-bullet",
             });
             const playbook = createTestPlaybook([bullet]);
             await savePlaybook(playbook, env.playbookPath);
@@ -598,7 +598,7 @@ describe("E2E: CLI undo command", () => {
             log.snapshot("output", { logs: capture.logs, errors: capture.errors });
 
             // Find and parse JSON output
-            const jsonOutput = capture.logs.find(l => l.startsWith("{"));
+            const jsonOutput = capture.logs.find((l) => l.startsWith("{"));
             expect(jsonOutput).toBeDefined();
 
             const parsed = JSON.parse(jsonOutput!);
@@ -673,7 +673,7 @@ describe("E2E: CLI undo command", () => {
               deprecatedAt: "2025-01-01T00:00:00Z",
               deprecationReason: "Test",
               state: "retired",
-              maturity: "deprecated"
+              maturity: "deprecated",
             });
             const playbook = createTestPlaybook([bullet]);
             await savePlaybook(playbook, env.playbookPath);
@@ -688,7 +688,7 @@ describe("E2E: CLI undo command", () => {
             log.snapshot("output", { logs: capture.logs, errors: capture.errors });
 
             // Find and parse JSON output
-            const jsonOutput = capture.logs.find(l => l.startsWith("{"));
+            const jsonOutput = capture.logs.find((l) => l.startsWith("{"));
             expect(jsonOutput).toBeDefined();
 
             const parsed = JSON.parse(jsonOutput!);

@@ -1,9 +1,9 @@
 import chalk from "chalk";
+import { type CassRunner, safeCassSearch } from "../cass.js";
 import { loadConfig } from "../config.js";
-import { evidenceCountGate } from "../validate.js";
-import { safeCassSearch, type CassRunner } from "../cass.js";
+import { type LLMIO, runValidator } from "../llm.js";
 import { extractKeywords, printJsonResult } from "../utils.js";
-import { runValidator, type LLMIO } from "../llm.js";
+import { evidenceCountGate } from "../validate.js";
 
 type ValidateOptions = {
   json?: boolean;
@@ -27,7 +27,7 @@ interface ValidationOutput {
 export async function validateCommand(
   proposedRule: string,
   options: ValidateOptions = {},
-  deps: ValidateDeps = {}
+  deps: ValidateDeps = {},
 ): Promise<void> {
   const startedAtMs = Date.now();
   const command = "validate";
@@ -45,7 +45,7 @@ export async function validateCommand(
     hits.map((h) => ({
       session: h.source_path,
       snippet: h.snippet,
-      outcome: classifyOutcome(h.snippet || "")
+      outcome: classifyOutcome(h.snippet || ""),
     }));
 
   // Strong failure -> auto reject
@@ -55,7 +55,7 @@ export async function validateCommand(
       verdict: "REJECT",
       confidence: 0.9,
       reason: gate.reason,
-      evidence: []
+      evidence: [],
     };
     return printResult(output, options, { command, startedAtMs });
   }
@@ -67,7 +67,7 @@ export async function validateCommand(
       verdict: "ACCEPT",
       confidence: 0.95,
       reason: gate.reason,
-      evidence: []
+      evidence: [],
     };
     return printResult(output, options, { command, startedAtMs });
   }
@@ -79,30 +79,33 @@ export async function validateCommand(
       verdict: "ACCEPT_WITH_CAUTION",
       confidence: 0.6,
       reason: gate.reason,
-      evidence: []
+      evidence: [],
     };
     return printResult(output, options, { command, startedAtMs });
   }
 
   // Step 2: Ambiguous -> gather evidence and run LLM validator
-  const hits = await safeCassSearch(extractKeywords(proposedRule).join(" "), {
-    limit: 10,
-    days: config.validationLookbackDays
-  }, config.cassPath, config, deps.cassRunner);
+  const hits = await safeCassSearch(
+    extractKeywords(proposedRule).join(" "),
+    {
+      limit: 10,
+      days: config.validationLookbackDays,
+    },
+    config.cassPath,
+    config,
+    deps.cassRunner,
+  );
 
   const formattedEvidence = hits
     .map(
       (h) =>
-        `Session: ${h.source_path}\nSnippet: "${(h.snippet || "").trim()}"\nRelevance: ${h.score ?? "n/a"}`
+        `Session: ${h.source_path}\nSnippet: "${(h.snippet || "").trim()}"\nRelevance: ${h.score ?? "n/a"}`,
     )
     .join("\n---\n");
 
   const llmResult = await runValidator(proposedRule, formattedEvidence, config, deps.io);
 
-  const verdict =
-    llmResult.verdict === "REFINE"
-      ? "ACCEPT_WITH_CAUTION"
-      : llmResult.verdict;
+  const verdict = llmResult.verdict === "REFINE" ? "ACCEPT_WITH_CAUTION" : llmResult.verdict;
 
   const confidence =
     verdict === "ACCEPT_WITH_CAUTION"
@@ -115,7 +118,7 @@ export async function validateCommand(
     confidence,
     reason: llmResult.reason,
     refinedRule: llmResult.suggestedRefinement,
-    evidence: evidenceFromHits(hits)
+    evidence: evidenceFromHits(hits),
   };
 
   return printResult(output, options, { command, startedAtMs });
@@ -146,7 +149,7 @@ function classifyOutcome(snippet: string): string {
 function printResult(
   result: ValidationOutput,
   options: ValidateOptions,
-  meta: { command: string; startedAtMs: number }
+  meta: { command: string; startedAtMs: number },
 ) {
   if (options.json) {
     printJsonResult(meta.command, result, { startedAtMs: meta.startedAtMs });
@@ -157,12 +160,14 @@ function printResult(
     result.verdict === "ACCEPT"
       ? chalk.green
       : result.verdict === "REJECT"
-      ? chalk.red
-      : chalk.yellow;
+        ? chalk.red
+        : chalk.yellow;
 
   console.log(chalk.bold("\nValidation Result"));
   console.log(`Rule: ${result.proposedRule}`);
-  console.log(`Verdict: ${verdictColor(result.verdict)} (confidence ${result.confidence.toFixed(2)})`);
+  console.log(
+    `Verdict: ${verdictColor(result.verdict)} (confidence ${result.confidence.toFixed(2)})`,
+  );
   console.log(`Reason: ${result.reason}`);
 
   if (result.refinedRule) {

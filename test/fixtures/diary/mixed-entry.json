@@ -21,10 +21,7 @@
     "One test still flaky due to timing issues",
     "Documentation needs updating"
   ],
-  "preferences": [
-    "Break large refactors into smaller PRs",
-    "Fix bugs before adding features"
-  ],
+  "preferences": ["Break large refactors into smaller PRs", "Fix bugs before adding features"],
   "keyLearnings": [
     "Large refactors should be planned incrementally",
     "Timing-based tests need proper mocking",

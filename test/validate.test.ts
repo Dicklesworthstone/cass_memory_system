@@ -1,9 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { evidenceCountGate, normalizeValidatorVerdict, validateDelta } from "../src/validate.js";
 import type { CassRunner } from "../src/cass.js";
+import type { NewBulletData, PlaybookDelta } from "../src/types.js";
+import { evidenceCountGate, normalizeValidatorVerdict, validateDelta } from "../src/validate.js";
 import { createTestConfig } from "./helpers/factories.js";
 import { withTempDir } from "./helpers/temp.js";
-import type { PlaybookDelta, NewBulletData } from "../src/types.js";
 
 function createCassRunnerForSearch(stdout: string): CassRunner {
   return {
@@ -48,18 +48,58 @@ describe("validate.ts evidence gate", () => {
   it("counts unique sessions (not hits) for success/failure signals", async () => {
     await withTempDir("validate-gate-unique-sessions", async (dir) => {
       const hits = [
-        { source_path: "s1.jsonl", line_number: 1, snippet: "fixed the bug", agent: "stub", score: 0.9 },
-        { source_path: "s1.jsonl", line_number: 2, snippet: "fixed the bug", agent: "stub", score: 0.9 },
-        { source_path: "s1.jsonl", line_number: 3, snippet: "fixed the bug", agent: "stub", score: 0.9 },
-        { source_path: "s1.jsonl", line_number: 4, snippet: "fixed the bug", agent: "stub", score: 0.9 },
-        { source_path: "s1.jsonl", line_number: 5, snippet: "fixed the bug", agent: "stub", score: 0.9 },
-        { source_path: "s2.jsonl", line_number: 1, snippet: "nothing relevant", agent: "stub", score: 0.1 },
+        {
+          source_path: "s1.jsonl",
+          line_number: 1,
+          snippet: "fixed the bug",
+          agent: "stub",
+          score: 0.9,
+        },
+        {
+          source_path: "s1.jsonl",
+          line_number: 2,
+          snippet: "fixed the bug",
+          agent: "stub",
+          score: 0.9,
+        },
+        {
+          source_path: "s1.jsonl",
+          line_number: 3,
+          snippet: "fixed the bug",
+          agent: "stub",
+          score: 0.9,
+        },
+        {
+          source_path: "s1.jsonl",
+          line_number: 4,
+          snippet: "fixed the bug",
+          agent: "stub",
+          score: 0.9,
+        },
+        {
+          source_path: "s1.jsonl",
+          line_number: 5,
+          snippet: "fixed the bug",
+          agent: "stub",
+          score: 0.9,
+        },
+        {
+          source_path: "s2.jsonl",
+          line_number: 1,
+          snippet: "nothing relevant",
+          agent: "stub",
+          score: 0.1,
+        },
       ];
 
       const runner = createCassRunnerForSearch(JSON.stringify(hits));
       const config = createTestConfig({ cassPath: "cass" });
 
-      const result = await evidenceCountGate("Validate user input before processing requests", config, runner);
+      const result = await evidenceCountGate(
+        "Validate user input before processing requests",
+        config,
+        runner,
+      );
 
       expect(result.sessionCount).toBe(2);
       expect(result.successCount).toBe(1);
@@ -73,16 +113,44 @@ describe("validate.ts evidence gate", () => {
   it("auto-rejects on failure signals across unique sessions", async () => {
     await withTempDir("validate-gate-failure-sessions", async (dir) => {
       const hits = [
-        { source_path: "s1.jsonl", line_number: 1, snippet: "failed to compile", agent: "stub", score: 0.9 },
-        { source_path: "s1.jsonl", line_number: 2, snippet: "failed to compile", agent: "stub", score: 0.9 },
-        { source_path: "s2.jsonl", line_number: 1, snippet: "crashed with error", agent: "stub", score: 0.9 },
-        { source_path: "s3.jsonl", line_number: 1, snippet: "doesn't work", agent: "stub", score: 0.9 },
+        {
+          source_path: "s1.jsonl",
+          line_number: 1,
+          snippet: "failed to compile",
+          agent: "stub",
+          score: 0.9,
+        },
+        {
+          source_path: "s1.jsonl",
+          line_number: 2,
+          snippet: "failed to compile",
+          agent: "stub",
+          score: 0.9,
+        },
+        {
+          source_path: "s2.jsonl",
+          line_number: 1,
+          snippet: "crashed with error",
+          agent: "stub",
+          score: 0.9,
+        },
+        {
+          source_path: "s3.jsonl",
+          line_number: 1,
+          snippet: "doesn't work",
+          agent: "stub",
+          score: 0.9,
+        },
       ];
 
       const runner = createCassRunnerForSearch(JSON.stringify(hits));
       const config = createTestConfig({ cassPath: "cass" });
 
-      const result = await evidenceCountGate("Always use var for everything in TypeScript code", config, runner);
+      const result = await evidenceCountGate(
+        "Always use var for everything in TypeScript code",
+        config,
+        runner,
+      );
 
       expect(result.sessionCount).toBe(3);
       expect(result.successCount).toBe(0);
@@ -95,17 +163,45 @@ describe("validate.ts evidence gate", () => {
   it("auto-accepts on strong success signals across unique sessions", async () => {
     await withTempDir("validate-gate-success-sessions", async () => {
       const hits = [
-        { source_path: "s1.jsonl", line_number: 1, snippet: "fixed the bug", agent: "stub", score: 0.9 },
-        { source_path: "s2.jsonl", line_number: 1, snippet: "solved the issue", agent: "stub", score: 0.9 },
-        { source_path: "s3.jsonl", line_number: 1, snippet: "works correctly", agent: "stub", score: 0.9 },
+        {
+          source_path: "s1.jsonl",
+          line_number: 1,
+          snippet: "fixed the bug",
+          agent: "stub",
+          score: 0.9,
+        },
+        {
+          source_path: "s2.jsonl",
+          line_number: 1,
+          snippet: "solved the issue",
+          agent: "stub",
+          score: 0.9,
+        },
+        {
+          source_path: "s3.jsonl",
+          line_number: 1,
+          snippet: "works correctly",
+          agent: "stub",
+          score: 0.9,
+        },
         { source_path: "s4.jsonl", line_number: 1, snippet: "resolved", agent: "stub", score: 0.9 },
-        { source_path: "s5.jsonl", line_number: 1, snippet: "working now", agent: "stub", score: 0.9 },
+        {
+          source_path: "s5.jsonl",
+          line_number: 1,
+          snippet: "working now",
+          agent: "stub",
+          score: 0.9,
+        },
       ];
 
       const runner = createCassRunnerForSearch(JSON.stringify(hits));
       const config = createTestConfig({ cassPath: "cass" });
 
-      const result = await evidenceCountGate("Validate user input before processing requests", config, runner);
+      const result = await evidenceCountGate(
+        "Validate user input before processing requests",
+        config,
+        runner,
+      );
 
       expect(result.sessionCount).toBe(5);
       expect(result.successCount).toBe(5);
@@ -119,7 +215,13 @@ describe("validate.ts evidence gate", () => {
   it("does not treat fixed-width as a success signal", async () => {
     await withTempDir("validate-gate-fixed-width", async () => {
       const hits = [
-        { source_path: "s1.jsonl", line_number: 1, snippet: "fixed-width encoding", agent: "stub", score: 0.9 },
+        {
+          source_path: "s1.jsonl",
+          line_number: 1,
+          snippet: "fixed-width encoding",
+          agent: "stub",
+          score: 0.9,
+        },
       ];
 
       const runner = createCassRunnerForSearch(JSON.stringify(hits));
@@ -141,13 +243,13 @@ describe("validateDelta", () => {
   function createAddDelta(content: string): PlaybookDelta {
     const bullet: NewBulletData = {
       content,
-      category: "testing"
+      category: "testing",
     };
     return {
       type: "add",
       bullet,
       reason: "test",
-      sourceSession: "/tmp/session.jsonl"
+      sourceSession: "/tmp/session.jsonl",
     };
   }
 
@@ -155,7 +257,7 @@ describe("validateDelta", () => {
     return {
       type: "helpful",
       bulletId: "b-test-1",
-      sourceSession: "/tmp/session.jsonl"
+      sourceSession: "/tmp/session.jsonl",
     };
   }
 
@@ -164,7 +266,7 @@ describe("validateDelta", () => {
       type: "replace",
       bulletId: "b-test-1",
       newContent,
-      reason: "test"
+      reason: "test",
     };
   }
 
@@ -282,8 +384,20 @@ describe("validateDelta — auto-draft bypass (Finding A, #54)", () => {
     // Two on-topic-but-non-corroborating hits: no SUCCESS/FAILURE language, and
     // too few to be a strong-failure signal. sessionCount=2, successCount=0.
     const hits = [
-      { source_path: "s1.jsonl", line_number: 1, snippet: "discussed the validation approach", agent: "stub", score: 0.0164 },
-      { source_path: "s2.jsonl", line_number: 1, snippet: "reviewed the input handling code", agent: "stub", score: 0.0161 },
+      {
+        source_path: "s1.jsonl",
+        line_number: 1,
+        snippet: "discussed the validation approach",
+        agent: "stub",
+        score: 0.0164,
+      },
+      {
+        source_path: "s2.jsonl",
+        line_number: 1,
+        snippet: "reviewed the input handling code",
+        agent: "stub",
+        score: 0.0161,
+      },
     ];
     const runner = createCassRunnerForSearch(JSON.stringify(hits));
     const { io, calls } = createRecordingLLMIO("REJECT");
@@ -311,8 +425,20 @@ describe("validateDelta — auto-draft bypass (Finding A, #54)", () => {
     // One success-language hit but not enough for the strong-success auto-accept
     // (needs >= 5). sessionCount=2, successCount=1 → ambiguous → must reach LLM.
     const hits = [
-      { source_path: "s1.jsonl", line_number: 1, snippet: "fixed the validation bug", agent: "stub", score: 0.0164 },
-      { source_path: "s2.jsonl", line_number: 1, snippet: "discussed the input handling", agent: "stub", score: 0.0161 },
+      {
+        source_path: "s1.jsonl",
+        line_number: 1,
+        snippet: "fixed the validation bug",
+        agent: "stub",
+        score: 0.0164,
+      },
+      {
+        source_path: "s2.jsonl",
+        line_number: 1,
+        snippet: "discussed the input handling",
+        agent: "stub",
+        score: 0.0161,
+      },
     ];
     const runner = createCassRunnerForSearch(JSON.stringify(hits));
     const { io, calls } = createRecordingLLMIO("ACCEPT");
@@ -337,9 +463,27 @@ describe("validateDelta — auto-draft bypass (Finding A, #54)", () => {
     // The widened draft path must not rescue strong failures: the gate rejects
     // these upstream (!gate.passed) before the bypass is ever considered.
     const hits = [
-      { source_path: "s1.jsonl", line_number: 1, snippet: "failed to compile", agent: "stub", score: 0.0164 },
-      { source_path: "s2.jsonl", line_number: 1, snippet: "crashed with error", agent: "stub", score: 0.0161 },
-      { source_path: "s3.jsonl", line_number: 1, snippet: "doesn't work", agent: "stub", score: 0.0159 },
+      {
+        source_path: "s1.jsonl",
+        line_number: 1,
+        snippet: "failed to compile",
+        agent: "stub",
+        score: 0.0164,
+      },
+      {
+        source_path: "s2.jsonl",
+        line_number: 1,
+        snippet: "crashed with error",
+        agent: "stub",
+        score: 0.0161,
+      },
+      {
+        source_path: "s3.jsonl",
+        line_number: 1,
+        snippet: "doesn't work",
+        agent: "stub",
+        score: 0.0159,
+      },
     ];
     const runner = createCassRunnerForSearch(JSON.stringify(hits));
     const { io, calls } = createRecordingLLMIO("ACCEPT");
@@ -358,6 +502,8 @@ describe("validateDelta — auto-draft bypass (Finding A, #54)", () => {
     expect(result.gate?.failureCount).toBe(3);
     expect(result.gate?.successCount).toBe(0);
     const log = result.decisionLog ?? [];
-    expect(log.some((e) => e.action === "rejected" && e.reason.includes("Strong failure signal"))).toBe(true);
+    expect(
+      log.some((e) => e.action === "rejected" && e.reason.includes("Strong failure signal")),
+    ).toBe(true);
   });
 });

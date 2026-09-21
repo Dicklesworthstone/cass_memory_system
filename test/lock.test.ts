@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { mkdir, writeFile, rm, stat, readFile } from "node:fs/promises";
 import { withLock } from "../src/lock.js";
 import { withTempDir } from "./helpers/index.js";
 
@@ -135,7 +135,7 @@ describe("withLock - Error Handling", () => {
       await expect(
         withLock(targetPath, async () => {
           throw customError;
-        })
+        }),
       ).rejects.toThrow("Custom error message");
     });
   });
@@ -158,33 +158,45 @@ describe("withLock - Lock Contention", () => {
 
       // Start 3 concurrent operations
       await Promise.all([
-        withLock(targetPath, async () => {
-          const start = Date.now();
-          const val = parseInt(await readFile(targetPath, "utf-8"), 10);
-          await new Promise((r) => setTimeout(r, 30)); // Simulate work
-          await writeFile(targetPath, (val + 1).toString());
-          results.push(1);
-          intervals.push({ id: 1, start, end: Date.now() });
-          return null;
-        }, lockOptions),
-        withLock(targetPath, async () => {
-          const start = Date.now();
-          const val = parseInt(await readFile(targetPath, "utf-8"), 10);
-          await new Promise((r) => setTimeout(r, 30));
-          await writeFile(targetPath, (val + 1).toString());
-          results.push(2);
-          intervals.push({ id: 2, start, end: Date.now() });
-          return null;
-        }, lockOptions),
-        withLock(targetPath, async () => {
-          const start = Date.now();
-          const val = parseInt(await readFile(targetPath, "utf-8"), 10);
-          await new Promise((r) => setTimeout(r, 30));
-          await writeFile(targetPath, (val + 1).toString());
-          results.push(3);
-          intervals.push({ id: 3, start, end: Date.now() });
-          return null;
-        }, lockOptions),
+        withLock(
+          targetPath,
+          async () => {
+            const start = Date.now();
+            const val = parseInt(await readFile(targetPath, "utf-8"), 10);
+            await new Promise((r) => setTimeout(r, 30)); // Simulate work
+            await writeFile(targetPath, (val + 1).toString());
+            results.push(1);
+            intervals.push({ id: 1, start, end: Date.now() });
+            return null;
+          },
+          lockOptions,
+        ),
+        withLock(
+          targetPath,
+          async () => {
+            const start = Date.now();
+            const val = parseInt(await readFile(targetPath, "utf-8"), 10);
+            await new Promise((r) => setTimeout(r, 30));
+            await writeFile(targetPath, (val + 1).toString());
+            results.push(2);
+            intervals.push({ id: 2, start, end: Date.now() });
+            return null;
+          },
+          lockOptions,
+        ),
+        withLock(
+          targetPath,
+          async () => {
+            const start = Date.now();
+            const val = parseInt(await readFile(targetPath, "utf-8"), 10);
+            await new Promise((r) => setTimeout(r, 30));
+            await writeFile(targetPath, (val + 1).toString());
+            results.push(3);
+            intervals.push({ id: 3, start, end: Date.now() });
+            return null;
+          },
+          lockOptions,
+        ),
       ]);
 
       // All 3 should have executed (serialized)
@@ -215,11 +227,10 @@ describe("withLock - Lock Contention", () => {
 
       // Start operation that will need to wait
       const startTime = Date.now();
-      const operationPromise = withLock(
-        targetPath,
-        async () => "success",
-        { retries: 50, delay: 50 }
-      );
+      const operationPromise = withLock(targetPath, async () => "success", {
+        retries: 50,
+        delay: 50,
+      });
 
       // Release lock after 100ms
       setTimeout(async () => {
@@ -262,7 +273,7 @@ describe("withLock - Lock Contention", () => {
 
       try {
         await expect(
-          withLock(targetPath, async () => null, { retries: 3, delay: 10 })
+          withLock(targetPath, async () => null, { retries: 3, delay: 10 }),
         ).rejects.toThrow(/Could not acquire lock/);
       } finally {
         clearInterval(interval);
@@ -290,7 +301,7 @@ describe("withLock - Stale Lock Detection", () => {
       // (must use non-existent PID since stale check skips if PID is still running)
       await mkdir(lockPath);
       await writeFile(join(lockPath, "pid"), "999998");
-      
+
       const oldTime = Date.now() - 35_000; // 35 seconds ago
       const { utimes } = await import("node:fs/promises");
       await utimes(lockPath, oldTime / 1000, oldTime / 1000);
@@ -316,11 +327,9 @@ describe("withLock - Stale Lock Detection", () => {
       await utimes(lockPath, twoSecondsAgo / 1000, twoSecondsAgo / 1000);
 
       // With default (30s) this would NOT be considered stale; using 1s threshold should remove it.
-      const result = await withLock(
-        targetPath,
-        async () => "custom stale removed",
-        { staleLockThresholdMs: 1_000 }
-      );
+      const result = await withLock(targetPath, async () => "custom stale removed", {
+        staleLockThresholdMs: 1_000,
+      });
 
       expect(result).toBe("custom stale removed");
     });
@@ -365,7 +374,7 @@ describe("withLock - Stale Lock Detection", () => {
       try {
         // Should timeout because lock is not stale
         await expect(
-          withLock(targetPath, async () => null, { retries: 3, delay: 10 })
+          withLock(targetPath, async () => null, { retries: 3, delay: 10 }),
         ).rejects.toThrow(/Could not acquire lock/);
       } finally {
         clearInterval(interval);
@@ -518,7 +527,7 @@ describe("withLock - Options", () => {
 
       try {
         await expect(
-          withLock(targetPath, async () => null, { retries: 5, delay: 20 })
+          withLock(targetPath, async () => null, { retries: 5, delay: 20 }),
         ).rejects.toThrow(/Could not acquire lock/);
 
         const elapsed = Date.now() - startTime;
@@ -561,7 +570,7 @@ describe("withLock - Options", () => {
 
       try {
         await expect(
-          withLock(targetPath, async () => null, { retries: 3, delay: 100 })
+          withLock(targetPath, async () => null, { retries: 3, delay: 100 }),
         ).rejects.toThrow(/Could not acquire lock/);
 
         const elapsed = Date.now() - startTime;

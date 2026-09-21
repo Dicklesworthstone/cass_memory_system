@@ -4,19 +4,19 @@
  * Per bead cass_memory_system-xex1:
  * clone repo with existing playbook → doctor → context → why <bullet-id> → mark --helpful
  */
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { execSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
-import { initCommand } from "../src/commands/init.js";
-import { doctorCommand } from "../src/commands/doctor.js";
 import { generateContextResult } from "../src/commands/context.js";
-import { whyCommand } from "../src/commands/why.js";
+import { doctorCommand } from "../src/commands/doctor.js";
+import { initCommand } from "../src/commands/init.js";
 import { markCommand } from "../src/commands/mark.js";
-import { withTempCassHome, withTempDir, type TestEnv } from "./helpers/temp.js";
-import { withTempGitRepo, commitAll } from "./helpers/git.js";
+import { whyCommand } from "../src/commands/why.js";
 import { createE2ELogger } from "./helpers/e2e-logger.js";
+import { commitAll, withTempGitRepo } from "./helpers/git.js";
+import { type TestEnv, withTempCassHome, withTempDir } from "./helpers/temp.js";
 
 function captureConsole() {
   const logs: string[] = [];
@@ -154,7 +154,7 @@ describe("Workflow E2E: team onboarding", () => {
               const ctx = await generateContextResult("validate setup after cloning", {});
               log.snapshot("context", ctx.result);
               const hasRepoRule = ctx.result.relevantBullets.some(
-                (b: any) => typeof b?.content === "string" && b.content.includes("cm doctor")
+                (b: any) => typeof b?.content === "string" && b.content.includes("cm doctor"),
               );
               expect(hasRepoRule).toBe(true);
             });
@@ -192,11 +192,13 @@ describe("Workflow E2E: team onboarding", () => {
 
             const updatedRepoPlaybookRaw = await readFile(
               path.join(cloneDir, ".cass", "playbook.yaml"),
-              "utf-8"
+              "utf-8",
             );
             const updatedRepoPlaybook = yaml.parse(updatedRepoPlaybookRaw) as any;
             log.snapshot("repoPlaybook.afterMark", updatedRepoPlaybook);
-            const bullet = (updatedRepoPlaybook?.bullets || []).find((b: any) => b?.id === repoBulletId);
+            const bullet = (updatedRepoPlaybook?.bullets || []).find(
+              (b: any) => b?.id === repoBulletId,
+            );
             expect(bullet).toBeDefined();
             expect(Number(bullet.helpfulCount ?? 0)).toBeGreaterThanOrEqual(1);
           }, "cass-team-onboard");

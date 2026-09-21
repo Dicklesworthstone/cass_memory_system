@@ -1,5 +1,21 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import { batchEmbed, configureEmbeddingBackend, cosineSimilarity, embedText, findSemanticDuplicates, ModelLoadProgress, ProgressCallback, WarmupResult, warmupEmbeddings, isModelCached, getEmbeddingBackend, getSemanticStatus, formatSemanticModeMessage, SemanticStatus, setEmbeddingBackend } from "../src/semantic.js";
+import {
+  batchEmbed,
+  configureEmbeddingBackend,
+  cosineSimilarity,
+  embedText,
+  findSemanticDuplicates,
+  formatSemanticModeMessage,
+  getEmbeddingBackend,
+  getSemanticStatus,
+  isModelCached,
+  type ModelLoadProgress,
+  type ProgressCallback,
+  type SemanticStatus,
+  setEmbeddingBackend,
+  type WarmupResult,
+  warmupEmbeddings,
+} from "../src/semantic.js";
 
 describe("semantic: cosineSimilarity", () => {
   test("returns 1 for identical vectors", () => {
@@ -61,20 +77,16 @@ describe("semantic: embedding helpers (no model downloads)", () => {
 
   test("Ollama embedding requests include a timeout signal", async () => {
     const signals: Array<AbortSignal | null | undefined> = [];
-    const fetchSpy = spyOn(globalThis, "fetch").mockImplementation(
-      (async (_input, init) => {
-        signals.push(init?.signal);
-        const request = JSON.parse(String(init?.body)) as {
-          input: string | string[];
-        };
-        const inputs = Array.isArray(request.input)
-          ? request.input
-          : [request.input];
-        return Response.json({
-          embeddings: inputs.map(() => [1, 0]),
-        });
-      }) as typeof fetch,
-    );
+    const fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async (_input, init) => {
+      signals.push(init?.signal);
+      const request = JSON.parse(String(init?.body)) as {
+        input: string | string[];
+      };
+      const inputs = Array.isArray(request.input) ? request.input : [request.input];
+      return Response.json({
+        embeddings: inputs.map(() => [1, 0]),
+      });
+    }) as typeof fetch);
 
     try {
       configureEmbeddingBackend({
@@ -212,7 +224,10 @@ describe("semantic: getSemanticStatus", () => {
   });
 
   test("uses custom model when specified", () => {
-    const status = getSemanticStatus({ semanticSearchEnabled: true, embeddingModel: "custom-model" });
+    const status = getSemanticStatus({
+      semanticSearchEnabled: true,
+      embeddingModel: "custom-model",
+    });
     expect(status.model).toBe("custom-model");
   });
 });

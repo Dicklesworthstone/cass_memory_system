@@ -1,17 +1,19 @@
-import { describe, test, expect, afterEach } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import {
   compareSemver,
+  fetchLatestRelease,
+  INSTALL_COMMAND,
+  LATEST_RELEASE_API_URL,
   normalizeVersion,
   parseSemver,
-  fetchLatestRelease,
-  updateCommand,
-  LATEST_RELEASE_API_URL,
-  INSTALL_COMMAND,
   UPDATE_REPO,
+  updateCommand,
 } from "../src/commands/update.js";
 import { getVersion } from "../src/utils.js";
 
-async function captureConsoleLog<T>(fn: () => Promise<T> | T): Promise<{ result: T; output: string }> {
+async function captureConsoleLog<T>(
+  fn: () => Promise<T> | T,
+): Promise<{ result: T; output: string }> {
   const original = console.log;
   const lines: string[] = [];
 
@@ -113,7 +115,7 @@ describe("update command", () => {
   describe("fetchLatestRelease", () => {
     test("returns normalized version, tag, and url", async () => {
       const info = await fetchLatestRelease(
-        stubFetch({ tag_name: "v9.9.9", html_url: "https://example.com/rel" })
+        stubFetch({ tag_name: "v9.9.9", html_url: "https://example.com/rel" }),
       );
       expect(info.version).toBe("9.9.9");
       expect(info.tag).toBe("v9.9.9");
@@ -140,8 +142,8 @@ describe("update command", () => {
       const { output } = await captureConsoleLog(() =>
         updateCommand(
           { check: true, json: true },
-          { fetchImpl: stubFetch({ tag_name: `v${getVersion()}` }) }
-        )
+          { fetchImpl: stubFetch({ tag_name: `v${getVersion()}` }) },
+        ),
       );
       const envelope = JSON.parse(output);
       expect(envelope.success).toBe(true);
@@ -155,8 +157,8 @@ describe("update command", () => {
       const { output } = await captureConsoleLog(() =>
         updateCommand(
           { check: true, json: true },
-          { fetchImpl: stubFetch({ tag_name: "v999.0.0" }) }
-        )
+          { fetchImpl: stubFetch({ tag_name: "v999.0.0" }) },
+        ),
       );
       const envelope = JSON.parse(output);
       expect(envelope.success).toBe(true);
@@ -173,8 +175,8 @@ describe("update command", () => {
       const { output } = await captureConsoleLog(() =>
         updateCommand(
           { json: true, interactive: false },
-          { fetchImpl: stubFetch({ tag_name: "v999.0.0" }) }
-        )
+          { fetchImpl: stubFetch({ tag_name: "v999.0.0" }) },
+        ),
       );
       const envelope = JSON.parse(output);
       expect(envelope.success).toBe(true);
@@ -189,8 +191,8 @@ describe("update command", () => {
       const { output } = await captureConsoleLog(() =>
         updateCommand(
           { json: true, interactive: false },
-          { fetchImpl: stubFetch({ tag_name: `v${getVersion()}` }) }
-        )
+          { fetchImpl: stubFetch({ tag_name: `v${getVersion()}` }) },
+        ),
       );
       const envelope = JSON.parse(output);
       expect(envelope.success).toBe(true);

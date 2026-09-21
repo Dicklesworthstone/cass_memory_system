@@ -1,43 +1,36 @@
-import {
+import { addBullet, deprecateBullet, findBullet } from "./playbook.js";
+import { checkForDemotion, checkForPromotion, getDecayedCounts } from "./scoring.js";
+import type {
   Config,
-  Playbook,
-  PlaybookDelta,
   CurationResult,
-  PlaybookBullet,
+  DecisionLogEntry,
   InversionReport,
-  DecisionLogEntry
+  Playbook,
+  PlaybookBullet,
+  PlaybookDelta,
 } from "./types.js";
-import { 
-  findBullet, 
-  addBullet, 
-  deprecateBullet 
-} from "./playbook.js";
-import { 
-  hashContent, 
-  jaccardSimilarity, 
+import {
+  generateBulletId,
+  hashContent,
+  jaccardSimilarity,
   jaccardSimilaritySets,
-  generateBulletId, 
-  now,
   log,
-  tokenize
+  now,
+  tokenize,
 } from "./utils.js";
-import { 
-  checkForPromotion, 
-  checkForDemotion, 
-  getDecayedCounts 
-} from "./scoring.js";
 
 function findSimilarBulletFromMeta(
   newTokens: Set<string>,
   metaList: ConflictMeta[],
-  threshold: number
+  threshold: number,
 ): PlaybookBullet | undefined {
   let bestDeprecated: PlaybookBullet | undefined;
 
   for (const meta of metaList) {
     const b = meta.bullet;
-    const isDeprecated = Boolean(b.deprecated) || b.maturity === "deprecated" || b.state === "retired";
-    
+    const isDeprecated =
+      Boolean(b.deprecated) || b.maturity === "deprecated" || b.state === "retired";
+
     // Fast skip based on size difference
     // Jaccard = intersection / union.
     // Max intersection = min(A, B). Min union = max(A, B).
@@ -66,14 +59,25 @@ function findSimilarBulletFromMeta(
 
 // --- Helper: Conflict Detection ---
 
-const NEGATIVE_MARKERS = ["never", "dont", "don't", "avoid", "forbid", "forbidden", "disable", "prevent", "stop", "skip"];
+const NEGATIVE_MARKERS = [
+  "never",
+  "dont",
+  "don't",
+  "avoid",
+  "forbid",
+  "forbidden",
+  "disable",
+  "prevent",
+  "stop",
+  "skip",
+];
 const POSITIVE_MARKERS = ["always", "must", "required", "ensure", "use", "enable"];
 const EXCEPTION_MARKERS = ["unless", "except", "only if", "only when", "except when"];
 
 function hasMarker(text: string, markers: string[]): boolean {
   // Use word boundaries to avoid substring matches (e.g., "use" matching "user")
   const lower = text.toLowerCase();
-  return markers.some(m => new RegExp(`\\b${m}\\b`, 'i').test(lower));
+  return markers.some((m) => new RegExp(`\\b${m}\\b`, "i").test(lower));
 }
 
 // Optimized metadata structure for conflict detection
@@ -91,13 +95,13 @@ function computeConflictMeta(bullet: PlaybookBullet): ConflictMeta {
     tokens: new Set(tokenize(bullet.content)),
     neg: hasMarker(bullet.content, NEGATIVE_MARKERS),
     pos: hasMarker(bullet.content, POSITIVE_MARKERS),
-    exc: hasMarker(bullet.content, EXCEPTION_MARKERS)
+    exc: hasMarker(bullet.content, EXCEPTION_MARKERS),
   };
 }
 
 export function detectConflicts(
   newContent: string,
-  existingBullets: PlaybookBullet[]
+  existingBullets: PlaybookBullet[],
 ): { id: string; content: string; reason: string }[] {
   // For tests/legacy calls: compute meta on the fly
   const meta = existingBullets.map(computeConflictMeta);
@@ -106,45 +110,46 @@ export function detectConflicts(
 
 export function detectConflictsWithMeta(
   newContent: string,
-  existingMeta: ConflictMeta[]
+  existingMeta: ConflictMeta[],
 ): { id: string; content: string; reason: string }[] {
   const conflicts: { id: string; content: string; reason: string }[] = [];
-  
+
   // Pre-check markers in new content once
   // Optimization: tokenize new content once
   const newTokens = tokenize(newContent);
   const newTokenSet = new Set(newTokens);
-  
+
   const newNeg = hasMarker(newContent, NEGATIVE_MARKERS);
   const newPos = hasMarker(newContent, POSITIVE_MARKERS);
   const newExc = hasMarker(newContent, EXCEPTION_MARKERS);
-  
+
   const hasNewMarkers = newNeg || newPos || newExc;
 
   for (const m of existingMeta) {
     // Skip deprecated/retired bullets - consistent with isDeprecated helper
-    if (m.bullet.deprecated || m.bullet.maturity === "deprecated" || m.bullet.state === "retired") continue;
+    if (m.bullet.deprecated || m.bullet.maturity === "deprecated" || m.bullet.state === "retired")
+      continue;
 
     // Optimization: Jaccard using pre-computed token sets
     if (newTokens.length === 0 || m.tokens.size === 0) continue;
-    
+
     // Fast skip based on size difference
     const maxSize = Math.max(newTokenSet.size, m.tokens.size);
     const minSize = Math.min(newTokenSet.size, m.tokens.size);
-    // If sizes are too different, Jaccard can't be high. 
+    // If sizes are too different, Jaccard can't be high.
     // intersection <= minSize. union >= maxSize.
     // Jaccard <= minSize / maxSize.
     // If minSize / maxSize < 0.1, then Jaccard < 0.1.
     // We need 0.1 or 0.2 overlap.
     const hasDirectiveMarkers = hasNewMarkers || m.neg || m.pos || m.exc;
     const minOverlap = hasDirectiveMarkers ? 0.1 : 0.2;
-    
+
     if (minSize / maxSize < minOverlap) continue;
 
-    const intersectionSize = [...newTokenSet].filter(x => m.tokens.has(x)).length;
+    const intersectionSize = [...newTokenSet].filter((x) => m.tokens.has(x)).length;
     const unionSize = new Set([...newTokenSet, ...m.tokens]).size;
     const overlap = intersectionSize / unionSize;
-    
+
     if (overlap < minOverlap) continue;
 
     // Heuristic 1: Negation conflict (one negative, one affirmative)
@@ -152,7 +157,8 @@ export function detectConflictsWithMeta(
       conflicts.push({
         id: m.bullet.id,
         content: m.bullet.content,
-        reason: "Possible negation conflict (one says do, the other says avoid) with high term overlap"
+        reason:
+          "Possible negation conflict (one says do, the other says avoid) with high term overlap",
       });
       continue;
     }
@@ -162,7 +168,7 @@ export function detectConflictsWithMeta(
       conflicts.push({
         id: m.bullet.id,
         content: m.bullet.content,
-        reason: "Opposite directives (must vs avoid) on similar subject matter"
+        reason: "Opposite directives (must vs avoid) on similar subject matter",
       });
       continue;
     }
@@ -172,9 +178,8 @@ export function detectConflictsWithMeta(
       conflicts.push({
         id: m.bullet.id,
         content: m.bullet.content,
-        reason: "Potential scope conflict (always vs exception) on overlapping topic"
+        reason: "Potential scope conflict (always vs exception) on overlapping topic",
       });
-      continue;
     }
   }
 
@@ -188,7 +193,7 @@ function logDecision(
   phase: DecisionLogEntry["phase"],
   action: DecisionLogEntry["action"],
   reason: string,
-  options?: { bulletId?: string; content?: string; details?: Record<string, unknown> }
+  options?: { bulletId?: string; content?: string; details?: Record<string, unknown> },
 ): void {
   decisionLog.push({
     timestamp: now(),
@@ -197,7 +202,7 @@ function logDecision(
     reason,
     bulletId: options?.bulletId,
     content: options?.content,
-    details: options?.details
+    details: options?.details,
   });
 }
 
@@ -220,8 +225,8 @@ function invertToAntiPattern(bullet: PlaybookBullet, config: Config): PlaybookBu
     scope: bullet.scope,
     workspace: bullet.workspace,
     source: "learned", // Derived from existing rule, so implicitly learned/inferred
-    state: "active", 
-    maturity: "candidate", 
+    state: "active",
+    maturity: "candidate",
     createdAt: now(),
     updatedAt: now(),
     // Copy provenance arrays to avoid aliasing mutations between bullets.
@@ -233,7 +238,7 @@ function invertToAntiPattern(bullet: PlaybookBullet, config: Config): PlaybookBu
     harmfulCount: 0,
     deprecated: false,
     pinned: false,
-    confidenceDecayHalfLifeDays: config.scoring.decayHalfLifeDays 
+    confidenceDecayHalfLifeDays: config.scoring.decayHalfLifeDays,
   };
 }
 
@@ -243,7 +248,7 @@ export function curatePlaybook(
   targetPlaybook: Playbook,
   deltas: PlaybookDelta[],
   config: Config,
-  contextPlaybook?: Playbook
+  contextPlaybook?: Playbook,
 ): CurationResult {
   // Use context playbook (merged) for dedup checks if available, otherwise target
   const referencePlaybook = contextPlaybook || targetPlaybook;
@@ -269,7 +274,7 @@ export function curatePlaybook(
     promotions: [],
     inversions: [],
     pruned: 0,
-    decisionLog
+    decisionLog,
   };
 
   for (const delta of deltas) {
@@ -279,7 +284,7 @@ export function curatePlaybook(
       case "add": {
         if (!delta.bullet?.content || !delta.bullet?.category) {
           logDecision(decisionLog, "add", "rejected", "Missing required content or category", {
-            content: delta.bullet?.content?.slice(0, 100)
+            content: delta.bullet?.content?.slice(0, 100),
           });
           break;
         }
@@ -292,25 +297,25 @@ export function curatePlaybook(
         // Use optimized version with pre-computed meta
         const newTokens = tokenize(content);
         const newTokenSet = new Set(newTokens);
-        
+
         // Note: detectConflictsWithMeta re-tokenizes internally if we pass string.
         // But we need newTokenSet for dedup anyway.
         // We can't easily pass Set to detectConflictsWithMeta without changing its signature or logic duplication.
         // For now, letting it re-tokenize is fine (it's fast), or we can refactor.
         // To be safe and minimal diff, we'll let it re-tokenize or just pass string.
         const conflicts = detectConflictsWithMeta(content, conflictMeta);
-        
+
         for (const c of conflicts) {
           result.conflicts.push({
             newBulletContent: content,
             conflictingBulletId: c.id,
             conflictingContent: c.content,
-            reason: c.reason
+            reason: c.reason,
           });
           logDecision(decisionLog, "conflict", "skipped", c.reason, {
             content: content.slice(0, 100),
             bulletId: c.id,
-            details: { conflictingContent: c.content.slice(0, 100) }
+            details: { conflictingContent: c.content.slice(0, 100) },
           });
         }
 
@@ -318,14 +323,23 @@ export function curatePlaybook(
         const exactMatch = bulletContentMap.get(hash);
 
         if (exactMatch) {
-          const isDeprecated = Boolean(exactMatch.deprecated) || exactMatch.maturity === "deprecated" || exactMatch.state === "retired";
+          const isDeprecated =
+            Boolean(exactMatch.deprecated) ||
+            exactMatch.maturity === "deprecated" ||
+            exactMatch.state === "retired";
 
           if (isDeprecated) {
-             logDecision(decisionLog, "dedup", "skipped", "Exact duplicate exists but is deprecated", {
-               content: content.slice(0, 100),
-               bulletId: exactMatch.id
-             });
-             break;
+            logDecision(
+              decisionLog,
+              "dedup",
+              "skipped",
+              "Exact duplicate exists but is deprecated",
+              {
+                content: content.slice(0, 100),
+                bulletId: exactMatch.id,
+              },
+            );
+            break;
           }
 
           // Try to find it in the target playbook (the one we are writing to)
@@ -336,28 +350,38 @@ export function curatePlaybook(
               type: "helpful",
               timestamp: now(),
               sessionPath: delta.sourceSession,
-              context: "Reinforced by exact duplicate insight"
+              context: "Reinforced by exact duplicate insight",
             });
             targetBullet.helpfulCount++;
             targetBullet.updatedAt = now();
             applied = true;
             logDecision(decisionLog, "dedup", "modified", "Reinforced existing exact duplicate", {
               bulletId: targetBullet.id,
-              content: content.slice(0, 100)
+              content: content.slice(0, 100),
             });
           } else {
             // It exists in the context (other layer) but not target. Skip to avoid duplication.
-            logDecision(decisionLog, "dedup", "skipped", "Exact duplicate exists in other playbook layer", {
-              content: content.slice(0, 100),
-              bulletId: exactMatch.id
-            });
+            logDecision(
+              decisionLog,
+              "dedup",
+              "skipped",
+              "Exact duplicate exists in other playbook layer",
+              {
+                content: content.slice(0, 100),
+                bulletId: exactMatch.id,
+              },
+            );
           }
           break;
         }
 
         // 2. Semantic duplicate check (Optimized)
         // Uses pre-computed tokens from conflictMeta (which includes newly added bullets)
-        const similar = findSimilarBulletFromMeta(newTokenSet, conflictMeta, config.dedupSimilarityThreshold);
+        const similar = findSimilarBulletFromMeta(
+          newTokenSet,
+          conflictMeta,
+          config.dedupSimilarityThreshold,
+        );
 
         if (similar) {
           const similarIsDeprecated =
@@ -375,8 +399,8 @@ export function curatePlaybook(
               {
                 content: content.slice(0, 100),
                 bulletId: similar.id,
-                details: { similarTo: similar.content.slice(0, 100) }
-              }
+                details: { similarTo: similar.content.slice(0, 100) },
+              },
             );
             break;
           }
@@ -397,8 +421,8 @@ export function curatePlaybook(
                 {
                   bulletId: targetSimilar.id,
                   content: content.slice(0, 100),
-                  details: { similarTo: similar.content.slice(0, 100) }
-                }
+                  details: { similarTo: similar.content.slice(0, 100) },
+                },
               );
               break;
             }
@@ -407,7 +431,7 @@ export function curatePlaybook(
               type: "helpful",
               timestamp: now(),
               sessionPath: delta.sourceSession,
-              context: "Reinforced by similar insight"
+              context: "Reinforced by similar insight",
             });
             targetSimilar.helpfulCount++;
             targetSimilar.updatedAt = now();
@@ -415,13 +439,22 @@ export function curatePlaybook(
             logDecision(decisionLog, "dedup", "modified", "Reinforced existing similar bullet", {
               bulletId: targetSimilar.id,
               content: content.slice(0, 100),
-              details: { similarTo: similar.content.slice(0, 100), similarity: config.dedupSimilarityThreshold }
+              details: {
+                similarTo: similar.content.slice(0, 100),
+                similarity: config.dedupSimilarityThreshold,
+              },
             });
           } else {
-            logDecision(decisionLog, "dedup", "skipped", "Similar bullet exists in repo playbook (or just added)", {
-              content: content.slice(0, 100),
-              details: { similarTo: similar.content.slice(0, 100) }
-            });
+            logDecision(
+              decisionLog,
+              "dedup",
+              "skipped",
+              "Similar bullet exists in repo playbook (or just added)",
+              {
+                content: content.slice(0, 100),
+                details: { similarTo: similar.content.slice(0, 100) },
+              },
+            );
           }
           break;
         }
@@ -443,7 +476,7 @@ export function curatePlaybook(
             searchPointer: delta.bullet.searchPointer,
           },
           delta.sourceSession,
-          config.scoring.decayHalfLifeDays
+          config.scoring.decayHalfLifeDays,
         );
 
         if (typeof delta.reason === "string" && delta.reason.trim()) {
@@ -452,14 +485,14 @@ export function curatePlaybook(
 
         // Update caches to catch duplicates later in this batch
         bulletContentMap.set(hash, newBullet);
-        
+
         // We reuse the already computed tokens for the new bullet metadata
         const newMeta: ConflictMeta = {
           bullet: newBullet,
           tokens: newTokenSet,
           neg: hasMarker(content, NEGATIVE_MARKERS),
           pos: hasMarker(content, POSITIVE_MARKERS),
-          exc: hasMarker(content, EXCEPTION_MARKERS)
+          exc: hasMarker(content, EXCEPTION_MARKERS),
         };
         conflictMeta.push(newMeta);
 
@@ -467,7 +500,7 @@ export function curatePlaybook(
         logDecision(decisionLog, "add", "accepted", "New bullet added to playbook", {
           bulletId: newBullet.id,
           content: content.slice(0, 100),
-          details: { category: delta.bullet.category, tags: delta.bullet.tags }
+          details: { category: delta.bullet.category, tags: delta.bullet.tags },
         });
         break;
       }
@@ -475,24 +508,37 @@ export function curatePlaybook(
       case "helpful": {
         const bullet = findBullet(targetPlaybook, delta.bulletId);
         if (!bullet) {
-          logDecision(decisionLog, "feedback", "rejected", "Bullet not found for helpful feedback", {
-            bulletId: delta.bulletId
-          });
+          logDecision(
+            decisionLog,
+            "feedback",
+            "rejected",
+            "Bullet not found for helpful feedback",
+            {
+              bulletId: delta.bulletId,
+            },
+          );
           break;
         }
 
         // Idempotency check
-        const alreadyRecorded = bullet.feedbackEvents.some(e =>
-          e.type === "helpful" &&
-          e.sessionPath &&
-          delta.sourceSession &&
-          e.sessionPath === delta.sourceSession
+        const alreadyRecorded = bullet.feedbackEvents.some(
+          (e) =>
+            e.type === "helpful" &&
+            e.sessionPath &&
+            delta.sourceSession &&
+            e.sessionPath === delta.sourceSession,
         );
 
         if (alreadyRecorded) {
-          logDecision(decisionLog, "feedback", "skipped", "Helpful feedback already recorded for this session", {
-            bulletId: delta.bulletId
-          });
+          logDecision(
+            decisionLog,
+            "feedback",
+            "skipped",
+            "Helpful feedback already recorded for this session",
+            {
+              bulletId: delta.bulletId,
+            },
+          );
           break;
         }
 
@@ -500,7 +546,7 @@ export function curatePlaybook(
           type: "helpful",
           timestamp: now(),
           sessionPath: delta.sourceSession,
-          context: delta.context
+          context: delta.context,
         });
         bullet.helpfulCount++;
         bullet.lastValidatedAt = now();
@@ -509,7 +555,7 @@ export function curatePlaybook(
         logDecision(decisionLog, "feedback", "accepted", "Helpful feedback recorded", {
           bulletId: delta.bulletId,
           content: bullet.content.slice(0, 100),
-          details: { helpfulCount: bullet.helpfulCount, context: delta.context }
+          details: { helpfulCount: bullet.helpfulCount, context: delta.context },
         });
         break;
       }
@@ -517,24 +563,37 @@ export function curatePlaybook(
       case "harmful": {
         const bullet = findBullet(targetPlaybook, delta.bulletId);
         if (!bullet) {
-          logDecision(decisionLog, "feedback", "rejected", "Bullet not found for harmful feedback", {
-            bulletId: delta.bulletId
-          });
+          logDecision(
+            decisionLog,
+            "feedback",
+            "rejected",
+            "Bullet not found for harmful feedback",
+            {
+              bulletId: delta.bulletId,
+            },
+          );
           break;
         }
 
         // Idempotency check
-        const alreadyRecorded = bullet.feedbackEvents.some(e =>
-          e.type === "harmful" &&
-          e.sessionPath &&
-          delta.sourceSession &&
-          e.sessionPath === delta.sourceSession
+        const alreadyRecorded = bullet.feedbackEvents.some(
+          (e) =>
+            e.type === "harmful" &&
+            e.sessionPath &&
+            delta.sourceSession &&
+            e.sessionPath === delta.sourceSession,
         );
 
         if (alreadyRecorded) {
-          logDecision(decisionLog, "feedback", "skipped", "Harmful feedback already recorded for this session", {
-            bulletId: delta.bulletId
-          });
+          logDecision(
+            decisionLog,
+            "feedback",
+            "skipped",
+            "Harmful feedback already recorded for this session",
+            {
+              bulletId: delta.bulletId,
+            },
+          );
           break;
         }
 
@@ -543,7 +602,7 @@ export function curatePlaybook(
           timestamp: now(),
           sessionPath: delta.sourceSession,
           reason: delta.reason,
-          context: delta.context
+          context: delta.context,
         });
         bullet.harmfulCount++;
         bullet.updatedAt = now();
@@ -551,7 +610,7 @@ export function curatePlaybook(
         logDecision(decisionLog, "feedback", "accepted", "Harmful feedback recorded", {
           bulletId: delta.bulletId,
           content: bullet.content.slice(0, 100),
-          details: { harmfulCount: bullet.harmfulCount, reason: delta.reason }
+          details: { harmfulCount: bullet.harmfulCount, reason: delta.reason },
         });
         break;
       }
@@ -560,7 +619,7 @@ export function curatePlaybook(
         const bullet = findBullet(targetPlaybook, delta.bulletId);
         if (!bullet) {
           logDecision(decisionLog, "add", "rejected", "Bullet not found for replacement", {
-            bulletId: delta.bulletId
+            bulletId: delta.bulletId,
           });
           break;
         }
@@ -571,7 +630,7 @@ export function curatePlaybook(
         logDecision(decisionLog, "add", "modified", "Bullet content replaced", {
           bulletId: delta.bulletId,
           content: delta.newContent.slice(0, 100),
-          details: { previousContent: oldContent.slice(0, 100) }
+          details: { previousContent: oldContent.slice(0, 100) },
         });
         break;
       }
@@ -581,34 +640,47 @@ export function curatePlaybook(
           applied = true;
           logDecision(decisionLog, "demotion", "accepted", "Bullet deprecated", {
             bulletId: delta.bulletId,
-            details: { reason: delta.reason, replacedBy: delta.replacedBy }
+            details: { reason: delta.reason, replacedBy: delta.replacedBy },
           });
         } else {
           logDecision(decisionLog, "demotion", "rejected", "Failed to deprecate bullet", {
-            bulletId: delta.bulletId
+            bulletId: delta.bulletId,
           });
         }
         break;
       }
-      
+
       case "merge": {
         // Only merge if all bullets exist in target
-        const bulletsToMerge = delta.bulletIds.map(id => findBullet(targetPlaybook, id)).filter(b => b !== undefined) as PlaybookBullet[];
+        const bulletsToMerge = delta.bulletIds
+          .map((id) => findBullet(targetPlaybook, id))
+          .filter((b) => b !== undefined) as PlaybookBullet[];
 
         if (bulletsToMerge.length !== delta.bulletIds.length || bulletsToMerge.length < 2) {
-          logDecision(decisionLog, "add", "rejected", "Cannot merge: missing bullets or insufficient count", {
-            details: { requested: delta.bulletIds.length, found: bulletsToMerge.length }
-          });
+          logDecision(
+            decisionLog,
+            "add",
+            "rejected",
+            "Cannot merge: missing bullets or insufficient count",
+            {
+              details: { requested: delta.bulletIds.length, found: bulletsToMerge.length },
+            },
+          );
           break;
         }
 
-        const merged = addBullet(targetPlaybook, {
-          content: delta.mergedContent,
-          category: bulletsToMerge[0].category,
-          tags: [...new Set(bulletsToMerge.flatMap(b => b.tags))]
-        }, "merged", config.scoring?.decayHalfLifeDays ?? config.defaultDecayHalfLife ?? 90);
+        const merged = addBullet(
+          targetPlaybook,
+          {
+            content: delta.mergedContent,
+            category: bulletsToMerge[0].category,
+            tags: [...new Set(bulletsToMerge.flatMap((b) => b.tags))],
+          },
+          "merged",
+          config.scoring?.decayHalfLifeDays ?? config.defaultDecayHalfLife ?? 90,
+        );
 
-        bulletsToMerge.forEach(b => {
+        bulletsToMerge.forEach((b) => {
           deprecateBullet(targetPlaybook, b.id, `Merged into ${merged.id}`, merged.id);
         });
 
@@ -616,7 +688,7 @@ export function curatePlaybook(
         logDecision(decisionLog, "add", "accepted", "Bullets merged into new combined bullet", {
           bulletId: merged.id,
           content: delta.mergedContent.slice(0, 100),
-          details: { mergedFrom: delta.bulletIds }
+          details: { mergedFrom: delta.bulletIds },
         });
         break;
       }
@@ -641,20 +713,35 @@ export function curatePlaybook(
     // Use epsilon for floating point comparison robustness
     const epsilon = 0.01;
 
-    if (decayedHarmful >= (pruneThreshold - epsilon) && decayedHarmful > (decayedHelpful * 2)) {
+    if (decayedHarmful >= pruneThreshold - epsilon && decayedHarmful > decayedHelpful * 2) {
       if (bullet.isNegative) {
-        deprecateBullet(targetPlaybook, bullet.id, "Negative rule marked harmful (likely incorrect restriction)");
+        deprecateBullet(
+          targetPlaybook,
+          bullet.id,
+          "Negative rule marked harmful (likely incorrect restriction)",
+        );
         result.pruned++;
-        logDecision(decisionLog, "inversion", "rejected", "Negative rule deprecated (not inverted) due to harmful feedback", {
-          bulletId: bullet.id,
-          content: bullet.content.slice(0, 100),
-          details: { decayedHarmful, decayedHelpful }
-        });
+        logDecision(
+          decisionLog,
+          "inversion",
+          "rejected",
+          "Negative rule deprecated (not inverted) due to harmful feedback",
+          {
+            bulletId: bullet.id,
+            content: bullet.content.slice(0, 100),
+            details: { decayedHarmful, decayedHelpful },
+          },
+        );
       } else {
         const antiPattern = invertToAntiPattern(bullet, config);
         targetPlaybook.bullets.push(antiPattern);
 
-        deprecateBullet(targetPlaybook, bullet.id, `Inverted to anti-pattern: ${antiPattern.id}`, antiPattern.id);
+        deprecateBullet(
+          targetPlaybook,
+          bullet.id,
+          `Inverted to anti-pattern: ${antiPattern.id}`,
+          antiPattern.id,
+        );
         invertedBulletIds.add(bullet.id);
 
         inversions.push({
@@ -663,14 +750,20 @@ export function curatePlaybook(
           antiPatternId: antiPattern.id,
           antiPatternContent: antiPattern.content,
           bulletId: bullet.id,
-          reason: `Marked as blocked/anti-pattern`
+          reason: `Marked as blocked/anti-pattern`,
         });
 
-        logDecision(decisionLog, "inversion", "accepted", "Positive rule inverted to anti-pattern due to harmful feedback", {
-          bulletId: bullet.id,
-          content: bullet.content.slice(0, 100),
-          details: { antiPatternId: antiPattern.id, decayedHarmful, decayedHelpful }
-        });
+        logDecision(
+          decisionLog,
+          "inversion",
+          "accepted",
+          "Positive rule inverted to anti-pattern due to harmful feedback",
+          {
+            bulletId: bullet.id,
+            content: bullet.content.slice(0, 100),
+            details: { antiPatternId: antiPattern.id, decayedHarmful, decayedHelpful },
+          },
+        );
       }
     }
   }
@@ -690,32 +783,50 @@ export function curatePlaybook(
         bulletId: bullet.id,
         from: oldMaturity,
         to: promoted,
-        reason: `Auto-promoted based on feedback`
+        reason: `Auto-promoted based on feedback`,
       });
-      
-      logDecision(decisionLog, "promotion", "accepted", `Maturity promoted from ${oldMaturity} to ${promoted}`, {
-        bulletId: bullet.id,
-        content: bullet.content.slice(0, 100),
-        details: { from: oldMaturity, to: promoted }
-      });
+
+      logDecision(
+        decisionLog,
+        "promotion",
+        "accepted",
+        `Maturity promoted from ${oldMaturity} to ${promoted}`,
+        {
+          bulletId: bullet.id,
+          content: bullet.content.slice(0, 100),
+          details: { from: oldMaturity, to: promoted },
+        },
+      );
     }
 
     const demotionCheck = checkForDemotion(bullet, config);
     if (demotionCheck === "auto-deprecate") {
       deprecateBullet(targetPlaybook, bullet.id, "Auto-deprecated due to negative score");
       result.pruned++;
-      logDecision(decisionLog, "demotion", "accepted", "Bullet auto-deprecated due to negative effective score", {
-        bulletId: bullet.id,
-        content: bullet.content.slice(0, 100)
-      });
+      logDecision(
+        decisionLog,
+        "demotion",
+        "accepted",
+        "Bullet auto-deprecated due to negative effective score",
+        {
+          bulletId: bullet.id,
+          content: bullet.content.slice(0, 100),
+        },
+      );
     } else if (demotionCheck !== bullet.maturity) {
       const prevMaturity = bullet.maturity;
       bullet.maturity = demotionCheck;
-      logDecision(decisionLog, "demotion", "accepted", `Maturity demoted from ${prevMaturity} to ${demotionCheck}`, {
-        bulletId: bullet.id,
-        content: bullet.content.slice(0, 100),
-        details: { from: prevMaturity, to: demotionCheck }
-      });
+      logDecision(
+        decisionLog,
+        "demotion",
+        "accepted",
+        `Maturity demoted from ${prevMaturity} to ${demotionCheck}`,
+        {
+          bulletId: bullet.id,
+          content: bullet.content.slice(0, 100),
+          details: { from: prevMaturity, to: demotionCheck },
+        },
+      );
     }
   }
 

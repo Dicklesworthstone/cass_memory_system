@@ -1,21 +1,27 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { writeFile, mkdir, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { execSync } from "node:child_process";
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import {
+  bakeBudgetIntoConfig,
   DEFAULT_CONFIG,
   getDefaultConfig,
   getSanitizeConfig,
-  loadConfig,
-  saveConfig,
   isBudgetBakedInConfig,
-  bakeBudgetIntoConfig,
+  loadConfig,
   patchGlobalConfig,
+  saveConfig,
 } from "../src/config.js";
-import { ensureGlobalStructure } from "../src/utils.js";
-import { ConfigSchema, Config } from "../src/types.js";
 import { getEmbeddingBackend, getSemanticStatus, setEmbeddingBackend } from "../src/semantic.js";
-import { withTempDir, withTempCassHome, createIsolatedEnvironment, cleanupEnvironment, TestEnv } from "./helpers/index.js";
+import { type Config, ConfigSchema } from "../src/types.js";
+import { ensureGlobalStructure } from "../src/utils.js";
+import {
+  cleanupEnvironment,
+  createIsolatedEnvironment,
+  TestEnv,
+  withTempCassHome,
+  withTempDir,
+} from "./helpers/index.js";
 
 // =============================================================================
 // getDefaultConfig() - Clone behavior
@@ -65,8 +71,8 @@ describe("getDefaultConfig()", () => {
 
   test("budget defaults are sensible", () => {
     const config = getDefaultConfig();
-    expect(config.budget.dailyLimit).toBe(1.00);
-    expect(config.budget.monthlyLimit).toBe(20.00);
+    expect(config.budget.dailyLimit).toBe(1.0);
+    expect(config.budget.monthlyLimit).toBe(20.0);
     expect(config.budget.warningThreshold).toBe(80);
     expect(config.budget.currency).toBe("USD");
   });
@@ -229,7 +235,7 @@ describe("loadConfig() - Global config file", () => {
           provider: "google",
           model: "gemini-pro",
           verbose: true,
-        })
+        }),
       );
 
       const config = await loadConfig();
@@ -259,7 +265,7 @@ describe("loadConfig() - Global config file", () => {
         JSON.stringify({
           provider: "openai",
           // model not specified
-        })
+        }),
       );
 
       const config = await loadConfig();
@@ -278,16 +284,16 @@ describe("loadConfig() - Global config file", () => {
             decayHalfLifeDays: 60,
           },
           budget: {
-            dailyLimit: 0.50,
+            dailyLimit: 0.5,
           },
-        })
+        }),
       );
 
       const config = await loadConfig();
 
       // Overridden nested values
       expect(config.scoring.decayHalfLifeDays).toBe(60);
-      expect(config.budget.dailyLimit).toBe(0.50);
+      expect(config.budget.dailyLimit).toBe(0.5);
       // Non-overridden nested values use defaults
       expect(config.scoring.harmfulMultiplier).toBe(4);
       expect(config.budget.currency).toBe("USD");
@@ -314,7 +320,7 @@ describe("loadConfig() - Repo config file", () => {
           `provider: openai
 model: gpt-4-turbo
 verbose: true
-`
+`,
         );
 
         // Change to repo directory
@@ -355,7 +361,7 @@ sanitization:
   extraPatterns:
     - EXTRA_SECRET_PATTERN
 provider: openai
-`
+`,
         );
 
         const originalCwd = process.cwd();
@@ -398,7 +404,7 @@ provider: openai
           `max_reflector_iterations: 5
 dedup_similarity_threshold: 0.9
 session_lookback_days: 14
-`
+`,
         );
 
         const originalCwd = process.cwd();
@@ -435,7 +441,7 @@ describe("loadConfig() - Repo config format parity", () => {
             provider: "google",
             model: "gemini-1.5-pro",
             verbose: true,
-          })
+          }),
         );
 
         const originalCwd = process.cwd();
@@ -466,7 +472,7 @@ describe("loadConfig() - Repo config format parity", () => {
           `provider: openai
 model: gpt-4o
 verbose: true
-`
+`,
         );
 
         const originalCwd = process.cwd();
@@ -499,13 +505,13 @@ verbose: true
           JSON.stringify({
             provider: "google",
             model: "gemini-from-json",
-          })
+          }),
         );
         await writeFile(
           join(repoDir, ".cass", "config.yaml"),
           `provider: openai
 model: gpt-from-yaml
-`
+`,
         );
 
         const originalCwd = process.cwd();
@@ -537,13 +543,13 @@ model: gpt-from-yaml
           join(repoDir, ".cass", "config.yaml"),
           `provider: openai
 model: from-yaml
-`
+`,
         );
         await writeFile(
           join(repoDir, ".cass", "config.yml"),
           `provider: google
 model: from-yml
-`
+`,
         );
 
         const originalCwd = process.cwd();
@@ -576,7 +582,7 @@ model: from-yml
             playbookPath: "/malicious/playbook.yaml",
             diaryDir: "/malicious/diary",
             provider: "openai",
-          })
+          }),
         );
 
         const originalCwd = process.cwd();
@@ -613,7 +619,7 @@ describe("loadConfig() - Merge precedence", () => {
           provider: "google",
           model: "gemini-pro",
           maxReflectorIterations: 2,
-        })
+        }),
       );
 
       await withTempDir("config-precedence", async (repoDir) => {
@@ -627,7 +633,7 @@ describe("loadConfig() - Merge precedence", () => {
           join(repoDir, ".cass", "config.yaml"),
           `model: gpt-4-turbo
 maxReflectorIterations: 4
-`
+`,
         );
 
         const originalCwd = process.cwd();
@@ -660,8 +666,8 @@ describe("loadConfig() - LLM config migration", () => {
       await writeFile(
         env.configPath,
         JSON.stringify({
-          llm: { provider: "openai" }
-        })
+          llm: { provider: "openai" },
+        }),
       );
 
       const config = await loadConfig();
@@ -675,8 +681,8 @@ describe("loadConfig() - LLM config migration", () => {
       await writeFile(
         env.configPath,
         JSON.stringify({
-          llm: { model: "gpt-4-turbo" }
-        })
+          llm: { model: "gpt-4-turbo" },
+        }),
       );
 
       const config = await loadConfig();
@@ -689,8 +695,8 @@ describe("loadConfig() - LLM config migration", () => {
       await writeFile(
         env.configPath,
         JSON.stringify({
-          llm: { provider: "google", model: "gemini-pro" }
-        })
+          llm: { provider: "google", model: "gemini-pro" },
+        }),
       );
 
       const config = await loadConfig();
@@ -705,8 +711,8 @@ describe("loadConfig() - LLM config migration", () => {
         env.configPath,
         JSON.stringify({
           provider: "anthropic",
-          llm: { provider: "openai" }
-        })
+          llm: { provider: "openai" },
+        }),
       );
 
       const config = await loadConfig();
@@ -721,8 +727,8 @@ describe("loadConfig() - LLM config migration", () => {
         env.configPath,
         JSON.stringify({
           model: "claude-explicit-top-level",
-          llm: { model: "gpt-4" }
-        })
+          llm: { model: "gpt-4" },
+        }),
       );
 
       const config = await loadConfig();
@@ -742,8 +748,8 @@ describe("loadConfig() - LLM config migration", () => {
         await writeFile(
           join(repoDir, ".cass", "config.json"),
           JSON.stringify({
-            llm: { provider: "openai", model: "gpt-4-turbo" }
-          })
+            llm: { provider: "openai", model: "gpt-4-turbo" },
+          }),
         );
 
         const originalCwd = process.cwd();
@@ -819,7 +825,7 @@ describe("loadConfig() - Error handling", () => {
           join(repoDir, ".cass", "config.yaml"),
           `invalid: yaml: : content
   - broken
-`
+`,
         );
 
         const originalCwd = process.cwd();
@@ -839,7 +845,7 @@ describe("loadConfig() - Error handling", () => {
     await expect(
       loadConfig({
         provider: "invalid-provider" as any,
-      })
+      }),
     ).rejects.toThrow(/Configuration validation failed/);
   });
 });
@@ -877,10 +883,7 @@ describe("saveConfig()", () => {
         await saveConfig(config);
 
         const { readFile } = await import("node:fs/promises");
-        const content = await readFile(
-          join(tempDir, ".cass-memory", "config.json"),
-          "utf-8"
-        );
+        const content = await readFile(join(tempDir, ".cass-memory", "config.json"), "utf-8");
         const saved = JSON.parse(content);
         expect(saved.schema_version).toBe(1);
       } finally {
@@ -909,10 +912,7 @@ describe("isBudgetBakedInConfig() / bakeBudgetIntoConfig()", () => {
 
   test("reports unbaked when only one spend ceiling is present", async () => {
     await withTempCassHome(async (env) => {
-      await writeFile(
-        env.configPath,
-        JSON.stringify({ budget: { dailyLimit: 0.5 } }, null, 2)
-      );
+      await writeFile(env.configPath, JSON.stringify({ budget: { dailyLimit: 0.5 } }, null, 2));
       expect(await isBudgetBakedInConfig()).toBe(false);
     });
   });
@@ -921,7 +921,7 @@ describe("isBudgetBakedInConfig() / bakeBudgetIntoConfig()", () => {
     await withTempCassHome(async (env) => {
       await writeFile(
         env.configPath,
-        JSON.stringify({ budget: { dailyLimit: 0.5, monthlyLimit: 5 } }, null, 2)
+        JSON.stringify({ budget: { dailyLimit: 0.5, monthlyLimit: 5 } }, null, 2),
       );
       expect(await isBudgetBakedInConfig()).toBe(true);
     });
@@ -982,7 +982,7 @@ describe("isBudgetBakedInConfig() / bakeBudgetIntoConfig()", () => {
     await withTempCassHome(async (env) => {
       await writeFile(
         env.configPath,
-        JSON.stringify({ budget: { customNote: "hi", dailyLimit: 0.25 } }, null, 2)
+        JSON.stringify({ budget: { customNote: "hi", dailyLimit: 0.25 } }, null, 2),
       );
 
       const budget = getDefaultConfig().budget;
@@ -1058,8 +1058,8 @@ describe("Config Defaults Snapshot", () => {
     expect(defaults.scoring.maxHarmfulRatioForProven).toBe(0.1);
 
     // Budget
-    expect(defaults.budget.dailyLimit).toBe(1.00);
-    expect(defaults.budget.monthlyLimit).toBe(20.00);
+    expect(defaults.budget.dailyLimit).toBe(1.0);
+    expect(defaults.budget.monthlyLimit).toBe(20.0);
     expect(defaults.budget.warningThreshold).toBe(80);
     expect(defaults.budget.currency).toBe("USD");
 
@@ -1133,7 +1133,7 @@ describe("loadConfig() - Global config format parity (#75)", () => {
         `provider: openai
 model: gpt-4o
 semanticSearchEnabled: true
-`
+`,
       );
 
       const config = await loadConfig();
@@ -1151,7 +1151,7 @@ semanticSearchEnabled: true
         `semantic_search_enabled: true
 scoring:
   decay_half_life_days: 30
-`
+`,
       );
 
       const config = await loadConfig();
@@ -1176,7 +1176,9 @@ scoring:
         expect(config.provider).toBe("google");
         // Nothing from the shadowed YAML leaks through.
         expect(config.verbose).toBe(false);
-        expect(warnings.some((w) => w.includes("config.yaml") && w.includes("takes precedence"))).toBe(true);
+        expect(
+          warnings.some((w) => w.includes("config.yaml") && w.includes("takes precedence")),
+        ).toBe(true);
       } finally {
         console.error = originalError;
       }
@@ -1215,7 +1217,7 @@ scoring:
   # nested comment must survive an unrelated patch
   decay_half_life_days: 45
 semantic_search_enabled: false
-`
+`,
       );
 
       expect(await patchGlobalConfig({ semanticSearchEnabled: true })).toBe(true);

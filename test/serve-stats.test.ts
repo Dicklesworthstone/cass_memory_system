@@ -1,10 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import yaml from "yaml";
-import { createTestPlaybook, createTestBullet, createTestConfig, createTestFeedbackEvent } from "./helpers/factories.js";
 import { computePlaybookStats, __test as serveTest } from "../src/commands/serve.js";
-import { withTempCassHome } from "./helpers/temp.js";
+import {
+  createTestBullet,
+  createTestConfig,
+  createTestFeedbackEvent,
+  createTestPlaybook,
+} from "./helpers/factories.js";
 import { withTempGitRepo } from "./helpers/git.js";
+import { withTempCassHome } from "./helpers/temp.js";
 
 function parseToolResult<T>(result: unknown): T {
   if (
@@ -36,13 +41,13 @@ describe("serve module stats (unit)", () => {
     const helpfulBullet = createTestBullet({
       maturity: "established",
       scope: "global",
-      feedbackEvents: [createTestFeedbackEvent("helpful", 0)]
+      feedbackEvents: [createTestFeedbackEvent("helpful", 0)],
     });
 
     const harmfulBullet = createTestBullet({
       maturity: "established",
       scope: "global",
-      feedbackEvents: [createTestFeedbackEvent("harmful", 0)]
+      feedbackEvents: [createTestFeedbackEvent("harmful", 0)],
     });
 
     // Stale bullet: no feedback, created long ago
@@ -50,7 +55,7 @@ describe("serve module stats (unit)", () => {
       maturity: "candidate", // Default
       scope: "global",
       feedbackEvents: [],
-      createdAt: new Date(Date.now() - 100 * 86_400_000).toISOString()
+      createdAt: new Date(Date.now() - 100 * 86_400_000).toISOString(),
     });
 
     const playbook = createTestPlaybook([helpfulBullet, harmfulBullet, staleBullet]);
@@ -64,7 +69,7 @@ describe("serve module stats (unit)", () => {
         good: expect.any(Number),
         neutral: expect.any(Number),
         atRisk: expect.any(Number),
-      })
+      }),
     );
     expect(Array.isArray(stats.topPerformers)).toBe(true);
     expect(stats.topPerformers.length).toBeLessThanOrEqual(5);
@@ -153,7 +158,7 @@ describe("serve module helper functions", () => {
       expect(error).toEqual({
         jsonrpc: "2.0",
         id: 1,
-        error: { code: -32000, message: "Test error" }
+        error: { code: -32000, message: "Test error" },
       });
     });
 
@@ -162,7 +167,7 @@ describe("serve module helper functions", () => {
       expect(error).toEqual({
         jsonrpc: "2.0",
         id: "req-1",
-        error: { code: -32001, message: "Error with data", data: { detail: "extra" } }
+        error: { code: -32001, message: "Error with data", data: { detail: "extra" } },
       });
     });
 
@@ -178,7 +183,7 @@ describe("serve module routing", () => {
     const response = await serveTest.routeRequest({
       jsonrpc: "2.0",
       id: 1,
-      method: "resources/list"
+      method: "resources/list",
     });
 
     expect("result" in response).toBe(true);
@@ -197,7 +202,7 @@ describe("serve module routing", () => {
       jsonrpc: "2.0",
       id: 1,
       method: "tools/call",
-      params: {}
+      params: {},
     });
 
     expect("error" in response).toBe(true);
@@ -212,7 +217,7 @@ describe("serve module routing", () => {
       jsonrpc: "2.0",
       id: 1,
       method: "tools/call",
-      params: { name: "nonexistent_tool", arguments: {} }
+      params: { name: "nonexistent_tool", arguments: {} },
     });
 
     expect("error" in response).toBe(true);
@@ -226,7 +231,7 @@ describe("serve module routing", () => {
       jsonrpc: "2.0",
       id: 1,
       method: "resources/read",
-      params: {}
+      params: {},
     });
 
     expect("error" in response).toBe(true);
@@ -241,7 +246,7 @@ describe("serve module routing", () => {
       jsonrpc: "2.0",
       id: 1,
       method: "resources/read",
-      params: { uri: "cm://unknown" }
+      params: { uri: "cm://unknown" },
     });
 
     expect("error" in response).toBe(true);
@@ -263,7 +268,7 @@ describe("serve module tool calls", () => {
             jsonrpc: "2.0",
             id: 1,
             method: "tools/call",
-            params: { name: "cm_context", arguments: {} }
+            params: { name: "cm_context", arguments: {} },
           });
 
           expect("error" in response).toBe(true);
@@ -288,7 +293,7 @@ describe("serve module tool calls", () => {
             jsonrpc: "2.0",
             id: 1,
             method: "tools/call",
-            params: { name: "cm_context", arguments: { task: "   " } }
+            params: { name: "cm_context", arguments: { task: "   " } },
           });
 
           expect("error" in response).toBe(true);
@@ -313,7 +318,7 @@ describe("serve module tool calls", () => {
             jsonrpc: "2.0",
             id: 1,
             method: "tools/call",
-            params: { name: "cm_context", arguments: { task: "fix authentication bug" } }
+            params: { name: "cm_context", arguments: { task: "fix authentication bug" } },
           });
 
           expect("result" in response).toBe(true);
@@ -329,7 +334,7 @@ describe("serve module tool calls", () => {
       jsonrpc: "2.0",
       id: 1,
       method: "tools/call",
-      params: { name: "cm_feedback", arguments: {} }
+      params: { name: "cm_feedback", arguments: {} },
     });
 
     expect("error" in response).toBe(true);
@@ -345,8 +350,8 @@ describe("serve module tool calls", () => {
       method: "tools/call",
       params: {
         name: "cm_feedback",
-        arguments: { bulletId: "b-test123", helpful: true, harmful: true }
-      }
+        arguments: { bulletId: "b-test123", helpful: true, harmful: true },
+      },
     });
 
     expect("error" in response).toBe(true);
@@ -360,7 +365,7 @@ describe("serve module tool calls", () => {
       jsonrpc: "2.0",
       id: 1,
       method: "tools/call",
-      params: { name: "cm_outcome", arguments: {} }
+      params: { name: "cm_outcome", arguments: {} },
     });
 
     expect("error" in response).toBe(true);
@@ -373,8 +378,8 @@ describe("serve module tool calls", () => {
       method: "tools/call",
       params: {
         name: "cm_outcome",
-        arguments: { sessionId: "session-1", outcome: "invalid_outcome" }
-      }
+        arguments: { sessionId: "session-1", outcome: "invalid_outcome" },
+      },
     });
 
     expect("error" in response).toBe(true);
@@ -388,7 +393,7 @@ describe("serve module tool calls", () => {
       jsonrpc: "2.0",
       id: 1,
       method: "tools/call",
-      params: { name: "memory_search", arguments: {} }
+      params: { name: "memory_search", arguments: {} },
     });
 
     expect("error" in response).toBe(true);
@@ -402,7 +407,7 @@ describe("serve module tool calls", () => {
       jsonrpc: "2.0",
       id: 1,
       method: "tools/call",
-      params: { name: "memory_search", arguments: { query: "  " } }
+      params: { name: "memory_search", arguments: { query: "  " } },
     });
 
     expect("error" in response).toBe(true);
@@ -424,8 +429,8 @@ describe("serve module tool calls", () => {
             method: "tools/call",
             params: {
               name: "memory_search",
-              arguments: { query: "authentication", scope: "playbook" }
-            }
+              arguments: { query: "authentication", scope: "playbook" },
+            },
           });
 
           expect("result" in response).toBe(true);
@@ -458,8 +463,8 @@ describe("serve module tool calls", () => {
             method: "tools/call",
             params: {
               name: "cm_feedback",
-              arguments: { bulletId: "b-serve-test-1", helpful: true }
-            }
+              arguments: { bulletId: "b-serve-test-1", helpful: true },
+            },
           });
 
           expect("result" in response).toBe(true);
@@ -502,9 +507,9 @@ describe("serve module tool calls", () => {
               arguments: {
                 bulletId: "b-serve-test-2",
                 harmful: true,
-                reason: "Did not help with the task"
-              }
-            }
+                reason: "Did not help with the task",
+              },
+            },
           });
 
           expect("result" in response).toBe(true);
@@ -543,9 +548,9 @@ describe("serve module tool calls", () => {
                 outcome: "success",
                 rulesUsed: ["b-rule-1", "b-rule-2"],
                 notes: "Task completed successfully",
-                task: "Fix authentication bug"
-              }
-            }
+                task: "Fix authentication bug",
+              },
+            },
           });
 
           expect("result" in response).toBe(true);
@@ -580,9 +585,9 @@ describe("serve module tool calls", () => {
               arguments: {
                 sessionId: "test-session-456",
                 outcome: "failure",
-                notes: "Task failed due to timeout"
-              }
-            }
+                notes: "Task failed due to timeout",
+              },
+            },
           });
 
           expect("result" in response).toBe(true);
@@ -613,9 +618,9 @@ describe("serve module tool calls", () => {
               arguments: {
                 sessionId: "test-session-789",
                 outcome: "mixed",
-                durationSec: 120
-              }
-            }
+                durationSec: 120,
+              },
+            },
           });
 
           expect("result" in response).toBe(true);
@@ -640,7 +645,7 @@ describe("serve module tool calls", () => {
           // Create a playbook with relevant bullet
           const bullet = createTestBullet({
             id: "b-auth-test",
-            content: "Use JWT for authentication"
+            content: "Use JWT for authentication",
           });
           writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([bullet])));
 
@@ -650,8 +655,8 @@ describe("serve module tool calls", () => {
             method: "tools/call",
             params: {
               name: "memory_search",
-              arguments: { query: "jwt", scope: "both", limit: 5 }
-            }
+              arguments: { query: "jwt", scope: "both", limit: 5 },
+            },
           });
 
           expect("result" in response).toBe(true);
@@ -687,8 +692,8 @@ describe("serve module tool calls", () => {
             method: "tools/call",
             params: {
               name: "memory_search",
-              arguments: { query: "error handling", scope: "cass", limit: 3, days: 7 }
-            }
+              arguments: { query: "error handling", scope: "cass", limit: 3, days: 7 },
+            },
           });
 
           expect("result" in response).toBe(true);
@@ -715,8 +720,8 @@ describe("serve module tool calls", () => {
       method: "tools/call",
       params: {
         name: "memory_search",
-        arguments: { query: "test", scope: "invalid_scope" }
-      }
+        arguments: { query: "test", scope: "invalid_scope" },
+      },
     });
 
     expect("error" in response).toBe(true);
@@ -741,9 +746,9 @@ describe("serve module tool calls", () => {
               arguments: {
                 days: 7,
                 maxSessions: 5,
-                dryRun: true
-              }
-            }
+                dryRun: true,
+              },
+            },
           });
 
           expect("result" in response).toBe(true);
@@ -778,9 +783,9 @@ describe("serve module tool calls", () => {
               name: "memory_reflect",
               arguments: {
                 days: 1,
-                maxSessions: 3
-              }
-            }
+                maxSessions: 3,
+              },
+            },
           });
 
           expect("result" in response).toBe(true);
@@ -809,9 +814,9 @@ describe("serve module tool calls", () => {
       params: {
         name: "memory_reflect",
         arguments: {
-          maxSessions: 500  // Exceeds max of 200
-        }
-      }
+          maxSessions: 500, // Exceeds max of 200
+        },
+      },
     });
 
     expect("error" in response).toBe(true);
@@ -833,7 +838,7 @@ describe("serve module resource reads", () => {
             jsonrpc: "2.0",
             id: 1,
             method: "resources/read",
-            params: { uri: "cm://playbook" }
+            params: { uri: "cm://playbook" },
           });
 
           expect("result" in response).toBe(true);
@@ -859,7 +864,7 @@ describe("serve module resource reads", () => {
             jsonrpc: "2.0",
             id: 1,
             method: "resources/read",
-            params: { uri: "cm://stats" }
+            params: { uri: "cm://stats" },
           });
 
           expect("result" in response).toBe(true);
@@ -886,7 +891,7 @@ describe("serve module resource reads", () => {
             jsonrpc: "2.0",
             id: 1,
             method: "resources/read",
-            params: { uri: "memory://stats" }
+            params: { uri: "memory://stats" },
           });
 
           expect("result" in response).toBe(true);
@@ -912,7 +917,7 @@ describe("serve module resource reads", () => {
             jsonrpc: "2.0",
             id: 1,
             method: "resources/read",
-            params: { uri: "cm://diary" }
+            params: { uri: "cm://diary" },
           });
 
           expect("result" in response).toBe(true);
@@ -939,7 +944,7 @@ describe("serve module resource reads", () => {
             jsonrpc: "2.0",
             id: 1,
             method: "resources/read",
-            params: { uri: "cm://outcomes" }
+            params: { uri: "cm://outcomes" },
           });
 
           expect("result" in response).toBe(true);

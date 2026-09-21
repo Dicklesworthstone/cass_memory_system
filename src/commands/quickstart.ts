@@ -121,51 +121,51 @@ function getQuickstartJson(cli: string) {
     expectations: {
       degradedMode: `If cass is missing/not indexed, historySnippets may be empty; run ${cli} doctor for next steps.`,
       privacy: `Cross-agent enrichment is opt-in and off by default; check ${cli} privacy status.`,
-      remoteHistory: `Optional: remote cass via SSH can add remote hits to historySnippets; filter by historySnippets[].origin.kind ("local"|"remote").`
+      remoteHistory: `Optional: remote cass via SSH can add remote hits to historySnippets; filter by historySnippets[].origin.kind ("local"|"remote").`,
     },
     whatItReturns: [
       "relevantBullets: Rules that may help",
       "antiPatterns: Pitfalls to avoid",
       "historySnippets: Past solutions (local + optional remote; see origin.kind/origin.host)",
-      "suggestedCassQueries: Deeper searches"
+      "suggestedCassQueries: Deeper searches",
     ],
     doNotDo: [
       `Run ${cli} reflect manually (operators typically schedule it)`,
       `Run ${cli} mark (use inline comments)`,
       "Manually add rules",
-      "Worry about learning pipeline"
+      "Worry about learning pipeline",
     ],
     operatorNote: {
       automation: `Schedule ${cli} reflect --days 7 --json (cron/hook).`,
-      health: `Use ${cli} doctor when agents report missing history or degraded mode.`
+      health: `Use ${cli} doctor when agents report missing history or degraded mode.`,
     },
     soloUser: {
       description: "If you're both agent and operator without scheduled reflection",
       manualReflection: [
         `${cli} reflect --days 1 --json  # After significant work`,
-        `${cli} reflect --days 7 --json  # Weekly maintenance`
+        `${cli} reflect --days 7 --json  # Weekly maintenance`,
       ],
       onboarding: [
         `${cli} onboard status --json   # Check progress`,
         `${cli} onboard sample --json   # Find sessions to analyze`,
-        `${cli} onboard read <path> --json  # Read session for extraction`
-      ]
+        `${cli} onboard read <path> --json  # Read session for extraction`,
+      ],
     },
     inlineFeedbackFormat: {
       helpful: "// [cass: helpful <id>] - reason",
-      harmful: "// [cass: harmful <id>] - reason"
+      harmful: "// [cass: harmful <id>] - reason",
     },
     protocol: {
       start: `${cli} context "<task>" --json`,
       work: "Reference rule IDs when following them",
       feedback: "Leave inline comments when rules help/hurt",
-      end: "Just finish. Learning happens automatically once reflection is scheduled."
+      end: "Just finish. Learning happens automatically once reflection is scheduled.",
     },
     examples: [
       `${cli} context "implement JWT authentication" --json`,
       `${cli} context "fix memory leak in connection pool" --json`,
-      `${cli} context "optimize database queries" --json`
-    ]
+      `${cli} context "optimize database queries" --json`,
+    ],
   };
 }
 

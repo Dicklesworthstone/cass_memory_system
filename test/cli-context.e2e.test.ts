@@ -4,14 +4,19 @@
  * Tests the `cm context` command for generating task-relevant context
  * from playbook rules and session history.
  */
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { writeFile, rm, mkdir } from "node:fs/promises";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
-import { contextCommand, generateContextResult, ContextFlags, scoreBulletsEnhanced } from "../src/commands/context.js";
-import { withTempCassHome, TestEnv, makeCassStub } from "./helpers/temp.js";
+import {
+  ContextFlags,
+  contextCommand,
+  generateContextResult,
+  scoreBulletsEnhanced,
+} from "../src/commands/context.js";
 import { createE2ELogger } from "./helpers/e2e-logger.js";
 import { createTestConfig } from "./helpers/factories.js";
+import { makeCassStub, TestEnv, withTempCassHome } from "./helpers/temp.js";
 
 // Helper to capture console output
 function captureConsole() {
@@ -32,7 +37,7 @@ function captureConsole() {
     restore: () => {
       console.log = originalLog;
       console.error = originalError;
-    }
+    },
   };
 }
 
@@ -46,26 +51,28 @@ function createTestPlaybook(bullets: any[] = []) {
     metadata: {
       createdAt: now,
       totalReflections: 0,
-      totalSessionsProcessed: 0
+      totalSessionsProcessed: 0,
     },
     bullets: bullets,
-    deprecatedPatterns: []
+    deprecatedPatterns: [],
   };
 }
 
 // Helper to create a valid test bullet
-function createTestBullet(overrides: Partial<{
-  id: string;
-  content: string;
-  kind: string;
-  category: string;
-  scope: string;
-  workspace?: string;
-  tags: string[];
-  maturity: string;
-  isNegative?: boolean;
-  effectiveScore?: number;
-}> = {}) {
+function createTestBullet(
+  overrides: Partial<{
+    id: string;
+    content: string;
+    kind: string;
+    category: string;
+    scope: string;
+    workspace?: string;
+    tags: string[];
+    maturity: string;
+    isNegative?: boolean;
+    effectiveScore?: number;
+  }> = {},
+) {
   const now = new Date().toISOString();
   return {
     id: overrides.id || `test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -83,7 +90,7 @@ function createTestBullet(overrides: Partial<{
     helpfulCount: 0,
     harmfulCount: 0,
     createdAt: now,
-    updatedAt: now
+    updatedAt: now,
   };
 }
 
@@ -117,7 +124,7 @@ describe("E2E: CLI context command", () => {
         "fix auth bug",
         ["auth"],
         config,
-        { queryEmbedding: [1, 0], skipEmbeddingLoad: true }
+        { queryEmbedding: [1, 0], skipEmbeddingLoad: true },
       );
 
       expect(scored[0].id).toBe("b-semantic");
@@ -151,7 +158,7 @@ describe("E2E: CLI context command", () => {
         "fix auth bug",
         ["auth"],
         config,
-        { queryEmbedding: [1, 0], skipEmbeddingLoad: true }
+        { queryEmbedding: [1, 0], skipEmbeddingLoad: true },
       );
 
       expect(scored[0].id).toBe("b-keyword");
@@ -191,7 +198,7 @@ describe("E2E: CLI context command", () => {
             kind: "workflow_rule",
             category: "security",
             tags: ["auth", "jwt", "security"],
-            effectiveScore: 0.8
+            effectiveScore: 0.8,
           }),
           createTestBullet({
             id: "test-db-1",
@@ -199,15 +206,15 @@ describe("E2E: CLI context command", () => {
             kind: "stack_pattern",
             category: "database",
             tags: ["database", "performance"],
-            effectiveScore: 0.7
-          })
+            effectiveScore: 0.7,
+          }),
         ]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
         const { result } = await generateContextResult("implement JWT authentication", {});
 
         expect(result.relevantBullets.length).toBeGreaterThanOrEqual(1);
-        const authBullet = result.relevantBullets.find(b => b.id === "test-auth-1");
+        const authBullet = result.relevantBullets.find((b) => b.id === "test-auth-1");
         expect(authBullet).toBeDefined();
       });
     });
@@ -228,7 +235,7 @@ describe("E2E: CLI context command", () => {
             kind: "workflow_rule",
             category: "performance",
             tags: ["performance", "api"],
-          })
+          }),
         ]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
@@ -258,7 +265,7 @@ describe("E2E: CLI context command", () => {
             kind: "workflow_rule",
             category: "security",
             tags: ["sql", "security"],
-            effectiveScore: 0.8
+            effectiveScore: 0.8,
           }),
           createTestBullet({
             id: "anti-1",
@@ -267,18 +274,18 @@ describe("E2E: CLI context command", () => {
             category: "security",
             tags: ["sql", "security"],
             effectiveScore: 0.8,
-            isNegative: true
-          })
+            isNegative: true,
+          }),
         ]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
         const { result } = await generateContextResult("write SQL query handler", {});
 
-        const hasRule = result.relevantBullets.some(b => b.id === "rule-1");
-        const hasAntiPattern = result.antiPatterns.some(b => b.id === "anti-1");
+        const hasRule = result.relevantBullets.some((b) => b.id === "rule-1");
+        const hasAntiPattern = result.antiPatterns.some((b) => b.id === "anti-1");
 
         expect(hasRule || hasAntiPattern).toBe(true);
-        const antiInRules = result.relevantBullets.some(b => b.kind === "anti_pattern");
+        const antiInRules = result.relevantBullets.some((b) => b.kind === "anti_pattern");
         expect(antiInRules).toBe(false);
       });
     });
@@ -293,7 +300,7 @@ describe("E2E: CLI context command", () => {
             category: "general",
             scope: "global",
             tags: ["api"],
-            effectiveScore: 0.8
+            effectiveScore: 0.8,
           }),
           createTestBullet({
             id: "workspace-1",
@@ -303,7 +310,7 @@ describe("E2E: CLI context command", () => {
             scope: "workspace",
             workspace: "frontend",
             tags: ["api", "react"],
-            effectiveScore: 0.8
+            effectiveScore: 0.8,
           }),
           createTestBullet({
             id: "workspace-2",
@@ -313,16 +320,16 @@ describe("E2E: CLI context command", () => {
             scope: "workspace",
             workspace: "backend",
             tags: ["api", "node"],
-            effectiveScore: 0.8
-          })
+            effectiveScore: 0.8,
+          }),
         ]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
         const { result } = await generateContextResult("build API endpoint", {
-          workspace: "frontend"
+          workspace: "frontend",
         });
 
-        const ids = result.relevantBullets.map(b => b.id);
+        const ids = result.relevantBullets.map((b) => b.id);
         if (ids.includes("global-1")) {
           expect(ids).toContain("global-1");
         }
@@ -379,8 +386,8 @@ describe("E2E: CLI context command", () => {
             kind: "workflow_rule",
             category: "testing",
             tags: ["test"],
-            effectiveScore: 0.8
-          })
+            effectiveScore: 0.8,
+          }),
         ]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
@@ -409,7 +416,7 @@ describe("E2E: CLI context command", () => {
           metadata: {
             createdAt: now,
             totalReflections: 0,
-            totalSessionsProcessed: 0
+            totalSessionsProcessed: 0,
           },
           bullets: [],
           deprecatedPatterns: [
@@ -417,20 +424,17 @@ describe("E2E: CLI context command", () => {
               pattern: "moment\\.js",
               replacement: "date-fns or dayjs",
               reason: "moment.js is in maintenance mode",
-              deprecatedAt: now
-            }
-          ]
+              deprecatedAt: now,
+            },
+          ],
         };
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
-        const { result } = await generateContextResult(
-          "add moment.js for date formatting",
-          {}
-        );
+        const { result } = await generateContextResult("add moment.js for date formatting", {});
 
         expect(result.deprecatedWarnings.length).toBeGreaterThan(0);
-        const hasWarning = result.deprecatedWarnings.some(w =>
-          w.includes("deprecated pattern") && w.includes("moment")
+        const hasWarning = result.deprecatedWarnings.some(
+          (w) => w.includes("deprecated pattern") && w.includes("moment"),
         );
         expect(hasWarning).toBe(true);
       });
@@ -445,7 +449,7 @@ describe("E2E: CLI context command", () => {
 
         const { result } = await generateContextResult(
           "implement user authentication with OAuth",
-          {}
+          {},
         );
 
         expect(Array.isArray(result.suggestedCassQueries)).toBe(true);
@@ -463,8 +467,8 @@ describe("E2E: CLI context command", () => {
             kind: "stack_pattern",
             category: "api",
             tags: ["api"],
-            effectiveScore: 0.8 - (i * 0.01)
-          })
+            effectiveScore: 0.8 - i * 0.01,
+          }),
         );
         const playbook = createTestPlaybook(bullets);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
@@ -486,8 +490,8 @@ describe("E2E: CLI context command", () => {
             kind: "workflow_rule",
             category: "testing",
             tags: ["test"],
-            effectiveScore: 0.8
-          })
+            effectiveScore: 0.8,
+          }),
         ]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
@@ -513,8 +517,8 @@ describe("E2E: CLI context command", () => {
             kind: "workflow_rule",
             category: "testing",
             tags: ["test"],
-            effectiveScore: 0.8
-          })
+            effectiveScore: 0.8,
+          }),
         ]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
@@ -546,10 +550,10 @@ describe("E2E: CLI context command", () => {
         const playbook = createTestPlaybook([]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
-        const { result, cassHits } = await generateContextResult(
-          "implement feature",
-          { history: 5, days: 30 }
-        );
+        const { result, cassHits } = await generateContextResult("implement feature", {
+          history: 5,
+          days: 30,
+        });
         expect(Array.isArray(result.historySnippets)).toBe(true);
       });
     });

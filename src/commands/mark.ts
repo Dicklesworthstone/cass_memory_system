@@ -1,21 +1,34 @@
-import { loadConfig } from "../config.js";
-import { loadPlaybook, savePlaybook, findBullet } from "../playbook.js";
-import { getEffectiveScore, calculateMaturityState } from "../scoring.js";
-import { now, expandPath, resolveRepoDir, fileExists, printJsonResult, reportError } from "../utils.js";
-import { HarmfulReason, HarmfulReasonEnum, FeedbackEvent, ErrorCode } from "../types.js";
-import { withLock } from "../lock.js";
-import chalk from "chalk";
-import { icon } from "../output.js";
 import path from "node:path";
+import chalk from "chalk";
+import { loadConfig } from "../config.js";
+import { withLock } from "../lock.js";
+import { icon } from "../output.js";
+import { findBullet, loadPlaybook, savePlaybook } from "../playbook.js";
+import { calculateMaturityState, getEffectiveScore } from "../scoring.js";
+import { ErrorCode, type FeedbackEvent, type HarmfulReason, HarmfulReasonEnum } from "../types.js";
+import {
+  expandPath,
+  fileExists,
+  now,
+  printJsonResult,
+  reportError,
+  resolveRepoDir,
+} from "../utils.js";
 
-type MarkFlags = { helpful?: boolean; harmful?: boolean; reason?: string; session?: string; json?: boolean };
+type MarkFlags = {
+  helpful?: boolean;
+  harmful?: boolean;
+  reason?: string;
+  session?: string;
+  json?: boolean;
+};
 
 /**
  * API-friendly feedback recorder (no console output, throws on error).
  */
 export async function recordFeedback(
   bulletId: string,
-  flags: MarkFlags
+  flags: MarkFlags,
 ): Promise<{ type: "helpful" | "harmful"; score: number; state: string }> {
   const helpful = Boolean(flags.helpful);
   const harmful = Boolean(flags.harmful);
@@ -26,7 +39,7 @@ export async function recordFeedback(
   const config = await loadConfig();
 
   const globalPath = expandPath(config.playbookPath);
-  
+
   const repoDir = await resolveRepoDir();
   const repoPath = repoDir ? path.join(repoDir, "playbook.yaml") : null;
   const repoPlaybookExists = repoPath ? await fileExists(repoPath) : false;
@@ -34,7 +47,7 @@ export async function recordFeedback(
   const type: "helpful" | "harmful" = helpful ? "helpful" : "harmful";
 
   const tryRecordInPlaybook = async (
-    saveTarget: string
+    saveTarget: string,
   ): Promise<{ found: boolean; score?: number; state?: string }> => {
     return await withLock(saveTarget, async () => {
       const targetPlaybook = await loadPlaybook(saveTarget);
@@ -42,10 +55,10 @@ export async function recordFeedback(
       const targetBullet = findBullet(targetPlaybook, bulletId);
       if (!targetBullet) return { found: false };
 
-      let reason: HarmfulReason | undefined = undefined;
-      let context: string | undefined = undefined;
+      let reason: HarmfulReason | undefined;
+      let context: string | undefined;
       const rawReason = typeof flags.reason === "string" ? flags.reason.trim() : "";
-      
+
       if (type === "harmful") {
         if (rawReason) {
           const parsed = HarmfulReasonEnum.safeParse(rawReason.toLowerCase());
@@ -63,12 +76,12 @@ export async function recordFeedback(
         context = rawReason;
       }
 
-      const event: FeedbackEvent = { 
-        type, 
-        timestamp: now(), 
-        sessionPath: flags.session, 
+      const event: FeedbackEvent = {
+        type,
+        timestamp: now(),
+        sessionPath: flags.session,
         reason,
-        ...(context ? { context } : {})
+        ...(context ? { context } : {}),
       };
 
       targetBullet.feedbackEvents = targetBullet.feedbackEvents || [];
@@ -86,14 +99,16 @@ export async function recordFeedback(
       targetBullet.maturity = newMaturity;
 
       if (newMaturity === "deprecated" && !targetBullet.deprecated) {
-          targetBullet.deprecated = true;
-          targetBullet.deprecatedAt = now();
-          targetBullet.state = "retired";
-          targetBullet.deprecationReason = targetBullet.deprecationReason || "Automatically deprecated due to harmful feedback ratio";
+        targetBullet.deprecated = true;
+        targetBullet.deprecatedAt = now();
+        targetBullet.state = "retired";
+        targetBullet.deprecationReason =
+          targetBullet.deprecationReason ||
+          "Automatically deprecated due to harmful feedback ratio";
       }
 
       await savePlaybook(targetPlaybook, saveTarget);
-      
+
       const score = getEffectiveScore(targetBullet, config);
       const state = targetBullet.maturity;
       return { found: true, score, state };
@@ -116,10 +131,7 @@ export async function recordFeedback(
   throw new Error(`Bullet ${bulletId} not found in ${locations}.`);
 }
 
-export async function markCommand(
-  bulletId: string,
-  flags: MarkFlags
-): Promise<void> {
+export async function markCommand(bulletId: string, flags: MarkFlags): Promise<void> {
   const startedAtMs = Date.now();
   const command = "mark";
   try {
@@ -134,7 +146,7 @@ export async function markCommand(
           newState: result.state,
           effectiveScore: result.score,
         },
-        { startedAtMs }
+        { startedAtMs },
       );
     } else {
       console.log(chalk.green(`${icon("success")} Marked bullet ${bulletId} as ${result.type}`));
@@ -148,6 +160,12 @@ export async function markCommand(
       : message.includes("Must specify")
         ? ErrorCode.MISSING_REQUIRED
         : ErrorCode.VALIDATION_FAILED;
-    reportError(err instanceof Error ? err : message, { code, details: { bulletId }, json: flags.json, command, startedAtMs });
+    reportError(err instanceof Error ? err : message, {
+      code,
+      details: { bulletId },
+      json: flags.json,
+      command,
+      startedAtMs,
+    });
   }
 }

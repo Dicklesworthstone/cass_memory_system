@@ -1,10 +1,10 @@
-import { describe, it, expect } from "bun:test";
-import { findDiaryBySession } from "../src/diary.js";
-import { generateDiaryId, extractAgentFromPath, canonicalAgentName } from "../src/utils.js";
-import { createTestDiary } from "./helpers/factories.js";
-import { withTempDir } from "./helpers/temp.js";
+import { describe, expect, it } from "bun:test";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
+import { findDiaryBySession } from "../src/diary.js";
+import { canonicalAgentName, extractAgentFromPath, generateDiaryId } from "../src/utils.js";
+import { createTestDiary } from "./helpers/factories.js";
+import { withTempDir } from "./helpers/temp.js";
 
 describe("utils.generateDiaryId", () => {
   it("generates unique IDs for the same session path in rapid succession", () => {
@@ -31,11 +31,11 @@ describe("findDiaryBySession", () => {
     await withTempDir("utils-diary-find", async (dir) => {
       const sessionPath = "/abs/path/to/session.jsonl";
       const diary = createTestDiary({ sessionPath });
-      
+
       // Save diary
       const diaryPath = path.join(dir, `${diary.id}.json`);
       await writeFile(diaryPath, JSON.stringify(diary));
-      
+
       const found = await findDiaryBySession(sessionPath, dir);
       expect(found).toBeDefined();
       expect(found?.id).toBe(diary.id);
@@ -46,19 +46,19 @@ describe("findDiaryBySession", () => {
     await withTempDir("utils-diary-rel", async (dir) => {
       const sessionPath = path.join(dir, "session.jsonl");
       const diary = createTestDiary({ sessionPath });
-      
+
       const diaryPath = path.join(dir, `${diary.id}.json`);
       await writeFile(diaryPath, JSON.stringify(diary));
-      
+
       // Input relative path
       const found = await findDiaryBySession("session.jsonl", dir);
-      // Since findDiaryBySession resolves relative against diaryDir base? 
+      // Since findDiaryBySession resolves relative against diaryDir base?
       // No, wait. The implementation uses:
       // const base = path.resolve(expandPath(diaryDir));
       // const target = path.isAbsolute(sessionPath) ? ... : path.resolve(base, sessionPath);
       // If diaryDir is the temp dir, then path.resolve(dir, "session.jsonl") matches the sessionPath we used.
       // But wait, usually sessionPath in diary is absolute.
-      
+
       expect(found).toBeDefined();
       expect(found?.id).toBe(diary.id);
     });
@@ -69,7 +69,7 @@ describe("findDiaryBySession", () => {
       const diary = createTestDiary({ sessionPath: "/other/session.jsonl" });
       const diaryPath = path.join(dir, `${diary.id}.json`);
       await writeFile(diaryPath, JSON.stringify(diary));
-      
+
       const found = await findDiaryBySession("/target/session.jsonl", dir);
       expect(found).toBeNull();
     });
@@ -78,7 +78,9 @@ describe("findDiaryBySession", () => {
 
 describe("utils.extractAgentFromPath", () => {
   it("recognizes the classic agent stores", () => {
-    expect(extractAgentFromPath("/Users/u/.claude/projects/-Users-u-repo/abc.jsonl")).toBe("claude");
+    expect(extractAgentFromPath("/Users/u/.claude/projects/-Users-u-repo/abc.jsonl")).toBe(
+      "claude",
+    );
     expect(extractAgentFromPath("/home/u/.cursor/sessions/x.json")).toBe("cursor");
     expect(extractAgentFromPath("/home/u/.codex/sessions/2025/x.jsonl")).toBe("codex");
     expect(extractAgentFromPath("/home/u/repo/.aider.chat.history.md")).toBe("aider");
@@ -86,14 +88,18 @@ describe("utils.extractAgentFromPath", () => {
   });
 
   it("recognizes OMP (Oh My Pi) session stores on POSIX and Windows paths (#73)", () => {
-    expect(extractAgentFromPath("/Users/u/.omp/agent/sessions/--Users-u-repo--/2026-09-01.jsonl")).toBe("omp");
+    expect(
+      extractAgentFromPath("/Users/u/.omp/agent/sessions/--Users-u-repo--/2026-09-01.jsonl"),
+    ).toBe("omp");
     expect(extractAgentFromPath("C:\\Users\\u\\.omp\\agent\\sessions\\ws\\s.jsonl")).toBe("omp");
     expect(extractAgentFromPath("/home/u/.local/share/omp/sessions/ws/s.jsonl")).toBe("omp");
   });
 
   it("recognizes Windows separators for every store", () => {
     expect(extractAgentFromPath("C:\\Users\\u\\.claude\\projects\\p\\s.jsonl")).toBe("claude");
-    expect(extractAgentFromPath("C:\\Users\\u\\.pi\\agent\\sessions\\ws\\s.jsonl")).toBe("pi_agent");
+    expect(extractAgentFromPath("C:\\Users\\u\\.pi\\agent\\sessions\\ws\\s.jsonl")).toBe(
+      "pi_agent",
+    );
     expect(extractAgentFromPath("C:\\Users\\u\\.codex\\sessions\\s.jsonl")).toBe("codex");
   });
 

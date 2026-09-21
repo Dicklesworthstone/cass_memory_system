@@ -43,10 +43,8 @@ export const CM_SUBPROCESS_ENV_VALUE = "1";
  * appear in cm's own output — so their presence in a session transcript means
  * that transcript came from a cm subprocess call.
  */
-export const CM_SUBPROCESS_PAYLOAD_BEGIN =
-  "[[CASS-MEMORY-LLM-PAYLOAD-BEGIN:6f1d29a4-cm-internal]]";
-export const CM_SUBPROCESS_PAYLOAD_END =
-  "[[CASS-MEMORY-LLM-PAYLOAD-END:6f1d29a4-cm-internal]]";
+export const CM_SUBPROCESS_PAYLOAD_BEGIN = "[[CASS-MEMORY-LLM-PAYLOAD-BEGIN:6f1d29a4-cm-internal]]";
+export const CM_SUBPROCESS_PAYLOAD_END = "[[CASS-MEMORY-LLM-PAYLOAD-END:6f1d29a4-cm-internal]]";
 
 /**
  * Default working directory for cm's LLM subprocesses.
@@ -131,10 +129,7 @@ export function cmSubprocessPathFragments(configuredCwd?: string): string[] {
 }
 
 /** True when `sessionPath` is a transcript produced by a cm LLM subprocess. */
-export function isCmSubprocessTranscriptPath(
-  sessionPath: string,
-  configuredCwd?: string
-): boolean {
+export function isCmSubprocessTranscriptPath(sessionPath: string, configuredCwd?: string): boolean {
   if (!sessionPath) return false;
   // Normalise Windows separators so a single comparison covers both shapes.
   const normalized = sessionPath.replace(/\\/g, "/");
@@ -174,7 +169,7 @@ export function stripCmSubprocessPayloads(content: string): string {
 
     const endToken = content.indexOf(
       CM_SUBPROCESS_PAYLOAD_END,
-      begin + CM_SUBPROCESS_PAYLOAD_BEGIN.length
+      begin + CM_SUBPROCESS_PAYLOAD_BEGIN.length,
     );
     if (endToken === -1) break; // unterminated: drop the remainder
     cursor = endToken + CM_SUBPROCESS_PAYLOAD_END.length;

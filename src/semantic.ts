@@ -1,14 +1,21 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import {
-  EmbeddingCache,
-  EmbeddingCacheSchema,
-  Playbook,
-  PlaybookBullet,
-} from "./types.js";
-import { atomicWrite, expandPath, getCliName, hashContent, resolveGlobalDir, warn } from "./utils.js";
 import { withLock } from "./lock.js";
 import { getOutputStyle } from "./output.js";
+import {
+  type EmbeddingCache,
+  EmbeddingCacheSchema,
+  type Playbook,
+  type PlaybookBullet,
+} from "./types.js";
+import {
+  atomicWrite,
+  expandPath,
+  getCliName,
+  hashContent,
+  resolveGlobalDir,
+  warn,
+} from "./utils.js";
 import { ensureOnnxWasmRuntime, getTransformersCacheDir } from "./wasm-runtime.js";
 
 export const DEFAULT_EMBEDDING_MODEL = "Xenova/all-MiniLM-L6-v2";
@@ -133,7 +140,7 @@ async function embedTextOllama(text: string): Promise<number[]> {
     if (message.includes("ECONNREFUSED") || message.includes("fetch failed")) {
       throw new Error(
         `Ollama connection refused at ${ollamaConfig.baseUrl}. ` +
-        `Is Ollama running? Start it with: ollama serve`
+          `Is Ollama running? Start it with: ollama serve`,
       );
     }
     throw new Error(`Ollama embedding request failed: ${message}`);
@@ -144,15 +151,13 @@ async function embedTextOllama(text: string): Promise<number[]> {
     if (response.status === 404 || body.includes("not found")) {
       throw new Error(
         `Ollama model "${ollamaConfig.model}" not found. ` +
-        `Pull it with: ollama pull ${ollamaConfig.model}`
+          `Pull it with: ollama pull ${ollamaConfig.model}`,
       );
     }
-    throw new Error(
-      `Ollama embedding failed (HTTP ${response.status}): ${body}`
-    );
+    throw new Error(`Ollama embedding failed (HTTP ${response.status}): ${body}`);
   }
 
-  const json = await response.json() as { embeddings?: number[][] };
+  const json = (await response.json()) as { embeddings?: number[][] };
   if (
     !json.embeddings ||
     !Array.isArray(json.embeddings) ||
@@ -177,7 +182,7 @@ async function embedTextOllama(text: string): Promise<number[]> {
  */
 async function batchEmbedOllama(
   texts: string[],
-  onProgress?: (event: { processed: number; total: number }) => void
+  onProgress?: (event: { processed: number; total: number }) => void,
 ): Promise<number[][]> {
   const url = `${ollamaConfig.baseUrl}/api/embed`;
 
@@ -215,7 +220,7 @@ async function batchEmbedOllama(
       if (message.includes("ECONNREFUSED") || message.includes("fetch failed")) {
         throw new Error(
           `Ollama connection refused at ${ollamaConfig.baseUrl}. ` +
-          `Is Ollama running? Start it with: ollama serve`
+            `Is Ollama running? Start it with: ollama serve`,
         );
       }
       throw new Error(`Ollama batch embedding request failed: ${message}`);
@@ -226,15 +231,13 @@ async function batchEmbedOllama(
       if (response.status === 404 || body.includes("not found")) {
         throw new Error(
           `Ollama model "${ollamaConfig.model}" not found. ` +
-          `Pull it with: ollama pull ${ollamaConfig.model}`
+            `Pull it with: ollama pull ${ollamaConfig.model}`,
         );
       }
-      throw new Error(
-        `Ollama batch embedding failed (HTTP ${response.status}): ${body}`
-      );
+      throw new Error(`Ollama batch embedding failed (HTTP ${response.status}): ${body}`);
     }
 
-    const json = await response.json() as { embeddings?: number[][] };
+    const json = (await response.json()) as { embeddings?: number[][] };
     if (
       !json.embeddings ||
       !Array.isArray(json.embeddings) ||
@@ -242,7 +245,7 @@ async function batchEmbedOllama(
     ) {
       throw new Error(
         `Unexpected Ollama batch response: expected ${batchTexts.length} embeddings, ` +
-        `got ${json.embeddings?.length ?? 0}`
+          `got ${json.embeddings?.length ?? 0}`,
       );
     }
 
@@ -320,7 +323,7 @@ function createStderrProgressCallback(): ProgressCallback {
 
 async function loadEmbedder(
   model: string,
-  options: { showProgress?: boolean; progressCallback?: ProgressCallback } = {}
+  options: { showProgress?: boolean; progressCallback?: ProgressCallback } = {},
 ): Promise<any> {
   // IMPORT ORDER IS LOAD-BEARING. @xenova/transformers/src/env.js
   // unconditionally sets `onnx_env.wasm.wasmPaths = path.join(__dirname, "/dist/")`
@@ -337,56 +340,61 @@ async function loadEmbedder(
   await ensureOnnxWasmRuntime();
 
   const showProgress = options.showProgress ?? shouldShowProgress();
-  const progressCallback = options.progressCallback ?? (showProgress ? createStderrProgressCallback() : undefined);
-  
+  const progressCallback =
+    options.progressCallback ?? (showProgress ? createStderrProgressCallback() : undefined);
+
   // Lock to prevent concurrent model downloads from corrupting the cache
   const lockPath = path.join(resolveGlobalDir(), "embeddings", "model_loading");
 
-  return withLock(lockPath, async () => {
-    try {
-      const result = await pipeline("feature-extraction", model, {
-        progress_callback: progressCallback,
-      });
+  return withLock(
+    lockPath,
+    async () => {
+      try {
+        const result = await pipeline("feature-extraction", model, {
+          progress_callback: progressCallback,
+        });
 
-      // Signal that model is ready
-      if (progressCallback) {
-        progressCallback({ status: "ready" });
-      }
-
-      return result;
-    } catch (error: any) {
-      // Check if this is a network error and we might have a cached model
-      const isNetworkError =
-        error?.message?.includes("fetch") ||
-        error?.message?.includes("network") ||
-        error?.message?.includes("ENOTFOUND") ||
-        error?.message?.includes("ECONNREFUSED");
-
-      if (isNetworkError) {
-        // Try loading from local cache only
-        try {
-          warn("[semantic] Network unavailable; attempting to use cached model...");
-          const result = await pipeline("feature-extraction", model, {
-            local_files_only: true,
-            progress_callback: progressCallback,
-          });
-          if (progressCallback) {
-            progressCallback({ status: "ready" });
-          }
-          return result;
-        } catch (cacheError: any) {
-          throw new Error(
-            `Embedding model not available offline. To enable offline use:\n` +
-            `  1. Run any '${getCliName()}' command with semantic search while online to download the model\n` +
-            `  2. The model will be cached in ${getTransformersCacheDir() ?? "the transformers.js cache"}\n` +
-            `Original error: ${error.message}`
-          );
+        // Signal that model is ready
+        if (progressCallback) {
+          progressCallback({ status: "ready" });
         }
-      }
 
-      throw error;
-    }
-  }, { staleLockThresholdMs: 600_000 }); // 10 minute timeout for downloads
+        return result;
+      } catch (error: any) {
+        // Check if this is a network error and we might have a cached model
+        const isNetworkError =
+          error?.message?.includes("fetch") ||
+          error?.message?.includes("network") ||
+          error?.message?.includes("ENOTFOUND") ||
+          error?.message?.includes("ECONNREFUSED");
+
+        if (isNetworkError) {
+          // Try loading from local cache only
+          try {
+            warn("[semantic] Network unavailable; attempting to use cached model...");
+            const result = await pipeline("feature-extraction", model, {
+              local_files_only: true,
+              progress_callback: progressCallback,
+            });
+            if (progressCallback) {
+              progressCallback({ status: "ready" });
+            }
+            return result;
+          } catch (cacheError: any) {
+            throw new Error(
+              `Embedding model not available offline. To enable offline use:\n` +
+                `  1. Run any '${getCliName()}' command with semantic search while online to download the model\n` +
+                `  2. The model will be cached in ${getTransformersCacheDir() ?? "the transformers.js cache"}\n` +
+                `Original error: ${error.message}`,
+            );
+          }
+        }
+
+        throw error;
+      }
+    },
+    { staleLockThresholdMs: 600_000 },
+  ); // 10 minute timeout for downloads
 }
 
 export interface GetEmbedderOptions {
@@ -396,7 +404,7 @@ export interface GetEmbedderOptions {
 
 export async function getEmbedder(
   model = DEFAULT_EMBEDDING_MODEL,
-  options: GetEmbedderOptions = {}
+  options: GetEmbedderOptions = {},
 ): Promise<any> {
   if (embedderPromise && embedderModel === model) return embedderPromise;
 
@@ -412,10 +420,7 @@ export async function getEmbedder(
   return embedderPromise;
 }
 
-export async function embedText(
-  text: string,
-  options: { model?: string } = {}
-): Promise<number[]> {
+export async function embedText(text: string, options: { model?: string } = {}): Promise<number[]> {
   const model = options.model || DEFAULT_EMBEDDING_MODEL;
   if (model === "none") return [];
   const cleaned = text?.trim();
@@ -440,7 +445,10 @@ export async function embedText(
 export async function batchEmbed(
   texts: string[],
   batchSize = 32,
-  options: { model?: string; onProgress?: (event: { processed: number; total: number }) => void } = {}
+  options: {
+    model?: string;
+    onProgress?: (event: { processed: number; total: number }) => void;
+  } = {},
 ): Promise<number[][]> {
   const model = options.model || DEFAULT_EMBEDDING_MODEL;
   if (model === "none") return texts.map(() => []);
@@ -450,8 +458,7 @@ export async function batchEmbed(
     return batchEmbedOllama(texts, options.onProgress);
   }
 
-  const safeBatchSize =
-    Number.isFinite(batchSize) && batchSize > 0 ? Math.floor(batchSize) : 32;
+  const safeBatchSize = Number.isFinite(batchSize) && batchSize > 0 ? Math.floor(batchSize) : 32;
 
   const cleaned = texts.map((t) => (typeof t === "string" ? t.trim() : ""));
   const output: number[][] = new Array(cleaned.length);
@@ -483,19 +490,26 @@ export async function batchEmbed(
       throw new Error("Unexpected embedder output (missing data/dims)");
     }
     if (batchCount !== batchTexts.length) {
-      throw new Error(`Unexpected embedder output (batch mismatch: got ${batchCount}, expected ${batchTexts.length})`);
+      throw new Error(
+        `Unexpected embedder output (batch mismatch: got ${batchCount}, expected ${batchTexts.length})`,
+      );
     }
 
     for (let i = 0; i < batchCount; i++) {
       const startIdx = i * dim;
       const endIdx = startIdx + dim;
-      const vec = Array.from(data.subarray ? data.subarray(startIdx, endIdx) : data.slice(startIdx, endIdx)) as number[];
+      const vec = Array.from(
+        data.subarray ? data.subarray(startIdx, endIdx) : data.slice(startIdx, endIdx),
+      ) as number[];
       output[batch[i].index] = vec;
     }
 
     if (typeof options.onProgress === "function") {
       try {
-        options.onProgress({ processed: Math.min(start + batchCount, nonEmpty.length), total: nonEmpty.length });
+        options.onProgress({
+          processed: Math.min(start + batchCount, nonEmpty.length),
+          total: nonEmpty.length,
+        });
       } catch {
         // Progress is best-effort; never break embeddings
       }
@@ -537,7 +551,7 @@ export function createEmptyEmbeddingCache(model = DEFAULT_EMBEDDING_MODEL): Embe
 }
 
 export async function loadEmbeddingCache(
-  options: { cachePath?: string; model?: string } = {}
+  options: { cachePath?: string; model?: string } = {},
 ): Promise<EmbeddingCache> {
   const model = options.model || DEFAULT_EMBEDDING_MODEL;
   const cachePath = expandPath(options.cachePath || getEmbeddingCachePath());
@@ -568,7 +582,7 @@ export async function loadEmbeddingCache(
 
 export async function saveEmbeddingCache(
   cache: EmbeddingCache,
-  options: { cachePath?: string } = {}
+  options: { cachePath?: string } = {},
 ): Promise<void> {
   const cachePath = expandPath(options.cachePath || getEmbeddingCachePath());
   try {
@@ -598,7 +612,7 @@ export async function loadOrComputeEmbeddingsForBullets(
       skipped: number;
       message: string;
     }) => void;
-  } = {}
+  } = {},
 ): Promise<{ cache: EmbeddingCache; stats: EmbeddingStats }> {
   const model = options.model || DEFAULT_EMBEDDING_MODEL;
   const cachePath = expandPath(options.cachePath || getEmbeddingCachePath());
@@ -660,7 +674,8 @@ export async function loadOrComputeEmbeddingsForBullets(
       reused,
       computed,
       skipped,
-      message: totalToCompute > 0 ? "Computing semantic embeddings..." : "Semantic embeddings up to date",
+      message:
+        totalToCompute > 0 ? "Computing semantic embeddings..." : "Semantic embeddings up to date",
     });
 
     if (model !== "none" && toCompute.length > 0) {
@@ -681,7 +696,7 @@ export async function loadOrComputeEmbeddingsForBullets(
                 message: "Computing semantic embeddings...",
               });
             },
-          }
+          },
         );
 
         for (let i = 0; i < toCompute.length; i++) {
@@ -702,7 +717,9 @@ export async function loadOrComputeEmbeddingsForBullets(
           computed++;
         }
       } catch (err: any) {
-        warn(`[semantic] batchEmbed failed; falling back to per-text embedding. ${err?.message || ""}`.trim());
+        warn(
+          `[semantic] batchEmbed failed; falling back to per-text embedding. ${err?.message || ""}`.trim(),
+        );
 
         let processed = 0;
         for (const { bullet, contentHash } of toCompute) {
@@ -741,7 +758,9 @@ export async function loadOrComputeEmbeddingsForBullets(
               message: "Computing semantic embeddings...",
             });
           } catch (innerErr: any) {
-            warn(`[semantic] embedText failed for bullet ${bullet.id}: ${innerErr?.message || innerErr}`);
+            warn(
+              `[semantic] embedText failed for bullet ${bullet.id}: ${innerErr?.message || innerErr}`,
+            );
             skipped++;
             processed++;
             emitProgress({
@@ -759,7 +778,13 @@ export async function loadOrComputeEmbeddingsForBullets(
     }
 
     // Only save if we computed something or if we want to ensure the cache file exists
-    if (computed > 0 || !await fs.access(cachePath).then(() => true).catch(() => false)) {
+    if (
+      computed > 0 ||
+      !(await fs
+        .access(cachePath)
+        .then(() => true)
+        .catch(() => false))
+    ) {
       await saveEmbeddingCache(cache, { cachePath });
     }
 
@@ -779,7 +804,7 @@ export async function loadOrComputeEmbeddingsForBullets(
 
 export async function loadOrComputeEmbeddings(
   playbook: Playbook,
-  options: { model?: string; cachePath?: string } = {}
+  options: { model?: string; cachePath?: string } = {},
 ): Promise<{ cache: EmbeddingCache; stats: EmbeddingStats }> {
   return loadOrComputeEmbeddingsForBullets(playbook.bullets, options);
 }
@@ -793,7 +818,12 @@ export async function findSimilarBulletsSemantic(
   query: string,
   bullets: PlaybookBullet[],
   topK = 5,
-  options: { threshold?: number; model?: string; cachePath?: string; queryEmbedding?: number[] } = {}
+  options: {
+    threshold?: number;
+    model?: string;
+    cachePath?: string;
+    queryEmbedding?: number[];
+  } = {},
 ): Promise<SimilarBulletMatch[]> {
   const cleaned = query?.trim();
   if (!cleaned) return [];
@@ -808,14 +838,16 @@ export async function findSimilarBulletsSemantic(
   const model = options.model || DEFAULT_EMBEDDING_MODEL;
 
   const queryEmbedding =
-    options.queryEmbedding && Array.isArray(options.queryEmbedding) && options.queryEmbedding.length > 0
+    options.queryEmbedding &&
+    Array.isArray(options.queryEmbedding) &&
+    options.queryEmbedding.length > 0
       ? options.queryEmbedding
       : await embedText(cleaned, { model });
 
   if (!queryEmbedding.length) return [];
 
   const allHaveEmbeddings = bullets.every(
-    (b) => Array.isArray(b.embedding) && b.embedding.length > 0
+    (b) => Array.isArray(b.embedding) && b.embedding.length > 0,
   );
   if (!allHaveEmbeddings) {
     await loadOrComputeEmbeddingsForBullets(bullets, { model, cachePath: options.cachePath });
@@ -845,15 +877,13 @@ export interface SemanticDuplicatePair {
 export async function findSemanticDuplicates(
   bullets: PlaybookBullet[],
   threshold = 0.85,
-  options: { model?: string; cachePath?: string; ensureEmbeddings?: boolean } = {}
+  options: { model?: string; cachePath?: string; ensureEmbeddings?: boolean } = {},
 ): Promise<SemanticDuplicatePair[]> {
   const cleanedThreshold =
     typeof threshold === "number" && Number.isFinite(threshold) ? threshold : 0.85;
   const minSimilarity = Math.min(1, Math.max(0, cleanedThreshold));
 
-  const candidates = bullets.filter(
-    (b) => Boolean(b?.id) && Boolean(b?.content)
-  );
+  const candidates = bullets.filter((b) => Boolean(b?.id) && Boolean(b?.content));
   if (candidates.length < 2) return [];
 
   const model = options.model || DEFAULT_EMBEDDING_MODEL;
@@ -861,7 +891,7 @@ export async function findSemanticDuplicates(
   const ensureEmbeddings = options.ensureEmbeddings !== false;
   if (ensureEmbeddings) {
     const allHaveEmbeddings = candidates.every(
-      (b) => Array.isArray(b.embedding) && b.embedding.length > 0
+      (b) => Array.isArray(b.embedding) && b.embedding.length > 0,
     );
 
     if (!allHaveEmbeddings && model !== "none") {
@@ -928,7 +958,12 @@ export interface SemanticStatus {
   posture: SemanticPosture;
 }
 
-export type SemanticPosture = "explicit-on" | "explicit-off" | "model-none" | "auto-on" | "auto-off";
+export type SemanticPosture =
+  | "explicit-on"
+  | "explicit-off"
+  | "model-none"
+  | "auto-on"
+  | "auto-off";
 
 /** The subset of `Config` that decides whether semantic search runs. */
 export interface SemanticConfigInput {
@@ -1009,9 +1044,8 @@ const SEMANTIC_NOT_READY_TTL_MS = 60_000;
  * racing to run (and pay for) the same check. `expiresAt` is `Infinity` while
  * the probe is in flight and is set from the TTLs above once it settles.
  */
-let semanticResolutionCache:
-  | { key: string; ready: Promise<boolean>; expiresAt: number }
-  | null = null;
+let semanticResolutionCache: { key: string; ready: Promise<boolean>; expiresAt: number } | null =
+  null;
 
 /** Forget the memoized readiness probe result (tests, or after `doctor --fix`). */
 export function resetSemanticResolutionCache(): void {
@@ -1047,7 +1081,7 @@ export async function resolveSemanticEnabled(config: SemanticConfigInput): Promi
   const key = JSON.stringify(
     backend === "ollama"
       ? ["ollama", resolveOllamaSettings(config)]
-      : ["xenova", model, getTransformersCacheDir()]
+      : ["xenova", model, getTransformersCacheDir()],
   );
   // Capture the entry locally: another resolver with a different key may
   // replace the single cache slot while we are awaiting this probe.
@@ -1056,20 +1090,19 @@ export async function resolveSemanticEnabled(config: SemanticConfigInput): Promi
     const probe = Promise.resolve().then(() =>
       backend === "ollama"
         ? semanticReadinessProbes.ollama(config)
-        : semanticReadinessProbes.xenova(model)
+        : semanticReadinessProbes.xenova(model),
     );
     const created: { key: string; ready: Promise<boolean>; expiresAt: number } = {
       key,
       // A probe must never take down the caller: any throw means "not ready".
       ready: probe.then(
         (ready) => ready === true,
-        () => false
+        () => false,
       ),
       expiresAt: Number.POSITIVE_INFINITY,
     };
     created.ready = created.ready.then((ready) => {
-      created.expiresAt =
-        Date.now() + (ready ? SEMANTIC_READY_TTL_MS : SEMANTIC_NOT_READY_TTL_MS);
+      created.expiresAt = Date.now() + (ready ? SEMANTIC_READY_TTL_MS : SEMANTIC_NOT_READY_TTL_MS);
       return ready;
     });
     entry = created;
@@ -1092,7 +1125,7 @@ export async function resolveSemanticEnabled(config: SemanticConfigInput): Promi
  */
 export function getSemanticStatus(
   config: SemanticConfigInput,
-  options: { autoReady?: boolean } = {}
+  options: { autoReady?: boolean } = {},
 ): SemanticStatus {
   const model = normalizeEmbeddingModel(config);
   const cli = getCliName();
@@ -1185,7 +1218,7 @@ export function getSemanticStatus(
  */
 export function formatSemanticModeMessage(
   mode: "semantic" | "keyword",
-  status: SemanticStatus
+  status: SemanticStatus,
 ): string {
   if (mode === "semantic") {
     return `Using semantic search (${status.model})`;
@@ -1221,7 +1254,7 @@ export function formatSemanticModeMessage(
  * @returns Promise resolving to warmup result with success/failure and duration
  */
 export async function warmupEmbeddings(
-  options: { model?: string; showProgress?: boolean } = {}
+  options: { model?: string; showProgress?: boolean } = {},
 ): Promise<WarmupResult> {
   const model = options.model || DEFAULT_EMBEDDING_MODEL;
   const startTime = Date.now();

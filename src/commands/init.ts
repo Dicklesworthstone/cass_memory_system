@@ -1,21 +1,42 @@
-import { installGuard, installGitHook } from "./guard.js";
-import { getDefaultConfig } from "../config.js";
-import { createEmptyPlaybook, loadPlaybook, savePlaybook } from "../playbook.js";
-import { withLock } from "../lock.js";
-import { expandPath, fileExists, warn, resolveRepoDir, resolveGlobalDir, resolveGlobalConfigFile, ensureRepoStructure, ensureGlobalStructure, getCliName, printJsonResult, atomicWrite, reportError, now } from "../utils.js";
-import { ErrorCode, Config, TraumaEntry } from "../types.js";
-import { scanForTraumas, saveTrauma } from "../trauma.js";
-import { cassAvailable } from "../cass.js";
-import { applyStarter, loadStarter } from "../starters.js";
+import crypto from "node:crypto";
+import fs from "node:fs/promises";
 import path from "node:path";
+import readline from "node:readline";
 import chalk from "chalk";
 import yaml from "yaml";
-import readline from "node:readline";
-import fs from "node:fs/promises";
-import crypto from "node:crypto";
-import { iconPrefix, icon, formatKv } from "../output.js";
+import { cassAvailable } from "../cass.js";
+import { getDefaultConfig } from "../config.js";
+import { withLock } from "../lock.js";
+import { formatKv, icon, iconPrefix } from "../output.js";
+import { createEmptyPlaybook, loadPlaybook, savePlaybook } from "../playbook.js";
+import { applyStarter, loadStarter } from "../starters.js";
+import { saveTrauma, scanForTraumas } from "../trauma.js";
+import { type Config, ErrorCode, type TraumaEntry } from "../types.js";
+import {
+  atomicWrite,
+  ensureGlobalStructure,
+  ensureRepoStructure,
+  expandPath,
+  fileExists,
+  getCliName,
+  now,
+  printJsonResult,
+  reportError,
+  resolveGlobalConfigFile,
+  resolveGlobalDir,
+  resolveRepoDir,
+  warn,
+} from "../utils.js";
+import { installGitHook, installGuard } from "./guard.js";
 
-type InitOptions = { force?: boolean; yes?: boolean; json?: boolean; repo?: boolean; starter?: string; interactive?: boolean };
+type InitOptions = {
+  force?: boolean;
+  yes?: boolean;
+  json?: boolean;
+  repo?: boolean;
+  starter?: string;
+  interactive?: boolean;
+};
 
 async function promptYesNo(question: string): Promise<boolean> {
   if (!process.stdin.isTTY) return false;
@@ -36,7 +57,9 @@ async function promptYesNo(question: string): Promise<boolean> {
 
 async function runTraumaScan(config: Config) {
   console.log(chalk.bold(`\n${iconPrefix("warning")}Project Hot Stove: Trauma Scan`));
-  console.log("We can scan your past agent sessions for 'catastrophic' patterns (e.g., apologies followed by destruction).");
+  console.log(
+    "We can scan your past agent sessions for 'catastrophic' patterns (e.g., apologies followed by destruction).",
+  );
   console.log("This will seed your safety guard so you don't repeat past mistakes.\n");
 
   const doit = await promptYesNo("Scan past 90 days of history? [y/N]: ");
@@ -56,7 +79,9 @@ async function runTraumaScan(config: Config) {
     console.log(`  Evidence: "${c.evidence.replace(/\n/g, " ")}"`);
   }
 
-  const importAll = await promptYesNo("\nAdd these patterns to your permanent safety blocklist? [Y/n]: ");
+  const importAll = await promptYesNo(
+    "\nAdd these patterns to your permanent safety blocklist? [Y/n]: ",
+  );
   if (importAll) {
     let count = 0;
     for (const c of candidates) {
@@ -69,14 +94,16 @@ async function runTraumaScan(config: Config) {
         trigger_event: {
           session_path: c.sessionPath,
           timestamp: now(),
-          human_message: `Auto-detected from history: ${c.description}`
+          human_message: `Auto-detected from history: ${c.description}`,
         },
-        created_at: now()
+        created_at: now(),
       };
       await saveTrauma(entry);
       count++;
     }
-    console.log(chalk.green(`${icon("success")} Imported ${count} trauma patterns. The guard is now active.`));
+    console.log(
+      chalk.green(`${icon("success")} Imported ${count} trauma patterns. The guard is now active.`),
+    );
   }
 }
 
@@ -85,10 +112,7 @@ export async function initCommand(options: InitOptions) {
   const command = "init";
   const cli = getCliName();
   const isInteractive =
-    options.interactive === true &&
-    !options.json &&
-    process.stdin.isTTY &&
-    process.stdout.isTTY;
+    options.interactive === true && !options.json && process.stdin.isTTY && process.stdout.isTTY;
 
   // If --repo flag is provided, initialize repo-level .cass/ structure
   if (options.repo) {
@@ -128,23 +152,23 @@ export async function initCommand(options: InitOptions) {
   if (needsForceConfirmation) {
     if (isInteractive) {
       const ok = await promptYesNo(
-        `This will back up and overwrite ~/.cass-memory/${path.basename(configPath)} and playbook.yaml. Continue? [y/N]: `
+        `This will back up and overwrite ~/.cass-memory/${path.basename(configPath)} and playbook.yaml. Continue? [y/N]: `,
       );
       if (!ok) {
         console.log(chalk.yellow("Cancelled."));
         return;
       }
-	    } else if (!options.yes) {
-	      reportError("Refusing to overwrite existing files without --yes", {
-	        code: ErrorCode.MISSING_REQUIRED,
-	        hint: "Use --yes to confirm",
-	        details: { missing: "confirmation" },
-	        json: options.json,
-          command,
-          startedAtMs,
-	      });
-	      return;
-	    }
+    } else if (!options.yes) {
+      reportError("Refusing to overwrite existing files without --yes", {
+        code: ErrorCode.MISSING_REQUIRED,
+        hint: "Use --yes to confirm",
+        details: { missing: "confirmation" },
+        json: options.json,
+        command,
+        startedAtMs,
+      });
+      return;
+    }
 
     const ts = Date.now();
     const toBackup = [configPath, playbookPath];
@@ -162,7 +186,9 @@ export async function initCommand(options: InitOptions) {
   if (!hasConfig && isInteractive) {
     console.log(chalk.bold(`\nWelcome to ${cli}!\n`));
     console.log("Cross-Agent Enrichment (Optional):");
-    console.log("cass-memory can enrich your diary entries by searching sessions from other agents (Claude, Cursor, Codex, etc.).");
+    console.log(
+      "cass-memory can enrich your diary entries by searching sessions from other agents (Claude, Cursor, Codex, etc.).",
+    );
     console.log("This never uploads data, but it may pull context across tools on your machine.\n");
 
     const enable = await promptYesNo("Enable cross-agent enrichment? [y/N]: ");
@@ -197,46 +223,55 @@ export async function initCommand(options: InitOptions) {
   if (needsForceConfirmation) {
     // Reset the ACTIVE config file in its own format, so a YAML config is not
     // left behind shadowed by a freshly written config.json.
-    await atomicWrite(configPath, configFile.format === "yaml" ? yaml.stringify(config) : defaultConfigStr);
+    await atomicWrite(
+      configPath,
+      configFile.format === "yaml" ? yaml.stringify(config) : defaultConfigStr,
+    );
     overwritten.push(path.basename(configPath));
     await atomicWrite(playbookPath, defaultPlaybookStr);
     overwritten.push("playbook.yaml");
   }
 
   let starterOutcome: { added: number; skipped: number; name: string } | null = null;
-	  if (options.starter) {
-	    try {
-	      starterOutcome = await seedStarter(playbookPath, options.starter);
-	    } catch (err: any) {
-	      reportError(err instanceof Error ? err : (err?.message || "Failed to apply starter"), {
-	        code: ErrorCode.VALIDATION_FAILED,
-	        details: { starter: options.starter },
-	        json: options.json,
-          command,
-          startedAtMs,
-	      });
-	      return;
-	    }
-	  }
+  if (options.starter) {
+    try {
+      starterOutcome = await seedStarter(playbookPath, options.starter);
+    } catch (err: any) {
+      reportError(err instanceof Error ? err : err?.message || "Failed to apply starter", {
+        code: ErrorCode.VALIDATION_FAILED,
+        details: { starter: options.starter },
+        json: options.json,
+        command,
+        startedAtMs,
+      });
+      return;
+    }
+  }
 
   // 4. Check cass
   const cassOk = cassAvailable(config.cassPath);
   if (!cassOk && !options.json) {
     warn("cass is not available. Some features will not work.");
-    console.log("Install cass from https://github.com/Dicklesworthstone/coding_agent_session_search");
+    console.log(
+      "Install cass from https://github.com/Dicklesworthstone/coding_agent_session_search",
+    );
   }
 
   // Output
   if (options.json) {
-    printJsonResult(command, {
-      configPath,
-      created: result.created,
-      existed: result.existed,
-      overwritten,
-      backups,
-      cassAvailable: cassOk,
-      starter: starterOutcome
-    }, { startedAtMs });
+    printJsonResult(
+      command,
+      {
+        configPath,
+        created: result.created,
+        existed: result.existed,
+        overwritten,
+        backups,
+        cassAvailable: cassOk,
+        starter: starterOutcome,
+      },
+      { startedAtMs },
+    );
   } else {
     if (result.created.length > 0) {
       for (const file of result.created) {
@@ -259,7 +294,7 @@ export async function initCommand(options: InitOptions) {
     if (overwritten.length > 0) {
       console.log(chalk.yellow(`\nOverwritten: ${overwritten.join(", ")}`));
     }
-    
+
     const cassStatus = cassOk
       ? "available"
       : "not found (history disabled until installed/indexed)";
@@ -267,8 +302,8 @@ export async function initCommand(options: InitOptions) {
     if (starterOutcome) {
       console.log(
         chalk.green(
-          `${icon("success")} Applied starter "${starterOutcome.name}" (${starterOutcome.added} added, ${starterOutcome.skipped} skipped)`
-        )
+          `${icon("success")} Applied starter "${starterOutcome.name}" (${starterOutcome.added} added, ${starterOutcome.skipped} skipped)`,
+        ),
       );
     }
 
@@ -284,7 +319,9 @@ export async function initCommand(options: InitOptions) {
           await installGuard(false, false);
           console.log(chalk.green(`${icon("success")} Installed Project Hot Stove safety guard`));
         } catch {
-          warn(`Failed to install Claude Code safety guard. You can install manually with: ${cli} guard --install`);
+          warn(
+            `Failed to install Claude Code safety guard. You can install manually with: ${cli} guard --install`,
+          );
         }
       } else {
         console.log(chalk.gray(`Skipped. You can install later with: ${cli} guard --install`));
@@ -296,7 +333,9 @@ export async function initCommand(options: InitOptions) {
       console.log("");
       console.log(chalk.bold("Git Pre-Commit Guard (Optional):"));
       console.log("Install a pre-commit hook to block commits containing dangerous patterns?");
-      console.log(chalk.dim("This checks staged changes against your trauma patterns before each commit."));
+      console.log(
+        chalk.dim("This checks staged changes against your trauma patterns before each commit."),
+      );
       console.log("");
 
       const installGit = await promptYesNo("Install git pre-commit trauma guard? [y/N]: ");
@@ -304,7 +343,9 @@ export async function initCommand(options: InitOptions) {
         try {
           await installGitHook(false, false);
         } catch {
-          warn(`Failed to install git pre-commit hook. You can install manually with: ${cli} guard --git`);
+          warn(
+            `Failed to install git pre-commit hook. You can install manually with: ${cli} guard --git`,
+          );
         }
       } else {
         console.log(chalk.gray(`Skipped. You can install later with: ${cli} guard --git`));
@@ -329,8 +370,8 @@ export async function initCommand(options: InitOptions) {
           { key: "Diary", value: "~/.cass-memory/diary/" },
           { key: "cass", value: cassStatus },
         ],
-        { indent: "  " }
-      )
+        { indent: "  " },
+      ),
     );
 
     console.log("");
@@ -341,17 +382,21 @@ export async function initCommand(options: InitOptions) {
 
     console.log(chalk.gray(`\nAutomation (operator): schedule ${cli} reflect --days 7 --json`));
     console.log(chalk.gray(`Project rules (repo): ${cli} init --repo`));
-    console.log(chalk.gray("Semantic search: enabling it may download an embedding model on first use."));
+    console.log(
+      chalk.gray("Semantic search: enabling it may download an embedding model on first use."),
+    );
   }
 }
 
 async function seedStarter(
   playbookPath: string,
-  starterName: string
+  starterName: string,
 ): Promise<{ added: number; skipped: number; name: string }> {
   const starter = await loadStarter(starterName);
   if (!starter) {
-    throw new Error(`Starter "${starterName}" not found. Run "${getCliName()} starters" to list available names.`);
+    throw new Error(
+      `Starter "${starterName}" not found. Run "${getCliName()} starters" to list available names.`,
+    );
   }
 
   return await withLock(playbookPath, async () => {
@@ -373,16 +418,16 @@ async function initRepoCommand(options: InitOptions) {
   const backups: Array<{ file: string; backup: string }> = [];
   const overwritten: string[] = [];
 
-	  if (!cassDir) {
-	    reportError("Not in a git repository. Run from within a git repo.", {
-	      code: ErrorCode.CONFIG_INVALID,
-	      hint: "cd into a git repository first",
-	      json: options.json,
-        command,
-        startedAtMs,
-	    });
-	    return;
-	  }
+  if (!cassDir) {
+    reportError("Not in a git repository. Run from within a git repo.", {
+      code: ErrorCode.CONFIG_INVALID,
+      hint: "cd into a git repository first",
+      json: options.json,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
 
   // Check if already initialized
   const playbookPath = `${cassDir}/playbook.yaml`;
@@ -407,30 +452,27 @@ async function initRepoCommand(options: InitOptions) {
   const needsForceConfirmation = hasAnyState && Boolean(options.force);
   if (needsForceConfirmation) {
     const isInteractive =
-      options.interactive === true &&
-      !options.json &&
-      process.stdin.isTTY &&
-      process.stdout.isTTY;
+      options.interactive === true && !options.json && process.stdin.isTTY && process.stdout.isTTY;
 
     if (isInteractive) {
       const ok = await promptYesNo(
-        `This will back up and overwrite ${cassDir}/playbook.yaml and blocked.log. Continue? [y/N]: `
+        `This will back up and overwrite ${cassDir}/playbook.yaml and blocked.log. Continue? [y/N]: `,
       );
       if (!ok) {
         console.log(chalk.yellow("Cancelled."));
         return;
       }
-	    } else if (!options.yes) {
-	      reportError("Refusing to overwrite existing files without --yes", {
-	        code: ErrorCode.MISSING_REQUIRED,
-	        hint: "Use --yes to confirm",
-	        details: { missing: "confirmation" },
-	        json: options.json,
-          command,
-          startedAtMs,
-	      });
-	      return;
-	    }
+    } else if (!options.yes) {
+      reportError("Refusing to overwrite existing files without --yes", {
+        code: ErrorCode.MISSING_REQUIRED,
+        hint: "Use --yes to confirm",
+        details: { missing: "confirmation" },
+        json: options.json,
+        command,
+        startedAtMs,
+      });
+      return;
+    }
 
     const ts = Date.now();
     const toBackup = [playbookPath, blockedPath];
@@ -456,32 +498,38 @@ async function initRepoCommand(options: InitOptions) {
   }
 
   let starterOutcome: { added: number; skipped: number; name: string } | null = null;
-	  if (options.starter) {
-	    try {
-	      starterOutcome = await seedStarter(playbookPath, options.starter);
-	    } catch (err: any) {
-	      reportError(err instanceof Error ? err : (err?.message || "Failed to apply starter"), {
-	        code: ErrorCode.VALIDATION_FAILED,
-	        details: { starter: options.starter, cassDir },
-	        json: options.json,
-          command,
-          startedAtMs,
-	      });
-	      return;
-	    }
-	  }
+  if (options.starter) {
+    try {
+      starterOutcome = await seedStarter(playbookPath, options.starter);
+    } catch (err: any) {
+      reportError(err instanceof Error ? err : err?.message || "Failed to apply starter", {
+        code: ErrorCode.VALIDATION_FAILED,
+        details: { starter: options.starter, cassDir },
+        json: options.json,
+        command,
+        startedAtMs,
+      });
+      return;
+    }
+  }
 
   if (options.json) {
-    printJsonResult(command, {
-      cassDir,
-      created: result.created,
-      existed: result.existed,
-      overwritten,
-      backups,
-      starter: starterOutcome
-    }, { startedAtMs });
+    printJsonResult(
+      command,
+      {
+        cassDir,
+        created: result.created,
+        existed: result.existed,
+        overwritten,
+        backups,
+        starter: starterOutcome,
+      },
+      { startedAtMs },
+    );
   } else {
-    console.log(chalk.bold(`\n${iconPrefix("construction")}Initializing repo-level .cass/ structure\n`));
+    console.log(
+      chalk.bold(`\n${iconPrefix("construction")}Initializing repo-level .cass/ structure\n`),
+    );
 
     if (result.created.length > 0) {
       for (const file of result.created) {
@@ -507,7 +555,11 @@ async function initRepoCommand(options: InitOptions) {
     }
 
     if (starterOutcome) {
-      console.log(chalk.green(`${icon("success")} Applied starter "${starterOutcome.name}" (${starterOutcome.added} added, ${starterOutcome.skipped} skipped)`));
+      console.log(
+        chalk.green(
+          `${icon("success")} Applied starter "${starterOutcome.name}" (${starterOutcome.added} added, ${starterOutcome.skipped} skipped)`,
+        ),
+      );
     }
 
     console.log("");
@@ -520,6 +572,8 @@ async function initRepoCommand(options: InitOptions) {
     console.log("These files are merged with your global ~/.cass-memory/ settings.");
     console.log("Project rules take precedence over global rules.");
     console.log("");
-    console.log(chalk.yellow("Remember: Commit .cass/ to version control to share with your team!"));
+    console.log(
+      chalk.yellow("Remember: Commit .cass/ to version control to share with your team!"),
+    );
   }
 }

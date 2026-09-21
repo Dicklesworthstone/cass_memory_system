@@ -1,10 +1,10 @@
 /**
  * Tests for CLI version handling and error formatting.
  */
-import { describe, test, expect, beforeAll } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { join } from "node:path";
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 const ROOT = join(import.meta.dir, "..");
 const CM_PATH = join(ROOT, "src/cm.ts");
@@ -13,7 +13,9 @@ const PACKAGE_JSON = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf-8"
 /**
  * Helper to run cm.ts and capture output.
  */
-async function runCm(args: string[]): Promise<{ stdout: string; stderr: string; code: number | null }> {
+async function runCm(
+  args: string[],
+): Promise<{ stdout: string; stderr: string; code: number | null }> {
   return new Promise((resolve) => {
     const proc = spawn("bun", ["run", CM_PATH, ...args], {
       cwd: ROOT,

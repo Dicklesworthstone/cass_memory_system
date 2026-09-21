@@ -9,21 +9,24 @@
  *
  * Uses isolated temp directories to avoid affecting the real system.
  */
-import { describe, it, expect, afterEach } from "bun:test";
-import { stat, mkdir, writeFile, rm } from "node:fs/promises";
+import { afterEach, describe, expect, it } from "bun:test";
+import { execSync } from "node:child_process";
+import { mkdir, rm, stat, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import yaml from "yaml";
-import os from "node:os";
-import { execSync } from "node:child_process";
 
-import { loadConfig, DEFAULT_CONFIG, getDefaultConfig } from "../src/config.js";
+import { DEFAULT_CONFIG, getDefaultConfig, loadConfig } from "../src/config.js";
 
 // --- Helper Functions ---
 
 let tempDirs: string[] = [];
 
 async function createTempDir(): Promise<string> {
-  const dirPath = path.join(os.tmpdir(), `config-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const dirPath = path.join(
+    os.tmpdir(),
+    `config-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  );
   await mkdir(dirPath, { recursive: true });
   tempDirs.push(dirPath);
   return dirPath;
@@ -117,12 +120,9 @@ describe("E2E: Config Cascade", () => {
         const globalConfig = {
           provider: "openai",
           model: "gpt-4",
-          verbose: true
+          verbose: true,
         };
-        await writeFile(
-          path.join(cassMemoryDir, "config.json"),
-          JSON.stringify(globalConfig)
-        );
+        await writeFile(path.join(cassMemoryDir, "config.json"), JSON.stringify(globalConfig));
 
         const config = await loadConfig();
 
@@ -146,13 +146,10 @@ describe("E2E: Config Cascade", () => {
 
         // Partial global config
         const globalConfig = {
-          provider: "openai"
+          provider: "openai",
           // model is not specified
         };
-        await writeFile(
-          path.join(cassMemoryDir, "config.json"),
-          JSON.stringify(globalConfig)
-        );
+        await writeFile(path.join(cassMemoryDir, "config.json"), JSON.stringify(globalConfig));
 
         const config = await loadConfig();
 
@@ -179,23 +176,17 @@ describe("E2E: Config Cascade", () => {
         const globalConfig = {
           provider: "openai",
           model: "gpt-4",
-          verbose: false
+          verbose: false,
         };
-        await writeFile(
-          path.join(cassMemoryDir, "config.json"),
-          JSON.stringify(globalConfig)
-        );
+        await writeFile(path.join(cassMemoryDir, "config.json"), JSON.stringify(globalConfig));
 
         // Create repo config (YAML format)
         await mkdir(repoCassDir, { recursive: true });
         const repoConfig = {
           provider: "anthropic",
-          verbose: true
+          verbose: true,
         };
-        await writeFile(
-          path.join(repoCassDir, "config.yaml"),
-          yaml.stringify(repoConfig)
-        );
+        await writeFile(path.join(repoCassDir, "config.yaml"), yaml.stringify(repoConfig));
 
         const config = await loadConfig();
 
@@ -221,12 +212,9 @@ describe("E2E: Config Cascade", () => {
         const globalConfig = {
           cassPath: "safe-cass-path",
           playbookPath: "~/.cass-memory/playbook.yaml",
-          diaryDir: "~/.cass-memory/diary"
+          diaryDir: "~/.cass-memory/diary",
         };
-        await writeFile(
-          path.join(cassMemoryDir, "config.json"),
-          JSON.stringify(globalConfig)
-        );
+        await writeFile(path.join(cassMemoryDir, "config.json"), JSON.stringify(globalConfig));
 
         // Repo tries to override sensitive paths (malicious attempt)
         await mkdir(repoCassDir, { recursive: true });
@@ -234,12 +222,9 @@ describe("E2E: Config Cascade", () => {
           cassPath: "/evil/path",
           playbookPath: "/etc/passwd",
           diaryDir: "/tmp/evil",
-          verbose: true // This should work
+          verbose: true, // This should work
         };
-        await writeFile(
-          path.join(repoCassDir, "config.yaml"),
-          yaml.stringify(repoConfig)
-        );
+        await writeFile(path.join(repoCassDir, "config.yaml"), yaml.stringify(repoConfig));
 
         const config = await loadConfig();
 
@@ -270,27 +255,21 @@ describe("E2E: Config Cascade", () => {
         // Create global config
         const globalConfig = {
           provider: "openai",
-          model: "gpt-4"
+          model: "gpt-4",
         };
-        await writeFile(
-          path.join(cassMemoryDir, "config.json"),
-          JSON.stringify(globalConfig)
-        );
+        await writeFile(path.join(cassMemoryDir, "config.json"), JSON.stringify(globalConfig));
 
         // Create repo config
         await mkdir(repoCassDir, { recursive: true });
         const repoConfig = {
-          provider: "anthropic"
+          provider: "anthropic",
         };
-        await writeFile(
-          path.join(repoCassDir, "config.yaml"),
-          yaml.stringify(repoConfig)
-        );
+        await writeFile(path.join(repoCassDir, "config.yaml"), yaml.stringify(repoConfig));
 
         // CLI override
         const config = await loadConfig({
           provider: "google",
-          verbose: true
+          verbose: true,
         });
 
         expect(config.provider).toBe("google"); // CLI wins
@@ -317,25 +296,19 @@ describe("E2E: Config Cascade", () => {
         const globalConfig = {
           sanitization: {
             enabled: true,
-            auditLog: true
-          }
+            auditLog: true,
+          },
         };
-        await writeFile(
-          path.join(cassMemoryDir, "config.json"),
-          JSON.stringify(globalConfig)
-        );
+        await writeFile(path.join(cassMemoryDir, "config.json"), JSON.stringify(globalConfig));
 
         // Repo with different sanitization settings
         await mkdir(repoCassDir, { recursive: true });
         const repoConfig = {
           sanitization: {
-            extraPatterns: ["secret_.*", "token_.*"]
-          }
+            extraPatterns: ["secret_.*", "token_.*"],
+          },
         };
-        await writeFile(
-          path.join(repoCassDir, "config.yaml"),
-          yaml.stringify(repoConfig)
-        );
+        await writeFile(path.join(repoCassDir, "config.yaml"), yaml.stringify(repoConfig));
 
         const config = await loadConfig();
 
@@ -362,25 +335,19 @@ describe("E2E: Config Cascade", () => {
         const globalConfig = {
           scoring: {
             decayHalfLifeDays: 60,
-            harmfulMultiplier: 3
-          }
+            harmfulMultiplier: 3,
+          },
         };
-        await writeFile(
-          path.join(cassMemoryDir, "config.json"),
-          JSON.stringify(globalConfig)
-        );
+        await writeFile(path.join(cassMemoryDir, "config.json"), JSON.stringify(globalConfig));
 
         // Repo with different scoring settings
         await mkdir(repoCassDir, { recursive: true });
         const repoConfig = {
           scoring: {
-            minFeedbackForActive: 5
-          }
+            minFeedbackForActive: 5,
+          },
         };
-        await writeFile(
-          path.join(repoCassDir, "config.yaml"),
-          yaml.stringify(repoConfig)
-        );
+        await writeFile(path.join(repoCassDir, "config.yaml"), yaml.stringify(repoConfig));
 
         const config = await loadConfig();
 
@@ -405,20 +372,17 @@ describe("E2E: Config Cascade", () => {
 
         const globalConfig = {
           scoring: {
-            decayHalfLifeDays: 60
-          }
+            decayHalfLifeDays: 60,
+          },
         };
-        await writeFile(
-          path.join(cassMemoryDir, "config.json"),
-          JSON.stringify(globalConfig)
-        );
+        await writeFile(path.join(cassMemoryDir, "config.json"), JSON.stringify(globalConfig));
 
         const config = await loadConfig({
           scoring: {
             ...DEFAULT_CONFIG.scoring,
             decayHalfLifeDays: 30,
-            harmfulMultiplier: 10
-          }
+            harmfulMultiplier: 10,
+          },
         });
 
         expect(config.scoring.decayHalfLifeDays).toBe(30); // CLI override
@@ -443,7 +407,7 @@ describe("E2E: Config Cascade", () => {
         // Global in JSON
         await writeFile(
           path.join(cassMemoryDir, "config.json"),
-          JSON.stringify({ provider: "openai" })
+          JSON.stringify({ provider: "openai" }),
         );
 
         // Repo in YAML
@@ -476,10 +440,7 @@ scoring:
         process.env.HOME = home;
         process.chdir(repo);
 
-        await writeFile(
-          path.join(cassMemoryDir, "config.json"),
-          "{}"
-        );
+        await writeFile(path.join(cassMemoryDir, "config.json"), "{}");
 
         // YAML with snake_case keys
         await mkdir(repoCassDir, { recursive: true });
@@ -535,7 +496,7 @@ auto_reflect: true
         // Only global config exists
         await writeFile(
           path.join(cassMemoryDir, "config.json"),
-          JSON.stringify({ provider: "openai" })
+          JSON.stringify({ provider: "openai" }),
         );
 
         // No .cass directory in repo
@@ -585,7 +546,7 @@ auto_reflect: true
 
         await writeFile(
           path.join(cassMemoryDir, "config.json"),
-          JSON.stringify({ verbose: false })
+          JSON.stringify({ verbose: false }),
         );
 
         const config = await loadConfig();
@@ -643,7 +604,7 @@ auto_reflect: true
 
         await writeFile(
           path.join(cassMemoryDir, "config.json"),
-          JSON.stringify({ provider: "openai", verbose: true })
+          JSON.stringify({ provider: "openai", verbose: true }),
         );
 
         const config = await loadConfig();
@@ -670,7 +631,7 @@ auto_reflect: true
         // Invalid provider
         await writeFile(
           path.join(cassMemoryDir, "config.json"),
-          JSON.stringify({ provider: "invalid-provider" })
+          JSON.stringify({ provider: "invalid-provider" }),
         );
 
         await expect(loadConfig()).rejects.toThrow();
@@ -690,10 +651,7 @@ auto_reflect: true
         process.chdir(repo);
 
         for (const provider of ["openai", "anthropic", "google"] as const) {
-          await writeFile(
-            path.join(cassMemoryDir, "config.json"),
-            JSON.stringify({ provider })
-          );
+          await writeFile(path.join(cassMemoryDir, "config.json"), JSON.stringify({ provider }));
 
           const config = await loadConfig();
           expect(config.provider).toBe(provider);
@@ -722,14 +680,11 @@ auto_reflect: true
         // Create configs
         await writeFile(
           path.join(cassMemoryDir, "config.json"),
-          JSON.stringify({ provider: "openai" })
+          JSON.stringify({ provider: "openai" }),
         );
 
         await mkdir(repoCassDir, { recursive: true });
-        await writeFile(
-          path.join(repoCassDir, "config.yaml"),
-          yaml.stringify({ verbose: true })
-        );
+        await writeFile(path.join(repoCassDir, "config.yaml"), yaml.stringify({ verbose: true }));
 
         const config = await loadConfig();
 

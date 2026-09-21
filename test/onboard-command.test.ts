@@ -6,14 +6,14 @@
  * - Subcommands: reset, mark-done, status, gaps, sample, read, prompt, guided
  * - Error handling paths
  */
-import { describe, test, expect } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import yaml from "yaml";
 import { onboardCommand } from "../src/commands/onboard.js";
-import { withTempCassHome, makeCassStub } from "./helpers/temp.js";
+import { loadOnboardState, markSessionProcessed } from "../src/onboard-state.js";
+import { createTestBullet, createTestPlaybook } from "./helpers/factories.js";
 import { withTempGitRepo } from "./helpers/git.js";
-import { createTestPlaybook, createTestBullet } from "./helpers/factories.js";
-import { markSessionProcessed, loadOnboardState } from "../src/onboard-state.js";
+import { makeCassStub, withTempCassHome } from "./helpers/temp.js";
 
 /**
  * Capture console output during async function execution.
@@ -340,10 +340,7 @@ describe("onboardCommand --status", () => {
         process.chdir(repoDir);
 
         // Create a playbook with some bullets
-        const bullets = [
-          createTestBullet({ id: "b-1" }),
-          createTestBullet({ id: "b-2" }),
-        ];
+        const bullets = [createTestBullet({ id: "b-1" }), createTestBullet({ id: "b-2" })];
         writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook(bullets)));
 
         const capture = captureConsole();
@@ -825,7 +822,7 @@ describe("onboardCommand recommendation paths", () => {
 
           // Create 5 bullets (state: "active" to count)
           const bullets = Array.from({ length: 5 }, (_, i) =>
-            createTestBullet({ id: `b-${i}`, state: "active" })
+            createTestBullet({ id: `b-${i}`, state: "active" }),
           );
           writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook(bullets)));
 
@@ -855,7 +852,7 @@ describe("onboardCommand recommendation paths", () => {
 
           // Create 25 active bullets
           const bullets = Array.from({ length: 25 }, (_, i) =>
-            createTestBullet({ id: `b-${i}`, state: "active" })
+            createTestBullet({ id: `b-${i}`, state: "active" }),
           );
           writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook(bullets)));
 
@@ -885,7 +882,7 @@ describe("onboardCommand recommendation paths", () => {
 
           // Create 55 active bullets
           const bullets = Array.from({ length: 55 }, (_, i) =>
-            createTestBullet({ id: `b-${i}`, state: "active" })
+            createTestBullet({ id: `b-${i}`, state: "active" }),
           );
           writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook(bullets)));
 
@@ -916,7 +913,7 @@ describe("onboardCommand --gaps text output", () => {
 
         // Create 15 bullets in "debugging" category (>10 = well-covered)
         const bullets = Array.from({ length: 15 }, (_, i) =>
-          createTestBullet({ id: `b-debug-${i}`, category: "debugging", state: "active" })
+          createTestBullet({ id: `b-debug-${i}`, category: "debugging", state: "active" }),
         );
         writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook(bullets)));
 

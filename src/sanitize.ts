@@ -1,4 +1,4 @@
-import { log, warn, jaccardSimilarity, hashContent, getCliName } from "./utils.js";
+import { getCliName, hashContent, jaccardSimilarity, log, warn } from "./utils.js";
 
 function buildPrefix(parts: string[]): string {
   return parts.join("");
@@ -24,47 +24,67 @@ const SLACK_TOKEN_PREFIX = buildPrefix(["x", "o", "x"]);
 
 export const SECRET_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
   // AWS
-  { pattern: new RegExp(`${AWS_ACCESS_KEY_PREFIX}[0-9A-Z]{16}`, "g"), replacement: "[AWS_ACCESS_KEY]" },
+  {
+    pattern: new RegExp(`${AWS_ACCESS_KEY_PREFIX}[0-9A-Z]{16}`, "g"),
+    replacement: "[AWS_ACCESS_KEY]",
+  },
   { pattern: /[A-Za-z0-9/+=]{40}(?=\s|$|"|')/g, replacement: "[AWS_SECRET_KEY]" },
 
   // Generic API keys/tokens
-  { pattern: /Bearer\s+[A-Za-z0-9\-\._~\+\/]{20,}=*/g, replacement: "[BEARER_TOKEN]" },
-  
+  { pattern: /Bearer\s+[A-Za-z0-9\-._~+/]{20,}=*/g, replacement: "[BEARER_TOKEN]" },
+
   // Use capturing groups to preserve JSON/YAML structure (keys, quotes, separators)
   // Matches: (key + separator + quote)(value)(quote)
-  { 
-    pattern: /(api[_-]?key["\s:=]+["']?)([A-Za-z0-9\-_]{20,})(["']?)/gi, 
-    replacement: "$1[API_KEY]$3" 
+  {
+    pattern: /(api[_-]?key["\s:=]+["']?)([A-Za-z0-9\-_]{20,})(["']?)/gi,
+    replacement: "$1[API_KEY]$3",
   },
-  { 
-    pattern: /(token["\s:=]+["']?)([A-Za-z0-9\-_]{20,})(["']?)/gi, 
-    replacement: "$1[TOKEN]$3" 
+  {
+    pattern: /(token["\s:=]+["']?)([A-Za-z0-9\-_]{20,})(["']?)/gi,
+    replacement: "$1[TOKEN]$3",
   },
 
   // Private keys (block replacement is safe as these are usually multiline strings or standalone)
-  { pattern: /-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----[\s\S]+?-----END (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----/g, replacement: "[PRIVATE_KEY]" },
+  {
+    pattern:
+      /-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----[\s\S]+?-----END (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----/g,
+    replacement: "[PRIVATE_KEY]",
+  },
 
   // Passwords in common formats (built dynamically to avoid static secret scanners)
   // Preserves surrounding syntax to avoid breaking JSON/Config files
   {
     pattern: new RegExp(
-      `(${["pa","ss","wo","rd"].join("")}["\\s:=]+["'])([^"']{8,})(["'])`,
-      "gi"
+      `(${["pa", "ss", "wo", "rd"].join("")}["\\s:=]+["'])([^"']{8,})(["'])`,
+      "gi",
     ),
-    replacement: '$1[CREDENTIAL_REDACTED]$3'
+    replacement: "$1[CREDENTIAL_REDACTED]$3",
   },
 
   // GitHub tokens
-  { pattern: new RegExp(`${GITHUB_CLASSIC_PAT_PREFIX}[A-Za-z0-9]{36}`, "g"), replacement: "[GITHUB_PAT]" },
-  { pattern: new RegExp(`${GITHUB_FINE_GRAINED_PAT_PREFIX}[A-Za-z0-9_]{22,}`, "g"), replacement: "[GITHUB_PAT]" },
+  {
+    pattern: new RegExp(`${GITHUB_CLASSIC_PAT_PREFIX}[A-Za-z0-9]{36}`, "g"),
+    replacement: "[GITHUB_PAT]",
+  },
+  {
+    pattern: new RegExp(`${GITHUB_FINE_GRAINED_PAT_PREFIX}[A-Za-z0-9_]{22,}`, "g"),
+    replacement: "[GITHUB_PAT]",
+  },
 
   // Slack tokens
-  { pattern: new RegExp(`${SLACK_TOKEN_PREFIX}[baprs]-[A-Za-z0-9-]+`, "g"), replacement: "[SLACK_TOKEN]" },
+  {
+    pattern: new RegExp(`${SLACK_TOKEN_PREFIX}[baprs]-[A-Za-z0-9-]+`, "g"),
+    replacement: "[SLACK_TOKEN]",
+  },
 
   // Database URLs with credentials
   // Matches protocol://user:pass@host
   // Supports standard URI characters in password
-  { pattern: /(postgres|mysql|mongodb|redis):\/\/([a-zA-Z0-9_]+):([a-zA-Z0-9_%\-.~!$&'()*+,;=]+)@/gi, replacement: "$1://[USER]:[PASS]@" }
+  {
+    pattern:
+      /(postgres|mysql|mongodb|redis):\/\/([a-zA-Z0-9_]+):([a-zA-Z0-9_%\-.~!$&'()*+,;=]+)@/gi,
+    replacement: "$1://[USER]:[PASS]@",
+  },
 ];
 
 export interface SanitizationConfig {
@@ -119,10 +139,7 @@ export function compileExtraPatterns(patterns: Array<string | RegExp> = []): Reg
   return compiled;
 }
 
-export function sanitize(
-  text: string,
-  config: SanitizationConfig = { enabled: true }
-): string {
+export function sanitize(text: string, config: SanitizationConfig = { enabled: true }): string {
   if (!config.enabled) return text;
 
   let sanitized = text;
@@ -132,7 +149,7 @@ export function sanitize(
     // Ensure global flag is set for replaceAll-like behavior
     // Optimization: Reuse existing RegExp if it already has 'g' flag
     const matcher = pattern.global ? pattern : new RegExp(pattern.source, pattern.flags + "g");
-    
+
     // We only count if auditing is enabled to avoid overhead
     if (config.auditLog) {
       const matches = [...sanitized.matchAll(matcher)];
@@ -141,7 +158,7 @@ export function sanitize(
         stats.push({ pattern: label ?? pattern.source, count });
       }
     }
-    
+
     sanitized = sanitized.replace(matcher, replacement);
   };
 
@@ -154,9 +171,7 @@ export function sanitize(
   if (config.extraPatterns) {
     const rawExtra = config.extraPatterns;
     const compiled =
-      Array.isArray(rawExtra) &&
-      rawExtra.length > 0 &&
-      rawExtra.every((p) => p instanceof RegExp)
+      Array.isArray(rawExtra) && rawExtra.length > 0 && rawExtra.every((p) => p instanceof RegExp)
         ? (rawExtra as RegExp[]).filter((pattern) => {
             if (isRegexPatternSafe(pattern.source)) return true;
             warn(`[sanitize] Skipped potentially unsafe regex pattern: ${pattern.source}`);
@@ -215,10 +230,7 @@ export function verifySanitization(text: string): {
  * @param blockedEntries - Array of blocked content strings to match against
  * @returns true if content matches any blocked entry
  */
-export function isSemanticallyBlocked(
-  content: string,
-  blockedEntries: string[]
-): boolean {
+export function isSemanticallyBlocked(content: string, blockedEntries: string[]): boolean {
   if (!content || blockedEntries.length === 0) return false;
 
   // Fast path: exact/near-exact matches (case/whitespace normalized).

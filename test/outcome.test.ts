@@ -7,18 +7,18 @@
  * - recordOutcome: Persistence with sanitization
  * - loadOutcomes: Loading with sanitization
  */
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
   detectSentiment,
-  scoreImplicitFeedback,
-  recordOutcome,
   loadOutcomes,
-  OutcomeInput,
+  type OutcomeInput,
+  recordOutcome,
+  scoreImplicitFeedback,
 } from "../src/outcome.js";
-import { withTempCassHome } from "./helpers/temp.js";
 import { createTestConfig } from "./helpers/factories.js";
+import { withTempCassHome } from "./helpers/temp.js";
 
 describe("detectSentiment", () => {
   describe("positive patterns", () => {
@@ -457,7 +457,9 @@ describe("recordOutcome", () => {
       process.chdir(env.home);
 
       try {
-        const config = createTestConfig({ playbookPath: path.join(env.cassMemoryDir, "playbook.yaml") });
+        const config = createTestConfig({
+          playbookPath: path.join(env.cassMemoryDir, "playbook.yaml"),
+        });
 
         const input: OutcomeInput = {
           sessionId: "test-session-123",
@@ -488,7 +490,9 @@ describe("recordOutcome", () => {
       process.chdir(env.home);
 
       try {
-        const config = createTestConfig({ playbookPath: path.join(env.cassMemoryDir, "playbook.yaml") });
+        const config = createTestConfig({
+          playbookPath: path.join(env.cassMemoryDir, "playbook.yaml"),
+        });
 
         const input: OutcomeInput = {
           sessionId: "test-session",
@@ -514,7 +518,9 @@ describe("recordOutcome", () => {
       process.chdir(env.home);
 
       try {
-        const config = createTestConfig({ playbookPath: path.join(env.cassMemoryDir, "playbook.yaml") });
+        const config = createTestConfig({
+          playbookPath: path.join(env.cassMemoryDir, "playbook.yaml"),
+        });
 
         const input: OutcomeInput = {
           sessionId: "test-session",
@@ -524,7 +530,10 @@ describe("recordOutcome", () => {
         const record = await recordOutcome(input, config);
 
         // Verify file was created
-        const exists = await fs.stat(record.path).then(() => true).catch(() => false);
+        const exists = await fs
+          .stat(record.path)
+          .then(() => true)
+          .catch(() => false);
         expect(exists).toBe(true);
       } finally {
         process.chdir(originalCwd);
@@ -538,7 +547,9 @@ describe("recordOutcome", () => {
       process.chdir(env.home);
 
       try {
-        const config = createTestConfig({ playbookPath: path.join(env.cassMemoryDir, "playbook.yaml") });
+        const config = createTestConfig({
+          playbookPath: path.join(env.cassMemoryDir, "playbook.yaml"),
+        });
 
         // Record two outcomes
         await recordOutcome({ sessionId: "session-1", outcome: "success" }, config);
@@ -547,8 +558,8 @@ describe("recordOutcome", () => {
         // Load and verify both exist
         const outcomes = await loadOutcomes(config);
         expect(outcomes.length).toBe(2);
-        expect(outcomes.map(o => o.sessionId)).toContain("session-1");
-        expect(outcomes.map(o => o.sessionId)).toContain("session-2");
+        expect(outcomes.map((o) => o.sessionId)).toContain("session-1");
+        expect(outcomes.map((o) => o.sessionId)).toContain("session-2");
       } finally {
         process.chdir(originalCwd);
       }
@@ -561,7 +572,9 @@ describe("recordOutcome", () => {
       process.chdir(env.home);
 
       try {
-        const config = createTestConfig({ playbookPath: path.join(env.cassMemoryDir, "playbook.yaml") });
+        const config = createTestConfig({
+          playbookPath: path.join(env.cassMemoryDir, "playbook.yaml"),
+        });
 
         const input: OutcomeInput = {
           sessionId: "test-session",
@@ -585,7 +598,9 @@ describe("loadOutcomes", () => {
       process.chdir(env.home);
 
       try {
-        const config = createTestConfig({ playbookPath: path.join(env.cassMemoryDir, "playbook.yaml") });
+        const config = createTestConfig({
+          playbookPath: path.join(env.cassMemoryDir, "playbook.yaml"),
+        });
 
         const outcomes = await loadOutcomes(config);
         expect(outcomes).toEqual([]);
@@ -601,7 +616,9 @@ describe("loadOutcomes", () => {
       process.chdir(env.home);
 
       try {
-        const config = createTestConfig({ playbookPath: path.join(env.cassMemoryDir, "playbook.yaml") });
+        const config = createTestConfig({
+          playbookPath: path.join(env.cassMemoryDir, "playbook.yaml"),
+        });
 
         // Record some outcomes first
         await recordOutcome({ sessionId: "s1", outcome: "success", task: "Task 1" }, config);
@@ -625,7 +642,9 @@ describe("loadOutcomes", () => {
       process.chdir(env.home);
 
       try {
-        const config = createTestConfig({ playbookPath: path.join(env.cassMemoryDir, "playbook.yaml") });
+        const config = createTestConfig({
+          playbookPath: path.join(env.cassMemoryDir, "playbook.yaml"),
+        });
 
         // Record 5 outcomes
         for (let i = 1; i <= 5; i++) {
@@ -649,7 +668,9 @@ describe("loadOutcomes", () => {
       process.chdir(env.home);
 
       try {
-        const config = createTestConfig({ playbookPath: path.join(env.cassMemoryDir, "playbook.yaml") });
+        const config = createTestConfig({
+          playbookPath: path.join(env.cassMemoryDir, "playbook.yaml"),
+        });
 
         // Record one valid outcome
         await recordOutcome({ sessionId: "valid", outcome: "success" }, config);
@@ -664,8 +685,8 @@ describe("loadOutcomes", () => {
         const outcomes = await loadOutcomes(config);
         // Should have 2 valid outcomes, malformed line ignored
         expect(outcomes.length).toBe(2);
-        expect(outcomes.map(o => o.sessionId)).toContain("valid");
-        expect(outcomes.map(o => o.sessionId)).toContain("valid2");
+        expect(outcomes.map((o) => o.sessionId)).toContain("valid");
+        expect(outcomes.map((o) => o.sessionId)).toContain("valid2");
       } finally {
         process.chdir(originalCwd);
       }
@@ -678,7 +699,9 @@ describe("loadOutcomes", () => {
       process.chdir(env.home);
 
       try {
-        const config = createTestConfig({ playbookPath: path.join(env.cassMemoryDir, "playbook.yaml") });
+        const config = createTestConfig({
+          playbookPath: path.join(env.cassMemoryDir, "playbook.yaml"),
+        });
 
         // Manually write outcome with unsanitized content
         const outcomesPath = path.join(env.cassMemoryDir, "outcomes.jsonl");
@@ -698,7 +721,9 @@ describe("loadOutcomes", () => {
         const outcomes = await loadOutcomes(config);
         expect(outcomes.length).toBe(1);
         // Notes should be sanitized on load
-        expect(outcomes[0].notes).not.toContain("sk-12345678901234567890123456789012345678901234567890");
+        expect(outcomes[0].notes).not.toContain(
+          "sk-12345678901234567890123456789012345678901234567890",
+        );
       } finally {
         process.chdir(originalCwd);
       }
@@ -711,14 +736,28 @@ describe("loadOutcomes", () => {
       process.chdir(env.home);
 
       try {
-        const config = createTestConfig({ playbookPath: path.join(env.cassMemoryDir, "playbook.yaml") });
+        const config = createTestConfig({
+          playbookPath: path.join(env.cassMemoryDir, "playbook.yaml"),
+        });
 
         // Manually write file with empty lines
         const outcomesPath = path.join(env.cassMemoryDir, "outcomes.jsonl");
         await fs.mkdir(path.dirname(outcomesPath), { recursive: true });
 
-        const outcome1 = JSON.stringify({ sessionId: "s1", outcome: "success", recordedAt: new Date().toISOString(), path: outcomesPath, rulesUsed: [] });
-        const outcome2 = JSON.stringify({ sessionId: "s2", outcome: "failure", recordedAt: new Date().toISOString(), path: outcomesPath, rulesUsed: [] });
+        const outcome1 = JSON.stringify({
+          sessionId: "s1",
+          outcome: "success",
+          recordedAt: new Date().toISOString(),
+          path: outcomesPath,
+          rulesUsed: [],
+        });
+        const outcome2 = JSON.stringify({
+          sessionId: "s2",
+          outcome: "failure",
+          recordedAt: new Date().toISOString(),
+          path: outcomesPath,
+          rulesUsed: [],
+        });
 
         await fs.writeFile(outcomesPath, `${outcome1}\n\n\n${outcome2}\n`);
 

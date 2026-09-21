@@ -9,11 +9,11 @@
  * - Auto-recording outcomes during reflection
  * - Inline feedback extraction during reflection
  */
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import {
-  extractRuleIdsFromTranscript,
   classifySessionOutcome,
   detectSentiment,
+  extractRuleIdsFromTranscript,
   scoreImplicitFeedback,
 } from "../src/outcome.js";
 import type { DiaryEntry } from "../src/types.js";
@@ -232,7 +232,10 @@ describe("classifySessionOutcome", () => {
   });
 
   it("falls back to keyLearnings when no accomplishments", () => {
-    const diary = makeDiary({ accomplishments: [], keyLearnings: ["TypeScript generics are tricky"] });
+    const diary = makeDiary({
+      accomplishments: [],
+      keyLearnings: ["TypeScript generics are tricky"],
+    });
     const result = classifySessionOutcome("done", diary, ["b-abc123"]);
     expect(result!.task).toBe("TypeScript generics are tricky");
   });

@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { writeFile } from "node:fs/promises";
-import { getModel, type LLMProvider } from "../src/llm.js";
 import { loadConfig } from "../src/config.js";
+import { getModel, type LLMProvider } from "../src/llm.js";
 import { ConfigSchema } from "../src/types.js";
 import { createTestConfig } from "./helpers/factories.js";
 import { withTempCassHome } from "./helpers/temp.js";
@@ -106,7 +106,7 @@ describe("loadConfig baseUrl", () => {
           provider: "openai",
           model: "gpt-4o-mini",
           baseUrl: "https://openrouter.ai/api/v1",
-        })
+        }),
       );
 
       const config = await loadConfig();
@@ -116,10 +116,7 @@ describe("loadConfig baseUrl", () => {
 
   it("uses OPENAI_BASE_URL env var as fallback when config has no baseUrl", async () => {
     await withTempCassHome(async (env) => {
-      await writeFile(
-        env.configPath,
-        JSON.stringify({ provider: "openai", model: "gpt-4o-mini" })
-      );
+      await writeFile(env.configPath, JSON.stringify({ provider: "openai", model: "gpt-4o-mini" }));
 
       process.env.OPENAI_BASE_URL = "https://openrouter.ai/api/v1";
 
@@ -132,7 +129,7 @@ describe("loadConfig baseUrl", () => {
     await withTempCassHome(async (env) => {
       await writeFile(
         env.configPath,
-        JSON.stringify({ provider: "anthropic", model: "claude-sonnet-4-20250514" })
+        JSON.stringify({ provider: "anthropic", model: "claude-sonnet-4-20250514" }),
       );
 
       process.env.ANTHROPIC_BASE_URL = "https://custom-anthropic.example.com/v1";
@@ -146,7 +143,7 @@ describe("loadConfig baseUrl", () => {
     await withTempCassHome(async (env) => {
       await writeFile(
         env.configPath,
-        JSON.stringify({ provider: "google", model: "gemini-1.5-flash" })
+        JSON.stringify({ provider: "google", model: "gemini-1.5-flash" }),
       );
 
       process.env.GOOGLE_BASE_URL = "https://custom-google.example.com/v1";
@@ -164,7 +161,7 @@ describe("loadConfig baseUrl", () => {
           provider: "openai",
           model: "gpt-4o-mini",
           baseUrl: "https://from-config.example.com/v1",
-        })
+        }),
       );
 
       process.env.OPENAI_BASE_URL = "https://from-env.example.com/v1";
@@ -176,10 +173,7 @@ describe("loadConfig baseUrl", () => {
 
   it("default behavior unchanged when neither config nor env var set", async () => {
     await withTempCassHome(async (env) => {
-      await writeFile(
-        env.configPath,
-        JSON.stringify({ provider: "openai", model: "gpt-4o-mini" })
-      );
+      await writeFile(env.configPath, JSON.stringify({ provider: "openai", model: "gpt-4o-mini" }));
 
       const config = await loadConfig();
       expect(config.baseUrl).toBeUndefined();
@@ -194,7 +188,7 @@ describe("loadConfig baseUrl", () => {
           provider: "openai",
           model: "gpt-4o-mini",
           baseUrl: "https://from-config.example.com/v1",
-        })
+        }),
       );
 
       process.env.OPENAI_BASE_URL = "https://from-env.example.com/v1";
@@ -314,7 +308,7 @@ describe("OpenRouter-style configuration", () => {
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.baseUrl).toBe(
-        "https://my-resource.openai.azure.com/openai/deployments/gpt-4o"
+        "https://my-resource.openai.azure.com/openai/deployments/gpt-4o",
       );
     }
   });

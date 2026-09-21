@@ -26,4 +26,3 @@ describe("truncateForContext", () => {
     expect(result.length).toBeLessThanOrEqual(80);
   });
 });
-

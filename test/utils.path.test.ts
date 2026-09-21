@@ -1,14 +1,14 @@
-import { describe, test, expect } from "bun:test";
+import { describe, expect, test } from "bun:test";
+import os from "node:os";
+import path from "node:path";
 import {
+  expandPath,
+  isAbsolutePath,
+  joinPath,
   normalizePlatformPath,
   toForwardSlashes,
   toNativeSeparators,
-  isAbsolutePath,
-  joinPath,
-  expandPath,
 } from "../src/utils.js";
-import path from "node:path";
-import os from "node:os";
 
 describe("Path Utilities", () => {
   describe("expandPath", () => {
@@ -123,9 +123,7 @@ describe("Path Utilities", () => {
     });
 
     test("converts backslashes to forward slashes", () => {
-      expect(toForwardSlashes("C:\\Users\\name\\file")).toBe(
-        "C:/Users/name/file"
-      );
+      expect(toForwardSlashes("C:\\Users\\name\\file")).toBe("C:/Users/name/file");
     });
 
     test("leaves forward slashes unchanged", () => {
@@ -133,9 +131,7 @@ describe("Path Utilities", () => {
     });
 
     test("handles mixed separators", () => {
-      expect(toForwardSlashes("path\\to/mixed\\file")).toBe(
-        "path/to/mixed/file"
-      );
+      expect(toForwardSlashes("path\\to/mixed\\file")).toBe("path/to/mixed/file");
     });
   });
 

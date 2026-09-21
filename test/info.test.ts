@@ -1,8 +1,8 @@
 /**
  * Tests for the info command (cm --info).
  */
-import { describe, it, expect } from "bun:test";
-import { gatherInfo, infoCommand, InfoResult } from "../src/info.js";
+import { describe, expect, it } from "bun:test";
+import { gatherInfo, InfoResult, infoCommand } from "../src/info.js";
 
 function captureConsole() {
   const logs: string[] = [];
@@ -13,7 +13,9 @@ function captureConsole() {
   return {
     logs,
     output: () => logs.join("\n"),
-    restore: () => { console.log = originalLog; }
+    restore: () => {
+      console.log = originalLog;
+    },
   };
 }
 

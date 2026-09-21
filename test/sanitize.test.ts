@@ -1,5 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { sanitize, compileExtraPatterns, SECRET_PATTERNS, isSemanticallyBlocked, verifySanitization } from "../src/sanitize.js";
+import {
+  compileExtraPatterns,
+  isSemanticallyBlocked,
+  SECRET_PATTERNS,
+  sanitize,
+  verifySanitization,
+} from "../src/sanitize.js";
 
 // =============================================================================
 // SECRET_PATTERNS
@@ -254,15 +260,15 @@ b3BlbnNzaC1rZXktdjEAAAAA
   describe("extra patterns", () => {
     it("applies extra patterns when provided", () => {
       const text = "Custom secret: ABC-123-XYZ";
-    const config = {
-      enabled: true,
-      extraPatterns: [/ABC-\d+-XYZ/g],
-    };
-    const result = sanitize(text, config);
-    // Extra patterns use the generic [REDACTED] placeholder
-    expect(result).toContain("[REDACTED]");
-    expect(result).not.toContain("ABC-123-XYZ");
-  });
+      const config = {
+        enabled: true,
+        extraPatterns: [/ABC-\d+-XYZ/g],
+      };
+      const result = sanitize(text, config);
+      // Extra patterns use the generic [REDACTED] placeholder
+      expect(result).toContain("[REDACTED]");
+      expect(result).not.toContain("ABC-123-XYZ");
+    });
 
     it("handles multiple extra patterns", () => {
       const text = "First: SECRET1 Second: SECRET2";
@@ -411,8 +417,8 @@ describe("compileExtraPatterns", () => {
 
   it("skips pre-compiled RegExp objects with ReDoS patterns", () => {
     // Even pre-compiled RegExp objects should be validated
-    const dangerous = new RegExp("(.+)+");
-    const safe = new RegExp("safe-pattern");
+    const dangerous = /(.+)+/;
+    const safe = /safe-pattern/;
     const result = compileExtraPatterns([dangerous, safe]);
     expect(result).toHaveLength(1);
     expect(result[0].source).toBe("safe-pattern");
@@ -420,15 +426,15 @@ describe("compileExtraPatterns", () => {
 
   it("skips pre-compiled RegExp with excessively long source", () => {
     const longPattern = new RegExp("a".repeat(300));
-    const short = new RegExp("short");
+    const short = /short/;
     const result = compileExtraPatterns([longPattern, short]);
     expect(result).toHaveLength(1);
     expect(result[0].source).toBe("short");
   });
 
   it("allows pre-compiled RegExp objects with safe patterns", () => {
-    const safe1 = new RegExp("pattern1", "gi");
-    const safe2 = new RegExp("pattern2", "i");
+    const safe1 = /pattern1/gi;
+    const safe2 = /pattern2/i;
     const result = compileExtraPatterns([safe1, safe2]);
     expect(result).toHaveLength(2);
   });
@@ -440,7 +446,9 @@ describe("compileExtraPatterns", () => {
 describe("isSemanticallyBlocked", () => {
   it("matches exact content (case/whitespace normalized)", () => {
     const blocked = ["Always validate user input before processing"];
-    expect(isSemanticallyBlocked("always   validate user input before processing", blocked)).toBe(true);
+    expect(isSemanticallyBlocked("always   validate user input before processing", blocked)).toBe(
+      true,
+    );
   });
 
   it("returns false for unrelated content", () => {
@@ -462,13 +470,13 @@ describe("verifySanitization", () => {
   it("detects potential key patterns", () => {
     const result = verifySanitization("api_key=ABCDEFGHIJ1234567890ABCD");
     expect(result.containsPotentialSecrets).toBe(true);
-    expect(result.warnings.some(w => w.includes("Potential Key"))).toBe(true);
+    expect(result.warnings.some((w) => w.includes("Potential Key"))).toBe(true);
   });
 
   it("detects potential token patterns", () => {
     const result = verifySanitization("auth_token=ABCDEFGHIJ1234567890ABCD");
     expect(result.containsPotentialSecrets).toBe(true);
-    expect(result.warnings.some(w => w.includes("Potential Token"))).toBe(true);
+    expect(result.warnings.some((w) => w.includes("Potential Token"))).toBe(true);
   });
 
   it("detects long base64 strings", () => {
@@ -476,7 +484,7 @@ describe("verifySanitization", () => {
     const longBase64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz12345678==";
     const result = verifySanitization(`data: ${longBase64}`);
     expect(result.containsPotentialSecrets).toBe(true);
-    expect(result.warnings.some(w => w.includes("Long Base64"))).toBe(true);
+    expect(result.warnings.some((w) => w.includes("Long Base64"))).toBe(true);
   });
 
   it("can detect multiple issues in one text", () => {

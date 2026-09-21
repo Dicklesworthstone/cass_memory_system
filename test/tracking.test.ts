@@ -1,10 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { join, resolve } from "node:path";
-import { writeFile, readFile, mkdir, stat } from "node:fs/promises";
-import { ProcessedLog, getProcessedLogPath } from "../src/tracking.js";
-import { withTempDir } from "./helpers/index.js";
 import crypto from "node:crypto";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
+import { join, resolve } from "node:path";
+import { getProcessedLogPath, ProcessedLog } from "../src/tracking.js";
+import { withTempDir } from "./helpers/index.js";
 
 // =============================================================================
 // getProcessedLogPath
@@ -33,7 +33,6 @@ describe("getProcessedLogPath", () => {
     const expected = join(home, ".cass-memory", "reflections", `ws-${hash}.processed.log`);
     expect(getProcessedLogPath(workspace)).toBe(expected);
   });
-
 });
 
 // =============================================================================
@@ -67,8 +66,16 @@ describe("ProcessedLog - Load", () => {
       // Using JSONL format
       const content = [
         "# JSONL header",
-        JSON.stringify({ sessionPath: "/path/to/session1.jsonl", processedAt: "2024-01-01T00:00:00Z", deltasGenerated: 5 }),
-        JSON.stringify({ sessionPath: "/path/to/session2.jsonl", processedAt: "2024-01-02T00:00:00Z", deltasGenerated: 3 }),
+        JSON.stringify({
+          sessionPath: "/path/to/session1.jsonl",
+          processedAt: "2024-01-01T00:00:00Z",
+          deltasGenerated: 5,
+        }),
+        JSON.stringify({
+          sessionPath: "/path/to/session2.jsonl",
+          processedAt: "2024-01-02T00:00:00Z",
+          deltasGenerated: 3,
+        }),
       ].join("\n");
       await writeFile(logPath, content);
 
@@ -171,10 +178,9 @@ describe("ProcessedLog - Load", () => {
   it("handles missing deltas count", async () => {
     await withTempDir("tracking-no-deltas", async (tempDir) => {
       const logPath = join(tempDir, "processed.tsv");
-      const content = [
-        "# header",
-        JSON.stringify({ sessionPath: "/path/session.jsonl" }),
-      ].join("\n");
+      const content = ["# header", JSON.stringify({ sessionPath: "/path/session.jsonl" })].join(
+        "\n",
+      );
       await writeFile(logPath, content);
 
       const log = new ProcessedLog(logPath);
@@ -262,7 +268,7 @@ describe("ProcessedLog - Save", () => {
 
       const content = await readFile(logPath, "utf-8");
       const lines = content.split("\n");
-      const dataLine = lines.find(l => !l.startsWith("#") && l.includes("/path/session.jsonl"));
+      const dataLine = lines.find((l) => !l.startsWith("#") && l.includes("/path/session.jsonl"));
       const parsed = JSON.parse(dataLine || "{}");
       // Should be undefined or not present
       expect(parsed.diaryId).toBeUndefined();
@@ -285,7 +291,7 @@ describe("ProcessedLog - Save", () => {
       // No .tmp file should remain
       const { readdir } = await import("node:fs/promises");
       const files = await readdir(tempDir);
-      const tmpFiles = files.filter(f => f.endsWith(".tmp"));
+      const tmpFiles = files.filter((f) => f.endsWith(".tmp"));
       expect(tmpFiles.length).toBe(0);
     });
   });
@@ -613,7 +619,10 @@ describe("ProcessedLog - Edge Cases", () => {
       const content = [
         "# header",
         JSON.stringify({ sessionPath: "", processedAt: "2024-01-01T00:00:00Z" }),
-        JSON.stringify({ sessionPath: "/valid/session.jsonl", processedAt: "2024-01-02T00:00:00Z" }),
+        JSON.stringify({
+          sessionPath: "/valid/session.jsonl",
+          processedAt: "2024-01-02T00:00:00Z",
+        }),
       ].join("\n");
       await writeFile(logPath, content);
 

@@ -5,12 +5,12 @@
  * that block dangerous commands matching registered trauma patterns.
  * Uses isolated temp directories to avoid affecting the real system.
  */
-import { describe, it, expect } from "bun:test";
-import { stat, readFile, mkdir, writeFile } from "node:fs/promises";
+import { describe, expect, it } from "bun:test";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { guardCommand, installGuard } from "../src/commands/guard.js";
-import { withTempDir } from "./helpers/temp.js";
 import { createE2ELogger } from "./helpers/e2e-logger.js";
+import { withTempDir } from "./helpers/temp.js";
 
 // Helper to check if a file exists
 async function exists(filePath: string): Promise<boolean> {
@@ -42,7 +42,7 @@ function captureConsole() {
     restore: () => {
       console.log = originalLog;
       console.error = originalError;
-    }
+    },
   };
 }
 
@@ -292,7 +292,7 @@ describe("E2E: CLI guard command", () => {
             log.snapshot("output", { logs: capture.logs, errors: capture.errors });
 
             // Should output valid JSON
-            const jsonOutput = capture.logs.find(l => l.startsWith("{"));
+            const jsonOutput = capture.logs.find((l) => l.startsWith("{"));
             expect(jsonOutput).toBeDefined();
 
             const parsed = JSON.parse(jsonOutput!);
@@ -363,8 +363,8 @@ describe("E2E: CLI guard command", () => {
               theme: "dark",
               someOtherSetting: true,
               hooks: {
-                PostToolUse: [{ matcher: "Write", hooks: [] }]
-              }
+                PostToolUse: [{ matcher: "Write", hooks: [] }],
+              },
             };
             await writeFile(settingsPath, JSON.stringify(existingSettings, null, 2), "utf-8");
             log.step("Created existing settings.json with custom content");
@@ -652,7 +652,7 @@ describe("E2E: CLI guard command", () => {
             log.snapshot("output", { logs: capture.logs, errors: capture.errors, result });
 
             // Should output valid JSON
-            const jsonOutput = capture.logs.find(l => l.startsWith("{"));
+            const jsonOutput = capture.logs.find((l) => l.startsWith("{"));
             expect(jsonOutput).toBeDefined();
 
             const parsed = JSON.parse(jsonOutput!);
@@ -869,7 +869,7 @@ npm test
             log.snapshot("output", { logs: capture.logs, errors: capture.errors });
 
             // Should output valid JSON
-            const jsonOutput = capture.logs.find(l => l.startsWith("{"));
+            const jsonOutput = capture.logs.find((l) => l.startsWith("{"));
             expect(jsonOutput).toBeDefined();
 
             const parsed = JSON.parse(jsonOutput!);
@@ -906,7 +906,7 @@ npm test
             log.snapshot("output", { logs: capture.logs, errors: capture.errors });
 
             // Should output valid JSON
-            const jsonOutput = capture.logs.find(l => l.startsWith("{"));
+            const jsonOutput = capture.logs.find((l) => l.startsWith("{"));
             expect(jsonOutput).toBeDefined();
 
             const parsed = JSON.parse(jsonOutput!);

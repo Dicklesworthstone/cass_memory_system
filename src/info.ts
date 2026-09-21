@@ -2,19 +2,20 @@
  * System info gathering for `cm --info` command.
  * Shows version, configuration paths, environment, and dependencies.
  */
-import path from "node:path";
+
 import { spawnSync } from "node:child_process";
+import path from "node:path";
 import chalk from "chalk";
+import { getActiveBullets, loadPlaybook } from "./playbook.js";
 import {
-  getVersion,
-  resolveGlobalDir,
-  resolveGlobalConfigFile,
-  resolveRepoDir,
   fileExists,
   getCliName,
+  getVersion,
   printJsonResult,
+  resolveGlobalConfigFile,
+  resolveGlobalDir,
+  resolveRepoDir,
 } from "./utils.js";
-import { loadPlaybook, getActiveBullets } from "./playbook.js";
 
 export interface InfoResult {
   version: string;
@@ -106,10 +107,7 @@ export async function gatherInfo(): Promise<InfoResult> {
   const globalPlaybookPath = path.join(globalDir, "playbook.yaml");
   const workspacePlaybookPath = repoDir ? path.join(repoDir, "playbook.yaml") : null;
 
-  const [
-    globalPlaybookExists,
-    workspacePlaybookExists,
-  ] = await Promise.all([
+  const [globalPlaybookExists, workspacePlaybookExists] = await Promise.all([
     fileExists(globalPlaybookPath),
     workspacePlaybookPath ? fileExists(workspacePlaybookPath) : Promise.resolve(false),
   ]);
@@ -139,13 +137,12 @@ export async function gatherInfo(): Promise<InfoResult> {
       workspacePlaybook: {
         path: workspacePlaybookPath,
         exists: workspacePlaybookExists,
-        ruleCount: workspacePlaybookExists && workspaceRuleCount !== null ? workspaceRuleCount : undefined,
+        ruleCount:
+          workspacePlaybookExists && workspaceRuleCount !== null ? workspaceRuleCount : undefined,
       },
     },
     environment: {
-      OPENAI_API_KEY: openaiKey
-        ? { set: true, masked: maskApiKey(openaiKey) }
-        : { set: false },
+      OPENAI_API_KEY: openaiKey ? { set: true, masked: maskApiKey(openaiKey) } : { set: false },
       ANTHROPIC_API_KEY: anthropicKey
         ? { set: true, masked: maskApiKey(anthropicKey) }
         : { set: false },
@@ -181,7 +178,9 @@ function formatInfoHuman(info: InfoResult): string {
     return home && p.startsWith(home) ? "~" + p.slice(home.length) : p;
   };
 
-  lines.push(`  Global config:    ${fmtPath(config.globalConfig.path)} ${config.globalConfig.exists ? chalk.green("(exists)") : chalk.yellow("(not found)")}`);
+  lines.push(
+    `  Global config:    ${fmtPath(config.globalConfig.path)} ${config.globalConfig.exists ? chalk.green("(exists)") : chalk.yellow("(not found)")}`,
+  );
 
   const globalPbStatus = config.globalPlaybook.exists
     ? typeof config.globalPlaybook.ruleCount === "number"
@@ -207,9 +206,15 @@ function formatInfoHuman(info: InfoResult): string {
   lines.push(chalk.bold("Environment:"));
 
   const { environment: env } = info;
-  lines.push(`  OPENAI_API_KEY:      ${env.OPENAI_API_KEY.set ? chalk.green(`set (${env.OPENAI_API_KEY.masked})`) : chalk.yellow("not set")}`);
-  lines.push(`  ANTHROPIC_API_KEY:   ${env.ANTHROPIC_API_KEY.set ? chalk.green(`set (${env.ANTHROPIC_API_KEY.masked})`) : chalk.yellow("not set")}`);
-  lines.push(`  CASS_HOME:           ${env.CASS_HOME.set ? chalk.green(env.CASS_HOME.value) : chalk.dim("not set (using default)")}`);
+  lines.push(
+    `  OPENAI_API_KEY:      ${env.OPENAI_API_KEY.set ? chalk.green(`set (${env.OPENAI_API_KEY.masked})`) : chalk.yellow("not set")}`,
+  );
+  lines.push(
+    `  ANTHROPIC_API_KEY:   ${env.ANTHROPIC_API_KEY.set ? chalk.green(`set (${env.ANTHROPIC_API_KEY.masked})`) : chalk.yellow("not set")}`,
+  );
+  lines.push(
+    `  CASS_HOME:           ${env.CASS_HOME.set ? chalk.green(env.CASS_HOME.value) : chalk.dim("not set (using default)")}`,
+  );
 
   if (env.CASS_MEMORY_VERBOSE.set || env.CASS_MEMORY_NO_EMOJI.set) {
     const flags: string[] = [];

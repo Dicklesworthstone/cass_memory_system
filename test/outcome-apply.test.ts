@@ -2,9 +2,9 @@ import { describe, expect, test } from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { applyOutcomeFeedback, OutcomeRecord } from "../src/outcome.js";
-import { createTestBullet, createTestConfig } from "./helpers/factories.js";
+import { applyOutcomeFeedback, type OutcomeRecord } from "../src/outcome.js";
 import { savePlaybook } from "../src/playbook.js";
+import { createTestBullet, createTestConfig } from "./helpers/factories.js";
 
 async function withTempPlaybook(run: (playbookPath: string) => Promise<void>) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cass-outcome-"));
@@ -20,8 +20,19 @@ describe("applyOutcomeFeedback", () => {
     await withTempPlaybook(async (playbookPath) => {
       const bullet = createTestBullet({ id: "b-1" });
       await savePlaybook(
-        { schema_version: 2, name: "pb", description: "", metadata: { createdAt: new Date().toISOString(), totalReflections: 0, totalSessionsProcessed: 0 }, deprecatedPatterns: [], bullets: [bullet] },
-        playbookPath
+        {
+          schema_version: 2,
+          name: "pb",
+          description: "",
+          metadata: {
+            createdAt: new Date().toISOString(),
+            totalReflections: 0,
+            totalSessionsProcessed: 0,
+          },
+          deprecatedPatterns: [],
+          bullets: [bullet],
+        },
+        playbookPath,
       );
 
       const outcome: OutcomeRecord = {
@@ -29,7 +40,7 @@ describe("applyOutcomeFeedback", () => {
         outcome: "success",
         rulesUsed: ["b-1"],
         recordedAt: new Date().toISOString(),
-        path: playbookPath
+        path: playbookPath,
       };
 
       const result = await applyOutcomeFeedback(outcome, createTestConfig({ playbookPath }));
@@ -43,8 +54,19 @@ describe("applyOutcomeFeedback", () => {
     await withTempPlaybook(async (playbookPath) => {
       const bullet = createTestBullet({ id: "b-idem" });
       await savePlaybook(
-        { schema_version: 2, name: "pb", description: "", metadata: { createdAt: new Date().toISOString(), totalReflections: 0, totalSessionsProcessed: 0 }, deprecatedPatterns: [], bullets: [bullet] },
-        playbookPath
+        {
+          schema_version: 2,
+          name: "pb",
+          description: "",
+          metadata: {
+            createdAt: new Date().toISOString(),
+            totalReflections: 0,
+            totalSessionsProcessed: 0,
+          },
+          deprecatedPatterns: [],
+          bullets: [bullet],
+        },
+        playbookPath,
       );
 
       const recordedAt = new Date().toISOString();
@@ -53,7 +75,7 @@ describe("applyOutcomeFeedback", () => {
         outcome: "success",
         rulesUsed: ["b-idem"],
         recordedAt,
-        path: playbookPath
+        path: playbookPath,
       };
 
       const cfg = createTestConfig({ playbookPath });
@@ -69,8 +91,19 @@ describe("applyOutcomeFeedback", () => {
     await withTempPlaybook(async (playbookPath) => {
       const bullet = createTestBullet({ id: "b-ctx" });
       await savePlaybook(
-        { schema_version: 2, name: "pb", description: "", metadata: { createdAt: new Date().toISOString(), totalReflections: 0, totalSessionsProcessed: 0 }, deprecatedPatterns: [], bullets: [bullet] },
-        playbookPath
+        {
+          schema_version: 2,
+          name: "pb",
+          description: "",
+          metadata: {
+            createdAt: new Date().toISOString(),
+            totalReflections: 0,
+            totalSessionsProcessed: 0,
+          },
+          deprecatedPatterns: [],
+          bullets: [bullet],
+        },
+        playbookPath,
       );
 
       // Write context log to repo-local .cass to be discovered by applyOutcomeFeedback
@@ -100,8 +133,8 @@ describe("applyOutcomeFeedback", () => {
           antiPatternIds: [],
           session: "/tmp/session-context",
           timestamp: new Date().toISOString(),
-          source: "test"
-        }) + "\n"
+          source: "test",
+        }) + "\n",
       );
 
       const outcome: OutcomeRecord = {
@@ -109,7 +142,7 @@ describe("applyOutcomeFeedback", () => {
         outcome: "success",
         rulesUsed: [],
         recordedAt: new Date().toISOString(),
-        path: playbookPath
+        path: playbookPath,
       };
 
       const cfg = createTestConfig({ playbookPath });

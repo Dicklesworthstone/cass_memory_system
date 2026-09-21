@@ -4,13 +4,20 @@
  * Identifies rules that haven't received helpful/harmful feedback in N days.
  * Useful for cleanup sessions and finding outdated practices.
  */
-import { loadConfig } from "../config.js";
-import { loadMergedPlaybook, getActiveBullets } from "../playbook.js";
-import { getEffectiveScore } from "../scoring.js";
-import { getCliName, printJsonResult, reportError, validateOneOf, validatePositiveInt } from "../utils.js";
-import { ErrorCode, PlaybookBullet } from "../types.js";
+
 import chalk from "chalk";
+import { loadConfig } from "../config.js";
 import { formatRule, formatTipPrefix, getOutputStyle, wrapText } from "../output.js";
+import { getActiveBullets, loadMergedPlaybook } from "../playbook.js";
+import { getEffectiveScore } from "../scoring.js";
+import { ErrorCode, type PlaybookBullet } from "../types.js";
+import {
+  getCliName,
+  printJsonResult,
+  reportError,
+  validateOneOf,
+  validatePositiveInt,
+} from "../utils.js";
 
 export interface StaleFlags {
   days?: number;
@@ -59,20 +66,20 @@ function calculateStaleness(bullet: PlaybookBullet): {
     return {
       days: daysSince(bullet.createdAt),
       lastAction: null,
-      lastTimestamp: null
+      lastTimestamp: null,
     };
   }
 
   // Find most recent feedback event
-  const sorted = [...events].sort((a, b) =>
-    new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+  const sorted = [...events].sort(
+    (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
   );
   const latest = sorted[0];
 
   return {
     days: daysSince(latest.timestamp),
     lastAction: latest.type,
-    lastTimestamp: latest.timestamp
+    lastTimestamp: latest.timestamp,
   };
 }
 
@@ -84,7 +91,7 @@ function getRecommendation(
   daysSinceLastFeedback: number,
   score: number,
   maturity: string,
-  cli: string
+  cli: string,
 ): string {
   if (score < -2) {
     return `Consider: ${cli} forget ${bulletId} --reason "<why>" (negative score suggests harm)`;
@@ -101,9 +108,7 @@ function getRecommendation(
   return `Review for current relevance (${cli} playbook get ${bulletId})`;
 }
 
-export async function staleCommand(
-  flags: StaleFlags = {}
-): Promise<void> {
+export async function staleCommand(flags: StaleFlags = {}): Promise<void> {
   const startedAtMs = Date.now();
   const command = "stale";
   const cli = getCliName();
@@ -150,7 +155,7 @@ export async function staleCommand(
 
   // Apply scope filter
   if (normalizedFlags.scope && normalizedFlags.scope !== "all") {
-    bullets = bullets.filter(b => b.scope === normalizedFlags.scope);
+    bullets = bullets.filter((b) => b.scope === normalizedFlags.scope);
   }
 
   // Calculate staleness for each bullet
@@ -171,9 +176,15 @@ export async function staleCommand(
         maturity: bullet.maturity || "candidate",
         lastFeedback: {
           action: staleness.lastAction,
-          timestamp: staleness.lastTimestamp
+          timestamp: staleness.lastTimestamp,
         },
-        recommendation: getRecommendation(bullet.id, staleness.days, score, bullet.maturity || "candidate", cli)
+        recommendation: getRecommendation(
+          bullet.id,
+          staleness.days,
+          score,
+          bullet.maturity || "candidate",
+          cli,
+        ),
       });
     }
   }
@@ -182,15 +193,19 @@ export async function staleCommand(
   staleBullets.sort((a, b) => b.daysSinceLastFeedback - a.daysSinceLastFeedback);
 
   if (flags.json) {
-    printJsonResult(command, {
-      threshold,
-      count: staleBullets.length,
-      totalActive: bullets.length,
-      filters: {
-        scope: normalizedFlags.scope || "all"
+    printJsonResult(
+      command,
+      {
+        threshold,
+        count: staleBullets.length,
+        totalActive: bullets.length,
+        filters: {
+          scope: normalizedFlags.scope || "all",
+        },
+        bullets: staleBullets,
       },
-      bullets: staleBullets
-    }, { startedAtMs });
+      { startedAtMs },
+    );
     return;
   }
 
@@ -203,7 +218,7 @@ function printStaleBullets(
   threshold: number,
   totalActive: number,
   flags: StaleFlags,
-  cli: string
+  cli: string,
 ): void {
   const style = getOutputStyle();
   const maxWidth = Math.min(style.width, 84);
@@ -216,13 +231,19 @@ function printStaleBullets(
 
   console.log(chalk.bold("STALE"));
   console.log(divider);
-  console.log(chalk.dim(`Threshold: ${threshold}+ days • Found: ${bullets.length}/${totalActive}${filterStr}`));
+  console.log(
+    chalk.dim(
+      `Threshold: ${threshold}+ days • Found: ${bullets.length}/${totalActive}${filterStr}`,
+    ),
+  );
   console.log("");
 
   if (bullets.length === 0) {
     console.log(chalk.green("No stale bullets found."));
     console.log(chalk.gray(`All ${totalActive} active bullets have recent feedback.`));
-    console.log(chalk.gray(`${formatTipPrefix()}Try '${cli} stale --days 0' to review everything.`));
+    console.log(
+      chalk.gray(`${formatTipPrefix()}Try '${cli} stale --days 0' to review everything.`),
+    );
     return;
   }
 
@@ -233,8 +254,8 @@ function printStaleBullets(
 
     console.log(
       `${daysLabel} ${chalk.bold(`[${b.id}]`)}${chalk.dim(
-        ` ${b.category}/${b.scope} • ${b.maturity} • score ${scoreLabel}`
-      )}`
+        ` ${b.category}/${b.scope} • ${b.maturity} • score ${scoreLabel}`,
+      )}`,
     );
 
     for (const line of wrapText(b.content.trim().replace(/\s+/g, " "), wrapWidth)) {
@@ -244,7 +265,9 @@ function printStaleBullets(
     if (b.lastFeedback.timestamp) {
       const action =
         b.lastFeedback.action === "helpful" ? chalk.green("helpful") : chalk.red("harmful");
-      console.log(chalk.dim(`  Last feedback: ${b.lastFeedback.timestamp.slice(0, 10)} (${action})`));
+      console.log(
+        chalk.dim(`  Last feedback: ${b.lastFeedback.timestamp.slice(0, 10)} (${action})`),
+      );
     } else {
       console.log(chalk.dim("  Last feedback: (none yet)"));
     }
@@ -257,25 +280,36 @@ function printStaleBullets(
 
   const veryStale = bullets.filter((b) => b.daysSinceLastFeedback > 180);
   const negative = bullets.filter((b) => b.score < 0);
-  const candidates = bullets.filter((b) => b.maturity === "candidate" && b.daysSinceLastFeedback > 90);
+  const candidates = bullets.filter(
+    (b) => b.maturity === "candidate" && b.daysSinceLastFeedback > 90,
+  );
 
   console.log(chalk.bold("Next actions"));
   console.log(divider);
   if (negative.length > 0) {
-    const ids = negative.slice(0, 5).map((b) => b.id).join(", ");
+    const ids = negative
+      .slice(0, 5)
+      .map((b) => b.id)
+      .join(", ");
     const suffix = negative.length > 5 ? ` (+${negative.length - 5} more)` : "";
     console.log(
       chalk.red(
-        `- ${negative.length} with negative scores → review/forget (${cli} forget <id> --reason \"...\")`
-      )
+        `- ${negative.length} with negative scores → review/forget (${cli} forget <id> --reason "...")`,
+      ),
     );
     console.log(chalk.dim(`  IDs: ${ids}${suffix}`));
   }
   if (veryStale.length > 0) {
-    console.log(chalk.yellow(`- ${veryStale.length} >180 days stale → consider deprecating candidates`));
+    console.log(
+      chalk.yellow(`- ${veryStale.length} >180 days stale → consider deprecating candidates`),
+    );
   }
   if (candidates.length > 0) {
     console.log(chalk.blue(`- ${candidates.length} stale candidates → validate or remove`));
   }
-  console.log(chalk.gray(`${formatTipPrefix()}Use '${cli} playbook get <id>' to inspect, then '${cli} mark <id> --helpful|--harmful'.`));
+  console.log(
+    chalk.gray(
+      `${formatTipPrefix()}Use '${cli} playbook get <id>' to inspect, then '${cli} mark <id> --helpful|--harmful'.`,
+    ),
+  );
 }

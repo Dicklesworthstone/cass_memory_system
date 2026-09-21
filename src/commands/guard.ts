@@ -1,17 +1,17 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import chalk from "chalk";
-import { TRAUMA_GUARD_SCRIPT, GIT_PRECOMMIT_HOOK } from "../trauma_guard_script.js";
+import { iconPrefix } from "../output.js";
+import { GIT_PRECOMMIT_HOOK, TRAUMA_GUARD_SCRIPT } from "../trauma_guard_script.js";
+import { ErrorCode } from "../types.js";
 import {
   ensureDir,
   fileExists,
   getCliName,
   printJsonResult,
   reportError,
-  resolveGitRoot
+  resolveGitRoot,
 } from "../utils.js";
-import { ErrorCode } from "../types.js";
-import { iconPrefix } from "../output.js";
 
 export async function guardCommand(flags: { install?: boolean; git?: boolean; json?: boolean }) {
   const startedAtMs = Date.now();
@@ -80,7 +80,11 @@ export async function installGuard(json?: boolean, silent?: boolean) {
       const { promisify } = await import("node:util");
       await promisify(exec)("python3 --version", { timeout: 2000 });
     } catch {
-      console.warn(chalk.yellow(`${iconPrefix("warning")} Warning: 'python3' not found in PATH. The trauma guard requires Python 3.`));
+      console.warn(
+        chalk.yellow(
+          `${iconPrefix("warning")} Warning: 'python3' not found in PATH. The trauma guard requires Python 3.`,
+        ),
+      );
     }
   }
 
@@ -111,11 +115,7 @@ export async function installGuard(json?: boolean, silent?: boolean) {
     const pExecFile = promisify(execFile);
     await pExecFile(
       "python3",
-      [
-        "-c",
-        `import ast,sys; ast.parse(open(sys.argv[1]).read()); print("ok")`,
-        scriptPath,
-      ],
+      ["-c", `import ast,sys; ast.parse(open(sys.argv[1]).read()); print("ok")`, scriptPath],
       { timeout: 5000 },
     );
   } catch (parseErr: any) {
@@ -152,7 +152,8 @@ export async function installGuard(json?: boolean, silent?: boolean) {
       const content = await fs.readFile(settingsPath, "utf-8");
       settings = JSON.parse(content);
     } catch (e) {
-      const msg = "Error: Could not parse .claude/settings.json (invalid JSON or comments). Aborting to prevent data loss.";
+      const msg =
+        "Error: Could not parse .claude/settings.json (invalid JSON or comments). Aborting to prevent data loss.";
       if (!silent) {
         reportError(msg, {
           code: ErrorCode.CONFIG_INVALID,
@@ -168,11 +169,13 @@ export async function installGuard(json?: boolean, silent?: boolean) {
             JSON.stringify(
               {
                 matcher: "Bash",
-                hooks: [{ type: "command", command: `$CLAUDE_PROJECT_DIR/.claude/hooks/${scriptName}` }],
+                hooks: [
+                  { type: "command", command: `$CLAUDE_PROJECT_DIR/.claude/hooks/${scriptName}` },
+                ],
               },
               null,
-              2
-            )
+              2,
+            ),
           );
         }
       }
@@ -182,7 +185,8 @@ export async function installGuard(json?: boolean, silent?: boolean) {
 
   // Ensure hooks structure (defensive: settings.json is user-owned)
   if (!settings || typeof settings !== "object" || Array.isArray(settings)) settings = {};
-  if (!settings.hooks || typeof settings.hooks !== "object" || Array.isArray(settings.hooks)) settings.hooks = {};
+  if (!settings.hooks || typeof settings.hooks !== "object" || Array.isArray(settings.hooks))
+    settings.hooks = {};
   if (!Array.isArray(settings.hooks.PreToolUse)) settings.hooks.PreToolUse = [];
 
   // Check if already installed
@@ -190,7 +194,9 @@ export async function installGuard(json?: boolean, silent?: boolean) {
     if (!entry || typeof entry !== "object") return false;
     const hooks = (entry as any).hooks;
     if (!Array.isArray(hooks)) return false;
-    return hooks.some((hook: any) => typeof hook?.command === "string" && hook.command.includes(scriptName));
+    return hooks.some(
+      (hook: any) => typeof hook?.command === "string" && hook.command.includes(scriptName),
+    );
   });
 
   if (!alreadyInstalled) {
@@ -200,11 +206,11 @@ export async function installGuard(json?: boolean, silent?: boolean) {
       hooks: [
         {
           type: "command",
-          command: `$CLAUDE_PROJECT_DIR/.claude/hooks/${scriptName}`
-        }
-      ]
+          command: `$CLAUDE_PROJECT_DIR/.claude/hooks/${scriptName}`,
+        },
+      ],
     });
-    
+
     await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2), "utf-8");
   }
 
@@ -214,17 +220,21 @@ export async function installGuard(json?: boolean, silent?: boolean) {
     printJsonResult(
       command,
       {
-        message: alreadyInstalled ? "Trauma guard already installed." : "Trauma guard installed successfully.",
+        message: alreadyInstalled
+          ? "Trauma guard already installed."
+          : "Trauma guard installed successfully.",
         alreadyInstalled,
         scriptPath,
         settingsPath,
       },
-      { startedAtMs }
+      { startedAtMs },
     );
   } else {
     console.log(chalk.green(`✓ Installed ${scriptName} to ${hooksDir}`));
     console.log(chalk.green(`✓ ${alreadyInstalled ? "Verified" : "Updated"} ${settingsPath}`));
-    console.log(chalk.bold.yellow("\nIMPORTANT: You must restart Claude Code for the hook to take effect."));
+    console.log(
+      chalk.bold.yellow("\nIMPORTANT: You must restart Claude Code for the hook to take effect."),
+    );
   }
 }
 
@@ -264,7 +274,11 @@ export async function installGitHook(json?: boolean, silent?: boolean): Promise<
       const { promisify } = await import("node:util");
       await promisify(exec)("python3 --version", { timeout: 2000 });
     } catch {
-      console.warn(chalk.yellow(`${iconPrefix("warning")} Warning: 'python3' not found in PATH. The git hook requires Python 3.`));
+      console.warn(
+        chalk.yellow(
+          `${iconPrefix("warning")} Warning: 'python3' not found in PATH. The git hook requires Python 3.`,
+        ),
+      );
     }
   }
 
@@ -277,13 +291,19 @@ export async function installGitHook(json?: boolean, silent?: boolean): Promise<
     if (existingHook.includes("trauma-guard-precommit") || existingHook.includes("HOT STOVE")) {
       if (silent) return true;
       if (json) {
-        printJsonResult(command, {
-          message: "Git pre-commit trauma guard already installed.",
-          alreadyInstalled: true,
-          hookPath: preCommitPath,
-        }, { startedAtMs });
+        printJsonResult(
+          command,
+          {
+            message: "Git pre-commit trauma guard already installed.",
+            alreadyInstalled: true,
+            hookPath: preCommitPath,
+          },
+          { startedAtMs },
+        );
       } else {
-        console.log(chalk.blue(`• Git pre-commit trauma guard already installed at ${preCommitPath}`));
+        console.log(
+          chalk.blue(`• Git pre-commit trauma guard already installed at ${preCommitPath}`),
+        );
       }
       return true;
     }
@@ -316,16 +336,22 @@ export async function installGitHook(json?: boolean, silent?: boolean): Promise<
   if (silent) return true;
 
   if (json) {
-    printJsonResult(command, {
-      message: "Git pre-commit trauma guard installed successfully.",
-      alreadyInstalled: false,
-      hookPath: preCommitPath,
-      guardScriptPath,
-    }, { startedAtMs });
+    printJsonResult(
+      command,
+      {
+        message: "Git pre-commit trauma guard installed successfully.",
+        alreadyInstalled: false,
+        hookPath: preCommitPath,
+        guardScriptPath,
+      },
+      { startedAtMs },
+    );
   } else {
     console.log(chalk.green(`✓ Installed ${scriptName} to ${gitHooksDir}`));
     console.log(chalk.green(`✓ Updated ${preCommitPath}`));
-    console.log(chalk.bold.yellow("\nThe trauma guard will now check staged changes before each commit."));
+    console.log(
+      chalk.bold.yellow("\nThe trauma guard will now check staged changes before each commit."),
+    );
     console.log(chalk.gray("Use 'git commit --no-verify' to bypass (not recommended)."));
   }
   return true;

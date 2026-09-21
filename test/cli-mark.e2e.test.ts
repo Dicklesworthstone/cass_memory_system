@@ -4,24 +4,27 @@
  * Tests the `cm mark` command for recording user feedback on playbook bullets.
  * Uses isolated temp directories to avoid affecting the real system.
  */
-import { describe, it, expect, afterEach } from "bun:test";
-import { stat, mkdir, writeFile, rm, readFile } from "node:fs/promises";
-import path from "node:path";
+import { afterEach, describe, expect, it } from "bun:test";
 import { execSync } from "node:child_process";
-import yaml from "yaml";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
+import path from "node:path";
+import yaml from "yaml";
 
 import { markCommand, recordFeedback } from "../src/commands/mark.js";
-import { createEmptyPlaybook, savePlaybook, loadPlaybook, findBullet } from "../src/playbook.js";
-import { createTestConfig, createTestBullet } from "./helpers/index.js";
+import { createEmptyPlaybook, findBullet, loadPlaybook, savePlaybook } from "../src/playbook.js";
 import { Playbook } from "../src/types.js";
+import { createTestBullet, createTestConfig } from "./helpers/index.js";
 
 // --- Helper Functions ---
 
 let tempDirs: string[] = [];
 
 async function createTempDir(): Promise<string> {
-  const dirPath = path.join(os.tmpdir(), `mark-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const dirPath = path.join(
+    os.tmpdir(),
+    `mark-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  );
   await mkdir(dirPath, { recursive: true });
   tempDirs.push(dirPath);
   return dirPath;
@@ -63,7 +66,7 @@ function captureConsole() {
     restore: () => {
       console.log = originalLog;
       console.error = originalError;
-    }
+    },
   };
 }
 
@@ -105,7 +108,7 @@ describe("E2E: CLI mark command", () => {
           id: "test-bullet-1",
           content: "Always validate user input",
           helpfulCount: 0,
-          harmfulCount: 0
+          harmfulCount: 0,
         });
         playbook.bullets = [bullet];
         await savePlaybook(playbook, path.join(cassMemoryDir, "playbook.yaml"));
@@ -142,7 +145,7 @@ describe("E2E: CLI mark command", () => {
           id: "multi-helpful",
           content: "Use descriptive variable names",
           helpfulCount: 2,
-          harmfulCount: 0
+          harmfulCount: 0,
         });
         playbook.bullets = [bullet];
         await savePlaybook(playbook, path.join(cassMemoryDir, "playbook.yaml"));
@@ -173,7 +176,7 @@ describe("E2E: CLI mark command", () => {
           id: "harmful-test",
           content: "Always use any type for flexibility",
           helpfulCount: 0,
-          harmfulCount: 0
+          harmfulCount: 0,
         });
         playbook.bullets = [bullet];
         await savePlaybook(playbook, path.join(cassMemoryDir, "playbook.yaml"));
@@ -202,14 +205,14 @@ describe("E2E: CLI mark command", () => {
         const playbook = createEmptyPlaybook("test");
         const bullet = createTestBullet({
           id: "reason-test",
-          content: "Use deprecated API for compatibility"
+          content: "Use deprecated API for compatibility",
         });
         playbook.bullets = [bullet];
         await savePlaybook(playbook, path.join(cassMemoryDir, "playbook.yaml"));
 
         await recordFeedback("reason-test", {
           harmful: true,
-          reason: "outdated"
+          reason: "outdated",
         });
 
         const updated = await loadPlaybook(path.join(cassMemoryDir, "playbook.yaml"));
@@ -231,14 +234,14 @@ describe("E2E: CLI mark command", () => {
         const playbook = createEmptyPlaybook("test");
         const bullet = createTestBullet({
           id: "unknown-reason",
-          content: "Test bullet"
+          content: "Test bullet",
         });
         playbook.bullets = [bullet];
         await savePlaybook(playbook, path.join(cassMemoryDir, "playbook.yaml"));
 
         await recordFeedback("unknown-reason", {
           harmful: true,
-          reason: "some-invalid-reason"
+          reason: "some-invalid-reason",
         });
 
         const updated = await loadPlaybook(path.join(cassMemoryDir, "playbook.yaml"));
@@ -262,7 +265,7 @@ describe("E2E: CLI mark command", () => {
         const playbook = createEmptyPlaybook("test");
         const bullet = createTestBullet({
           id: "session-test",
-          content: "Test session tracking"
+          content: "Test session tracking",
         });
         playbook.bullets = [bullet];
         await savePlaybook(playbook, path.join(cassMemoryDir, "playbook.yaml"));
@@ -270,7 +273,7 @@ describe("E2E: CLI mark command", () => {
         const sessionPath = "/path/to/session/123.jsonl";
         await recordFeedback("session-test", {
           helpful: true,
-          session: sessionPath
+          session: sessionPath,
         });
 
         const updated = await loadPlaybook(path.join(cassMemoryDir, "playbook.yaml"));
@@ -296,9 +299,7 @@ describe("E2E: CLI mark command", () => {
         await savePlaybook(playbook, path.join(cassMemoryDir, "playbook.yaml"));
 
         // Try to mark non-existent bullet
-        await expect(
-          recordFeedback("non-existent-bullet", { helpful: true })
-        ).rejects.toThrow();
+        await expect(recordFeedback("non-existent-bullet", { helpful: true })).rejects.toThrow();
       } finally {
         process.env.HOME = originalHome;
       }
@@ -328,16 +329,16 @@ describe("E2E: CLI mark command", () => {
 
   describe("Validation", () => {
     it("requires either helpful or harmful flag", async () => {
-      await expect(
-        recordFeedback("any-bullet", {})
-      ).rejects.toThrow("Must specify exactly one of --helpful or --harmful");
+      await expect(recordFeedback("any-bullet", {})).rejects.toThrow(
+        "Must specify exactly one of --helpful or --harmful",
+      );
     });
 
     it("rejects when both helpful and harmful are set", async () => {
       // When both flags are set, the command throws an error
-      await expect(
-        recordFeedback("any-bullet", { helpful: true, harmful: true })
-      ).rejects.toThrow("Must specify exactly one of --helpful or --harmful");
+      await expect(recordFeedback("any-bullet", { helpful: true, harmful: true })).rejects.toThrow(
+        "Must specify exactly one of --helpful or --harmful",
+      );
     });
   });
 
@@ -430,7 +431,7 @@ describe("E2E: CLI mark command", () => {
         const repoPlaybook = createEmptyPlaybook("repo");
         const bullet = createTestBullet({
           id: "repo-bullet",
-          content: "Repo-specific rule"
+          content: "Repo-specific rule",
         });
         repoPlaybook.bullets = [bullet];
         await savePlaybook(repoPlaybook, path.join(repoCassDir, "playbook.yaml"));
@@ -465,7 +466,7 @@ describe("E2E: CLI mark command", () => {
         const globalPlaybook = createEmptyPlaybook("global");
         const bullet = createTestBullet({
           id: "global-bullet",
-          content: "Global rule"
+          content: "Global rule",
         });
         globalPlaybook.bullets = [bullet];
         await savePlaybook(globalPlaybook, path.join(cassMemoryDir, "playbook.yaml"));
@@ -500,7 +501,7 @@ describe("E2E: CLI mark command", () => {
         const playbook = createEmptyPlaybook("test");
         const bullet = createTestBullet({
           id: "persist-test",
-          content: "Test persistence"
+          content: "Test persistence",
         });
         playbook.bullets = [bullet];
         await savePlaybook(playbook, path.join(cassMemoryDir, "playbook.yaml"));
@@ -529,7 +530,7 @@ describe("E2E: CLI mark command", () => {
         const playbook = createEmptyPlaybook("test");
         const bullet = createTestBullet({
           id: "multi-feedback",
-          content: "Multiple feedback test"
+          content: "Multiple feedback test",
         });
         playbook.bullets = [bullet];
         await savePlaybook(playbook, path.join(cassMemoryDir, "playbook.yaml"));
@@ -563,7 +564,7 @@ describe("E2E: CLI mark command", () => {
         const bullet = createTestBullet({
           id: "maturity-test",
           content: "Test maturity updates",
-          maturity: "candidate"
+          maturity: "candidate",
         });
         playbook.bullets = [bullet];
         await savePlaybook(playbook, path.join(cassMemoryDir, "playbook.yaml"));
@@ -626,7 +627,7 @@ describe("E2E: CLI mark command", () => {
         const playbook = createEmptyPlaybook("test");
         const bullet = createTestBullet({
           id: "updated-at-test",
-          updatedAt: "2020-01-01T00:00:00Z"
+          updatedAt: "2020-01-01T00:00:00Z",
         });
         playbook.bullets = [bullet];
         await savePlaybook(playbook, path.join(cassMemoryDir, "playbook.yaml"));

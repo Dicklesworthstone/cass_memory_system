@@ -7,21 +7,20 @@
  * - contextWithoutCass function
  * - Error handling paths
  */
-import { describe, test, expect } from "bun:test";
-import { writeFileSync } from "node:fs";
+import { describe, expect, test } from "bun:test";
+import { realpathSync, writeFileSync } from "node:fs";
 import yaml from "yaml";
-import { realpathSync } from "node:fs";
 import {
-  contextCommand,
-  buildContextResult,
   buildCassHistoryQuery,
+  buildContextResult,
+  contextCommand,
   contextWithoutCass,
   generateContextResult,
   resolveWorkspaceFilter,
 } from "../src/commands/context.js";
-import { withTempCassHome } from "./helpers/temp.js";
+import { createTestBullet, createTestConfig, createTestPlaybook } from "./helpers/factories.js";
 import { withTempGitRepo } from "./helpers/git.js";
-import { createTestPlaybook, createTestBullet, createTestConfig } from "./helpers/factories.js";
+import { withTempCassHome } from "./helpers/temp.js";
 
 /**
  * Capture console output during async function execution.
@@ -292,19 +291,49 @@ describe("contextCommand input validation", () => {
 describe("buildContextResult", () => {
   test("builds result with rules and anti-patterns", () => {
     const rules = [
-      { ...createTestBullet({ id: "r-1" }), relevanceScore: 8, effectiveScore: 0.9, finalScore: 7.2 },
-      { ...createTestBullet({ id: "r-2" }), relevanceScore: 6, effectiveScore: 0.8, finalScore: 4.8 },
+      {
+        ...createTestBullet({ id: "r-1" }),
+        relevanceScore: 8,
+        effectiveScore: 0.9,
+        finalScore: 7.2,
+      },
+      {
+        ...createTestBullet({ id: "r-2" }),
+        relevanceScore: 6,
+        effectiveScore: 0.8,
+        finalScore: 4.8,
+      },
     ];
     const antiPatterns = [
-      { ...createTestBullet({ id: "a-1", isNegative: true }), relevanceScore: 7, effectiveScore: 0.85, finalScore: 5.95 },
+      {
+        ...createTestBullet({ id: "a-1", isNegative: true }),
+        relevanceScore: 7,
+        effectiveScore: 0.85,
+        finalScore: 5.95,
+      },
     ];
     const history = [
-      { source_path: "/test/session.jsonl", line_number: 42, timestamp: new Date().toISOString(), agent: "claude", snippet: "test snippet", score: 0.9 },
+      {
+        source_path: "/test/session.jsonl",
+        line_number: 42,
+        timestamp: new Date().toISOString(),
+        agent: "claude",
+        snippet: "test snippet",
+        score: 0.9,
+      },
     ];
     const warnings = ["Test warning"];
     const suggestedQueries = ["cass search 'test'"];
 
-    const result = buildContextResult("test task", rules as any, antiPatterns as any, history as any, warnings, suggestedQueries, { maxBullets: 10, maxHistory: 10 });
+    const result = buildContextResult(
+      "test task",
+      rules as any,
+      antiPatterns as any,
+      history as any,
+      warnings,
+      suggestedQueries,
+      { maxBullets: 10, maxHistory: 10 },
+    );
 
     expect(result.task).toBe("test task");
     expect(result.relevantBullets).toHaveLength(2);
@@ -322,7 +351,10 @@ describe("buildContextResult", () => {
       finalScore: (8 - i * 0.1) * 0.9,
     }));
 
-    const result = buildContextResult("test", rules as any, [], [], [], [], { maxBullets: 5, maxHistory: 10 });
+    const result = buildContextResult("test", rules as any, [], [], [], [], {
+      maxBullets: 5,
+      maxHistory: 10,
+    });
 
     expect(result.relevantBullets).toHaveLength(5);
   });
@@ -337,23 +369,31 @@ describe("buildContextResult", () => {
       score: 0.9 - i * 0.01,
     }));
 
-    const result = buildContextResult("test", [], [], history as any, [], [], { maxBullets: 10, maxHistory: 3 });
+    const result = buildContextResult("test", [], [], history as any, [], [], {
+      maxBullets: 10,
+      maxHistory: 3,
+    });
 
     expect(result.historySnippets).toHaveLength(3);
   });
 
   test("truncates long snippets", () => {
     const longSnippet = "A".repeat(500);
-    const history = [{
-      source_path: "/test/session.jsonl",
-      line_number: 1,
-      timestamp: new Date().toISOString(),
-      agent: "claude",
-      snippet: longSnippet,
-      score: 0.9,
-    }];
+    const history = [
+      {
+        source_path: "/test/session.jsonl",
+        line_number: 1,
+        timestamp: new Date().toISOString(),
+        agent: "claude",
+        snippet: longSnippet,
+        score: 0.9,
+      },
+    ];
 
-    const result = buildContextResult("test", [], [], history as any, [], [], { maxBullets: 10, maxHistory: 10 });
+    const result = buildContextResult("test", [], [], history as any, [], [], {
+      maxBullets: 10,
+      maxHistory: 10,
+    });
 
     expect(result.historySnippets[0].snippet.length).toBeLessThan(500);
     // truncateWithIndicator uses "..." as the default indicator
@@ -361,22 +401,30 @@ describe("buildContextResult", () => {
   });
 
   test("adds lastHelpful and reasoning to bullets", () => {
-    const rules = [{
-      ...createTestBullet({ id: "r-1" }),
-      relevanceScore: 8,
-      effectiveScore: 0.9,
-      finalScore: 7.2,
-      helpfulEvents: [{ timestamp: new Date().toISOString() }],
-    }];
+    const rules = [
+      {
+        ...createTestBullet({ id: "r-1" }),
+        relevanceScore: 8,
+        effectiveScore: 0.9,
+        finalScore: 7.2,
+        helpfulEvents: [{ timestamp: new Date().toISOString() }],
+      },
+    ];
 
-    const result = buildContextResult("test", rules as any, [], [], [], [], { maxBullets: 10, maxHistory: 10 });
+    const result = buildContextResult("test", rules as any, [], [], [], [], {
+      maxBullets: 10,
+      maxHistory: 10,
+    });
 
     expect(result.relevantBullets[0].lastHelpful).toBeDefined();
     expect(result.relevantBullets[0].reasoning).toBeDefined();
   });
 
   test("handles empty inputs", () => {
-    const result = buildContextResult("test", [], [], [], [], [], { maxBullets: 10, maxHistory: 10 });
+    const result = buildContextResult("test", [], [], [], [], [], {
+      maxBullets: 10,
+      maxHistory: 10,
+    });
 
     expect(result.task).toBe("test");
     expect(result.relevantBullets).toEqual([]);
@@ -394,7 +442,10 @@ describe("buildContextResult", () => {
       finalScore: 7.2,
     }));
 
-    const result = buildContextResult("test", rules as any, [], [], [], [], { maxBullets: -5, maxHistory: 10 });
+    const result = buildContextResult("test", rules as any, [], [], [], [], {
+      maxBullets: -5,
+      maxHistory: 10,
+    });
 
     // Should use default of 10
     expect(result.relevantBullets).toHaveLength(10);
@@ -411,7 +462,7 @@ describe("buildCassHistoryQuery", () => {
 
   test("filters bead-style identifiers and path-like tokens from cass history queries", () => {
     const query = buildCassHistoryQuery(
-      "Manual operator loop for ntm swarm completion; verify bd-j9jo3.3.5 redaction/disclosure adapter slice"
+      "Manual operator loop for ntm swarm completion; verify bd-j9jo3.3.5 redaction/disclosure adapter slice",
     );
 
     expect(query).not.toContain("bd-j9jo3.3.5");
@@ -437,7 +488,9 @@ describe("contextWithoutCass", () => {
 
         expect(result.task).toBe("write unit tests");
         expect(result.historySnippets).toEqual([]);
-        expect(result.deprecatedWarnings).toContain("Context generated without historical data (cass unavailable)");
+        expect(result.deprecatedWarnings).toContain(
+          "Context generated without historical data (cass unavailable)",
+        );
       } finally {
         capture.restore();
       }
@@ -448,8 +501,18 @@ describe("contextWithoutCass", () => {
     await withTempCassHome(async (env) => {
       const bullets = [
         createTestBullet({ id: "b-global", content: "Global rule", scope: "global" }),
-        createTestBullet({ id: "b-frontend", content: "Frontend rule", scope: "workspace", workspace: "frontend" }),
-        createTestBullet({ id: "b-backend", content: "Backend rule", scope: "workspace", workspace: "backend" }),
+        createTestBullet({
+          id: "b-frontend",
+          content: "Frontend rule",
+          scope: "workspace",
+          workspace: "frontend",
+        }),
+        createTestBullet({
+          id: "b-backend",
+          content: "Backend rule",
+          scope: "workspace",
+          workspace: "backend",
+        }),
       ];
       writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook(bullets)));
 
@@ -470,7 +533,7 @@ describe("contextWithoutCass", () => {
   test("respects maxBullets option", async () => {
     await withTempCassHome(async (env) => {
       const bullets = Array.from({ length: 20 }, (_, i) =>
-        createTestBullet({ id: `b-${i}`, content: `Rule ${i} about API`, tags: ["api"] })
+        createTestBullet({ id: `b-${i}`, content: `Rule ${i} about API`, tags: ["api"] }),
       );
       writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook(bullets)));
 
@@ -514,7 +577,12 @@ describe("contextWithoutCass", () => {
       const playbook = {
         ...createTestPlaybook([]),
         deprecatedPatterns: [
-          { pattern: "moment", replacement: "date-fns", reason: "maintenance mode", deprecatedAt: new Date().toISOString() },
+          {
+            pattern: "moment",
+            replacement: "date-fns",
+            reason: "maintenance mode",
+            deprecatedAt: new Date().toISOString(),
+          },
         ],
       };
       writeFileSync(env.playbookPath, yaml.stringify(playbook));
@@ -525,8 +593,8 @@ describe("contextWithoutCass", () => {
       try {
         const result = await contextWithoutCass("add moment.js", config);
 
-        const hasDeprecatedWarning = result.deprecatedWarnings.some((w) =>
-          w.includes("deprecated pattern") && w.includes("moment")
+        const hasDeprecatedWarning = result.deprecatedWarnings.some(
+          (w) => w.includes("deprecated pattern") && w.includes("moment"),
         );
         expect(hasDeprecatedWarning).toBe(true);
       } finally {
@@ -617,7 +685,12 @@ describe("safeDeprecatedPatternMatcher via playbook patterns", () => {
       const playbook = {
         ...createTestPlaybook([]),
         deprecatedPatterns: [
-          { pattern: "moment", replacement: "date-fns", reason: "maintenance mode", deprecatedAt: new Date().toISOString() },
+          {
+            pattern: "moment",
+            replacement: "date-fns",
+            reason: "maintenance mode",
+            deprecatedAt: new Date().toISOString(),
+          },
         ],
       };
       writeFileSync(env.playbookPath, yaml.stringify(playbook));
@@ -629,8 +702,8 @@ describe("safeDeprecatedPatternMatcher via playbook patterns", () => {
         const result = JSON.parse(output);
 
         expect(result.success).toBe(true);
-        const hasDeprecatedWarning = result.data.deprecatedWarnings.some((w: string) =>
-          w.includes("deprecated pattern") && w.includes("moment")
+        const hasDeprecatedWarning = result.data.deprecatedWarnings.some(
+          (w: string) => w.includes("deprecated pattern") && w.includes("moment"),
         );
         expect(hasDeprecatedWarning).toBe(true);
       } finally {
@@ -646,7 +719,12 @@ describe("safeDeprecatedPatternMatcher via playbook patterns", () => {
       const playbook = {
         ...createTestPlaybook([]),
         deprecatedPatterns: [
-          { pattern: longPattern, replacement: "shorter", reason: "too long", deprecatedAt: new Date().toISOString() },
+          {
+            pattern: longPattern,
+            replacement: "shorter",
+            reason: "too long",
+            deprecatedAt: new Date().toISOString(),
+          },
         ],
       };
       writeFileSync(env.playbookPath, yaml.stringify(playbook));
@@ -675,7 +753,12 @@ describe("safeDeprecatedPatternMatcher via playbook patterns", () => {
       const playbook = {
         ...createTestPlaybook([]),
         deprecatedPatterns: [
-          { pattern: unsafePattern, replacement: "safe", reason: "redos", deprecatedAt: new Date().toISOString() },
+          {
+            pattern: unsafePattern,
+            replacement: "safe",
+            reason: "redos",
+            deprecatedAt: new Date().toISOString(),
+          },
         ],
       };
       writeFileSync(env.playbookPath, yaml.stringify(playbook));
@@ -703,7 +786,12 @@ describe("safeDeprecatedPatternMatcher via playbook patterns", () => {
       const playbook = {
         ...createTestPlaybook([]),
         deprecatedPatterns: [
-          { pattern: invalidPattern, replacement: "valid", reason: "bad regex", deprecatedAt: new Date().toISOString() },
+          {
+            pattern: invalidPattern,
+            replacement: "valid",
+            reason: "bad regex",
+            deprecatedAt: new Date().toISOString(),
+          },
         ],
       };
       writeFileSync(env.playbookPath, yaml.stringify(playbook));
@@ -731,7 +819,12 @@ describe("safeDeprecatedPatternMatcher via playbook patterns", () => {
       const playbook = {
         ...createTestPlaybook([]),
         deprecatedPatterns: [
-          { pattern: validPattern, replacement: "const/let", reason: "use const or let", deprecatedAt: new Date().toISOString() },
+          {
+            pattern: validPattern,
+            replacement: "const/let",
+            reason: "use const or let",
+            deprecatedAt: new Date().toISOString(),
+          },
         ],
       };
       writeFileSync(env.playbookPath, yaml.stringify(playbook));
@@ -744,7 +837,7 @@ describe("safeDeprecatedPatternMatcher via playbook patterns", () => {
 
         expect(result.success).toBe(true);
         const hasDeprecatedWarning = result.data.deprecatedWarnings.some((w: string) =>
-          w.includes("deprecated pattern")
+          w.includes("deprecated pattern"),
         );
         expect(hasDeprecatedWarning).toBe(true);
       } finally {
@@ -766,7 +859,11 @@ describe("scoreBulletsEnhanced", () => {
     await withTempCassHome(async (env) => {
       const { scoreBulletsEnhanced } = await import("../src/commands/context.js");
       const bullets = [
-        createTestBullet({ id: "b-1", content: "Use TypeScript for type safety", tags: ["typescript"] }),
+        createTestBullet({
+          id: "b-1",
+          content: "Use TypeScript for type safety",
+          tags: ["typescript"],
+        }),
         createTestBullet({ id: "b-2", content: "Write tests before code", tags: ["testing"] }),
       ];
       const config = createTestConfig({
@@ -775,7 +872,12 @@ describe("scoreBulletsEnhanced", () => {
       });
       writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook(bullets)));
 
-      const result = await scoreBulletsEnhanced(bullets, "typescript types", ["typescript", "types"], config);
+      const result = await scoreBulletsEnhanced(
+        bullets,
+        "typescript types",
+        ["typescript", "types"],
+        config,
+      );
 
       expect(result.length).toBe(2);
       // TypeScript bullet should score higher
@@ -788,9 +890,7 @@ describe("scoreBulletsEnhanced", () => {
   test("handles semantic embedding error gracefully", async () => {
     await withTempCassHome(async (env) => {
       const { scoreBulletsEnhanced } = await import("../src/commands/context.js");
-      const bullets = [
-        createTestBullet({ id: "b-1", content: "Test bullet", tags: ["test"] }),
-      ];
+      const bullets = [createTestBullet({ id: "b-1", content: "Test bullet", tags: ["test"] })];
       // Enable semantic but with invalid model to trigger error
       const config = createTestConfig({
         semanticSearchEnabled: true,
@@ -853,9 +953,13 @@ describe("generateContextResult", () => {
       const progressEvents: any[] = [];
       const capture = captureConsole();
       try {
-        await generateContextResult("test task", { json: true }, {
-          onProgress: (event) => progressEvents.push(event),
-        });
+        await generateContextResult(
+          "test task",
+          { json: true },
+          {
+            onProgress: (event) => progressEvents.push(event),
+          },
+        );
 
         // Should have at least cass_search events
         const cassEvents = progressEvents.filter((e) => e.phase === "cass_search");
@@ -870,8 +974,18 @@ describe("generateContextResult", () => {
     await withTempCassHome(async (env) => {
       const bullets = [
         createTestBullet({ id: "b-global", content: "Global API rule", scope: "global" }),
-        createTestBullet({ id: "b-frontend", content: "Frontend API rule", scope: "workspace", workspace: "frontend" }),
-        createTestBullet({ id: "b-backend", content: "Backend API rule", scope: "workspace", workspace: "backend" }),
+        createTestBullet({
+          id: "b-frontend",
+          content: "Frontend API rule",
+          scope: "workspace",
+          workspace: "frontend",
+        }),
+        createTestBullet({
+          id: "b-backend",
+          content: "Backend API rule",
+          scope: "workspace",
+          workspace: "backend",
+        }),
       ];
       writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook(bullets)));
 
@@ -909,7 +1023,12 @@ describe("generateContextResult", () => {
         await withTempGitRepo(async (repoDir) => {
           const absRepo = realpathSync(repoDir);
           const bullets = [
-            createTestBullet({ id: "b-global", content: "Global API rule", scope: "global", tags: ["api"] }),
+            createTestBullet({
+              id: "b-global",
+              content: "Global API rule",
+              scope: "global",
+              tags: ["api"],
+            }),
             createTestBullet({
               id: "b-ws",
               content: "Repo-local API rule",
@@ -978,19 +1097,22 @@ describe("generateContextResult", () => {
         createTestBullet({
           id: "b-low",
           content: "Document API usage guidelines",
-          tags: ["documentation"]
+          tags: ["documentation"],
         }),
         createTestBullet({
           id: "b-high",
           content: "Optimize API performance with caching",
-          tags: ["performance", "api"]
+          tags: ["performance", "api"],
         }),
       ];
       writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook(bullets)));
 
       const capture = captureConsole();
       try {
-        const { result } = await generateContextResult("optimize API performance", { limit: 5, json: true });
+        const { result } = await generateContextResult("optimize API performance", {
+          limit: 5,
+          json: true,
+        });
         const ids = result.relevantBullets.map((b) => b.id);
 
         expect(ids.length).toBeGreaterThanOrEqual(2);
@@ -1007,7 +1129,12 @@ describe("contextCommand markdown output", () => {
   test("markdown output shows rules with scores", async () => {
     await withTempCassHome(async (env) => {
       const bullets = [
-        createTestBullet({ id: "b-api", content: "Use REST for API design", category: "api", tags: ["api", "rest"] }),
+        createTestBullet({
+          id: "b-api",
+          content: "Use REST for API design",
+          category: "api",
+          tags: ["api", "rest"],
+        }),
       ];
       writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook(bullets)));
 
@@ -1029,7 +1156,13 @@ describe("contextCommand markdown output", () => {
   test("markdown output shows pitfalls section", async () => {
     await withTempCassHome(async (env) => {
       const bullets = [
-        createTestBullet({ id: "ap-1", content: "Never use eval for API input", isNegative: true, kind: "anti_pattern", tags: ["api", "security"] }),
+        createTestBullet({
+          id: "ap-1",
+          content: "Never use eval for API input",
+          isNegative: true,
+          kind: "anti_pattern",
+          tags: ["api", "security"],
+        }),
       ];
       writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook(bullets)));
 
@@ -1082,7 +1215,12 @@ describe("contextCommand markdown output", () => {
       const playbook = {
         ...createTestPlaybook([]),
         deprecatedPatterns: [
-          { pattern: "legacy", replacement: "modern", reason: "outdated", deprecatedAt: new Date().toISOString() },
+          {
+            pattern: "legacy",
+            replacement: "modern",
+            reason: "outdated",
+            deprecatedAt: new Date().toISOString(),
+          },
         ],
       };
       writeFileSync(env.playbookPath, yaml.stringify(playbook));
@@ -1121,7 +1259,12 @@ describe("contextCommand human output", () => {
   test("human output shows PLAYBOOK RULES section with bullets", async () => {
     await withTempCassHome(async (env) => {
       const bullets = [
-        createTestBullet({ id: "b-test", content: "Test rule for human output", category: "testing", tags: ["test"] }),
+        createTestBullet({
+          id: "b-test",
+          content: "Test rule for human output",
+          category: "testing",
+          tags: ["test"],
+        }),
       ];
       writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook(bullets)));
 
@@ -1164,7 +1307,7 @@ describe("contextCommand human output", () => {
           content: "Never concatenate user input into SQL queries",
           isNegative: true,
           kind: "anti_pattern",
-          tags: ["sql", "security"]
+          tags: ["sql", "security"],
         }),
       ];
       writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook(bullets)));
@@ -1207,7 +1350,12 @@ describe("contextCommand human output", () => {
       const playbook = {
         ...createTestPlaybook([]),
         deprecatedPatterns: [
-          { pattern: "callback", replacement: "async/await", reason: "modernize", deprecatedAt: new Date().toISOString() },
+          {
+            pattern: "callback",
+            replacement: "async/await",
+            reason: "modernize",
+            deprecatedAt: new Date().toISOString(),
+          },
         ],
       };
       writeFileSync(env.playbookPath, yaml.stringify(playbook));

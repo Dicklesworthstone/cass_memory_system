@@ -6,16 +6,15 @@
  * - JSON output contract + stats
  * - Privacy: sanitization applied before LLM audit
  */
-import { describe, test, expect } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import yaml from "yaml";
-
-import type { LLMIO } from "../src/llm.js";
+import { scanSessionsForViolations } from "../src/audit.js";
 import type { CassRunner } from "../src/cass.js";
 import { auditCommand } from "../src/commands/audit.js";
-import { scanSessionsForViolations } from "../src/audit.js";
+import type { LLMIO } from "../src/llm.js";
+import { createTestBullet, createTestConfig, createTestPlaybook } from "./helpers/factories.js";
 import { withTempCassHome } from "./helpers/temp.js";
-import { createTestBullet, createTestPlaybook, createTestConfig } from "./helpers/factories.js";
 
 function createCassRunnerStub(opts: { timeline: string; exportText: string }): CassRunner {
   return {
@@ -34,7 +33,7 @@ function createCassRunnerStub(opts: { timeline: string; exportText: string }): C
 
 async function withEnvAsync<T>(
   overrides: Record<string, string | undefined>,
-  fn: () => Promise<T>
+  fn: () => Promise<T>,
 ): Promise<T> {
   const previous: Record<string, string | undefined> = {};
   for (const [key, value] of Object.entries(overrides)) {
@@ -63,7 +62,9 @@ async function withCwd<T>(cwd: string, fn: () => Promise<T>): Promise<T> {
   }
 }
 
-async function captureConsoleLog<T>(fn: () => Promise<T> | T): Promise<{ result: T; output: string }> {
+async function captureConsoleLog<T>(
+  fn: () => Promise<T> | T,
+): Promise<{ result: T; output: string }> {
   const original = console.log;
   const lines: string[] = [];
 
@@ -137,7 +138,10 @@ describe("audit command - Unit Tests", () => {
             });
 
             const cassExportText = `User note: SUPER_SECRET should never appear in prompts.`;
-            const cassRunner = createCassRunnerStub({ timeline: timelineJson, exportText: cassExportText });
+            const cassRunner = createCassRunnerStub({
+              timeline: timelineJson,
+              exportText: cassExportText,
+            });
 
             writeFileSync(
               env.configPath,
@@ -148,8 +152,8 @@ describe("audit command - Unit Tests", () => {
                   sanitization: { enabled: true, extraPatterns: ["SUPER_SECRET"] },
                 },
                 null,
-                2
-              )
+                2,
+              ),
             );
 
             const bullet = createTestBullet({
@@ -184,7 +188,7 @@ describe("audit command - Unit Tests", () => {
 
             process.exitCode = 0;
             const { output } = await captureConsoleLog(() =>
-              auditCommand({ days: 30, json: true }, { io, cassRunner })
+              auditCommand({ days: 30, json: true }, { io, cassRunner }),
             );
 
             const payload = JSON.parse(output) as JsonEnvelope<AuditJson>;
@@ -208,7 +212,7 @@ describe("audit command - Unit Tests", () => {
             expect(JSON.stringify(payload.data)).not.toContain("SUPER_SECRET");
           });
         });
-      }
+      },
     );
   });
 
@@ -229,7 +233,7 @@ describe("audit command - Unit Tests", () => {
 
             writeFileSync(
               env.configPath,
-              JSON.stringify({ cassPath: "cass", apiKey: "sk-ant-test-0000000000000000" }, null, 2)
+              JSON.stringify({ cassPath: "cass", apiKey: "sk-ant-test-0000000000000000" }, null, 2),
             );
 
             writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])));
@@ -244,7 +248,7 @@ describe("audit command - Unit Tests", () => {
 
             process.exitCode = 0;
             const { output } = await captureConsoleLog(() =>
-              auditCommand({ days: 30, json: true }, { io, cassRunner })
+              auditCommand({ days: 30, json: true }, { io, cassRunner }),
             );
 
             const payload = JSON.parse(output) as JsonEnvelope<AuditJson>;
@@ -255,7 +259,7 @@ describe("audit command - Unit Tests", () => {
             expect(prompts).toHaveLength(0);
           });
         });
-      }
+      },
     );
   });
 
@@ -284,9 +288,7 @@ describe("audit command - Unit Tests", () => {
             writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])));
 
             process.exitCode = 0;
-            const { output } = await captureConsoleLog(() =>
-              auditCommand({ days: 7, json: true })
-            );
+            const { output } = await captureConsoleLog(() => auditCommand({ days: 7, json: true }));
 
             const payload = JSON.parse(output) as any;
             expect(payload.success).toBe(false);
@@ -294,7 +296,7 @@ describe("audit command - Unit Tests", () => {
             expect(payload.error.message).toContain("Audit requires LLM access");
           });
         });
-      }
+      },
     );
   });
 
@@ -316,13 +318,13 @@ describe("audit command - Unit Tests", () => {
 
             writeFileSync(
               env.configPath,
-              JSON.stringify({ cassPath: "cass", apiKey: "sk-ant-test-0000000000000000" }, null, 2)
+              JSON.stringify({ cassPath: "cass", apiKey: "sk-ant-test-0000000000000000" }, null, 2),
             );
             writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])));
 
             process.exitCode = 0;
             const { output } = await captureConsoleLog(() =>
-              auditCommand({ days: 7, json: true }, { cassRunner })
+              auditCommand({ days: 7, json: true }, { cassRunner }),
             );
 
             const payload = JSON.parse(output) as any;
@@ -331,7 +333,7 @@ describe("audit command - Unit Tests", () => {
             expect(payload.data?.stats.violationsFound).toBe(0);
           });
         });
-      }
+      },
     );
   });
 
@@ -352,19 +354,19 @@ describe("audit command - Unit Tests", () => {
 
             writeFileSync(
               env.configPath,
-              JSON.stringify({ cassPath: "cass", apiKey: "sk-ant-test-0000000000000000" }, null, 2)
+              JSON.stringify({ cassPath: "cass", apiKey: "sk-ant-test-0000000000000000" }, null, 2),
             );
             writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])));
 
             const { output } = await captureConsoleLog(() =>
-              auditCommand({ days: 7, json: false }, { cassRunner })
+              auditCommand({ days: 7, json: false }, { cassRunner }),
             );
 
             // With empty groups array, it says "No sessions found"
             expect(output).toContain("No sessions found");
           });
         });
-      }
+      },
     );
   });
 
@@ -377,18 +379,20 @@ describe("audit command - Unit Tests", () => {
             const cmd = args[0] ?? "";
             if (cmd === "timeline") return { stdout: JSON.stringify({ groups: [] }), stderr: "" };
             if (cmd === "export") return { stdout: "", stderr: "" };
-            if (cmd === "search") return { stdout: "[]", stderr: "" };  // No trauma matches
+            if (cmd === "search") return { stdout: "[]", stderr: "" }; // No trauma matches
             throw new Error(`Unexpected cass execFile command: ${cmd}`);
           },
           spawnSync: () => ({ status: 0, stdout: "", stderr: "" }),
-          spawn: (() => { throw new Error("spawn not implemented"); }) as any,
+          spawn: (() => {
+            throw new Error("spawn not implemented");
+          }) as any,
         };
 
         writeFileSync(env.configPath, JSON.stringify({ cassPath: "cass" }, null, 2));
         writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])));
 
         const { output } = await captureConsoleLog(() =>
-          auditCommand({ days: 7, json: true, trauma: true }, { cassRunner })
+          auditCommand({ days: 7, json: true, trauma: true }, { cassRunner }),
         );
 
         const payload = JSON.parse(output) as any;
@@ -407,18 +411,20 @@ describe("audit command - Unit Tests", () => {
             const cmd = args[0] ?? "";
             if (cmd === "timeline") return { stdout: JSON.stringify({ groups: [] }), stderr: "" };
             if (cmd === "export") return { stdout: "", stderr: "" };
-            if (cmd === "search") return { stdout: "[]", stderr: "" };  // No trauma matches
+            if (cmd === "search") return { stdout: "[]", stderr: "" }; // No trauma matches
             throw new Error(`Unexpected cass execFile command: ${cmd}`);
           },
           spawnSync: () => ({ status: 0, stdout: "", stderr: "" }),
-          spawn: (() => { throw new Error("spawn not implemented"); }) as any,
+          spawn: (() => {
+            throw new Error("spawn not implemented");
+          }) as any,
         };
 
         writeFileSync(env.configPath, JSON.stringify({ cassPath: "cass" }, null, 2));
         writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])));
 
         const { output } = await captureConsoleLog(() =>
-          auditCommand({ days: 7, json: false, trauma: true }, { cassRunner })
+          auditCommand({ days: 7, json: false, trauma: true }, { cassRunner }),
         );
 
         expect(output).toContain("Project Hot Stove");
@@ -439,30 +445,53 @@ describe("audit command - Unit Tests", () => {
           await withCwd(env.home, async () => {
             const sessionPath = "/sessions/audit-hr.jsonl";
             const timelineJson = JSON.stringify({
-              groups: [{ date: "2025-01-01", sessions: [{ path: sessionPath, agent: "stub", messageCount: 1, startTime: "10:00", endTime: "10:01" }] }],
+              groups: [
+                {
+                  date: "2025-01-01",
+                  sessions: [
+                    {
+                      path: sessionPath,
+                      agent: "stub",
+                      messageCount: 1,
+                      startTime: "10:00",
+                      endTime: "10:01",
+                    },
+                  ],
+                },
+              ],
             });
 
-            const cassRunner = createCassRunnerStub({ timeline: timelineJson, exportText: "test content" });
+            const cassRunner = createCassRunnerStub({
+              timeline: timelineJson,
+              exportText: "test content",
+            });
 
             writeFileSync(
               env.configPath,
-              JSON.stringify({ cassPath: "cass", apiKey: "sk-ant-test-0000000000000000" }, null, 2)
+              JSON.stringify({ cassPath: "cass", apiKey: "sk-ant-test-0000000000000000" }, null, 2),
             );
 
-            const bullet = createTestBullet({ id: "b-hr-test", content: "Test rule", category: "testing", maturity: "proven" });
+            const bullet = createTestBullet({
+              id: "b-hr-test",
+              content: "Test rule",
+              category: "testing",
+              maturity: "proven",
+            });
             writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([bullet])));
 
             const io: LLMIO = {
               generateObject: async <T>() => ({
                 object: {
-                  results: [{ ruleId: "b-hr-test", status: "violated", evidence: "Found violation" }],
+                  results: [
+                    { ruleId: "b-hr-test", status: "violated", evidence: "Found violation" },
+                  ],
                   summary: "1 violation",
                 } as any as T,
               }),
             };
 
             const { output } = await captureConsoleLog(() =>
-              auditCommand({ days: 7, json: false }, { io, cassRunner })
+              auditCommand({ days: 7, json: false }, { io, cassRunner }),
             );
 
             expect(output).toContain("AUDIT RESULTS");
@@ -472,7 +501,7 @@ describe("audit command - Unit Tests", () => {
             expect(output).toContain("b-hr-test");
           });
         });
-      }
+      },
     );
   });
 
@@ -487,8 +516,9 @@ describe("audit command - Unit Tests", () => {
             if (cmd === "export") {
               // Return session content that matches DOOM_PATTERNS (apology + destructive action)
               return {
-                stdout: "I apologize for the mistake. I deleted your important database files by accident.",
-                stderr: ""
+                stdout:
+                  "I apologize for the mistake. I deleted your important database files by accident.",
+                stderr: "",
               };
             }
             if (cmd === "search") {
@@ -509,14 +539,16 @@ describe("audit command - Unit Tests", () => {
             throw new Error(`Unexpected cass execFile command: ${cmd}`);
           },
           spawnSync: () => ({ status: 0, stdout: "", stderr: "" }),
-          spawn: (() => { throw new Error("spawn not implemented"); }) as any,
+          spawn: (() => {
+            throw new Error("spawn not implemented");
+          }) as any,
         };
 
         writeFileSync(env.configPath, JSON.stringify({ cassPath: "cass" }, null, 2));
         writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])));
 
         const { output } = await captureConsoleLog(() =>
-          auditCommand({ days: 7, json: false, trauma: true }, { cassRunner })
+          auditCommand({ days: 7, json: false, trauma: true }, { cassRunner }),
         );
 
         expect(output).toContain("Project Hot Stove");
@@ -538,22 +570,20 @@ describe("audit command - Unit Tests", () => {
           await withCwd(env.home, async () => {
             writeFileSync(
               env.configPath,
-              JSON.stringify({ cassPath: "cass", apiKey: "sk-ant-test-0000000000000000" }, null, 2)
+              JSON.stringify({ cassPath: "cass", apiKey: "sk-ant-test-0000000000000000" }, null, 2),
             );
             // Write invalid YAML that will cause loadMergedPlaybook to throw
             writeFileSync(env.playbookPath, "{{{{invalid yaml that will not parse");
 
             process.exitCode = 0;
-            const { output } = await captureConsoleLog(() =>
-              auditCommand({ days: 7, json: true })
-            );
+            const { output } = await captureConsoleLog(() => auditCommand({ days: 7, json: true }));
 
             const payload = JSON.parse(output) as any;
             expect(payload.success).toBe(false);
             expect(payload.error.code).toBe("AUDIT_FAILED");
           });
         });
-      }
+      },
     );
   });
 
@@ -610,7 +640,7 @@ describe("audit command - Unit Tests", () => {
       playbook,
       config,
       io,
-      cassRunner
+      cassRunner,
     );
 
     expect(violations).toHaveLength(2);

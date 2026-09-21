@@ -1,37 +1,37 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
+import type { z } from "zod";
+import { withLock } from "./lock.js";
+import { formatMaturityIcon, iconPrefix } from "./output.js";
+import { getEffectiveScore, isStale } from "./scoring.js";
 import {
-  Playbook,
-  PlaybookSchema,
-  PlaybookBullet,
-  Config,
-  PlaybookBulletSchema,
   BulletMaturity,
+  type Config,
   NewBulletData,
-  PlaybookStats
+  type Playbook,
+  type PlaybookBullet,
+  type PlaybookBulletSchema,
+  PlaybookSchema,
+  type PlaybookStats,
 } from "./types.js";
 import {
-  expandPath,
+  atomicWrite,
   ensureDir,
+  expandPath,
+  extractAgentFromPath,
   fileExists,
   generateBulletId,
-  now,
-  log,
-  warn,
-  error as logError,
   hashContent,
   jaccardSimilarity,
-  atomicWrite,
-  extractAgentFromPath,
-  resolveRepoDir,
+  log,
+  error as logError,
+  now,
   resolveGlobalDir,
-  tokenize
+  resolveRepoDir,
+  tokenize,
+  warn,
 } from "./utils.js";
-import { z } from "zod";
-import { getEffectiveScore, isStale } from "./scoring.js";
-import { formatMaturityIcon, iconPrefix } from "./output.js";
-import { withLock } from "./lock.js";
 
 // --- Interfaces ---
 
@@ -64,7 +64,7 @@ export function createEmptyPlaybook(name = "playbook"): Playbook {
 
 export async function loadPlaybook(filePath: string): Promise<Playbook> {
   const expanded = expandPath(filePath);
-  
+
   if (!(await fileExists(expanded))) {
     log(`Playbook not found at ${expanded}, creating empty one.`, true);
     return createEmptyPlaybook();
@@ -73,15 +73,17 @@ export async function loadPlaybook(filePath: string): Promise<Playbook> {
   try {
     const content = await fs.readFile(expanded, "utf-8");
     if (!content.trim()) return createEmptyPlaybook();
-    
+
     const raw = yaml.parse(content);
     const result = PlaybookSchema.safeParse(raw);
-    
+
     if (!result.success) {
       logError(`Playbook validation failed for ${expanded}: ${result.error.message}`);
-      throw new Error(`Playbook at ${expanded} is invalid. Please fix it manually or remove it to reset.`);
+      throw new Error(
+        `Playbook at ${expanded} is invalid. Please fix it manually or remove it to reset.`,
+      );
     }
-    
+
     return result.data;
   } catch (err: any) {
     if (err.code === "ENOENT") {
@@ -93,9 +95,9 @@ export async function loadPlaybook(filePath: string): Promise<Playbook> {
 }
 
 export async function savePlaybook(
-  playbook: Playbook, 
-  filePath: string, 
-  options: { updateLastReflection?: boolean } = {}
+  playbook: Playbook,
+  filePath: string,
+  options: { updateLastReflection?: boolean } = {},
 ): Promise<void> {
   if (options.updateLastReflection) {
     playbook.metadata.lastReflection = now();
@@ -144,16 +146,24 @@ export interface PlaybookRecoveryResult {
  */
 export async function recoverCorruptPlaybook(
   playbookPath: string,
-  error: Error
+  error: Error,
 ): Promise<PlaybookRecoveryResult> {
   const expanded = expandPath(playbookPath);
   let backupPath: string | null = null;
 
   // Determine error type for better diagnostics
   let errorType: PlaybookRecoveryResult["errorType"] = "unknown";
-  if (error.message.includes("YAML") || error.message.includes("parse") || error.message.includes("Unexpected")) {
+  if (
+    error.message.includes("YAML") ||
+    error.message.includes("parse") ||
+    error.message.includes("Unexpected")
+  ) {
     errorType = "parse_error";
-  } else if (error.message.includes("validation") || error.message.includes("invalid") || error.name === "ZodError") {
+  } else if (
+    error.message.includes("validation") ||
+    error.message.includes("invalid") ||
+    error.name === "ZodError"
+  ) {
     errorType = "validation_error";
   } else if (error.message.includes("truncat") || error.message.includes("incomplete")) {
     errorType = "truncation";
@@ -196,7 +206,7 @@ export async function recoverCorruptPlaybook(
     playbook: newPlaybook,
     backupPath,
     errorType,
-    originalError: error
+    originalError: error,
   };
 }
 
@@ -207,7 +217,7 @@ export async function recoverCorruptPlaybook(
  * Returns both the playbook and recovery info if recovery was needed.
  */
 export async function loadPlaybookWithRecovery(
-  filePath: string
+  filePath: string,
 ): Promise<{ playbook: Playbook; recovered: boolean; recovery?: PlaybookRecoveryResult }> {
   try {
     const playbook = await loadPlaybook(filePath);
@@ -222,7 +232,7 @@ export async function loadPlaybookWithRecovery(
     return {
       playbook: recovery.playbook,
       recovered: true,
-      recovery
+      recovery,
     };
   }
 }
@@ -325,61 +335,63 @@ export async function removeFromBlockedLog(bulletId: string, logPath: string): P
 
 export function mergePlaybooks(global: Playbook, repo: Playbook | null): Playbook {
   if (!repo) return global;
-  
+
   const merged = createEmptyPlaybook("merged-playbook");
-  merged.metadata = { ...global.metadata }; 
-  
+  merged.metadata = { ...global.metadata };
+
   const bulletMap = new Map<string, PlaybookBullet>();
-  
+
   for (const b of global.bullets) {
     bulletMap.set(b.id, b);
   }
-  
+
   for (const b of repo.bullets) {
     bulletMap.set(b.id, b);
   }
-  
+
   merged.bullets = Array.from(bulletMap.values());
-  
+
   // Deduplicate deprecated patterns
   const seenPatterns = new Set<string>();
-  const uniqueDeprecatedPatterns: Array<z.infer<typeof import("./types.js").DeprecatedPatternSchema>> = [];
-  
+  const uniqueDeprecatedPatterns: Array<
+    z.infer<typeof import("./types.js").DeprecatedPatternSchema>
+  > = [];
+
   for (const p of [...global.deprecatedPatterns, ...repo.deprecatedPatterns]) {
     if (!seenPatterns.has(p.pattern)) {
       seenPatterns.add(p.pattern);
       uniqueDeprecatedPatterns.push(p);
     }
   }
-  
+
   merged.deprecatedPatterns = uniqueDeprecatedPatterns;
-  
+
   return merged;
 }
 
 export async function loadMergedPlaybook(config: Config): Promise<Playbook> {
   const globalPlaybook = await loadPlaybook(config.playbookPath);
-  
+
   let repoPlaybook: Playbook | null = null;
-  
+
   const repoDir = await resolveRepoDir();
   const repoPath = repoDir ? path.join(repoDir, "playbook.yaml") : null;
-  
-  if (repoPath && await fileExists(repoPath)) {
+
+  if (repoPath && (await fileExists(repoPath))) {
     repoPlaybook = await loadPlaybook(repoPath);
   }
-  
+
   const merged = mergePlaybooks(globalPlaybook, repoPlaybook);
-  
+
   const globalBlocked = await loadBlockedLog(path.join(resolveGlobalDir(), "blocked.log"));
   const globalToxic = await loadBlockedLog(path.join(resolveGlobalDir(), "toxic_bullets.log"));
-  
+
   const repoBlockedPath = repoDir ? path.join(repoDir, "blocked.log") : null;
   const repoBlocked = repoBlockedPath ? await loadBlockedLog(repoBlockedPath) : [];
 
   const repoToxicPath = repoDir ? path.join(repoDir, "toxic.log") : null;
   const repoToxic = repoToxicPath ? await loadBlockedLog(repoToxicPath) : [];
-  
+
   const allBlocked = [...globalBlocked, ...globalToxic, ...repoBlocked, ...repoToxic];
 
   if (allBlocked.length > 0) {
@@ -391,15 +403,15 @@ export async function loadMergedPlaybook(config: Config): Promise<Playbook> {
     const deduplicatedBlocked = Array.from(uniqueBlocked.values());
 
     // Optimization: Pre-compute hashes and tokens for blocked entries
-    const blockedMeta = deduplicatedBlocked.map(entry => ({
+    const blockedMeta = deduplicatedBlocked.map((entry) => ({
       entry,
       hash: hashContent(entry.content),
-      tokens: new Set(tokenize(entry.content))
+      tokens: new Set(tokenize(entry.content)),
     }));
 
     for (const b of merged.bullets) {
       if (b.deprecated) continue;
-      
+
       const bHash = hashContent(b.content);
       const bTokens = tokenize(b.content);
       const bTokenSet = new Set(bTokens);
@@ -418,15 +430,18 @@ export async function loadMergedPlaybook(config: Config): Promise<Playbook> {
 
         const maxPossibleIntersection = Math.min(bTokenSet.size, meta.tokens.size);
         const minPossibleUnion = Math.max(bTokenSet.size, meta.tokens.size);
-        
+
         // Fast skip
         if (maxPossibleIntersection / minPossibleUnion <= 0.85) continue;
 
-        const intersectionSize = [...bTokenSet].filter(x => meta.tokens.has(x)).length;
+        const intersectionSize = [...bTokenSet].filter((x) => meta.tokens.has(x)).length;
         const unionSize = new Set([...bTokenSet, ...meta.tokens]).size;
 
-        if (unionSize > 0 && (intersectionSize / unionSize) > 0.85) {
-          log(`Blocked content: "${b.content.slice(0, 50)}"... matches blocked "${meta.entry.content.slice(0, 50)}"...`, true);
+        if (unionSize > 0 && intersectionSize / unionSize > 0.85) {
+          log(
+            `Blocked content: "${b.content.slice(0, 50)}"... matches blocked "${meta.entry.content.slice(0, 50)}"...`,
+            true,
+          );
           isBlocked = true;
           break;
         }
@@ -438,25 +453,28 @@ export async function loadMergedPlaybook(config: Config): Promise<Playbook> {
       }
     }
   }
-  
+
   return merged;
 }
 
 // --- Bullet Management ---
 
 export function findBullet(playbook: Playbook, id: string): PlaybookBullet | undefined {
-  return playbook.bullets.find(b => b.id === id);
+  return playbook.bullets.find((b) => b.id === id);
 }
 
-type PartialBulletData = Partial<z.infer<typeof PlaybookBulletSchema>> & { content: string; category: string };
+type PartialBulletData = Partial<z.infer<typeof PlaybookBulletSchema>> & {
+  content: string;
+  category: string;
+};
 
 export function addBullet(
-  playbook: Playbook, 
-  data: PartialBulletData, 
+  playbook: Playbook,
+  data: PartialBulletData,
   sourceSession: string,
-  defaultDecayHalfLifeDays: number = 90
+  defaultDecayHalfLifeDays: number = 90,
 ): PlaybookBullet {
-  const agent = extractAgentFromPath(sourceSession); 
+  const agent = extractAgentFromPath(sourceSession);
   const requestedId =
     typeof data.id === "string" && data.id.trim() !== "" ? data.id.trim() : undefined;
   if (requestedId && playbook.bullets.some((b) => b.id === requestedId)) {
@@ -487,9 +505,9 @@ export function addBullet(
     deprecated: false,
     pinned: false,
     deprecatedAt: undefined,
-    confidenceDecayHalfLifeDays: defaultDecayHalfLifeDays
+    confidenceDecayHalfLifeDays: defaultDecayHalfLifeDays,
   };
-  
+
   playbook.bullets.push(newBullet);
   return newBullet;
 }
@@ -498,11 +516,11 @@ export function deprecateBullet(
   playbook: Playbook,
   id: string,
   reason: string,
-  replacedBy?: string
+  replacedBy?: string,
 ): boolean {
   const bullet = findBullet(playbook, id);
   if (!bullet) return false;
-  
+
   bullet.deprecated = true;
   bullet.deprecatedAt = now();
   bullet.deprecationReason = reason;
@@ -510,33 +528,28 @@ export function deprecateBullet(
   bullet.state = "retired";
   bullet.maturity = "deprecated";
   bullet.updatedAt = now();
-  
+
   return true;
 }
 
 export function getActiveBullets(playbook: Playbook): PlaybookBullet[] {
-  return playbook.bullets.filter(b => 
-    b.state !== "retired" && 
-    b.maturity !== "deprecated" && 
-    !b.deprecated
+  return playbook.bullets.filter(
+    (b) => b.state !== "retired" && b.maturity !== "deprecated" && !b.deprecated,
   );
 }
 
-export function getBulletsByCategory(
-  playbook: Playbook, 
-  category: string
-): PlaybookBullet[] {
+export function getBulletsByCategory(playbook: Playbook, category: string): PlaybookBullet[] {
   const active = getActiveBullets(playbook);
-  return active.filter(b => b.category.toLowerCase() === category.toLowerCase());
+  return active.filter((b) => b.category.toLowerCase() === category.toLowerCase());
 }
 
 export function exportToMarkdown(
   playbook: Playbook,
-  options: { topN?: number; showCounts?: boolean; includeAntiPatterns?: boolean } = {}
+  options: { topN?: number; showCounts?: boolean; includeAntiPatterns?: boolean } = {},
 ): string {
   const active = getActiveBullets(playbook);
-  const rules = active.filter(b => b.type !== "anti-pattern" && b.kind !== "anti_pattern");
-  const antiPatterns = active.filter(b => b.type === "anti-pattern" || b.kind === "anti_pattern");
+  const rules = active.filter((b) => b.type !== "anti-pattern" && b.kind !== "anti_pattern");
+  const antiPatterns = active.filter((b) => b.type === "anti-pattern" || b.kind === "anti_pattern");
 
   const categories: Record<string, PlaybookBullet[]> = {};
   for (const b of rules) {
@@ -550,7 +563,9 @@ export function exportToMarkdown(
     md += `### ${cat}\n`;
     const slice = options.topN ? bullets.slice(0, options.topN) : bullets;
     for (const b of slice) {
-      const count = options.showCounts ? ` (${b.helpfulCount ?? 0}+ / ${b.harmfulCount ?? 0}-)` : "";
+      const count = options.showCounts
+        ? ` (${b.helpfulCount ?? 0}+ / ${b.harmfulCount ?? 0}-)`
+        : "";
       md += `- ${b.content}${count}\n`;
     }
     md += "\n";
@@ -560,7 +575,9 @@ export function exportToMarkdown(
     md += `### PITFALLS (Anti-Patterns)\n`;
     const slice = options.topN ? antiPatterns.slice(0, Math.ceil(options.topN / 2)) : antiPatterns;
     for (const b of slice) {
-      const count = options.showCounts ? ` (${b.helpfulCount ?? 0}+ / ${b.harmfulCount ?? 0}-)` : "";
+      const count = options.showCounts
+        ? ` (${b.helpfulCount ?? 0}+ / ${b.harmfulCount ?? 0}-)`
+        : "";
       md += `- ${b.content}${count}\n`;
     }
     md += "\n";
@@ -576,18 +593,18 @@ export function exportToMarkdown(
 export function exportToAgentsMd(
   playbook: Playbook,
   config: Config,
-  options: { topN?: number; showCounts?: boolean } = {}
+  options: { topN?: number; showCounts?: boolean } = {},
 ): string {
   const active = getActiveBullets(playbook);
-  const rules = active.filter(b => b.type !== "anti-pattern" && b.kind !== "anti_pattern");
-  const antiPatterns = active.filter(b => b.type === "anti-pattern" || b.kind === "anti_pattern");
+  const rules = active.filter((b) => b.type !== "anti-pattern" && b.kind !== "anti_pattern");
+  const antiPatterns = active.filter((b) => b.type === "anti-pattern" || b.kind === "anti_pattern");
 
   // Sort by effective score (highest first)
-  const sortedRules = [...rules].sort((a, b) =>
-    getEffectiveScore(b, config) - getEffectiveScore(a, config)
+  const sortedRules = [...rules].sort(
+    (a, b) => getEffectiveScore(b, config) - getEffectiveScore(a, config),
   );
-  const sortedAntiPatterns = [...antiPatterns].sort((a, b) =>
-    getEffectiveScore(b, config) - getEffectiveScore(a, config)
+  const sortedAntiPatterns = [...antiPatterns].sort(
+    (a, b) => getEffectiveScore(b, config) - getEffectiveScore(a, config),
   );
 
   // Group by category
@@ -644,15 +661,15 @@ export function exportToAgentsMd(
 export function exportToClaudeMd(
   playbook: Playbook,
   config: Config,
-  options: { topN?: number; showCounts?: boolean } = {}
+  options: { topN?: number; showCounts?: boolean } = {},
 ): string {
   const active = getActiveBullets(playbook);
-  const rules = active.filter(b => b.type !== "anti-pattern" && b.kind !== "anti_pattern");
-  const antiPatterns = active.filter(b => b.type === "anti-pattern" || b.kind === "anti_pattern");
+  const rules = active.filter((b) => b.type !== "anti-pattern" && b.kind !== "anti_pattern");
+  const antiPatterns = active.filter((b) => b.type === "anti-pattern" || b.kind === "anti_pattern");
 
   // Sort by effective score (highest first)
-  const sortedRules = [...rules].sort((a, b) =>
-    getEffectiveScore(b, config) - getEffectiveScore(a, config)
+  const sortedRules = [...rules].sort(
+    (a, b) => getEffectiveScore(b, config) - getEffectiveScore(a, config),
   );
 
   // Group by category
@@ -690,23 +707,23 @@ export function exportToClaudeMd(
 
 export function computeFullStats(playbook: Playbook, config: Config): PlaybookStats {
   const active = getActiveBullets(playbook);
-  
+
   const stats: PlaybookStats = {
     total: active.length,
     byScope: { global: 0, workspace: 0 },
     byMaturity: { candidate: 0, established: 0, proven: 0, deprecated: 0 },
     byType: { rule: 0, antiPattern: 0 },
-    scoreDistribution: { excellent: 0, good: 0, neutral: 0, atRisk: 0 }
+    scoreDistribution: { excellent: 0, good: 0, neutral: 0, atRisk: 0 },
   };
-  
+
   for (const b of active) {
     if (b.scope === "workspace") stats.byScope.workspace++;
     else stats.byScope.global++;
-    
+
     stats.byMaturity[b.maturity]++;
     if (b.type === "anti-pattern") stats.byType.antiPattern++;
     else stats.byType.rule++;
-    
+
     const score = getEffectiveScore(b, config);
     // Thresholds aligned with scoring.ts analyzeScoreDistribution
     if (score >= 10) stats.scoreDistribution.excellent++;
@@ -714,6 +731,6 @@ export function computeFullStats(playbook: Playbook, config: Config): PlaybookSt
     else if (score >= 0) stats.scoreDistribution.neutral++;
     else stats.scoreDistribution.atRisk++;
   }
-  
+
   return stats;
 }

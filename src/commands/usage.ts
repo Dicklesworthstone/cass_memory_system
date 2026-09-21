@@ -1,8 +1,8 @@
+import chalk from "chalk";
 import { loadConfig } from "../config.js";
 import { getUsageStats } from "../cost.js";
-import chalk from "chalk";
+import { formatTipPrefix, iconPrefix } from "../output.js";
 import { printJsonResult, reportError } from "../utils.js";
-import { iconPrefix, formatTipPrefix } from "../output.js";
 
 export interface UsageOptions {
   json?: boolean;
@@ -24,25 +24,23 @@ export async function usageCommand(options: UsageOptions = {}): Promise<void> {
     console.log(chalk.bold(`\n${iconPrefix("chart")}LLM Usage Statistics\n`));
 
     // Today's usage
-    const todayPercent = stats.dailyLimit > 0
-      ? ((stats.today / stats.dailyLimit) * 100).toFixed(1)
-      : "N/A";
-    const todayColor = stats.dailyLimit > 0 && stats.today >= stats.dailyLimit * 0.8
-      ? chalk.yellow
-      : chalk.green;
+    const todayPercent =
+      stats.dailyLimit > 0 ? ((stats.today / stats.dailyLimit) * 100).toFixed(1) : "N/A";
+    const todayColor =
+      stats.dailyLimit > 0 && stats.today >= stats.dailyLimit * 0.8 ? chalk.yellow : chalk.green;
     console.log(
-      `Today:    ${todayColor(`$${stats.today.toFixed(4)}`)} / $${stats.dailyLimit.toFixed(2)} (${todayPercent}%)`
+      `Today:    ${todayColor(`$${stats.today.toFixed(4)}`)} / $${stats.dailyLimit.toFixed(2)} (${todayPercent}%)`,
     );
 
     // Monthly usage
-    const monthPercent = stats.monthlyLimit > 0
-      ? ((stats.month / stats.monthlyLimit) * 100).toFixed(1)
-      : "N/A";
-    const monthColor = stats.monthlyLimit > 0 && stats.month >= stats.monthlyLimit * 0.8
-      ? chalk.yellow
-      : chalk.green;
+    const monthPercent =
+      stats.monthlyLimit > 0 ? ((stats.month / stats.monthlyLimit) * 100).toFixed(1) : "N/A";
+    const monthColor =
+      stats.monthlyLimit > 0 && stats.month >= stats.monthlyLimit * 0.8
+        ? chalk.yellow
+        : chalk.green;
     console.log(
-      `Month:    ${monthColor(`$${stats.month.toFixed(4)}`)} / $${stats.monthlyLimit.toFixed(2)} (${monthPercent}%)`
+      `Month:    ${monthColor(`$${stats.month.toFixed(4)}`)} / $${stats.monthlyLimit.toFixed(2)} (${monthPercent}%)`,
     );
 
     // All-time total
@@ -50,9 +48,17 @@ export async function usageCommand(options: UsageOptions = {}): Promise<void> {
 
     // Budget warnings
     if (stats.dailyLimit > 0 && stats.today >= stats.dailyLimit) {
-      console.log(chalk.red(`\n${iconPrefix("warning")}Daily budget limit reached! LLM operations will be blocked.`));
+      console.log(
+        chalk.red(
+          `\n${iconPrefix("warning")}Daily budget limit reached! LLM operations will be blocked.`,
+        ),
+      );
     } else if (stats.monthlyLimit > 0 && stats.month >= stats.monthlyLimit) {
-      console.log(chalk.red(`\n${iconPrefix("warning")}Monthly budget limit reached! LLM operations will be blocked.`));
+      console.log(
+        chalk.red(
+          `\n${iconPrefix("warning")}Monthly budget limit reached! LLM operations will be blocked.`,
+        ),
+      );
     }
 
     // Usage progress bars
@@ -60,9 +66,17 @@ export async function usageCommand(options: UsageOptions = {}): Promise<void> {
     console.log(`Daily:   ${renderProgressBar(stats.today, stats.dailyLimit)}`);
     console.log(`Monthly: ${renderProgressBar(stats.month, stats.monthlyLimit)}`);
 
-    console.log(chalk.gray(`\n${formatTipPrefix()}Configure limits in ~/.cass-memory/config.json under 'budget'`));
+    console.log(
+      chalk.gray(
+        `\n${formatTipPrefix()}Configure limits in ~/.cass-memory/config.json under 'budget'`,
+      ),
+    );
   } catch (err) {
-    reportError(err instanceof Error ? err : String(err), { json: options.json, command, startedAtMs });
+    reportError(err instanceof Error ? err : String(err), {
+      json: options.json,
+      command,
+      startedAtMs,
+    });
   }
 }
 

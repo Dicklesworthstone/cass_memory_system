@@ -1,9 +1,18 @@
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import crypto from "node:crypto";
-import { ProcessedEntry } from "./types.js";
-import { ensureDir, fileExists, expandPath, now, atomicWrite, withLock, warn, resolveGlobalDir } from "./utils.js";
 import { sanitize } from "./sanitize.js";
+import type { ProcessedEntry } from "./types.js";
+import {
+  atomicWrite,
+  ensureDir,
+  expandPath,
+  fileExists,
+  now,
+  resolveGlobalDir,
+  warn,
+  withLock,
+} from "./utils.js";
 
 // -----------------------------------------------------------------------------
 // Usage Analytics Types
@@ -150,12 +159,12 @@ export function setUsageLogPath(p: string): void {
  */
 export async function trackEvent<T extends UsageEventType>(
   event: T,
-  data: Extract<UsageEvent, { event: T }>["data"]
+  data: Extract<UsageEvent, { event: T }>["data"],
 ): Promise<void> {
   try {
     // Sanitize sensitive fields before logging
     const safeData = { ...data };
-    
+
     if (event === "command_run") {
       const d = safeData as CommandRunEvent["data"];
       if (d.error) d.error = sanitize(d.error);
@@ -176,7 +185,7 @@ export async function trackEvent<T extends UsageEventType>(
 
     const logPath = getUsageLogPath();
     await ensureDir(path.dirname(logPath));
-    
+
     await withLock(logPath, async () => {
       await fs.appendFile(logPath, JSON.stringify(entry) + "\n", "utf-8");
     });
@@ -192,7 +201,7 @@ export async function trackEvent<T extends UsageEventType>(
 export async function trackBulletMarked(
   bulletId: string,
   feedback: "helpful" | "harmful",
-  options?: { reason?: string; sessionPath?: string }
+  options?: { reason?: string; sessionPath?: string },
 ): Promise<void> {
   await trackEvent("bullet_marked", {
     bulletId,
@@ -208,7 +217,7 @@ export async function trackCommandRun(
   command: string,
   duration_ms: number,
   success: boolean,
-  options?: { scope?: string; error?: string }
+  options?: { scope?: string; error?: string },
 ): Promise<void> {
   await trackEvent("command_run", {
     command,
@@ -224,7 +233,7 @@ export async function trackCommandRun(
 export async function trackSessionCount(
   provider: string,
   count: number,
-  workspace?: string
+  workspace?: string,
 ): Promise<void> {
   await trackEvent("session_count", {
     provider,
@@ -240,7 +249,7 @@ export async function trackReflectionStats(
   sessionsProcessed: number,
   deltasProposed: number,
   deltasApplied: number,
-  workspace?: string
+  workspace?: string,
 ): Promise<void> {
   await trackEvent("reflection_stats", {
     sessionsProcessed,
@@ -255,7 +264,7 @@ export async function trackReflectionStats(
  */
 export async function trackPlaybookChange(
   action: "add" | "remove" | "deprecate" | "update" | "merge",
-  options?: { bulletId?: string; count?: number }
+  options?: { bulletId?: string; count?: number },
 ): Promise<void> {
   await trackEvent("playbook_change", {
     action,
@@ -269,7 +278,7 @@ export async function trackPlaybookChange(
 export async function trackError(
   category: string,
   message: string,
-  options?: { command?: string; stack?: string }
+  options?: { command?: string; stack?: string },
 ): Promise<void> {
   await trackEvent("error_occurred", {
     category,
@@ -304,10 +313,7 @@ export async function loadUsageEvents(options?: {
     try {
       const event = JSON.parse(line) as UsageEvent;
       events.push(event);
-    } catch {
-      // Skip malformed lines
-      continue;
-    }
+    } catch {}
   }
 
   // Apply filters
@@ -364,9 +370,9 @@ export async function getUsageStats(): Promise<{
       else harmful++;
     }
 
-    if (event.event === "command_run" && event.data && typeof event.data === 'object') {
+    if (event.event === "command_run" && event.data && typeof event.data === "object") {
       commandTotal++;
-      if ('success' in event.data && event.data.success) commandSuccess++;
+      if ("success" in event.data && event.data.success) commandSuccess++;
       else commandFailed++;
     }
   }
@@ -418,8 +424,8 @@ export class ProcessedLog {
 
     try {
       const content = await fs.readFile(this.logPath, "utf-8");
-      const lines = content.split("\n").filter(line => line.trim() && !line.startsWith("#"));
-      
+      const lines = content.split("\n").filter((line) => line.trim() && !line.startsWith("#"));
+
       for (const line of lines) {
         // Try JSONL first (new format)
         if (line.trim().startsWith("{")) {
@@ -432,7 +438,8 @@ export class ProcessedLog {
                 sessionPath: normalizedSessionPath,
                 processedAt: entry.processedAt || new Date().toISOString(),
                 diaryId: entry.diaryId || entry.id, // Handle both keys for compatibility
-                deltasGenerated: typeof entry.deltasGenerated === 'number' ? entry.deltasGenerated : 0
+                deltasGenerated:
+                  typeof entry.deltasGenerated === "number" ? entry.deltasGenerated : 0,
               });
             }
             continue;
@@ -454,12 +461,10 @@ export class ProcessedLog {
               sessionPath: normalizedSessionPath,
               processedAt: processedAt || new Date().toISOString(),
               diaryId: id === "-" ? undefined : id,
-              deltasGenerated: parseInt(deltasProposed || "0", 10)
+              deltasGenerated: parseInt(deltasProposed || "0", 10),
             });
           }
-        } catch {
-          continue;
-        }
+        } catch {}
       }
     } catch (error) {
       warn(`Failed to load processed log: ${error}`);
@@ -467,12 +472,12 @@ export class ProcessedLog {
   }
 
   async save(): Promise<void> {
-    const lines = ["# JSONL format: {\"sessionPath\":..., \"processedAt\":...}"];
-    
+    const lines = ['# JSONL format: {"sessionPath":..., "processedAt":...}'];
+
     for (const entry of this.entries.values()) {
       lines.push(JSON.stringify(entry));
     }
-    
+
     await withLock(this.logPath, async () => {
       await atomicWrite(this.logPath, lines.join("\n"));
     });
@@ -486,11 +491,11 @@ export class ProcessedLog {
     if (entries.length === 0) return;
 
     const lines: string[] = [];
-    
+
     for (const entry of entries) {
       const normalizedSessionPath = normalizeSessionPathForLog(entry.sessionPath);
       if (!normalizedSessionPath) continue;
-      
+
       const normalizedEntry: ProcessedEntry = { ...entry, sessionPath: normalizedSessionPath };
       this.entries.set(normalizedSessionPath, normalizedEntry);
       lines.push(JSON.stringify(normalizedEntry));
@@ -504,7 +509,7 @@ export class ProcessedLog {
       // Check if file exists to add header if needed
       const exists = await fileExists(this.logPath);
       if (!exists) {
-        const header = "# JSONL format: {\"sessionPath\":..., \"processedAt\":...}\n";
+        const header = '# JSONL format: {"sessionPath":..., "processedAt":...}\n';
         await fs.writeFile(this.logPath, header + lines.join("\n") + "\n", "utf-8");
       } else {
         await fs.appendFile(this.logPath, lines.join("\n") + "\n", "utf-8");

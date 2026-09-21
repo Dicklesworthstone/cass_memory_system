@@ -1,5 +1,5 @@
-import { describe, test, expect } from "bun:test";
-import { normalizeYamlKeys, camelToSnakeKeys } from "../src/utils.js";
+import { describe, expect, test } from "bun:test";
+import { camelToSnakeKeys, normalizeYamlKeys } from "../src/utils.js";
 
 describe("normalizeYamlKeys", () => {
   test("converts snake_case keys to camelCase deeply", () => {
@@ -7,12 +7,12 @@ describe("normalizeYamlKeys", () => {
       api_key: "x",
       llm_config: {
         max_tokens: 100,
-        model_name: "gpt"
+        model_name: "gpt",
       },
       playbook_paths: [
         { repo_path: "/repo/.cass/playbook.yaml" },
-        { global_path: "~/.cass-memory/playbook.yaml" }
-      ]
+        { global_path: "~/.cass-memory/playbook.yaml" },
+      ],
     };
 
     const result = normalizeYamlKeys<any>(input as any);
@@ -21,12 +21,12 @@ describe("normalizeYamlKeys", () => {
       apiKey: "x",
       llmConfig: {
         maxTokens: 100,
-        modelName: "gpt"
+        modelName: "gpt",
       },
       playbookPaths: [
         { repoPath: "/repo/.cass/playbook.yaml" },
-        { globalPath: "~/.cass-memory/playbook.yaml" }
-      ]
+        { globalPath: "~/.cass-memory/playbook.yaml" },
+      ],
     });
   });
 
@@ -42,12 +42,12 @@ describe("camelToSnakeKeys (inverse)", () => {
       apiKey: "x",
       llmConfig: {
         maxTokens: 100,
-        modelName: "gpt"
+        modelName: "gpt",
       },
       playbookPaths: [
         { repoPath: "/repo/.cass/playbook.yaml" },
-        { globalPath: "~/.cass-memory/playbook.yaml" }
-      ]
+        { globalPath: "~/.cass-memory/playbook.yaml" },
+      ],
     };
 
     const result = camelToSnakeKeys<any>(input as any);
@@ -56,12 +56,12 @@ describe("camelToSnakeKeys (inverse)", () => {
       api_key: "x",
       llm_config: {
         max_tokens: 100,
-        model_name: "gpt"
+        model_name: "gpt",
       },
       playbook_paths: [
         { repo_path: "/repo/.cass/playbook.yaml" },
-        { global_path: "~/.cass-memory/playbook.yaml" }
-      ]
+        { global_path: "~/.cass-memory/playbook.yaml" },
+      ],
     });
   });
 

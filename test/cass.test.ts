@@ -1,16 +1,16 @@
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import {
-  cassAvailable,
-  handleCassUnavailable,
-  cassNeedsIndex,
-  safeCassSearch,
-  safeCassSearchWithDegraded,
-  cassExport,
-  cassExpand,
-  cassTimeline,
-  findUnprocessedSessions,
   CASS_EXIT_CODES,
   type CassRunner,
+  cassAvailable,
+  cassExpand,
+  cassExport,
+  cassNeedsIndex,
+  cassTimeline,
+  findUnprocessedSessions,
+  handleCassUnavailable,
+  safeCassSearch,
+  safeCassSearchWithDegraded,
 } from "../src/cass.js";
 import { createTestConfig } from "./helpers/factories.js";
 
@@ -25,7 +25,7 @@ function createCassRunnerStub(opts: {
   onExecFile?: (
     file: string,
     args: string[],
-    options?: { maxBuffer?: number; timeout?: number }
+    options?: { maxBuffer?: number; timeout?: number },
   ) => void;
   onSpawnSync?: (file: string, args: string[]) => void;
 }): CassRunner {
@@ -105,7 +105,7 @@ describe("cass.ts core functions (runner stubbed)", () => {
     const runner = createCassRunnerStub({ versionOk: false, versionErrorCode: "ENOENT" });
     const result = await handleCassUnavailable(
       { cassPath: "/no/cass", searchCommonPaths: false },
-      runner
+      runner,
     );
     expect(result.fallbackMode).toBe("playbook-only");
     expect(result.canContinue).toBe(true);
@@ -230,7 +230,13 @@ describe("cass.ts core functions (runner stubbed)", () => {
         {
           date: "2025-01-01",
           sessions: [
-            { path: "s1.jsonl", agent: "claude", messageCount: 10, startTime: "10:00", endTime: "11:00" },
+            {
+              path: "s1.jsonl",
+              agent: "claude",
+              messageCount: 10,
+              startTime: "10:00",
+              endTime: "11:00",
+            },
           ],
         },
       ],
@@ -293,7 +299,13 @@ describe("cass.ts core functions (runner stubbed)", () => {
         {
           date: "2025-01-01",
           sessions: [
-            { path: "s1.jsonl", agent: "claude", messageCount: 10, startTime: "10:00", endTime: "11:00" },
+            {
+              path: "s1.jsonl",
+              agent: "claude",
+              messageCount: 10,
+              startTime: "10:00",
+              endTime: "11:00",
+            },
           ],
         },
       ],
@@ -312,8 +324,20 @@ describe("cass.ts core functions (runner stubbed)", () => {
         {
           date: "2025-01-01",
           sessions: [
-            { path: "s1.jsonl", agent: "claude", messageCount: 10, startTime: "10:00", endTime: "11:00" },
-            { path: "s2.jsonl", agent: "claude", messageCount: 5, startTime: "12:00", endTime: "13:00" },
+            {
+              path: "s1.jsonl",
+              agent: "claude",
+              messageCount: 10,
+              startTime: "10:00",
+              endTime: "11:00",
+            },
+            {
+              path: "s2.jsonl",
+              agent: "claude",
+              messageCount: 5,
+              startTime: "12:00",
+              endTime: "13:00",
+            },
           ],
         },
       ],
@@ -334,9 +358,26 @@ describe("cass.ts core functions (runner stubbed)", () => {
         {
           date: "2025-01-01",
           sessions: [
-            { path: "/home/u/.omp/agent/sessions/ws/s1.jsonl", agent: "omp", messageCount: 10, startTime: "10:00", endTime: "11:00" },
-            { path: "/home/u/.claude/projects/p/s2.jsonl", agent: "claude_code", messageCount: 5, startTime: "12:00", endTime: "13:00" },
-            { path: "/home/u/somewhere/s3.jsonl", messageCount: 5, startTime: "12:00", endTime: "13:00" },
+            {
+              path: "/home/u/.omp/agent/sessions/ws/s1.jsonl",
+              agent: "omp",
+              messageCount: 10,
+              startTime: "10:00",
+              endTime: "11:00",
+            },
+            {
+              path: "/home/u/.claude/projects/p/s2.jsonl",
+              agent: "claude_code",
+              messageCount: 5,
+              startTime: "12:00",
+              endTime: "13:00",
+            },
+            {
+              path: "/home/u/somewhere/s3.jsonl",
+              messageCount: 5,
+              startTime: "12:00",
+              endTime: "13:00",
+            },
           ],
         },
       ],
@@ -358,8 +399,20 @@ describe("cass.ts core functions (runner stubbed)", () => {
         {
           date: "2025-01-01",
           sessions: [
-            { path: "s1.jsonl", agent: "claude_code", messageCount: 10, startTime: "10:00", endTime: "11:00" },
-            { path: "s2.jsonl", agent: "omp", messageCount: 5, startTime: "12:00", endTime: "13:00" },
+            {
+              path: "s1.jsonl",
+              agent: "claude_code",
+              messageCount: 10,
+              startTime: "10:00",
+              endTime: "11:00",
+            },
+            {
+              path: "s2.jsonl",
+              agent: "omp",
+              messageCount: 5,
+              startTime: "12:00",
+              endTime: "13:00",
+            },
           ],
         },
       ],
@@ -370,7 +423,12 @@ describe("cass.ts core functions (runner stubbed)", () => {
     const claude = await findUnprocessedSessions(new Set(), { agent: "claude" }, "cass", runner);
     expect(claude.map((s) => s.path)).toEqual(["s1.jsonl"]);
 
-    const claudeCode = await findUnprocessedSessions(new Set(), { agent: "claude_code" }, "cass", runner);
+    const claudeCode = await findUnprocessedSessions(
+      new Set(),
+      { agent: "claude_code" },
+      "cass",
+      runner,
+    );
     expect(claudeCode.map((s) => s.path)).toEqual(["s1.jsonl"]);
 
     const omp = await findUnprocessedSessions(new Set(), { agent: "oh-my-pi" }, "cass", runner);
@@ -383,8 +441,20 @@ describe("cass.ts core functions (runner stubbed)", () => {
         {
           date: "2025-01-01",
           sessions: [
-            { path: "s1.jsonl", agent: "Claude", messageCount: 10, startTime: "10:00", endTime: "11:00" },
-            { path: "s2.jsonl", agent: "cursor", messageCount: 5, startTime: "12:00", endTime: "13:00" },
+            {
+              path: "s1.jsonl",
+              agent: "Claude",
+              messageCount: 10,
+              startTime: "10:00",
+              endTime: "11:00",
+            },
+            {
+              path: "s2.jsonl",
+              agent: "cursor",
+              messageCount: 5,
+              startTime: "12:00",
+              endTime: "13:00",
+            },
           ],
         },
       ],
@@ -393,7 +463,12 @@ describe("cass.ts core functions (runner stubbed)", () => {
     const runner = createCassRunnerStub({ execStdout: { timeline: output } });
     const processed = new Set<string>();
 
-    const result = await findUnprocessedSessions(processed, { agent: "  cLaUdE  " }, "cass", runner);
+    const result = await findUnprocessedSessions(
+      processed,
+      { agent: "  cLaUdE  " },
+      "cass",
+      runner,
+    );
 
     expect(result.map((s) => s.path)).toEqual(["s1.jsonl"]);
   });
@@ -404,9 +479,27 @@ describe("cass.ts core functions (runner stubbed)", () => {
         {
           date: "2025-01-01",
           sessions: [
-            { path: "s1.jsonl", agent: "claude", messageCount: 10, startTime: "10:00", endTime: "11:00" },
-            { path: "s2.jsonl", agent: "claude", messageCount: 5, startTime: "12:00", endTime: "13:00" },
-            { path: "s3.jsonl", agent: "claude", messageCount: 5, startTime: "14:00", endTime: "15:00" },
+            {
+              path: "s1.jsonl",
+              agent: "claude",
+              messageCount: 10,
+              startTime: "10:00",
+              endTime: "11:00",
+            },
+            {
+              path: "s2.jsonl",
+              agent: "claude",
+              messageCount: 5,
+              startTime: "12:00",
+              endTime: "13:00",
+            },
+            {
+              path: "s3.jsonl",
+              agent: "claude",
+              messageCount: 5,
+              startTime: "14:00",
+              endTime: "15:00",
+            },
           ],
         },
       ],

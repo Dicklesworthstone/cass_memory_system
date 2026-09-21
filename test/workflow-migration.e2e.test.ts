@@ -4,13 +4,13 @@
  * Per bead cass_memory_system-xex1:
  * create old-schema playbook → doctor --fix → verify data preserved + new schema fields available
  */
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { readFile, writeFile } from "node:fs/promises";
 import yaml from "yaml";
 import { doctorCommand } from "../src/commands/doctor.js";
-import { withTempCassHome, type TestEnv } from "./helpers/temp.js";
 import { createE2ELogger } from "./helpers/e2e-logger.js";
 import { createTestConfig } from "./helpers/factories.js";
+import { type TestEnv, withTempCassHome } from "./helpers/temp.js";
 
 function captureConsole() {
   const logs: string[] = [];
@@ -45,7 +45,7 @@ function captureConsole() {
 async function snapshotFile(
   log: ReturnType<typeof createE2ELogger>,
   name: string,
-  filePath: string
+  filePath: string,
 ): Promise<void> {
   const contents = await readFile(filePath, "utf-8").catch(() => "");
   log.snapshot(name, contents);
@@ -127,4 +127,3 @@ describe("Workflow E2E: playbook migration", () => {
     });
   });
 });
-

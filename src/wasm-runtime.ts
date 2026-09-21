@@ -45,16 +45,22 @@
  * universally supported and adequate for a 23MB MiniLM model.
  */
 
+import path from "node:path";
 // NOTE: these imports must come from onnxruntime-web's real on-disk
 // location. When bundled with `bun build --compile`, Bun copies the
 // referenced files into the virtual FS and rewrites these identifiers
 // to point at the extracted locations. When running under plain `bun
 // run`, they resolve to the literal on-disk node_modules paths.
 import ortWasmPath from "../node_modules/onnxruntime-web/dist/ort-wasm.wasm" with { type: "file" };
-import ortWasmSimdPath from "../node_modules/onnxruntime-web/dist/ort-wasm-simd.wasm" with { type: "file" };
-import ortWasmThreadedPath from "../node_modules/onnxruntime-web/dist/ort-wasm-threaded.wasm" with { type: "file" };
-import ortWasmSimdThreadedPath from "../node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm" with { type: "file" };
-import path from "node:path";
+import ortWasmSimdPath from "../node_modules/onnxruntime-web/dist/ort-wasm-simd.wasm" with {
+  type: "file",
+};
+import ortWasmSimdThreadedPath from "../node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm" with {
+  type: "file",
+};
+import ortWasmThreadedPath from "../node_modules/onnxruntime-web/dist/ort-wasm-threaded.wasm" with {
+  type: "file",
+};
 
 let configured = false;
 

@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -35,7 +35,7 @@ export async function cleanupTempGitRepo(repoDir: string): Promise<void> {
  */
 export async function withTempGitRepo<T>(
   fn: (repoDir: string) => Promise<T>,
-  prefix = "cass-test-repo"
+  prefix = "cass-test-repo",
 ): Promise<T> {
   const repoDir = await createTempGitRepo(prefix);
   try {
@@ -52,7 +52,7 @@ export function commitAll(repoDir: string, message: string): void {
   execSync("git add -A", { cwd: repoDir, stdio: "pipe" });
   execSync(`git commit -m "${message.replace(/"/g, '\\"')}"`, {
     cwd: repoDir,
-    stdio: "pipe"
+    stdio: "pipe",
   });
 }
 
@@ -62,7 +62,7 @@ export function commitAll(repoDir: string, message: string): void {
 export function getCurrentBranch(repoDir: string): string {
   return execSync("git rev-parse --abbrev-ref HEAD", {
     cwd: repoDir,
-    encoding: "utf-8"
+    encoding: "utf-8",
   }).trim();
 }
 
@@ -72,7 +72,7 @@ export function getCurrentBranch(repoDir: string): string {
 export function hasUncommittedChanges(repoDir: string): boolean {
   const status = execSync("git status --porcelain", {
     cwd: repoDir,
-    encoding: "utf-8"
+    encoding: "utf-8",
   });
   return status.trim().length > 0;
 }
@@ -84,7 +84,7 @@ export async function createAndCommitFile(
   repoDir: string,
   relativePath: string,
   content: string,
-  commitMessage: string
+  commitMessage: string,
 ): Promise<void> {
   const fullPath = join(repoDir, relativePath);
   const parentDir = join(fullPath, "..");
@@ -93,6 +93,6 @@ export async function createAndCommitFile(
   execSync(`git add "${relativePath}"`, { cwd: repoDir, stdio: "pipe" });
   execSync(`git commit -m "${commitMessage.replace(/"/g, '\\"')}"`, {
     cwd: repoDir,
-    stdio: "pipe"
+    stdio: "pipe",
   });
 }

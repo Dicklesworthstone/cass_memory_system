@@ -1,24 +1,24 @@
-import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { z } from "zod";
 import {
-  getApiKey,
-  validateApiKey,
-  getModel,
-  generateObjectSafe,
-  objectGenerationOverrides,
-  isLLMAvailable,
-  getAvailableProviders,
-  fillPrompt,
-  llmWithRetry,
-  llmWithFallback,
-  resolveEffectiveLLMConfig,
   __resetAutoFallbackNoticeForTest,
+  fillPrompt,
+  generateObjectSafe,
+  getApiKey,
+  getAvailableProviders,
+  getModel,
+  isLLMAvailable,
   LLM_RETRY_CONFIG,
-  PROMPTS,
   type LLMIO,
-  type LLMProvider
+  type LLMProvider,
+  llmWithFallback,
+  llmWithRetry,
+  objectGenerationOverrides,
+  PROMPTS,
+  resolveEffectiveLLMConfig,
+  validateApiKey,
 } from "../src/llm.js";
 import { truncateForContext } from "../src/utils.js";
-import { z } from "zod";
 import { createTestConfig } from "./helpers/factories.js";
 
 // ============================================================================
@@ -116,7 +116,9 @@ describe("getApiKey", () => {
 
   it("throws error for missing API key", () => {
     delete process.env.ANTHROPIC_API_KEY;
-    expect(() => getApiKey("anthropic")).toThrow("ANTHROPIC_API_KEY environment variable not found");
+    expect(() => getApiKey("anthropic")).toThrow(
+      "ANTHROPIC_API_KEY environment variable not found",
+    );
   });
 
   it("throws error for empty API key", () => {
@@ -134,7 +136,9 @@ describe("getApiKey", () => {
   });
 
   it("includes supported providers in unknown provider error", () => {
-    expect(() => getApiKey("bedrock")).toThrow("Supported providers: openai, anthropic, google, ollama");
+    expect(() => getApiKey("bedrock")).toThrow(
+      "Supported providers: openai, anthropic, google, ollama",
+    );
   });
 });
 
@@ -162,25 +166,25 @@ describe("validateApiKey", () => {
   it("does not warn for valid OpenAI key format", () => {
     process.env.OPENAI_API_KEY = "sk-validkeyformat123456789012345678901234567890";
     validateApiKey("openai");
-    expect(warnMessages.filter(m => m.includes("does not start with")).length).toBe(0);
+    expect(warnMessages.filter((m) => m.includes("does not start with")).length).toBe(0);
   });
 
   it("warns for OpenAI key with wrong prefix", () => {
     process.env.OPENAI_API_KEY = "wrong-prefix-key-12345678901234567890";
     validateApiKey("openai");
-    expect(warnMessages.some(m => m.includes("does not start with 'sk-'"))).toBe(true);
+    expect(warnMessages.some((m) => m.includes("does not start with 'sk-'"))).toBe(true);
   });
 
   it("warns for Anthropic key with wrong prefix", () => {
     process.env.ANTHROPIC_API_KEY = "sk-wrong-anthropic-key-12345678901234567890";
     validateApiKey("anthropic");
-    expect(warnMessages.some(m => m.includes("does not start with 'sk-ant-'"))).toBe(true);
+    expect(warnMessages.some((m) => m.includes("does not start with 'sk-ant-'"))).toBe(true);
   });
 
   it("warns for Google key with wrong prefix", () => {
     process.env.GOOGLE_GENERATIVE_AI_API_KEY = "wrong-google-key-12345678901234567890";
     validateApiKey("google");
-    expect(warnMessages.some(m => m.includes("does not start with 'AIza'"))).toBe(true);
+    expect(warnMessages.some((m) => m.includes("does not start with 'AIza'"))).toBe(true);
   });
 
   it("warns for placeholder values in key", () => {
@@ -188,13 +192,13 @@ describe("validateApiKey", () => {
     // Use a long key to avoid the "short key" warning interfering with test isolation if any
     process.env.OPENAI_API_KEY = "sk-test-key-here-very-long-string-to-avoid-short-warning";
     validateApiKey("openai");
-    expect(warnMessages.some(m => m.includes("placeholder"))).toBe(true);
+    expect(warnMessages.some((m) => m.includes("placeholder"))).toBe(true);
   });
 
   it("warns for short API key", () => {
     process.env.OPENAI_API_KEY = "sk-short";
     validateApiKey("openai");
-    expect(warnMessages.some(m => m.includes("seems too short"))).toBe(true);
+    expect(warnMessages.some((m) => m.includes("seems too short"))).toBe(true);
   });
 
   it("does nothing for unknown provider", () => {
@@ -308,19 +312,23 @@ describe("getModel", () => {
   it("accepts explicit apiKey parameter", () => {
     clearAllApiKeys();
     // This should not throw because we provide the key directly
-    expect(() => getModel({
-      provider: "openai",
-      model: "gpt-4",
-      apiKey: "sk-explicit-key"
-    })).not.toThrow();
+    expect(() =>
+      getModel({
+        provider: "openai",
+        model: "gpt-4",
+        apiKey: "sk-explicit-key",
+      }),
+    ).not.toThrow();
   });
 
   it("throws for unsupported provider", () => {
-    expect(() => getModel({
-      provider: "unsupported" as any,
-      model: "model",
-      apiKey: "key"
-    })).toThrow("Unsupported provider");
+    expect(() =>
+      getModel({
+        provider: "unsupported" as any,
+        model: "model",
+        apiKey: "key",
+      }),
+    ).toThrow("Unsupported provider");
   });
 
   it("creates OpenAI model when key is available", () => {
@@ -353,7 +361,7 @@ describe("getModel", () => {
       provider: "openai",
       model: "o3",
       apiKey: "sk-test-key",
-      disableStructuredOutputs: true
+      disableStructuredOutputs: true,
     }) as any;
     expect(flagOn.supportsStructuredOutputs).toBe(false);
   });
@@ -364,7 +372,7 @@ describe("getModel", () => {
       model: "deepseek/deepseek-chat",
       apiKey: "sk-test-key",
       baseUrl: "https://openrouter.ai/api/v1",
-      disableStructuredOutputs: true
+      disableStructuredOutputs: true,
     }) as any;
     expect(model.supportsStructuredOutputs).toBe(false);
   });
@@ -404,7 +412,7 @@ describe("generateObjectSafe with disableStructuredOutputs", () => {
       generateObject: async <T>(options: any) => {
         captured.options = options;
         return { object: { test: "ok" } as T };
-      }
+      },
     };
   }
 
@@ -414,7 +422,7 @@ describe("generateObjectSafe with disableStructuredOutputs", () => {
       provider: "openai",
       model: "deepseek/deepseek-chat",
       baseUrl: "https://openrouter.ai/api/v1",
-      disableStructuredOutputs: true
+      disableStructuredOutputs: true,
     });
 
     const result = await generateObjectSafe(schema, "prompt", config, 3, capturingIO(captured));
@@ -525,7 +533,7 @@ describe("generateObjectSafe retired-model errors", () => {
       generateObject: async () => {
         calls.count++;
         throw err;
-      }
+      },
     };
   }
 
@@ -536,7 +544,7 @@ describe("generateObjectSafe retired-model errors", () => {
     const config = createTestConfig({ provider: "anthropic", model: "claude-sonnet-4-20250514" });
 
     await expect(
-      generateObjectSafe(schema, "prompt", config, 3, throwingIO(err, calls))
+      generateObjectSafe(schema, "prompt", config, 3, throwingIO(err, calls)),
     ).rejects.toThrow(/may have been retired/);
     // Hard error — no retry attempts burned on a request that can never succeed
     expect(calls.count).toBe(1);
@@ -544,7 +552,9 @@ describe("generateObjectSafe retired-model errors", () => {
 
   it("throws immediately with a hint on a not_found_error body without a status code", async () => {
     const calls = { count: 0 };
-    const err = new Error('{"type":"error","error":{"type":"not_found_error","message":"model: claude-sonnet-4-20250514"}}');
+    const err = new Error(
+      '{"type":"error","error":{"type":"not_found_error","message":"model: claude-sonnet-4-20250514"}}',
+    );
     const config = createTestConfig({ provider: "anthropic", model: "claude-sonnet-4-20250514" });
 
     const promise = generateObjectSafe(schema, "prompt", config, 3, throwingIO(err, calls));
@@ -830,7 +840,7 @@ describe("llmWithFallback", () => {
     const schema = z.object({ test: z.string() });
 
     await expect(llmWithFallback(schema, "test prompt", config)).rejects.toThrow(
-      "No LLM providers available"
+      "No LLM providers available",
     );
   });
 
@@ -840,7 +850,7 @@ describe("llmWithFallback", () => {
     const schema = z.object({ test: z.string() });
 
     await expect(llmWithFallback(schema, "test prompt", config)).rejects.toThrow(
-      "OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY, or OLLAMA_BASE_URL"
+      "OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY, or OLLAMA_BASE_URL",
     );
   });
 });
@@ -854,17 +864,21 @@ describe("LLM integration (skipped if no API keys)", () => {
   // "cli" provider is auto-detected from binaries on PATH and getModel()
   // intentionally throws for it (use cliGenerateObject() instead).
   const sdkProviders = () =>
-    getAvailableProviders().filter((p): p is "openai" | "anthropic" | "google" =>
-      p === "openai" || p === "anthropic" || p === "google"
+    getAvailableProviders().filter(
+      (p): p is "openai" | "anthropic" | "google" =>
+        p === "openai" || p === "anthropic" || p === "google",
     );
 
   it.skipIf(sdkProviders().length === 0)("can create model for available provider", () => {
     const provider = sdkProviders()[0];
     const model = getModel({
       provider,
-      model: provider === "openai" ? "gpt-4o-mini" :
-             provider === "anthropic" ? "claude-3-5-sonnet-20241022" :
-             "gemini-1.5-flash"
+      model:
+        provider === "openai"
+          ? "gpt-4o-mini"
+          : provider === "anthropic"
+            ? "claude-3-5-sonnet-20241022"
+            : "gemini-1.5-flash",
     });
     expect(model).toBeDefined();
   });

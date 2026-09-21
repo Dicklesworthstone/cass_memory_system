@@ -70,7 +70,7 @@ function safeStringify(value: unknown, maxChars: number): string {
         }
         return v;
       },
-      2
+      2,
     );
     return truncate(json, maxChars);
   } catch {
@@ -79,7 +79,13 @@ function safeStringify(value: unknown, maxChars: number): string {
 }
 
 function safeFileStem(name: string): string {
-  return name.trim().replace(/[^a-zA-Z0-9-_]+/g, "-").replace(/-+/g, "-").slice(0, 80) || "e2e";
+  return (
+    name
+      .trim()
+      .replace(/[^a-zA-Z0-9-_]+/g, "-")
+      .replace(/-+/g, "-")
+      .slice(0, 80) || "e2e"
+  );
 }
 
 const LEVEL_ORDER: Record<Level, number> = { debug: 10, info: 20, warn: 30, error: 40 };
@@ -95,11 +101,13 @@ export class E2ELogger {
 
   constructor(
     private readonly testName: string,
-    options: E2ELoggerOptions = {}
+    options: E2ELoggerOptions = {},
   ) {
     const envLevel = (process.env.TEST_LOG_LEVEL || "").trim().toLowerCase();
     const liveMinLevel = (options.liveMinLevel ||
-      (["debug", "info", "warn", "error"].includes(envLevel) ? (envLevel as Level) : "info")) as Level;
+      (["debug", "info", "warn", "error"].includes(envLevel)
+        ? (envLevel as Level)
+        : "info")) as Level;
 
     this.options = {
       liveMinLevel,
@@ -185,7 +193,13 @@ export class E2ELogger {
     this.push({ ts: nowIso(), level: "info", kind: "repro", command: cmd });
   }
 
-  toJSON(): { testName: string; startedAt: string; durationMs: number; events: LogEvent[]; repro?: string } {
+  toJSON(): {
+    testName: string;
+    startedAt: string;
+    durationMs: number;
+    events: LogEvent[];
+    repro?: string;
+  } {
     return {
       testName: this.testName,
       startedAt: new Date(this.startedAt).toISOString(),
@@ -246,7 +260,9 @@ export class E2ELogger {
         console.error(`\nARTIFACT: ${artifact}`);
       } catch (err) {
         // eslint-disable-next-line no-console
-        console.error(`(failed to write artifact) ${err instanceof Error ? err.message : String(err)}`);
+        console.error(
+          `(failed to write artifact) ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     }
 
@@ -267,4 +283,3 @@ export class E2ELogger {
 export function createE2ELogger(testName: string, options: E2ELoggerOptions = {}): E2ELogger {
   return new E2ELogger(testName, options);
 }
-

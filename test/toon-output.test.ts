@@ -1,9 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
-import {
-  __setStdoutSinkForTests,
-  isToonOutput,
-  printToon,
-} from "../src/utils.js";
+import { __setStdoutSinkForTests, isToonOutput, printToon } from "../src/utils.js";
 
 describe("TOON output helpers", () => {
   const envKeys = [
@@ -52,14 +48,15 @@ describe("TOON output helpers", () => {
     const childProcess = require("child_process");
 
     const spawnSpy = spyOn(childProcess, "spawnSync").mockImplementation((...callArgs: any[]) => {
-        const cmdStr = String(callArgs[0]);
-        const argv = Array.isArray(callArgs[1]) ? callArgs[1].map(String) : [];
-        calls.push({ cmd: cmdStr, args: argv });
+      const cmdStr = String(callArgs[0]);
+      const argv = Array.isArray(callArgs[1]) ? callArgs[1].map(String) : [];
+      calls.push({ cmd: cmdStr, args: argv });
 
-        const sub = argv[0] ?? "";
-        if (sub === "--help") {
-          // Only `tru` should look like toon_rust.
-          return (cmdStr === "tru"
+      const sub = argv[0] ?? "";
+      if (sub === "--help") {
+        // Only `tru` should look like toon_rust.
+        return (
+          cmdStr === "tru"
             ? {
                 pid: 0,
                 output: [],
@@ -75,10 +72,12 @@ describe("TOON output helpers", () => {
                 stderr: "",
                 status: 0,
                 signal: null,
-              }) as any;
-        }
-        if (sub === "--version") {
-          return (cmdStr === "tru"
+              }
+        ) as any;
+      }
+      if (sub === "--version") {
+        return (
+          cmdStr === "tru"
             ? {
                 pid: 0,
                 output: [],
@@ -94,20 +93,21 @@ describe("TOON output helpers", () => {
                 stderr: "",
                 status: 0,
                 signal: null,
-              }) as any;
-        }
-        if (sub === "--encode") {
-          return {
-            pid: 0,
-            output: [],
-            stdout: "k=v\n",
-            stderr: "",
-            status: 0,
-            signal: null,
-          } as any;
-        }
-        return { pid: 0, output: [], stdout: "", stderr: "", status: 0, signal: null } as any;
-      });
+              }
+        ) as any;
+      }
+      if (sub === "--encode") {
+        return {
+          pid: 0,
+          output: [],
+          stdout: "k=v\n",
+          stderr: "",
+          status: 0,
+          signal: null,
+        } as any;
+      }
+      return { pid: 0, output: [], stdout: "", stderr: "", status: 0, signal: null } as any;
+    });
 
     let output = "";
     __setStdoutSinkForTests((text) => {

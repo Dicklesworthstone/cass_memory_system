@@ -1,12 +1,12 @@
-import { describe, test, expect } from "bun:test";
-import {
-  validateRule,
-  formatValidationResult,
-  hasWarnings,
-  hasIssues,
-  type ValidationResult,
-} from "../src/rule-validation.js";
+import { describe, expect, test } from "bun:test";
 import { createEmptyPlaybook } from "../src/playbook.js";
+import {
+  formatValidationResult,
+  hasIssues,
+  hasWarnings,
+  type ValidationResult,
+  validateRule,
+} from "../src/rule-validation.js";
 import { configureOllamaEmbedding, setEmbeddingBackend } from "../src/semantic.js";
 import { createTestBullet } from "./helpers/factories.js";
 
@@ -14,13 +14,16 @@ describe("rule-validation.ts", () => {
   describe("validateRule", () => {
     test("accepts valid rule with good quality", async () => {
       const pb = createEmptyPlaybook("test");
-      const content = "When debugging async code, always check for unhandled promise rejections before investigating further.";
+      const content =
+        "When debugging async code, always check for unhandled promise rejections before investigating further.";
 
       const result = await validateRule(content, "debugging", pb, { skipSimilarity: true });
 
       expect(result.valid).toBe(true);
       // May have suggestions but no errors/warnings
-      const issues = result.warnings.filter(w => w.severity === "error" || w.severity === "warning");
+      const issues = result.warnings.filter(
+        (w) => w.severity === "error" || w.severity === "warning",
+      );
       expect(issues.length).toBe(0);
     });
 
@@ -30,7 +33,9 @@ describe("rule-validation.ts", () => {
 
       const result = await validateRule(content, "testing", pb, { skipSimilarity: true });
 
-      expect(result.warnings.some(w => w.type === "quality" && w.message.includes("too short"))).toBe(true);
+      expect(
+        result.warnings.some((w) => w.type === "quality" && w.message.includes("too short")),
+      ).toBe(true);
     });
 
     test("suggests split for long rule", async () => {
@@ -39,8 +44,10 @@ describe("rule-validation.ts", () => {
 
       const result = await validateRule(content, "general", pb, { skipSimilarity: true });
 
-      expect(result.warnings.some(w => w.type === "quality" && w.message.includes("long"))).toBe(true);
-      expect(result.warnings.find(w => w.message.includes("long"))?.severity).toBe("suggestion");
+      expect(result.warnings.some((w) => w.type === "quality" && w.message.includes("long"))).toBe(
+        true,
+      );
+      expect(result.warnings.find((w) => w.message.includes("long"))?.severity).toBe("suggestion");
     });
 
     test("suggests context when missing context words", async () => {
@@ -49,7 +56,9 @@ describe("rule-validation.ts", () => {
 
       const result = await validateRule(content, "testing", pb, { skipSimilarity: true });
 
-      expect(result.warnings.some(w => w.type === "quality" && w.message.includes("context"))).toBe(true);
+      expect(
+        result.warnings.some((w) => w.type === "quality" && w.message.includes("context")),
+      ).toBe(true);
     });
 
     test("warns on vague content", async () => {
@@ -58,12 +67,15 @@ describe("rule-validation.ts", () => {
 
       const result = await validateRule(content, "general", pb, { skipSimilarity: true });
 
-      expect(result.warnings.some(w => w.type === "quality" && w.message.includes("vague"))).toBe(true);
+      expect(result.warnings.some((w) => w.type === "quality" && w.message.includes("vague"))).toBe(
+        true,
+      );
     });
 
     test("suggests category when none provided", async () => {
       const pb = createEmptyPlaybook("test");
-      const content = "When writing unit tests, always mock external dependencies to ensure isolation.";
+      const content =
+        "When writing unit tests, always mock external dependencies to ensure isolation.";
 
       const result = await validateRule(content, "", pb, { skipSimilarity: true });
 
@@ -77,7 +89,7 @@ describe("rule-validation.ts", () => {
       const result = await validateRule(content, "documentation", pb, { skipSimilarity: true });
 
       // Should suggest security instead of documentation
-      expect(result.warnings.some(w => w.type === "category")).toBe(true);
+      expect(result.warnings.some((w) => w.type === "category")).toBe(true);
       expect(result.suggestions.category).toBe("security");
     });
 
@@ -90,27 +102,31 @@ describe("rule-validation.ts", () => {
         skipSimilarity: true,
         minWords: 3,
       });
-      expect(result1.warnings.filter(w => w.message.includes("too short")).length).toBe(0);
+      expect(result1.warnings.filter((w) => w.message.includes("too short")).length).toBe(0);
 
       // With high minWords, should warn
       const result2 = await validateRule(content, "general", pb, {
         skipSimilarity: true,
         minWords: 20,
       });
-      expect(result2.warnings.some(w => w.message.includes("too short"))).toBe(true);
+      expect(result2.warnings.some((w) => w.message.includes("too short"))).toBe(true);
     });
 
     test("similarity check finds duplicates", async () => {
       const pb = createEmptyPlaybook("test");
-      const existingContent = "When debugging async code, always check for unhandled promise rejections.";
-      pb.bullets.push(createTestBullet({
-        content: existingContent,
-        category: "debugging",
-        embedding: [1, 0],
-      }));
+      const existingContent =
+        "When debugging async code, always check for unhandled promise rejections.";
+      pb.bullets.push(
+        createTestBullet({
+          content: existingContent,
+          category: "debugging",
+          embedding: [1, 0],
+        }),
+      );
 
       // Very similar content
-      const newContent = "When debugging asynchronous code, always check for unhandled promise rejections first.";
+      const newContent =
+        "When debugging asynchronous code, always check for unhandled promise rejections first.";
       const server = Bun.serve({
         port: 0,
         fetch: () => Response.json({ embeddings: [[1, 0]] }),
@@ -124,7 +140,7 @@ describe("rule-validation.ts", () => {
           similarityThreshold: 0.7,
         });
 
-        expect(result.warnings.some(w => w.type === "similarity")).toBe(true);
+        expect(result.warnings.some((w) => w.type === "similarity")).toBe(true);
       } finally {
         setEmbeddingBackend("xenova");
         server.stop(true);
@@ -143,7 +159,7 @@ describe("rule-validation.ts", () => {
       });
 
       // Should not have similarity warning when skipped
-      expect(result.warnings.some(w => w.type === "similarity")).toBe(false);
+      expect(result.warnings.some((w) => w.type === "similarity")).toBe(false);
     });
   });
 
@@ -179,9 +195,7 @@ describe("rule-validation.ts", () => {
     test("formats error with x icon", () => {
       const result: ValidationResult = {
         valid: false,
-        warnings: [
-          { type: "similarity", message: "Duplicate detected", severity: "error" },
-        ],
+        warnings: [{ type: "similarity", message: "Duplicate detected", severity: "error" }],
         suggestions: {},
       };
 

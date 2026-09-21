@@ -7,16 +7,19 @@
  * - Hard delete a bullet
  * - Error handling for non-existent bullets
  */
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import yaml from "yaml";
-import { Playbook, PlaybookBullet } from "../src/types.js";
 import { undoCommand } from "../src/commands/undo.js";
-import { withTempCassHome } from "./helpers/temp.js";
+import type { Playbook, PlaybookBullet } from "../src/types.js";
+import {
+  createTestBullet as factoryCreateBullet,
+  createTestPlaybook as factoryCreatePlaybook,
+} from "./helpers/factories.js";
 import { withTempGitRepo } from "./helpers/git.js";
-import { createTestBullet as factoryCreateBullet, createTestPlaybook as factoryCreatePlaybook } from "./helpers/factories.js";
+import { withTempCassHome } from "./helpers/temp.js";
 
 /**
  * Capture console output during async function execution.
@@ -70,7 +73,7 @@ function createTestBullet(overrides: Partial<PlaybookBullet> = {}): PlaybookBull
     deprecated: false,
     pinned: false,
     ...overrides,
-    confidenceDecayHalfLifeDays: overrides.confidenceDecayHalfLifeDays ?? 90
+    confidenceDecayHalfLifeDays: overrides.confidenceDecayHalfLifeDays ?? 90,
   };
 }
 
@@ -83,10 +86,10 @@ function createTestPlaybook(bullets: PlaybookBullet[] = []): Playbook {
     metadata: {
       createdAt: "2025-01-01T00:00:00Z",
       totalReflections: 0,
-      totalSessionsProcessed: 0
+      totalSessionsProcessed: 0,
     },
     deprecatedPatterns: [],
-    bullets
+    bullets,
   };
 }
 
@@ -102,12 +105,15 @@ describe("undo command - Unit Tests", () => {
 
     // Create config
     const configPath = join(cassMemoryDir, "config.yaml");
-    writeFileSync(configPath, yaml.stringify({
-      playbookPath,
-      diaryDir: join(cassMemoryDir, "diaries"),
-      defaultLookbackDays: 30,
-      llmProvider: "none"
-    }));
+    writeFileSync(
+      configPath,
+      yaml.stringify({
+        playbookPath,
+        diaryDir: join(cassMemoryDir, "diaries"),
+        defaultLookbackDays: 30,
+        llmProvider: "none",
+      }),
+    );
   });
 
   afterEach(() => {
@@ -123,7 +129,7 @@ describe("undo command - Unit Tests", () => {
         deprecatedAt: "2025-06-01T00:00:00Z",
         deprecationReason: "Test deprecation",
         state: "retired",
-        maturity: "deprecated"
+        maturity: "deprecated",
       });
 
       // Simulate undeprecation
@@ -145,7 +151,7 @@ describe("undo command - Unit Tests", () => {
         deprecated: true,
         deprecatedAt: "2025-06-01T00:00:00Z",
         state: "retired",
-        maturity: "established"  // Was established before deprecation
+        maturity: "established", // Was established before deprecation
       });
 
       // Simulate undeprecation - maturity should go to candidate if it was "deprecated"
@@ -170,8 +176,8 @@ describe("undo command - Unit Tests", () => {
         feedbackEvents: [
           { type: "helpful", timestamp: "2025-01-01T00:00:00Z" },
           { type: "harmful", timestamp: "2025-01-02T00:00:00Z" },
-          { type: "helpful", timestamp: "2025-01-03T00:00:00Z" }
-        ]
+          { type: "helpful", timestamp: "2025-01-03T00:00:00Z" },
+        ],
       });
 
       // Simulate undo last feedback
@@ -191,8 +197,8 @@ describe("undo command - Unit Tests", () => {
         harmfulCount: 2,
         feedbackEvents: [
           { type: "helpful", timestamp: "2025-01-01T00:00:00Z" },
-          { type: "harmful", timestamp: "2025-01-02T00:00:00Z" }
-        ]
+          { type: "harmful", timestamp: "2025-01-02T00:00:00Z" },
+        ],
       });
 
       // Simulate undo last feedback
@@ -208,11 +214,9 @@ describe("undo command - Unit Tests", () => {
 
     test("should not go below 0 when undoing feedback", () => {
       const bullet = createTestBullet({
-        helpfulCount: 0,  // Already at 0
+        helpfulCount: 0, // Already at 0
         harmfulCount: 0,
-        feedbackEvents: [
-          { type: "helpful", timestamp: "2025-01-01T00:00:00Z" }
-        ]
+        feedbackEvents: [{ type: "helpful", timestamp: "2025-01-01T00:00:00Z" }],
       });
 
       // Simulate undo
@@ -221,12 +225,12 @@ describe("undo command - Unit Tests", () => {
         bullet.helpfulCount = Math.max(0, bullet.helpfulCount - 1);
       }
 
-      expect(bullet.helpfulCount).toBe(0);  // Should not be negative
+      expect(bullet.helpfulCount).toBe(0); // Should not be negative
     });
 
     test("should handle empty feedback events", () => {
       const bullet = createTestBullet({
-        feedbackEvents: []
+        feedbackEvents: [],
       });
 
       const lastEvent = bullet.feedbackEvents!.length > 0 ? bullet.feedbackEvents!.pop() : null;
@@ -243,7 +247,7 @@ describe("undo command - Unit Tests", () => {
       const playbook = createTestPlaybook([bullet1, bullet2]);
 
       // Simulate hard delete
-      const index = playbook.bullets.findIndex(b => b.id === "b-delete");
+      const index = playbook.bullets.findIndex((b) => b.id === "b-delete");
       playbook.bullets.splice(index, 1);
 
       expect(playbook.bullets).toHaveLength(1);
@@ -259,7 +263,7 @@ describe("undo command - Unit Tests", () => {
         deprecatedAt: "2025-06-01T00:00:00Z",
         deprecationReason: "Test reason",
         state: "retired",
-        maturity: "deprecated"
+        maturity: "deprecated",
       });
       const playbook = createTestPlaybook([bullet]);
 
@@ -294,8 +298,8 @@ describe("undo command - Unit Tests", () => {
         harmfulCount: 2,
         feedbackEvents: [
           { type: "helpful", timestamp: "2025-01-01T00:00:00Z" },
-          { type: "helpful", timestamp: "2025-01-02T00:00:00Z" }
-        ]
+          { type: "helpful", timestamp: "2025-01-02T00:00:00Z" },
+        ],
       });
       const playbook = createTestPlaybook([bullet]);
 
@@ -351,7 +355,7 @@ describe("undo command - Unit Tests", () => {
         deprecatedAt: "2025-06-01T00:00:00Z",
         deprecationReason: "Test deprecation",
         state: "retired",
-        maturity: "deprecated"
+        maturity: "deprecated",
       });
 
       // Simulate dry-run preview computation
@@ -385,13 +389,14 @@ describe("undo command - Unit Tests", () => {
         harmfulCount: 2,
         feedbackEvents: [
           { type: "helpful", timestamp: "2025-01-01T00:00:00Z" },
-          { type: "harmful", timestamp: "2025-01-02T00:00:00Z" }
-        ]
+          { type: "harmful", timestamp: "2025-01-02T00:00:00Z" },
+        ],
       });
 
-      const lastEvent = bullet.feedbackEvents!.length > 0
-        ? bullet.feedbackEvents![bullet.feedbackEvents!.length - 1]
-        : null;
+      const lastEvent =
+        bullet.feedbackEvents!.length > 0
+          ? bullet.feedbackEvents![bullet.feedbackEvents!.length - 1]
+          : null;
 
       // Simulate dry-run preview
       const plan = {
@@ -410,7 +415,10 @@ describe("undo command - Unit Tests", () => {
 
       expect(plan.dryRun).toBe(true);
       expect(plan.action).toBe("undo-feedback");
-      expect(plan.before.lastFeedback).toEqual({ type: "harmful", timestamp: "2025-01-02T00:00:00Z" });
+      expect(plan.before.lastFeedback).toEqual({
+        type: "harmful",
+        timestamp: "2025-01-02T00:00:00Z",
+      });
       expect(plan.wouldChange).toContain("harmful");
 
       // Verify bullet was NOT modified
@@ -421,7 +429,7 @@ describe("undo command - Unit Tests", () => {
     test("should compute correct preview for hard-delete action", () => {
       const bullet = createTestBullet({
         id: "b-delete-dry",
-        content: "Bullet to preview deletion"
+        content: "Bullet to preview deletion",
       });
 
       // Simulate dry-run preview

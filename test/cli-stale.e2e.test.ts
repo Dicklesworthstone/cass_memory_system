@@ -1,14 +1,20 @@
 /**
  * E2E Tests for CLI stale command - Staleness detection
  */
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { readFile, writeFile } from "node:fs/promises";
 import yaml from "yaml";
 import { staleCommand } from "../src/commands/stale.js";
 import { calculateDecayedValue } from "../src/scoring.js";
-import { withTempCassHome, type TestEnv } from "./helpers/temp.js";
 import { createE2ELogger } from "./helpers/e2e-logger.js";
-import { createTestConfig, createTestPlaybook, createBullet, createFeedbackEvent, daysAgo } from "./helpers/factories.js";
+import {
+  createBullet,
+  createFeedbackEvent,
+  createTestConfig,
+  createTestPlaybook,
+  daysAgo,
+} from "./helpers/factories.js";
+import { type TestEnv, withTempCassHome } from "./helpers/temp.js";
 
 function captureConsole() {
   const logs: string[] = [];
@@ -44,7 +50,11 @@ async function writeTestConfig(env: TestEnv): Promise<void> {
   await writeFile(env.configPath, JSON.stringify(config, null, 2), "utf-8");
 }
 
-async function snapshotFile(log: ReturnType<typeof createE2ELogger>, name: string, filePath: string): Promise<void> {
+async function snapshotFile(
+  log: ReturnType<typeof createE2ELogger>,
+  name: string,
+  filePath: string,
+): Promise<void> {
   const contents = await readFile(filePath, "utf-8").catch(() => "");
   log.snapshot(name, contents);
 }
@@ -164,7 +174,11 @@ describe("E2E: CLI stale command", () => {
           helpfulCount: 1,
         });
 
-        const playbook = createTestPlaybook([bulletNoFeedback, bulletOldFeedback, bulletRecentFeedback]);
+        const playbook = createTestPlaybook([
+          bulletNoFeedback,
+          bulletOldFeedback,
+          bulletRecentFeedback,
+        ]);
         log.step("Write playbook", {
           playbookPath: env.playbookPath,
           bulletIds: [bulletNoFeedback.id, bulletOldFeedback.id, bulletRecentFeedback.id],
@@ -243,7 +257,10 @@ describe("E2E: CLI stale command", () => {
         });
 
         const playbook = createTestPlaybook([bulletOld, bulletNow]);
-        log.step("Write playbook", { playbookPath: env.playbookPath, bulletIds: [bulletOld.id, bulletNow.id] });
+        log.step("Write playbook", {
+          playbookPath: env.playbookPath,
+          bulletIds: [bulletOld.id, bulletNow.id],
+        });
         await writeFile(env.playbookPath, yaml.stringify(playbook));
         await snapshotFile(log, "config.json", env.configPath);
         await snapshotFile(log, "playbook.before", env.playbookPath);
@@ -428,7 +445,11 @@ describe("E2E: CLI stale command", () => {
           helpfulCount: 8,
         });
 
-        const playbook = createTestPlaybook([bulletNegativeScore, bulletVeryStale, bulletHighScore]);
+        const playbook = createTestPlaybook([
+          bulletNegativeScore,
+          bulletVeryStale,
+          bulletHighScore,
+        ]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
         const capture = captureConsole();

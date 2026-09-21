@@ -1,9 +1,4 @@
-import {
-  Config,
-  PlaybookBullet,
-  FeedbackEvent,
-  BulletMaturity,
-} from "./types.js";
+import type { BulletMaturity, Config, FeedbackEvent, PlaybookBullet } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Internal helpers to tolerate config drift (scoring section vs legacy fields)
@@ -27,24 +22,20 @@ function getHarmfulMultiplier(config: Config): number {
 // Decay
 // ---------------------------------------------------------------------------
 
-export function calculateDecayedValue(
-  event: FeedbackEvent,
-  now: Date,
-  halfLifeDays = 90
-): number {
+export function calculateDecayedValue(event: FeedbackEvent, now: Date, halfLifeDays = 90): number {
   const eventDate = new Date(event.timestamp);
   const ageMs = now.getTime() - eventDate.getTime();
   const ageDays = ageMs / (1000 * 60 * 60 * 24);
-  
+
   if (!Number.isFinite(ageDays) || halfLifeDays <= 0) return 0;
 
   // Clamp future events to 0 age (value 1.0)
-  return Math.pow(0.5, Math.max(0, ageDays) / halfLifeDays);
+  return 0.5 ** (Math.max(0, ageDays) / halfLifeDays);
 }
 
 export function getDecayedCounts(
   bullet: PlaybookBullet,
-  config: Config
+  config: Config,
 ): { decayedHelpful: number; decayedHarmful: number } {
   const now = new Date();
   const halfLifeDays = getHalfLifeDays(config);
@@ -82,10 +73,7 @@ export function getDecayedCounts(
 // Effective score
 // ---------------------------------------------------------------------------
 
-export function getEffectiveScore(
-  bullet: PlaybookBullet,
-  config: Config
-): number {
+export function getEffectiveScore(bullet: PlaybookBullet, config: Config): number {
   const { decayedHelpful, decayedHarmful } = getDecayedCounts(bullet, config);
 
   const harmfulMultiplier = getHarmfulMultiplier(config);
@@ -107,52 +95,47 @@ export function getEffectiveScore(
 // Maturity transitions
 // ---------------------------------------------------------------------------
 
-export function calculateMaturityState(
-  bullet: PlaybookBullet,
-  config: Config
-): BulletMaturity {
+export function calculateMaturityState(bullet: PlaybookBullet, config: Config): BulletMaturity {
   if (bullet.maturity === "deprecated" || bullet.deprecated) return "deprecated";
-  
+
   // Pinned bullets should not be auto-deprecated or demoted by feedback
   if (bullet.pinned) return bullet.maturity;
 
   const { decayedHelpful, decayedHarmful } = getDecayedCounts(bullet, config);
-  
+
   const total = decayedHelpful + decayedHarmful;
   // Use epsilon for float comparisons
   const epsilon = 0.01;
   const safeTotal = total > epsilon ? total : 0;
-  
+
   const harmfulRatio = safeTotal > 0 ? decayedHarmful / safeTotal : 0;
 
   const { minFeedbackForActive, minHelpfulForProven, maxHarmfulRatioForProven } = config.scoring;
 
   // If we have enough signal and it's bad -> deprecated
   // We use minFeedbackForActive (default 3) as threshold for automatic deprecation too?
-  // Yes, to give it a chance to recover if just 1 bad event? 
+  // Yes, to give it a chance to recover if just 1 bad event?
   // But 1 bad event might be enough if ratio > 0.3.
   // Let's stick to minFeedbackForActive - epsilon to be consistent.
-  if (harmfulRatio > 0.3 && safeTotal >= (minFeedbackForActive - epsilon)) return "deprecated"; 
-  
+  if (harmfulRatio > 0.3 && safeTotal >= minFeedbackForActive - epsilon) return "deprecated";
+
   // If not enough signal yet -> candidate
-  if (safeTotal < (minFeedbackForActive - epsilon)) return "candidate";                        
-  
+  if (safeTotal < minFeedbackForActive - epsilon) return "candidate";
+
   // If strong positive signal -> proven
-  if (decayedHelpful >= (minHelpfulForProven - epsilon) && harmfulRatio < maxHarmfulRatioForProven) return "proven";
-  
+  if (decayedHelpful >= minHelpfulForProven - epsilon && harmfulRatio < maxHarmfulRatioForProven)
+    return "proven";
+
   // Otherwise -> established
   return "established";
 }
 
-export function checkForPromotion(
-  bullet: PlaybookBullet,
-  config: Config
-): BulletMaturity {
+export function checkForPromotion(bullet: PlaybookBullet, config: Config): BulletMaturity {
   const current = bullet.maturity;
   if (current === "proven" || current === "deprecated") return current;
 
   const newState = calculateMaturityState(bullet, config);
-  
+
   // Allow promotion sequence: candidate -> established -> proven
   // Also allow candidate -> proven directly if signal is strong enough
   const isPromotion =
@@ -164,7 +147,7 @@ export function checkForPromotion(
 
 export function checkForDemotion(
   bullet: PlaybookBullet,
-  config: Config
+  config: Config,
 ): BulletMaturity | "auto-deprecate" {
   if (bullet.pinned) return bullet.maturity;
 
@@ -186,22 +169,14 @@ export function checkForDemotion(
 // Staleness
 // ---------------------------------------------------------------------------
 
-export function isStale(
-  bullet: PlaybookBullet,
-  staleDays = 90
-): boolean {
+export function isStale(bullet: PlaybookBullet, staleDays = 90): boolean {
   const events = bullet.feedbackEvents || [];
 
   if (events.length === 0) {
-    return (
-      Date.now() - new Date(bullet.createdAt).getTime() >
-      staleDays * 86_400_000
-    );
+    return Date.now() - new Date(bullet.createdAt).getTime() > staleDays * 86_400_000;
   }
 
-  const lastTs = Math.max(
-    ...events.map((e) => new Date(e.timestamp).getTime())
-  );
+  const lastTs = Math.max(...events.map((e) => new Date(e.timestamp).getTime()));
   return Date.now() - lastTs > staleDays * 86_400_000;
 }
 
@@ -211,7 +186,7 @@ export function isStale(
 
 export function analyzeScoreDistribution(
   bullets: PlaybookBullet[],
-  config: Config
+  config: Config,
 ): { excellent: number; good: number; neutral: number; atRisk: number } {
   let excellent = 0;
   let good = 0;

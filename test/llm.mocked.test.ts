@@ -1,28 +1,28 @@
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { z } from "zod";
-import { createTestConfig, createTestDiary } from "./helpers/factories.js";
-import { extractDiary, runReflector, runValidator } from "../src/llm.js";
 import type { LLMIO } from "../src/llm.js";
+import { extractDiary, runReflector, runValidator } from "../src/llm.js";
+import { createTestConfig, createTestDiary } from "./helpers/factories.js";
 
 describe("LLM flows with injected generateObject", () => {
   it("extractDiary returns structured diary using session metadata in the prompt", async () => {
     let lastOptions: any = null;
     const io: LLMIO = {
       generateObject: async <T>(options: any) => {
-      lastOptions = options;
-      return {
-        object: {
-          status: "success",
-          accomplishments: ["wrote tests"],
-          decisions: ["used injected provider"],
-          challenges: ["llm offline"],
-          preferences: [],
-          keyLearnings: ["mocking keeps tests local"],
-          tags: ["testing"],
-          searchAnchors: ["mocked ai"]
-        } as T
-      };
-      }
+        lastOptions = options;
+        return {
+          object: {
+            status: "success",
+            accomplishments: ["wrote tests"],
+            decisions: ["used injected provider"],
+            challenges: ["llm offline"],
+            preferences: [],
+            keyLearnings: ["mocking keeps tests local"],
+            tags: ["testing"],
+            searchAnchors: ["mocked ai"],
+          } as T,
+        };
+      },
     };
 
     const schema = z.object({
@@ -33,7 +33,7 @@ describe("LLM flows with injected generateObject", () => {
       preferences: z.array(z.string()),
       keyLearnings: z.array(z.string()),
       tags: z.array(z.string()),
-      searchAnchors: z.array(z.string())
+      searchAnchors: z.array(z.string()),
     });
 
     const config = createTestConfig({ apiKey: "sk-ant-test-0000000000000000" });
@@ -43,7 +43,7 @@ describe("LLM flows with injected generateObject", () => {
       "session content body",
       { sessionPath: "/tmp/s1.jsonl", agent: "agent-1", workspace: "ws-1" },
       config,
-      io
+      io,
     );
 
     expect(result.status).toBe("success");
@@ -59,20 +59,20 @@ describe("LLM flows with injected generateObject", () => {
     let lastOptions: any = null;
     const io: LLMIO = {
       generateObject: async <T>(options: any) => {
-      lastOptions = options;
-      return {
-        object: {
-          deltas: [
-            {
-              type: "add",
-              bullet: { content: "Prefer bun test for fast runs", category: "testing" },
-              reason: "keeps feedback tight",
-              sourceSession: "/tmp/s1.jsonl"
-            }
-          ]
-        } as T
-      };
-      }
+        lastOptions = options;
+        return {
+          object: {
+            deltas: [
+              {
+                type: "add",
+                bullet: { content: "Prefer bun test for fast runs", category: "testing" },
+                reason: "keeps feedback tight",
+                sourceSession: "/tmp/s1.jsonl",
+              },
+            ],
+          } as T,
+        };
+      },
     };
 
     const diary = createTestDiary({
@@ -83,7 +83,7 @@ describe("LLM flows with injected generateObject", () => {
       accomplishments: ["added integration tests"],
       decisions: ["mocked ai sdk"],
       challenges: ["llm unavailable"],
-      keyLearnings: ["mock before import to intercept ai"]
+      keyLearnings: ["mock before import to intercept ai"],
     });
 
     const schema = z.object({
@@ -92,9 +92,9 @@ describe("LLM flows with injected generateObject", () => {
           type: z.literal("add"),
           bullet: z.object({ content: z.string(), category: z.string() }),
           reason: z.string(),
-          sourceSession: z.string().optional()
-        })
-      )
+          sourceSession: z.string().optional(),
+        }),
+      ),
     });
 
     const config = createTestConfig({ apiKey: "sk-ant-test-0000000000000000" });
@@ -106,7 +106,7 @@ describe("LLM flows with injected generateObject", () => {
       "cass history notes",
       1,
       config,
-      io
+      io,
     );
 
     expect(result.deltas).toHaveLength(1);
@@ -125,20 +125,20 @@ describe("LLM flows with injected generateObject", () => {
     let lastOptions: any = null;
     const io: LLMIO = {
       generateObject: async <T>(options: any) => {
-      lastOptions = options;
-      return {
-        object: {
-          verdict: "ACCEPT",
-          confidence: 0.92,
-          reason: "supported by history",
-          evidence: {
-            supporting: ["session a evidence"],
-            contradicting: ["session b counterpoint"]
-          },
-          suggestedRefinement: null
-        } as T
-      };
-      }
+        lastOptions = options;
+        return {
+          object: {
+            verdict: "ACCEPT",
+            confidence: 0.92,
+            reason: "supported by history",
+            evidence: {
+              supporting: ["session a evidence"],
+              contradicting: ["session b counterpoint"],
+            },
+            suggestedRefinement: null,
+          } as T,
+        };
+      },
     };
 
     const config = createTestConfig({ apiKey: "sk-ant-test-0000000000000000" });
@@ -147,14 +147,14 @@ describe("LLM flows with injected generateObject", () => {
       "Use transactions for writes",
       "Session: /tmp/s2\nSnippet: committed changes\n---",
       config,
-      io
+      io,
     );
 
     expect(result.valid).toBe(true);
     expect(result.verdict).toBe("ACCEPT");
     expect(result.evidence).toEqual([
       { sessionPath: "unknown", snippet: "session a evidence", supports: true },
-      { sessionPath: "unknown", snippet: "session b counterpoint", supports: false }
+      { sessionPath: "unknown", snippet: "session b counterpoint", supports: false },
     ]);
 
     expect(lastOptions).toBeTruthy();

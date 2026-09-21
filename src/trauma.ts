@@ -1,23 +1,19 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import {
-  TraumaEntry,
-  TraumaEntrySchema,
-  Config
-} from "./types.js";
-import {
-  expandPath,
-  resolveRepoDir,
-  resolveGlobalDir,
-  ensureDir,
-  fileExists,
-  atomicWrite,
-  warn,
-  error as logError,
-  log
-} from "./utils.js";
-import { cassSearch, cassExport, type CassRunner } from "./cass.js";
+import { type CassRunner, cassExport, cassSearch } from "./cass.js";
 import { withLock } from "./lock.js";
+import { type Config, type TraumaEntry, TraumaEntrySchema } from "./types.js";
+import {
+  atomicWrite,
+  ensureDir,
+  expandPath,
+  fileExists,
+  log,
+  error as logError,
+  resolveGlobalDir,
+  resolveRepoDir,
+  warn,
+} from "./utils.js";
 
 const GLOBAL_TRAUMA_FILE = "traumas.jsonl";
 const REPO_TRAUMA_FILE = "traumas.jsonl";
@@ -28,20 +24,32 @@ const REPO_TRAUMA_FILE = "traumas.jsonl";
  */
 export const DOOM_PATTERNS = [
   // Filesystem Destruction
-  { pattern: String.raw`^rm\s+(-[rf]+\s+)+/(etc|usr|var|boot|home|root|bin|sbin|lib)`, description: "Recursive deletion of system directories" },
-  { pattern: String.raw`^rm\s+(-[rf]+\s+)+/[^t]`, description: "Recursive deletion of root subdirectories" },
+  {
+    pattern: String.raw`^rm\s+(-[rf]+\s+)+/(etc|usr|var|boot|home|root|bin|sbin|lib)`,
+    description: "Recursive deletion of system directories",
+  },
+  {
+    pattern: String.raw`^rm\s+(-[rf]+\s+)+/[^t]`,
+    description: "Recursive deletion of root subdirectories",
+  },
   { pattern: String.raw`^rm\s+(-[rf]+\s+)+~`, description: "Recursive deletion of home directory" },
   { pattern: String.raw`^rm\s+(-[rf]+\s+)+`, description: "Recursive force deletion (high risk)" },
-  
+
   // Database Destruction
   { pattern: String.raw`DROP\s+DATABASE`, description: "Drop database" },
   { pattern: String.raw`DROP\s+SCHEMA`, description: "Drop schema" },
   { pattern: String.raw`TRUNCATE\s+TABLE`, description: "Truncate table" },
-  { pattern: String.raw`DELETE\s+FROM\s+[\w.\[\]"'\x60]+\s*(;|$|--|/\*)`, description: "Unbounded delete from table" },
+  {
+    pattern: String.raw`DELETE\s+FROM\s+[\w.\[\]"'\x60]+\s*(;|$|--|/\*)`,
+    description: "Unbounded delete from table",
+  },
 
   // Infrastructure Destruction
   { pattern: String.raw`^terraform\s+destroy`, description: "Terraform destroy" },
-  { pattern: String.raw`^kubectl\s+delete\s+(node|namespace|pv|pvc)\b`, description: "Kubernetes core resource deletion" },
+  {
+    pattern: String.raw`^kubectl\s+delete\s+(node|namespace|pv|pvc)\b`,
+    description: "Kubernetes core resource deletion",
+  },
   { pattern: String.raw`^helm\s+uninstall.*--all`, description: "Helm uninstall all" },
   { pattern: String.raw`^docker\s+system\s+prune\s+-a`, description: "Docker system prune all" },
 
@@ -51,8 +59,11 @@ export const DOOM_PATTERNS = [
   { pattern: String.raw`^git\s+reset\s+--hard`, description: "Git hard reset" },
   { pattern: String.raw`^git\s+clean\s+-[a-z]*f`, description: "Git clean force" },
   { pattern: String.raw`^git\s+checkout\s+--\s+`, description: "Git checkout discard changes" },
-  { pattern: String.raw`^git\s+restore\s+(?!--staged)`, description: "Git restore discard changes" },
-  
+  {
+    pattern: String.raw`^git\s+restore\s+(?!--staged)`,
+    description: "Git restore discard changes",
+  },
+
   // Cloud/System
   { pattern: String.raw`^aws\s+.*terminate-instances`, description: "AWS terminate instances" },
   { pattern: String.raw`^gcloud.*delete.*--quiet`, description: "GCloud quiet delete" },
@@ -60,7 +71,7 @@ export const DOOM_PATTERNS = [
   { pattern: String.raw`^fdisk`, description: "Partition modification" },
   { pattern: String.raw`^dd\b.*of=/dev/`, description: "Direct disk write" },
   { pattern: String.raw`^chmod\s+-R`, description: "Recursive permission change" },
-  { pattern: String.raw`^chown\s+-R`, description: "Recursive ownership change" }
+  { pattern: String.raw`^chown\s+-R`, description: "Recursive ownership change" },
 ];
 
 /**
@@ -82,19 +93,28 @@ export interface TraumaCandidate {
 export async function scanForTraumas(
   config: Config,
   days: number = 30,
-  cassRunner?: CassRunner
+  cassRunner?: CassRunner,
 ): Promise<TraumaCandidate[]> {
   const APOLOGY_KEYWORDS = [
-    "sorry", "apologies", "mistake", "error", "catastrophe", "disaster", 
-    "destroyed", "wiped", "deleted", "overwrote", "lost work"
+    "sorry",
+    "apologies",
+    "mistake",
+    "error",
+    "catastrophe",
+    "disaster",
+    "destroyed",
+    "wiped",
+    "deleted",
+    "overwrote",
+    "lost work",
   ];
-  
+
   // 1. Search for sessions with apologies
   const query = APOLOGY_KEYWORDS.join(" OR ");
   const hits = await cassSearch(query, { days, limit: 50 }, config.cassPath, cassRunner);
-  
+
   // Deduplicate sessions
-  const sessionPaths = Array.from(new Set(hits.map(h => h.source_path)));
+  const sessionPaths = Array.from(new Set(hits.map((h) => h.source_path)));
   const candidates: TraumaCandidate[] = [];
 
   log(`Scanning ${sessionPaths.length} sessions for potential traumas...`);
@@ -109,13 +129,13 @@ export async function scanForTraumas(
       for (const doom of DOOM_PATTERNS) {
         const regex = new RegExp(doom.pattern, "mi"); // Multiline, case-insensitive
         const match = regex.exec(content);
-        
+
         if (match) {
           // Found a dangerous command!
           // We assume if it's in a session with an apology, it might be a trauma.
           // Note: This is heuristic. It might be a false positive (e.g. discussing the command).
           // But "cm audit --trauma" is for human review.
-          
+
           // Grab some context around the match
           const start = Math.max(0, match.index - 100);
           const end = Math.min(content.length, match.index + match[0].length + 100);
@@ -127,7 +147,7 @@ export async function scanForTraumas(
             description: doom.description,
             evidence: match[0],
             context: context.trim(),
-            timestamp: undefined // We'd need to parse this from session content if available
+            timestamp: undefined, // We'd need to parse this from session content if available
           });
         }
       }
@@ -168,7 +188,7 @@ export type TraumaStatus = TraumaEntry["status"];
 async function updateTraumaStatusInFile(
   filePath: string,
   traumaId: string,
-  status: TraumaStatus
+  status: TraumaStatus,
 ): Promise<number> {
   const expanded = expandPath(filePath);
   if (!(await fileExists(expanded))) return 0;
@@ -216,7 +236,7 @@ async function updateTraumaStatusInFile(
 export async function setTraumaStatusById(
   traumaId: string,
   status: TraumaStatus,
-  options: { scope?: "global" | "project" | "all" } = {}
+  options: { scope?: "global" | "project" | "all" } = {},
 ): Promise<{ updated: number; checkedPaths: string[]; updatedPaths: string[] }> {
   const scope = options.scope ?? "all";
   const checkedPaths: string[] = [];
@@ -247,7 +267,7 @@ export async function setTraumaStatusById(
 
 export async function healTraumaById(
   traumaId: string,
-  options: { scope?: "global" | "project" | "all" } = {}
+  options: { scope?: "global" | "project" | "all" } = {},
 ): Promise<{ updated: number; checkedPaths: string[]; updatedPaths: string[] }> {
   return setTraumaStatusById(traumaId, "healed", options);
 }
@@ -294,7 +314,7 @@ async function removeTraumaFromFile(filePath: string, traumaId: string): Promise
 
 export async function removeTraumaById(
   traumaId: string,
-  options: { scope?: "global" | "project" | "all" } = {}
+  options: { scope?: "global" | "project" | "all" } = {},
 ): Promise<{ removed: number; checkedPaths: string[]; updatedPaths: string[] }> {
   const scope = options.scope ?? "all";
   const checkedPaths: string[] = [];
@@ -426,7 +446,7 @@ export async function saveTraumas(entries: TraumaEntry[]): Promise<void> {
   for (const [targetPath, lines] of batches.entries()) {
     await ensureDir(path.dirname(targetPath));
     const content = lines.join("\n") + "\n";
-    
+
     await withLock(targetPath, async () => {
       await fs.appendFile(expandPath(targetPath), content, "utf-8");
     });

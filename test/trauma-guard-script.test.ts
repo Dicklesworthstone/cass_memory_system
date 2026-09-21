@@ -1,9 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { join } from "node:path";
-import { mkdir, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
-import { TRAUMA_GUARD_SCRIPT, GIT_PRECOMMIT_HOOK } from "../src/trauma_guard_script.js";
-import { TraumaEntry } from "../src/types.js";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { GIT_PRECOMMIT_HOOK, TRAUMA_GUARD_SCRIPT } from "../src/trauma_guard_script.js";
+import type { TraumaEntry } from "../src/types.js";
 import { withTempDir } from "./helpers/index.js";
 
 /**
@@ -21,9 +21,7 @@ function getPythonScript(script: string = TRAUMA_GUARD_SCRIPT): string {
   // Fix Unicode escapes that Bun may introduce
   return script
     .replace(/\\u\{1f525\}/g, "🔥")
-    .replace(/\\u\{([0-9a-fA-F]+)\}/g, (_, hex) =>
-      String.fromCodePoint(parseInt(hex, 16))
-    );
+    .replace(/\\u\{([0-9a-fA-F]+)\}/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)));
 }
 
 // =============================================================================
@@ -103,7 +101,7 @@ describe("TRAUMA_GUARD_SCRIPT / GIT_PRECOMMIT_HOOK — no raw \\u{…} escapes",
       const result = spawnSync(
         "python3",
         ["-c", `import ast; ast.parse(open(${JSON.stringify(scriptPath)}).read())`],
-        { encoding: "utf-8" }
+        { encoding: "utf-8" },
       );
       expect(result.stderr).toBe("");
       expect(result.status).toBe(0);
@@ -117,7 +115,7 @@ describe("TRAUMA_GUARD_SCRIPT / GIT_PRECOMMIT_HOOK — no raw \\u{…} escapes",
       const result = spawnSync(
         "python3",
         ["-c", `import ast; ast.parse(open(${JSON.stringify(scriptPath)}).read())`],
-        { encoding: "utf-8" }
+        { encoding: "utf-8" },
       );
       expect(result.stderr).toBe("");
       expect(result.status).toBe(0);
@@ -139,48 +137,51 @@ describe("GIT_PRECOMMIT_HOOK", () => {
     status: "active",
     trigger_event: {
       session_path: "/sessions/test.jsonl",
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     },
-    created_at: new Date().toISOString()
+    created_at: new Date().toISOString(),
   });
 
   async function setupAndRunHook(
     dir: string,
     diffContent: string,
-    traumas: TraumaEntry[] = []
+    traumas: TraumaEntry[] = [],
   ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
     const scriptPath = join(dir, "pre-commit.py");
     // Mock get_staged_diff to return our content
     let script = getPythonScript(GIT_PRECOMMIT_HOOK);
-    
+
     // Inject mock for get_staged_diff
     const mockFunc = `
 def get_staged_diff():
     return """${diffContent}"""
 `;
     // Replace the real function with our mock
-    script = script.replace(/def get_staged_diff\(\):[\s\S]+?return result.stdout\n    except:\n        return ""/, mockFunc);
-    
+    script = script.replace(
+      /def get_staged_diff\(\):[\s\S]+?return result.stdout\n {4}except:\n {8}return ""/,
+      mockFunc,
+    );
+
     await writeFile(scriptPath, script);
 
     // Create trauma files if needed
     if (traumas.length > 0) {
       const cassMemoryDir = join(dir, ".cass-memory");
       await mkdir(cassMemoryDir, { recursive: true });
-      const traumaContent = traumas.map(t => JSON.stringify(t)).join("\n") + "\n";
+      const traumaContent = traumas.map((t) => JSON.stringify(t)).join("\n") + "\n";
       await writeFile(join(cassMemoryDir, "traumas.jsonl"), traumaContent);
     }
 
     const result = spawnSync("python3", [scriptPath], {
       encoding: "utf-8",
       timeout: 5000,
-      env: { ...process.env, HOME: dir }
+      env: { ...process.env, HOME: dir },
     });
 
     return {
       exitCode: result.status ?? 1,
       stdout: result.stdout?.trim() ?? "",
-      stderr: result.stderr?.trim() ?? ""
+      stderr: result.stderr?.trim() ?? "",
     };
   }
 
@@ -310,7 +311,7 @@ describe("TRAUMA_GUARD_SCRIPT - Python Syntax Validation", () => {
       // Use Python's compile check (-m py_compile)
       const result = spawnSync("python3", ["-m", "py_compile", scriptPath], {
         encoding: "utf-8",
-        timeout: 5000
+        timeout: 5000,
       });
 
       if (result.status !== 0) {
@@ -330,7 +331,7 @@ describe("TRAUMA_GUARD_SCRIPT - Python Syntax Validation", () => {
         input: "",
         encoding: "utf-8",
         timeout: 5000,
-        env: { ...process.env, HOME: dir }
+        env: { ...process.env, HOME: dir },
       });
 
       expect(result.status).toBe(0);
@@ -350,15 +351,15 @@ describe("TRAUMA_GUARD_SCRIPT - Hook I/O", () => {
     status: "active",
     trigger_event: {
       session_path: "/sessions/test.jsonl",
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     },
-    created_at: new Date().toISOString()
+    created_at: new Date().toISOString(),
   });
 
   async function setupAndRun(
     dir: string,
     input: Record<string, unknown>,
-    traumas: TraumaEntry[] = []
+    traumas: TraumaEntry[] = [],
   ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
     const scriptPath = join(dir, "trauma_guard.py");
     await writeFile(scriptPath, getPythonScript());
@@ -367,7 +368,7 @@ describe("TRAUMA_GUARD_SCRIPT - Hook I/O", () => {
     if (traumas.length > 0) {
       const cassMemoryDir = join(dir, ".cass-memory");
       await mkdir(cassMemoryDir, { recursive: true });
-      const traumaContent = traumas.map(t => JSON.stringify(t)).join("\n") + "\n";
+      const traumaContent = traumas.map((t) => JSON.stringify(t)).join("\n") + "\n";
       await writeFile(join(cassMemoryDir, "traumas.jsonl"), traumaContent);
     }
 
@@ -375,13 +376,13 @@ describe("TRAUMA_GUARD_SCRIPT - Hook I/O", () => {
       input: JSON.stringify(input),
       encoding: "utf-8",
       timeout: 5000,
-      env: { ...process.env, HOME: dir }
+      env: { ...process.env, HOME: dir },
     });
 
     return {
       exitCode: result.status ?? 1,
       stdout: result.stdout?.trim() ?? "",
-      stderr: result.stderr?.trim() ?? ""
+      stderr: result.stderr?.trim() ?? "",
     };
   }
 
@@ -393,7 +394,7 @@ describe("TRAUMA_GUARD_SCRIPT - Hook I/O", () => {
       const result = spawnSync("python3", [scriptPath], {
         input: "not json at all",
         encoding: "utf-8",
-        timeout: 5000
+        timeout: 5000,
       });
 
       expect(result.status).toBe(0);
@@ -404,7 +405,7 @@ describe("TRAUMA_GUARD_SCRIPT - Hook I/O", () => {
     await withTempDir("guard-nonbash", async (dir) => {
       const input = {
         tool_name: "Read",
-        tool_input: { file_path: "/some/file.txt" }
+        tool_input: { file_path: "/some/file.txt" },
       };
 
       const result = await setupAndRun(dir, input);
@@ -417,7 +418,7 @@ describe("TRAUMA_GUARD_SCRIPT - Hook I/O", () => {
     await withTempDir("guard-safe", async (dir) => {
       const input = {
         tool_name: "Bash",
-        tool_input: { command: "git status" }
+        tool_input: { command: "git status" },
       };
 
       const result = await setupAndRun(dir, input);
@@ -431,7 +432,7 @@ describe("TRAUMA_GUARD_SCRIPT - Hook I/O", () => {
       const traumas = [createTrauma("t1", "rm -rf")];
       const input = {
         tool_name: "Bash",
-        tool_input: { command: "git status" }
+        tool_input: { command: "git status" },
       };
 
       const result = await setupAndRun(dir, input, traumas);
@@ -445,7 +446,7 @@ describe("TRAUMA_GUARD_SCRIPT - Hook I/O", () => {
       const traumas = [createTrauma("trauma-123", "rm -rf")];
       const input = {
         tool_name: "Bash",
-        tool_input: { command: "rm -rf /home/user" }
+        tool_input: { command: "rm -rf /home/user" },
       };
 
       const result = await setupAndRun(dir, input, traumas);
@@ -469,18 +470,20 @@ describe("TRAUMA_GUARD_SCRIPT - Hook I/O", () => {
         trigger_event: {
           session_path: "/sessions/disaster.jsonl",
           timestamp: new Date().toISOString(),
-          human_message: "We lost 3 hours of data!"
-        }
+          human_message: "We lost 3 hours of data!",
+        },
       };
 
       const input = {
         tool_name: "Bash",
-        tool_input: { command: "DROP DATABASE production" }
+        tool_input: { command: "DROP DATABASE production" },
       };
 
       const result = await setupAndRun(dir, input, [trauma]);
       const output = JSON.parse(result.stdout);
-      expect(output.hookSpecificOutput.permissionDecisionReason).toContain("We lost 3 hours of data!");
+      expect(output.hookSpecificOutput.permissionDecisionReason).toContain(
+        "We lost 3 hours of data!",
+      );
     });
   });
 
@@ -488,12 +491,12 @@ describe("TRAUMA_GUARD_SCRIPT - Hook I/O", () => {
     await withTempDir("guard-healed", async (dir) => {
       const trauma: TraumaEntry = {
         ...createTrauma("t1", "rm -rf"),
-        status: "healed"
+        status: "healed",
       };
 
       const input = {
         tool_name: "Bash",
-        tool_input: { command: "rm -rf /home" }
+        tool_input: { command: "rm -rf /home" },
       };
 
       const result = await setupAndRun(dir, input, [trauma]);
@@ -514,7 +517,7 @@ describe("TRAUMA_GUARD_SCRIPT - Hook I/O", () => {
     await withTempDir("guard-empty", async (dir) => {
       const input = {
         tool_name: "Bash",
-        tool_input: { command: "" }
+        tool_input: { command: "" },
       };
 
       const result = await setupAndRun(dir, input);
@@ -528,7 +531,7 @@ describe("TRAUMA_GUARD_SCRIPT - Hook I/O", () => {
       const traumas = [createTrauma("t1", "DROP DATABASE")];
       const input = {
         tool_name: "Bash",
-        tool_input: { command: "drop database production" }
+        tool_input: { command: "drop database production" },
       };
 
       const result = await setupAndRun(dir, input, traumas);
@@ -543,7 +546,7 @@ describe("TRAUMA_GUARD_SCRIPT - Hook I/O", () => {
       // Should match
       const input1 = {
         tool_name: "Bash",
-        tool_input: { command: "git push origin main --force" }
+        tool_input: { command: "git push origin main --force" },
       };
       const result1 = await setupAndRun(dir, input1, traumas);
       expect(result1.stdout).toContain("deny");
@@ -551,7 +554,7 @@ describe("TRAUMA_GUARD_SCRIPT - Hook I/O", () => {
       // Should not match
       const input2 = {
         tool_name: "Bash",
-        tool_input: { command: "git push origin main" }
+        tool_input: { command: "git push origin main" },
       };
       const result2 = await setupAndRun(dir, input2, traumas);
       expect(result2.stdout).toBe("");
@@ -562,12 +565,12 @@ describe("TRAUMA_GUARD_SCRIPT - Hook I/O", () => {
     await withTempDir("guard-badregex", async (dir) => {
       const traumas = [
         createTrauma("bad", "[invalid(regex"),
-        createTrauma("good", "valid-pattern")
+        createTrauma("good", "valid-pattern"),
       ];
 
       const input = {
         tool_name: "Bash",
-        tool_input: { command: "valid-pattern-test" }
+        tool_input: { command: "valid-pattern-test" },
       };
 
       // Should not crash, should match the valid pattern
@@ -591,14 +594,14 @@ describe("TRAUMA_GUARD_SCRIPT - load_traumas", () => {
       // No trauma file exists
       const input = {
         tool_name: "Bash",
-        tool_input: { command: "rm -rf /" }
+        tool_input: { command: "rm -rf /" },
       };
 
       const result = spawnSync("python3", [scriptPath], {
         input: JSON.stringify(input),
         encoding: "utf-8",
         timeout: 5000,
-        env: { ...process.env, HOME: dir }
+        env: { ...process.env, HOME: dir },
       });
 
       // Should pass (no traumas to match)
@@ -618,14 +621,14 @@ describe("TRAUMA_GUARD_SCRIPT - load_traumas", () => {
 
       const input = {
         tool_name: "Bash",
-        tool_input: { command: "rm -rf /" }
+        tool_input: { command: "rm -rf /" },
       };
 
       const result = spawnSync("python3", [scriptPath], {
         input: JSON.stringify(input),
         encoding: "utf-8",
         timeout: 5000,
-        env: { ...process.env, HOME: dir }
+        env: { ...process.env, HOME: dir },
       });
 
       expect(result.status).toBe(0);
@@ -649,9 +652,9 @@ describe("TRAUMA_GUARD_SCRIPT - load_traumas", () => {
         status: "active",
         trigger_event: {
           session_path: "/sessions/test.jsonl",
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
         },
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
       };
 
       const content = "not json\n" + JSON.stringify(validTrauma) + "\n{bad json\n";
@@ -659,14 +662,14 @@ describe("TRAUMA_GUARD_SCRIPT - load_traumas", () => {
 
       const input = {
         tool_name: "Bash",
-        tool_input: { command: "dangerous command" }
+        tool_input: { command: "dangerous command" },
       };
 
       const result = spawnSync("python3", [scriptPath], {
         input: JSON.stringify(input),
         encoding: "utf-8",
         timeout: 5000,
-        env: { ...process.env, HOME: dir }
+        env: { ...process.env, HOME: dir },
       });
 
       // Should still match the valid trauma
@@ -688,9 +691,9 @@ describe("TRAUMA_GUARD_SCRIPT - Edge Cases", () => {
     status: "active",
     trigger_event: {
       session_path: "/sessions/test.jsonl",
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     },
-    created_at: new Date().toISOString()
+    created_at: new Date().toISOString(),
   });
 
   it("handles newlines in command", async () => {
@@ -702,19 +705,19 @@ describe("TRAUMA_GUARD_SCRIPT - Edge Cases", () => {
       await mkdir(cassMemoryDir, { recursive: true });
       await writeFile(
         join(cassMemoryDir, "traumas.jsonl"),
-        JSON.stringify(createTrauma("t1", "rm -rf")) + "\n"
+        JSON.stringify(createTrauma("t1", "rm -rf")) + "\n",
       );
 
       const input = {
         tool_name: "Bash",
-        tool_input: { command: "echo hello\nrm -rf /\necho done" }
+        tool_input: { command: "echo hello\nrm -rf /\necho done" },
       };
 
       const result = spawnSync("python3", [scriptPath], {
         input: JSON.stringify(input),
         encoding: "utf-8",
         timeout: 5000,
-        env: { ...process.env, HOME: dir }
+        env: { ...process.env, HOME: dir },
       });
 
       expect(result.status).toBe(0);
@@ -731,19 +734,19 @@ describe("TRAUMA_GUARD_SCRIPT - Edge Cases", () => {
       await mkdir(cassMemoryDir, { recursive: true });
       await writeFile(
         join(cassMemoryDir, "traumas.jsonl"),
-        JSON.stringify(createTrauma("t1", "dangerous")) + "\n"
+        JSON.stringify(createTrauma("t1", "dangerous")) + "\n",
       );
 
       const input = {
         tool_name: "Bash",
-        tool_input: { command: "dangerous" }
+        tool_input: { command: "dangerous" },
       };
 
       const result = spawnSync("python3", [scriptPath], {
         input: JSON.stringify(input),
         encoding: "utf-8",
         timeout: 5000,
-        env: { ...process.env, HOME: dir, CASS_MEMORY_NO_EMOJI: "1" }
+        env: { ...process.env, HOME: dir, CASS_MEMORY_NO_EMOJI: "1" },
       });
 
       expect(result.status).toBe(0);
@@ -767,24 +770,21 @@ describe("TRAUMA_GUARD_SCRIPT - Edge Cases", () => {
         trigger_event: {
           session_path: "/sessions/test.jsonl",
           timestamp: new Date().toISOString(),
-          human_message: "永远不要这样做！"
-        }
+          human_message: "永远不要这样做！",
+        },
       };
-      await writeFile(
-        join(cassMemoryDir, "traumas.jsonl"),
-        JSON.stringify(trauma) + "\n"
-      );
+      await writeFile(join(cassMemoryDir, "traumas.jsonl"), JSON.stringify(trauma) + "\n");
 
       const input = {
         tool_name: "Bash",
-        tool_input: { command: "删除所有数据库" }
+        tool_input: { command: "删除所有数据库" },
       };
 
       const result = spawnSync("python3", [scriptPath], {
         input: JSON.stringify(input),
         encoding: "utf-8",
         timeout: 5000,
-        env: { ...process.env, HOME: dir }
+        env: { ...process.env, HOME: dir },
       });
 
       expect(result.status).toBe(0);
@@ -804,19 +804,19 @@ describe("TRAUMA_GUARD_SCRIPT - Edge Cases", () => {
       await mkdir(cassMemoryDir, { recursive: true });
       await writeFile(
         join(cassMemoryDir, "traumas.jsonl"),
-        JSON.stringify(createTrauma("t1", "rm\\s+-rf\\s+/\\w+")) + "\n"
+        JSON.stringify(createTrauma("t1", "rm\\s+-rf\\s+/\\w+")) + "\n",
       );
 
       const input = {
         tool_name: "Bash",
-        tool_input: { command: "rm -rf /home" }
+        tool_input: { command: "rm -rf /home" },
       };
 
       const result = spawnSync("python3", [scriptPath], {
         input: JSON.stringify(input),
         encoding: "utf-8",
         timeout: 5000,
-        env: { ...process.env, HOME: dir }
+        env: { ...process.env, HOME: dir },
       });
 
       expect(result.status).toBe(0);

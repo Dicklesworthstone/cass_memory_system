@@ -1,19 +1,19 @@
 import { z } from "zod";
+import { type LLMIO, runReflector } from "./llm.js";
 import {
-  Config,
-  DiaryEntry,
-  Playbook,
-  PlaybookBullet,
-  PlaybookDelta,
-  HarmfulReasonEnum,
+  BulletKindEnum,
   BulletScopeEnum,
   BulletTypeEnum,
-  BulletKindEnum,
-  CassHit,
-  DecisionLogEntry
+  type CassHit,
+  type Config,
+  type DecisionLogEntry,
+  type DiaryEntry,
+  HarmfulReasonEnum,
+  type Playbook,
+  type PlaybookBullet,
+  type PlaybookDelta,
 } from "./types.js";
-import { runReflector, type LLMIO } from "./llm.js";
-import { log, now, hashContent } from "./utils.js";
+import { hashContent, log, now } from "./utils.js";
 
 // --- Helper: Summarize Playbook for Prompt ---
 
@@ -60,27 +60,27 @@ export function formatDiaryForPrompt(diary: DiaryEntry): string {
 
   if (diary.accomplishments && diary.accomplishments.length > 0) {
     lines.push(`\n## Accomplishments`);
-    diary.accomplishments.forEach(a => lines.push(`- ${a}`));
+    diary.accomplishments.forEach((a) => lines.push(`- ${a}`));
   }
 
   if (diary.decisions && diary.decisions.length > 0) {
     lines.push(`\n## Decisions Made`);
-    diary.decisions.forEach(d => lines.push(`- ${d}`));
+    diary.decisions.forEach((d) => lines.push(`- ${d}`));
   }
 
   if (diary.challenges && diary.challenges.length > 0) {
     lines.push(`\n## Challenges Encountered`);
-    diary.challenges.forEach(c => lines.push(`- ${c}`));
+    diary.challenges.forEach((c) => lines.push(`- ${c}`));
   }
 
   if (diary.keyLearnings && diary.keyLearnings.length > 0) {
     lines.push(`\n## Key Learnings`);
-    diary.keyLearnings.forEach(k => lines.push(`- ${k}`));
+    diary.keyLearnings.forEach((k) => lines.push(`- ${k}`));
   }
 
   if (diary.preferences && diary.preferences.length > 0) {
     lines.push(`\n## User Preferences`);
-    diary.preferences.forEach(p => lines.push(`- ${p}`));
+    diary.preferences.forEach((p) => lines.push(`- ${p}`));
   }
 
   return lines.join("\n");
@@ -88,31 +88,40 @@ export function formatDiaryForPrompt(diary: DiaryEntry): string {
 
 // --- Helper: Context Gathering ---
 
-async function getCassHistoryForDiary(
-  diary: DiaryEntry,
-  config: Config
-): Promise<string> {
+async function getCassHistoryForDiary(diary: DiaryEntry, config: Config): Promise<string> {
   if (!diary.relatedSessions || diary.relatedSessions.length === 0) {
     return "(No related history found)";
   }
 
   // Format top 3 related sessions
-  return diary.relatedSessions.slice(0, 3).map(s => `
+  return diary.relatedSessions
+    .slice(0, 3)
+    .map(
+      (s) => `
 Session: ${s.sessionPath}
 Agent: ${s.agent}
 Snippet: ${s.snippet}
----`).join("\n");
+---`,
+    )
+    .join("\n");
 }
 
 export function formatCassHistory(hits: CassHit[]): string {
   if (!hits || hits.length === 0) {
     return "RELATED HISTORY FROM OTHER AGENTS:\n\n(None found)";
   }
-  return "RELATED HISTORY FROM OTHER AGENTS:\n\n" + hits.map(h => `
+  return (
+    "RELATED HISTORY FROM OTHER AGENTS:\n\n" +
+    hits
+      .map(
+        (h) => `
 Session: ${h.source_path || (h as any).sessionPath}
 Agent: ${h.agent || "unknown"}
 Snippet: "${h.snippet}"
----`).join("\n");
+---`,
+      )
+      .join("\n")
+  );
 }
 
 // --- Helper: Deduplication ---
@@ -128,24 +137,27 @@ export function hashDelta(delta: PlaybookDelta): string {
   if (delta.type === "replace") {
     return `replace:${delta.bulletId}:${normalize(delta.newContent)}`;
   }
-  
+
   // Only types with bulletId fall through here
   if ("bulletId" in delta) {
     return `${delta.type}:${delta.bulletId}`;
   }
-  
+
   // Merge delta handling
   if (delta.type === "merge") {
     return `merge:${[...delta.bulletIds].sort().join(",")}`;
   }
-  
+
   // Fallback for unexpected types
   return JSON.stringify(delta);
 }
 
-export function deduplicateDeltas(newDeltas: PlaybookDelta[], existing: PlaybookDelta[]): PlaybookDelta[] {
+export function deduplicateDeltas(
+  newDeltas: PlaybookDelta[],
+  existing: PlaybookDelta[],
+): PlaybookDelta[] {
   const seen = new Set(existing.map(hashDelta));
-  return newDeltas.filter(d => {
+  return newDeltas.filter((d) => {
     const h = hashDelta(d);
     if (seen.has(h)) return false;
     seen.add(h);
@@ -165,63 +177,77 @@ export function deduplicateDeltas(newDeltas: PlaybookDelta[], existing: Playbook
 // time, not by the LLM. We therefore expose a minimal, strict-compliant
 // LLM-facing schema here and let the downstream code enrich it. Field list
 // mirrors what curate.ts consumes from `delta.bullet`.
-const LLMNewBulletSchema = z.object({
-  content: z.string(),
-  category: z.string(),
-  kind: BulletKindEnum.nullable(),
-  type: BulletTypeEnum.nullable(),
-  isNegative: z.boolean().nullable(),
-  scope: BulletScopeEnum.nullable(),
-  workspace: z.string().nullable(),
-  searchPointer: z.string().nullable(),
-  tags: z.array(z.string()).nullable()
-}).strict();
+const LLMNewBulletSchema = z
+  .object({
+    content: z.string(),
+    category: z.string(),
+    kind: BulletKindEnum.nullable(),
+    type: BulletTypeEnum.nullable(),
+    isNegative: z.boolean().nullable(),
+    scope: BulletScopeEnum.nullable(),
+    workspace: z.string().nullable(),
+    searchPointer: z.string().nullable(),
+    tags: z.array(z.string()).nullable(),
+  })
+  .strict();
 
-const LLMAddDeltaSchema = z.object({
-  type: z.literal("add"),
-  bullet: LLMNewBulletSchema,
-  reason: z.string(),
-  // sourceSession is injected by reflectOnSession() after the LLM responds,
-  // but strict mode requires the property to be present in the schema's
-  // `required` list. We accept null here and overwrite post-hoc.
-  sourceSession: z.string().nullable()
-}).strict();
+const LLMAddDeltaSchema = z
+  .object({
+    type: z.literal("add"),
+    bullet: LLMNewBulletSchema,
+    reason: z.string(),
+    // sourceSession is injected by reflectOnSession() after the LLM responds,
+    // but strict mode requires the property to be present in the schema's
+    // `required` list. We accept null here and overwrite post-hoc.
+    sourceSession: z.string().nullable(),
+  })
+  .strict();
 
-const LLMHelpfulDeltaSchema = z.object({
-  type: z.literal("helpful"),
-  bulletId: z.string(),
-  sourceSession: z.string().nullable(),
-  context: z.string().nullable()
-}).strict();
+const LLMHelpfulDeltaSchema = z
+  .object({
+    type: z.literal("helpful"),
+    bulletId: z.string(),
+    sourceSession: z.string().nullable(),
+    context: z.string().nullable(),
+  })
+  .strict();
 
-const LLMHarmfulDeltaSchema = z.object({
-  type: z.literal("harmful"),
-  bulletId: z.string(),
-  sourceSession: z.string().nullable(),
-  reason: HarmfulReasonEnum.nullable(),
-  context: z.string().nullable()
-}).strict();
+const LLMHarmfulDeltaSchema = z
+  .object({
+    type: z.literal("harmful"),
+    bulletId: z.string(),
+    sourceSession: z.string().nullable(),
+    reason: HarmfulReasonEnum.nullable(),
+    context: z.string().nullable(),
+  })
+  .strict();
 
-const LLMReplaceDeltaSchema = z.object({
-  type: z.literal("replace"),
-  bulletId: z.string(),
-  newContent: z.string(),
-  reason: z.string().nullable()
-}).strict();
+const LLMReplaceDeltaSchema = z
+  .object({
+    type: z.literal("replace"),
+    bulletId: z.string(),
+    newContent: z.string(),
+    reason: z.string().nullable(),
+  })
+  .strict();
 
-const LLMDeprecateDeltaSchema = z.object({
-  type: z.literal("deprecate"),
-  bulletId: z.string(),
-  reason: z.string(),
-  replacedBy: z.string().nullable()
-}).strict();
+const LLMDeprecateDeltaSchema = z
+  .object({
+    type: z.literal("deprecate"),
+    bulletId: z.string(),
+    reason: z.string(),
+    replacedBy: z.string().nullable(),
+  })
+  .strict();
 
-const LLMMergeDeltaSchema = z.object({
-  type: z.literal("merge"),
-  bulletIds: z.array(z.string()),
-  mergedContent: z.string(),
-  reason: z.string().nullable()
-}).strict();
+const LLMMergeDeltaSchema = z
+  .object({
+    type: z.literal("merge"),
+    bulletIds: z.array(z.string()),
+    mergedContent: z.string(),
+    reason: z.string().nullable(),
+  })
+  .strict();
 
 const LLMPlaybookDeltaSchema = z.discriminatedUnion("type", [
   LLMAddDeltaSchema,
@@ -233,9 +259,11 @@ const LLMPlaybookDeltaSchema = z.discriminatedUnion("type", [
 ]);
 
 // Schema for the LLM output - array of deltas
-const ReflectorOutputSchema = z.object({
-  deltas: z.array(LLMPlaybookDeltaSchema)
-}).strict();
+const ReflectorOutputSchema = z
+  .object({
+    deltas: z.array(LLMPlaybookDeltaSchema),
+  })
+  .strict();
 
 type LLMReflectorDelta = z.infer<typeof LLMPlaybookDeltaSchema>;
 
@@ -269,14 +297,14 @@ function normalizeLLMDelta(d: LLMReflectorDelta, sessionPath: string): PlaybookD
         // not trust that — a model that echoes or hallucinates a path must not
         // be able to write a fabricated/unresolvable source pointer into the
         // rule's provenance (see issue #58). Always overwrite with sessionPath.
-        sourceSession: sessionPath
+        sourceSession: sessionPath,
       };
     case "helpful":
       return {
         type: "helpful",
         bulletId: d.bulletId,
         sourceSession: d.sourceSession ?? sessionPath,
-        ...(d.context !== null ? { context: d.context } : {})
+        ...(d.context !== null ? { context: d.context } : {}),
       };
     case "harmful":
       return {
@@ -284,28 +312,28 @@ function normalizeLLMDelta(d: LLMReflectorDelta, sessionPath: string): PlaybookD
         bulletId: d.bulletId,
         sourceSession: d.sourceSession ?? sessionPath,
         ...(d.reason !== null ? { reason: d.reason } : {}),
-        ...(d.context !== null ? { context: d.context } : {})
+        ...(d.context !== null ? { context: d.context } : {}),
       };
     case "replace":
       return {
         type: "replace",
         bulletId: d.bulletId,
         newContent: d.newContent,
-        ...(d.reason !== null ? { reason: d.reason } : {})
+        ...(d.reason !== null ? { reason: d.reason } : {}),
       };
     case "deprecate":
       return {
         type: "deprecate",
         bulletId: d.bulletId,
         reason: d.reason,
-        ...(d.replacedBy !== null ? { replacedBy: d.replacedBy } : {})
+        ...(d.replacedBy !== null ? { replacedBy: d.replacedBy } : {}),
       };
     case "merge":
       return {
         type: "merge",
         bulletIds: d.bulletIds,
         mergedContent: d.mergedContent,
-        ...(d.reason !== null ? { reason: d.reason } : {})
+        ...(d.reason !== null ? { reason: d.reason } : {}),
       };
   }
 }
@@ -315,7 +343,7 @@ export function shouldExitEarly(
   iteration: number,
   deltasThisIteration: number,
   totalDeltas: number,
-  config: Config
+  config: Config,
 ): boolean {
   if (deltasThisIteration === 0) return true;
   if (totalDeltas >= 50) return true;
@@ -333,7 +361,7 @@ export async function reflectOnSession(
   diary: DiaryEntry,
   playbook: Playbook,
   config: Config,
-  io?: LLMIO
+  io?: LLMIO,
 ): Promise<ReflectionResult> {
   log(`Reflecting on diary ${diary.id}...`);
 
@@ -360,10 +388,12 @@ export async function reflectOnSession(
 
         return {
           deltas: deduplicateDeltas(collected, []),
-          decisionLog: []
+          decisionLog: [],
         };
       } catch (err) {
-        log(`Failed to parse CM_REFLECTOR_STUBS: ${err instanceof Error ? err.message : String(err)}`);
+        log(
+          `Failed to parse CM_REFLECTOR_STUBS: ${err instanceof Error ? err.message : String(err)}`,
+        );
         // fall through to real flow
       }
     }
@@ -387,15 +417,15 @@ export async function reflectOnSession(
         cassHistory,
         i,
         config,
-        io
+        io,
       );
 
       // `output.deltas` are strict-mode LLM deltas (see issue #44) — null
       // fields must be collapsed to `undefined` before curation. "add" deltas
       // always get `sourceSession` injected from the diary, overriding any
       // value the LLM may have supplied.
-      const validDeltas: PlaybookDelta[] = output.deltas.map(d =>
-        normalizeLLMDelta(d, diary.sessionPath)
+      const validDeltas: PlaybookDelta[] = output.deltas.map((d) =>
+        normalizeLLMDelta(d, diary.sessionPath),
       );
 
       const uniqueDeltas = deduplicateDeltas(validDeltas, allDeltas);
@@ -410,8 +440,8 @@ export async function reflectOnSession(
           iteration: i + 1,
           generatedCount: validDeltas.length,
           uniqueCount: uniqueDeltas.length,
-          duplicatesRemoved
-        }
+          duplicatesRemoved,
+        },
       });
 
       allDeltas.push(...uniqueDeltas);
@@ -421,8 +451,8 @@ export async function reflectOnSession(
           timestamp: now(),
           phase: "add",
           action: "skipped",
-          reason: `Early exit at iteration ${i + 1}: ${uniqueDeltas.length === 0 ? 'no new deltas' : `reached ${allDeltas.length} total deltas`}`,
-          details: { iteration: i + 1, totalDeltas: allDeltas.length }
+          reason: `Early exit at iteration ${i + 1}: ${uniqueDeltas.length === 0 ? "no new deltas" : `reached ${allDeltas.length} total deltas`}`,
+          details: { iteration: i + 1, totalDeltas: allDeltas.length },
         });
         log("Ending reflection early.");
         break;
@@ -433,7 +463,7 @@ export async function reflectOnSession(
         phase: "add",
         action: "rejected",
         reason: `Iteration ${i + 1} failed: ${err instanceof Error ? err.message : String(err)}`,
-        details: { iteration: i + 1, error: String(err) }
+        details: { iteration: i + 1, error: String(err) },
       });
       log(`Reflection iteration ${i + 1} failed: ${err}`);
       break;

@@ -1,12 +1,22 @@
-import { describe, test, expect } from "bun:test";
-import { reflectOnSession, deduplicateDeltas } from "../src/reflect.js"; // Internal export for testing
-import { __test as reflectCommandTest, reflectCommand } from "../src/commands/reflect.js";
-import { createTestConfig, createTestDiary, createTestPlaybook, createTestBullet } from "./helpers/factories.js";
-import { PlaybookDelta } from "../src/types.js";
-import { formatBulletsForPrompt, hashDelta, shouldExitEarly } from "../src/reflect.js";
+import { describe, expect, test } from "bun:test";
+import { reflectCommand, __test as reflectCommandTest } from "../src/commands/reflect.js";
+import {
+  deduplicateDeltas,
+  formatBulletsForPrompt,
+  hashDelta,
+  reflectOnSession,
+  shouldExitEarly,
+} from "../src/reflect.js";
+import type { PlaybookDelta } from "../src/types.js";
+import {
+  createTestBullet,
+  createTestConfig,
+  createTestDiary,
+  createTestPlaybook,
+} from "./helpers/factories.js";
+import { withTempGitRepo } from "./helpers/git.js";
 import { withLlmShim } from "./helpers/llm-shim.js";
 import { withTempCassHome } from "./helpers/temp.js";
-import { withTempGitRepo } from "./helpers/git.js";
 
 /**
  * Capture console output during async function execution.
@@ -44,13 +54,16 @@ describe("reflectOnSession", () => {
     const playbook = createTestPlaybook();
 
     // Use LLMIO injection instead of env var
-    await withLlmShim({
-      reflector: { deltas: [] }
-    }, async (io) => {
-      const result = await reflectOnSession(diary, playbook, config, io);
-      const deltas = Array.isArray(result) ? result : result.deltas ?? [];
-      expect(deltas).toEqual([]);
-    });
+    await withLlmShim(
+      {
+        reflector: { deltas: [] },
+      },
+      async (io) => {
+        const result = await reflectOnSession(diary, playbook, config, io);
+        const deltas = Array.isArray(result) ? result : (result.deltas ?? []);
+        expect(deltas).toEqual([]);
+      },
+    );
   });
 
   test("should aggregate unique deltas across iterations", async () => {
@@ -62,38 +75,37 @@ describe("reflectOnSession", () => {
       type: "add",
       bullet: { content: "Rule A", category: "test" },
       reason: "reason A",
-      sourceSession: diary.sessionPath
+      sourceSession: diary.sessionPath,
     };
 
     const deltaB: PlaybookDelta = {
       type: "add",
       bullet: { content: "Rule B", category: "test" },
       reason: "reason B",
-      sourceSession: diary.sessionPath
+      sourceSession: diary.sessionPath,
     };
 
     // Use a function to return different responses per iteration
     let callCount = 0;
-    const iterationResponses = [
-      { deltas: [deltaA] },
-      { deltas: [deltaB] },
-      { deltas: [deltaA] }
-    ];
+    const iterationResponses = [{ deltas: [deltaA] }, { deltas: [deltaB] }, { deltas: [deltaA] }];
 
-    await withLlmShim({
-      reflector: () => {
-        const response = iterationResponses[callCount] || { deltas: [] };
-        callCount++;
-        return response;
-      }
-    }, async (io) => {
-      const result = await reflectOnSession(diary, playbook, config, io);
-      const deltas = Array.isArray(result) ? result : result.deltas ?? [];
+    await withLlmShim(
+      {
+        reflector: () => {
+          const response = iterationResponses[callCount] || { deltas: [] };
+          callCount++;
+          return response;
+        },
+      },
+      async (io) => {
+        const result = await reflectOnSession(diary, playbook, config, io);
+        const deltas = Array.isArray(result) ? result : (result.deltas ?? []);
 
-      expect(deltas).toHaveLength(2);
-      expect(deltas.map(d => d.type === 'add' ? d.bullet.content : '')).toContain("Rule A");
-      expect(deltas.map(d => d.type === 'add' ? d.bullet.content : '')).toContain("Rule B");
-    });
+        expect(deltas).toHaveLength(2);
+        expect(deltas.map((d) => (d.type === "add" ? d.bullet.content : ""))).toContain("Rule A");
+        expect(deltas.map((d) => (d.type === "add" ? d.bullet.content : ""))).toContain("Rule B");
+      },
+    );
   });
 
   test("should stop if max iterations reached", async () => {
@@ -102,21 +114,47 @@ describe("reflectOnSession", () => {
 
     let callCount = 0;
     const iterationResponses = [
-      { deltas: [{ type: "add" as const, bullet: { content: "Unique", category: "test" }, reason: "reason", sourceSession: diary.sessionPath }] },
-      { deltas: [{ type: "add" as const, bullet: { content: "Another", category: "test" }, reason: "reason", sourceSession: diary.sessionPath }] },
+      {
+        deltas: [
+          {
+            type: "add" as const,
+            bullet: { content: "Unique", category: "test" },
+            reason: "reason",
+            sourceSession: diary.sessionPath,
+          },
+        ],
+      },
+      {
+        deltas: [
+          {
+            type: "add" as const,
+            bullet: { content: "Another", category: "test" },
+            reason: "reason",
+            sourceSession: diary.sessionPath,
+          },
+        ],
+      },
     ];
 
-    await withLlmShim({
-      reflector: () => {
-        const response = iterationResponses[callCount] || { deltas: [] };
-        callCount++;
-        return response;
-      }
-    }, async (io) => {
-      const result = await reflectOnSession(diary, playbook, { ...config, maxReflectorIterations: 2 }, io);
-      const deltas = Array.isArray(result) ? result : result.deltas ?? [];
-      expect(deltas.length).toBeGreaterThanOrEqual(2);
-    });
+    await withLlmShim(
+      {
+        reflector: () => {
+          const response = iterationResponses[callCount] || { deltas: [] };
+          callCount++;
+          return response;
+        },
+      },
+      async (io) => {
+        const result = await reflectOnSession(
+          diary,
+          playbook,
+          { ...config, maxReflectorIterations: 2 },
+          io,
+        );
+        const deltas = Array.isArray(result) ? result : (result.deltas ?? []);
+        expect(deltas.length).toBeGreaterThanOrEqual(2);
+      },
+    );
   });
 });
 
@@ -126,12 +164,12 @@ describe("deduplicateDeltas", () => {
       type: "add",
       bullet: { content: "content", category: "cat" },
       reason: "reason",
-      sourceSession: "s1"
+      sourceSession: "s1",
     };
-    
+
     const existing = [delta];
     const newDeltas = [delta];
-    
+
     const result = deduplicateDeltas(newDeltas, existing);
     expect(result).toHaveLength(0);
   });
@@ -141,16 +179,16 @@ describe("deduplicateDeltas", () => {
       type: "add",
       bullet: { content: "Same Content", category: "cat1" },
       reason: "r1",
-      sourceSession: "s1"
+      sourceSession: "s1",
     };
-    
+
     const d2: PlaybookDelta = {
       type: "add",
       bullet: { content: "same content", category: "cat2" }, // distinct case
       reason: "r2",
-      sourceSession: "s2"
+      sourceSession: "s2",
     };
-    
+
     const result = deduplicateDeltas([d2], [d1]);
     expect(result).toHaveLength(0); // Should match case-insensitive
   });
@@ -160,15 +198,15 @@ describe("deduplicateDeltas", () => {
       type: "add",
       bullet: { content: "A", category: "c" },
       reason: "r",
-      sourceSession: "s"
+      sourceSession: "s",
     };
     const d2: PlaybookDelta = {
       type: "add",
       bullet: { content: "B", category: "c" },
       reason: "r",
-      sourceSession: "s"
+      sourceSession: "s",
     };
-    
+
     const result = deduplicateDeltas([d2], [d1]);
     expect(result).toHaveLength(1);
   });
@@ -221,14 +259,43 @@ describe("reflect command helpers (unit)", () => {
 
   test("formatDeltaLine renders each delta type", () => {
     expect(
-      reflectCommandTest.formatDeltaLine({ type: "add", bullet: { content: "A", category: "cat" }, reason: "r", sourceSession: "s" })
+      reflectCommandTest.formatDeltaLine({
+        type: "add",
+        bullet: { content: "A", category: "cat" },
+        reason: "r",
+        sourceSession: "s",
+      }),
     ).toContain("ADD");
-    expect(reflectCommandTest.formatDeltaLine({ type: "helpful", bulletId: "b-1" })).toBe("HELPFUL  b-1");
-    expect(reflectCommandTest.formatDeltaLine({ type: "harmful", bulletId: "b-2" })).toBe("HARMFUL  b-2");
-    expect(reflectCommandTest.formatDeltaLine({ type: "harmful", bulletId: "b-3", reason: "wasted_time" })).toContain("(wasted_time)");
-    expect(reflectCommandTest.formatDeltaLine({ type: "replace", bulletId: "b-4", newContent: "new" })).toContain("REPLACE");
-    expect(reflectCommandTest.formatDeltaLine({ type: "deprecate", bulletId: "b-5", reason: "outdated" })).toContain("DEPRECATE");
-    expect(reflectCommandTest.formatDeltaLine({ type: "merge", bulletIds: ["b-6", "b-7"], mergedContent: "merged" })).toContain("MERGE");
+    expect(reflectCommandTest.formatDeltaLine({ type: "helpful", bulletId: "b-1" })).toBe(
+      "HELPFUL  b-1",
+    );
+    expect(reflectCommandTest.formatDeltaLine({ type: "harmful", bulletId: "b-2" })).toBe(
+      "HARMFUL  b-2",
+    );
+    expect(
+      reflectCommandTest.formatDeltaLine({
+        type: "harmful",
+        bulletId: "b-3",
+        reason: "wasted_time",
+      }),
+    ).toContain("(wasted_time)");
+    expect(
+      reflectCommandTest.formatDeltaLine({ type: "replace", bulletId: "b-4", newContent: "new" }),
+    ).toContain("REPLACE");
+    expect(
+      reflectCommandTest.formatDeltaLine({
+        type: "deprecate",
+        bulletId: "b-5",
+        reason: "outdated",
+      }),
+    ).toContain("DEPRECATE");
+    expect(
+      reflectCommandTest.formatDeltaLine({
+        type: "merge",
+        bulletIds: ["b-6", "b-7"],
+        mergedContent: "merged",
+      }),
+    ).toContain("MERGE");
   });
 
   test("formatDeltaLine includes category and content in ADD", () => {
@@ -236,7 +303,7 @@ describe("reflect command helpers (unit)", () => {
       type: "add",
       bullet: { content: "Use TypeScript for safety", category: "best-practices" },
       reason: "learned from session",
-      sourceSession: "/path/to/session"
+      sourceSession: "/path/to/session",
     });
     expect(line).toBe("ADD  [best-practices] Use TypeScript for safety");
   });
@@ -245,7 +312,7 @@ describe("reflect command helpers (unit)", () => {
     const line = reflectCommandTest.formatDeltaLine({
       type: "replace",
       bulletId: "b-abc123",
-      newContent: "Updated content here"
+      newContent: "Updated content here",
     });
     expect(line).toBe("REPLACE  b-abc123 → Updated content here");
   });
@@ -254,7 +321,7 @@ describe("reflect command helpers (unit)", () => {
     const line = reflectCommandTest.formatDeltaLine({
       type: "deprecate",
       bulletId: "b-old",
-      reason: "superseded by newer rule"
+      reason: "superseded by newer rule",
     });
     expect(line).toBe("DEPRECATE  b-old (superseded by newer rule)");
   });
@@ -263,7 +330,7 @@ describe("reflect command helpers (unit)", () => {
     const line = reflectCommandTest.formatDeltaLine({
       type: "merge",
       bulletIds: ["b-1", "b-2", "b-3"],
-      mergedContent: "Combined rule content"
+      mergedContent: "Combined rule content",
     });
     expect(line).toBe("MERGE  b-1, b-2, b-3 → Combined rule content");
   });
@@ -271,7 +338,7 @@ describe("reflect command helpers (unit)", () => {
   test("formatDeltaLine handles harmful without reason", () => {
     const line = reflectCommandTest.formatDeltaLine({
       type: "harmful",
-      bulletId: "b-xyz"
+      bulletId: "b-xyz",
     });
     expect(line).toBe("HARMFUL  b-xyz");
   });
@@ -287,7 +354,11 @@ describe("reflect module helpers (unit)", () => {
     const mergeB: PlaybookDelta = { type: "merge", bulletIds: ["b-1", "b-2"], mergedContent: "m" };
     expect(hashDelta(mergeA)).toBe(hashDelta(mergeB));
 
-    const replaceA: PlaybookDelta = { type: "replace", bulletId: "b-3", newContent: " New   Content " };
+    const replaceA: PlaybookDelta = {
+      type: "replace",
+      bulletId: "b-3",
+      newContent: " New   Content ",
+    };
     const replaceB: PlaybookDelta = { type: "replace", bulletId: "b-3", newContent: "new content" };
     expect(hashDelta(replaceA)).toBe(hashDelta(replaceB));
   });
@@ -614,7 +685,8 @@ describe("reflectCommand human output", () => {
           expect(output).toContain("DRY RUN");
           expect(output).toContain("Sessions processed");
           // May show delta types even if counts are 0
-          const hasDeltas = output.includes("add") || output.includes("helpful") || output.includes("harmful");
+          const hasDeltas =
+            output.includes("add") || output.includes("helpful") || output.includes("harmful");
           expect(hasDeltas || output.includes("Proposed")).toBe(true);
         } finally {
           capture.restore();

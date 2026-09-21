@@ -15,8 +15,8 @@
  *   });
  */
 
-import type { PlaybookDelta } from "../../src/types.js";
 import type { LLMIO } from "../../src/llm.js";
+import type { PlaybookDelta } from "../../src/types.js";
 
 // --- Types ---
 
@@ -90,19 +90,19 @@ export const DEFAULT_DIARY_RESPONSE: DiaryExtractShimResponse = {
   preferences: [],
   keyLearnings: ["Task completed successfully"],
   tags: ["general"],
-  searchAnchors: ["task completion"]
+  searchAnchors: ["task completion"],
 };
 
 export const DEFAULT_REFLECTOR_RESPONSE: ReflectorShimResponse = {
   deltas: [],
-  reasoning: "No significant patterns detected in this session"
+  reasoning: "No significant patterns detected in this session",
 };
 
 export const DEFAULT_VALIDATOR_RESPONSE: ValidatorShimResponse = {
   verdict: "ACCEPT",
   confidence: 0.8,
   reasoning: "Rule appears valid based on available evidence",
-  supportingEvidence: []
+  supportingEvidence: [],
 };
 
 // --- Shim Implementation ---
@@ -134,7 +134,7 @@ function createMockGenerateObject(config: LlmShimConfig): LLMIO["generateObject"
   return async <T>(options: any) => {
     // Apply delay if configured
     if (config.delay) {
-      await new Promise(resolve => setTimeout(resolve, config.delay));
+      await new Promise((resolve) => setTimeout(resolve, config.delay));
     }
 
     // Check for global error
@@ -149,7 +149,11 @@ function createMockGenerateObject(config: LlmShimConfig): LLMIO["generateObject"
     // NOTE: Check reflector FIRST because reflector prompt contains "session" and "diary"
     // which would otherwise match the extractDiary detection.
     // The reflector prompt uniquely contains "playbook" and "reusable lessons".
-    if (prompt.includes("playbook") || prompt.includes("reusable lessons") || prompt.includes("delta")) {
+    if (
+      prompt.includes("playbook") ||
+      prompt.includes("reusable lessons") ||
+      prompt.includes("delta")
+    ) {
       // runReflector call
       if (config.errors?.reflector) {
         throw config.errors.reflector;
@@ -159,31 +163,35 @@ function createMockGenerateObject(config: LlmShimConfig): LLMIO["generateObject"
         callLog.reflector.push({
           diary: prompt,
           playbook: options,
-          timestamp: new Date()
+          timestamp: new Date(),
         });
       }
 
-      const response = typeof config.reflector === "function"
-        ? config.reflector(prompt, options)
-        : config.reflector || DEFAULT_REFLECTOR_RESPONSE;
+      const response =
+        typeof config.reflector === "function"
+          ? config.reflector(prompt, options)
+          : config.reflector || DEFAULT_REFLECTOR_RESPONSE;
 
       return {
         object: {
-          deltas: (response.deltas || []).map(d => ({
+          deltas: (response.deltas || []).map((d) => ({
             type: d.type || "add",
-            bullet: d.type === "add" ? {
-              content: (d as any).bullet?.content || "Test rule",
-              category: (d as any).bullet?.category || "general",
-              scope: (d as any).bullet?.scope || "global",
-              tags: (d as any).bullet?.tags || []
-            } : undefined,
+            bullet:
+              d.type === "add"
+                ? {
+                    content: (d as any).bullet?.content || "Test rule",
+                    category: (d as any).bullet?.category || "general",
+                    scope: (d as any).bullet?.scope || "global",
+                    tags: (d as any).bullet?.tags || [],
+                  }
+                : undefined,
             bulletId: (d as any).bulletId,
             bulletIds: (d as any).bulletIds,
             mergedContent: (d as any).mergedContent,
             reason: (d as any).reason || "Generated from reflection",
-            sourceSession: (d as any).sourceSession || "/test/session.jsonl"
-          }))
-        }
+            sourceSession: (d as any).sourceSession || "/test/session.jsonl",
+          })),
+        },
       } as any;
     }
 
@@ -197,13 +205,14 @@ function createMockGenerateObject(config: LlmShimConfig): LLMIO["generateObject"
         callLog.validator.push({
           delta: prompt,
           evidence: options,
-          timestamp: new Date()
+          timestamp: new Date(),
         });
       }
 
-      const response = typeof config.validator === "function"
-        ? config.validator(prompt, options)
-        : config.validator || DEFAULT_VALIDATOR_RESPONSE;
+      const response =
+        typeof config.validator === "function"
+          ? config.validator(prompt, options)
+          : config.validator || DEFAULT_VALIDATOR_RESPONSE;
 
       return {
         object: {
@@ -211,13 +220,17 @@ function createMockGenerateObject(config: LlmShimConfig): LLMIO["generateObject"
           confidence: response.confidence ?? 0.8,
           reasoning: response.reasoning || "Validated",
           refinedContent: response.refinedContent,
-          supportingEvidence: response.supportingEvidence || []
-        }
+          supportingEvidence: response.supportingEvidence || [],
+        },
       } as any;
     }
 
     // extractDiary detection (checked after reflector since reflector prompt also contains "session"/"diary")
-    if (prompt.includes("diary") || prompt.includes("session") || prompt.includes("accomplishments")) {
+    if (
+      prompt.includes("diary") ||
+      prompt.includes("session") ||
+      prompt.includes("accomplishments")
+    ) {
       // extractDiary call
       if (config.errors?.extractDiary) {
         throw config.errors.extractDiary;
@@ -227,13 +240,14 @@ function createMockGenerateObject(config: LlmShimConfig): LLMIO["generateObject"
         callLog.extractDiary.push({
           content: prompt,
           metadata: options,
-          timestamp: new Date()
+          timestamp: new Date(),
         });
       }
 
-      const response = typeof config.extractDiary === "function"
-        ? config.extractDiary(prompt)
-        : config.extractDiary || DEFAULT_DIARY_RESPONSE;
+      const response =
+        typeof config.extractDiary === "function"
+          ? config.extractDiary(prompt)
+          : config.extractDiary || DEFAULT_DIARY_RESPONSE;
 
       return {
         object: {
@@ -244,14 +258,14 @@ function createMockGenerateObject(config: LlmShimConfig): LLMIO["generateObject"
           preferences: response.preferences || [],
           keyLearnings: response.keyLearnings || [],
           tags: response.tags || [],
-          searchAnchors: response.searchAnchors || []
-        }
+          searchAnchors: response.searchAnchors || [],
+        },
       } as any;
     }
 
     // Default response for unknown LLM calls
     return {
-      object: {}
+      object: {},
     } as any;
   };
 }
@@ -265,14 +279,14 @@ function createMockGenerateObject(config: LlmShimConfig): LLMIO["generateObject"
  */
 export async function withLlmShim<T>(
   config: LlmShimConfig,
-  fn: (io: LLMIO) => Promise<T>
+  fn: (io: LLMIO) => Promise<T>,
 ): Promise<T> {
   // Reset call log - only create if tracking is enabled
   if (config.trackCalls) {
     callLog = {
       extractDiary: [],
       reflector: [],
-      validator: []
+      validator: [],
     };
   } else {
     callLog = null;
@@ -296,7 +310,7 @@ export async function withLlmShim<T>(
  */
 export function createDiarySuccessShim(
   accomplishments: string[] = ["Task completed"],
-  learnings: string[] = ["Learned something"]
+  learnings: string[] = ["Learned something"],
 ): LlmShimConfig {
   return {
     extractDiary: {
@@ -307,17 +321,15 @@ export function createDiarySuccessShim(
       preferences: [],
       keyLearnings: learnings,
       tags: ["success"],
-      searchAnchors: accomplishments
-    }
+      searchAnchors: accomplishments,
+    },
   };
 }
 
 /**
  * Create a shim config for failed diary extraction
  */
-export function createDiaryFailureShim(
-  challenges: string[] = ["Task failed"]
-): LlmShimConfig {
+export function createDiaryFailureShim(challenges: string[] = ["Task failed"]): LlmShimConfig {
   return {
     extractDiary: {
       status: "failure",
@@ -327,8 +339,8 @@ export function createDiaryFailureShim(
       preferences: [],
       keyLearnings: [],
       tags: ["failure"],
-      searchAnchors: challenges
-    }
+      searchAnchors: challenges,
+    },
   };
 }
 
@@ -336,36 +348,34 @@ export function createDiaryFailureShim(
  * Create a shim config that generates add deltas
  */
 export function createReflectorAddDeltaShim(
-  rules: Array<{ content: string; category?: string }>
+  rules: Array<{ content: string; category?: string }>,
 ): LlmShimConfig {
   return {
     reflector: {
-      deltas: rules.map(r => ({
+      deltas: rules.map((r) => ({
         type: "add" as const,
         bullet: {
           content: r.content,
-          category: r.category || "general"
+          category: r.category || "general",
         },
         reason: "Generated from test reflection",
-        sourceSession: "/test/session.jsonl"
-      }))
-    }
+        sourceSession: "/test/session.jsonl",
+      })),
+    },
   };
 }
 
 /**
  * Create a shim config that always rejects validation
  */
-export function createValidatorRejectShim(
-  reason: string = "Insufficient evidence"
-): LlmShimConfig {
+export function createValidatorRejectShim(reason: string = "Insufficient evidence"): LlmShimConfig {
   return {
     validator: {
       verdict: "REJECT",
       confidence: 0.9,
       reasoning: reason,
-      supportingEvidence: []
-    }
+      supportingEvidence: [],
+    },
   };
 }
 
@@ -377,19 +387,17 @@ export function createOfflineShim(): LlmShimConfig {
     extractDiary: DEFAULT_DIARY_RESPONSE,
     reflector: DEFAULT_REFLECTOR_RESPONSE,
     validator: DEFAULT_VALIDATOR_RESPONSE,
-    trackCalls: true
+    trackCalls: true,
   };
 }
 
 /**
  * Create a shim config that simulates LLM API errors
  */
-export function createErrorShim(
-  errorMessage: string = "API rate limit exceeded"
-): LlmShimConfig {
+export function createErrorShim(errorMessage: string = "API rate limit exceeded"): LlmShimConfig {
   return {
     errors: {
-      any: new Error(errorMessage)
-    }
+      any: new Error(errorMessage),
+    },
   };
 }

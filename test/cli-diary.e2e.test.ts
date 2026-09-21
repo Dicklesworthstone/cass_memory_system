@@ -7,12 +7,12 @@
  * - Human output with save-only behavior
  * - Error handling for missing sessions
  */
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { diaryCommand } from "../src/commands/diary.js";
-import { withTempCassHome } from "./helpers/temp.js";
 import { createE2ELogger } from "./helpers/e2e-logger.js";
+import { withTempCassHome } from "./helpers/temp.js";
 
 function captureConsole() {
   const logs: string[] = [];
@@ -33,7 +33,7 @@ function captureConsole() {
     restore: () => {
       console.log = originalLog;
       console.error = originalError;
-    }
+    },
   };
 }
 
@@ -51,7 +51,7 @@ describe("E2E: CLI diary command", () => {
           const sessionPath = path.join(env.home, "session.jsonl");
           const sessionLines = [
             JSON.stringify({ role: "user", content: "Please fix the bug" }),
-            JSON.stringify({ role: "assistant", content: "Working on it" })
+            JSON.stringify({ role: "assistant", content: "Working on it" }),
           ].join("\n");
           await writeFile(sessionPath, sessionLines, "utf-8");
 
@@ -94,7 +94,7 @@ describe("E2E: CLI diary command", () => {
           const sessionPath = path.join(env.home, "session.jsonl");
           const sessionLines = [
             JSON.stringify({ role: "user", content: "Summarize changes" }),
-            JSON.stringify({ role: "assistant", content: "Done" })
+            JSON.stringify({ role: "assistant", content: "Done" }),
           ].join("\n");
           await writeFile(sessionPath, sessionLines, "utf-8");
 
@@ -223,10 +223,20 @@ describe("E2E: CLI diary command", () => {
           // Create a rich session that will produce a diary with various fields
           const sessionPath = path.join(env.home, "session.jsonl");
           const sessionLines = [
-            JSON.stringify({ role: "user", content: "Please fix the authentication bug in the login module" }),
-            JSON.stringify({ role: "assistant", content: "I'll analyze the authentication issue and fix it." }),
+            JSON.stringify({
+              role: "user",
+              content: "Please fix the authentication bug in the login module",
+            }),
+            JSON.stringify({
+              role: "assistant",
+              content: "I'll analyze the authentication issue and fix it.",
+            }),
             JSON.stringify({ role: "user", content: "Thanks! Also add some tests please." }),
-            JSON.stringify({ role: "assistant", content: "Fixed the bug and added comprehensive tests. The issue was with token expiry validation." })
+            JSON.stringify({
+              role: "assistant",
+              content:
+                "Fixed the bug and added comprehensive tests. The issue was with token expiry validation.",
+            }),
           ].join("\n");
           await writeFile(sessionPath, sessionLines, "utf-8");
 
@@ -401,11 +411,11 @@ describe("E2E: diary handleDiaryOutput", () => {
           preferences: [],
           tags: [],
           relatedSessions: [],
-          searchAnchors: []
+          searchAnchors: [],
         };
 
         const config = {
-          diaryDir: env.home
+          diaryDir: env.home,
         } as any;
 
         const capture = captureConsole();
@@ -445,11 +455,11 @@ describe("E2E: diary handleDiaryOutput", () => {
           preferences: [],
           tags: [],
           relatedSessions: [],
-          searchAnchors: []
+          searchAnchors: [],
         };
 
         const config = {
-          diaryDir: env.home
+          diaryDir: env.home,
         } as any;
 
         const capture = captureConsole();
@@ -488,11 +498,11 @@ describe("E2E: diary handleDiaryOutput", () => {
           preferences: [],
           tags: [],
           relatedSessions: [],
-          searchAnchors: []
+          searchAnchors: [],
         };
 
         const config = {
-          diaryDir: env.home
+          diaryDir: env.home,
         } as any;
 
         const capture = captureConsole();
@@ -531,11 +541,11 @@ describe("E2E: diary handleDiaryOutput", () => {
           preferences: [],
           tags: [],
           relatedSessions: [],
-          searchAnchors: []
+          searchAnchors: [],
         };
 
         const config = {
-          diaryDir: env.home
+          diaryDir: env.home,
         } as any;
 
         const capture = captureConsole();
@@ -574,11 +584,11 @@ describe("E2E: diary handleDiaryOutput", () => {
           preferences: ["Prefers TypeScript", "Uses functional style"],
           tags: [],
           relatedSessions: [],
-          searchAnchors: []
+          searchAnchors: [],
         };
 
         const config = {
-          diaryDir: env.home
+          diaryDir: env.home,
         } as any;
 
         const capture = captureConsole();
@@ -617,11 +627,11 @@ describe("E2E: diary handleDiaryOutput", () => {
           preferences: [],
           tags: ["auth", "security", "typescript"],
           relatedSessions: [],
-          searchAnchors: []
+          searchAnchors: [],
         };
 
         const config = {
-          diaryDir: env.home
+          diaryDir: env.home,
         } as any;
 
         const capture = captureConsole();
@@ -661,13 +671,18 @@ describe("E2E: diary handleDiaryOutput", () => {
           preferences: [],
           tags: [],
           relatedSessions: [
-            { agent: "cursor", sessionPath: "/cursor/session1.jsonl", snippet: "Fixed similar auth issue in another project last week", relevanceScore: 0.85 }
+            {
+              agent: "cursor",
+              sessionPath: "/cursor/session1.jsonl",
+              snippet: "Fixed similar auth issue in another project last week",
+              relevanceScore: 0.85,
+            },
           ],
-          searchAnchors: []
+          searchAnchors: [],
         };
 
         const config = {
-          diaryDir: env.home
+          diaryDir: env.home,
         } as any;
 
         const capture = captureConsole();
@@ -707,16 +722,19 @@ describe("E2E: diary handleDiaryOutput", () => {
           preferences: [],
           tags: [],
           relatedSessions: [],
-          searchAnchors: []
+          searchAnchors: [],
         };
 
         const config = {
-          diaryDir: env.home
+          diaryDir: env.home,
         } as any;
 
         const capture = captureConsole();
         try {
-          await handleDiaryOutput(failureDiary, {}, config, { command: "diary", startedAtMs: Date.now() });
+          await handleDiaryOutput(failureDiary, {}, config, {
+            command: "diary",
+            startedAtMs: Date.now(),
+          });
         } finally {
           capture.restore();
         }

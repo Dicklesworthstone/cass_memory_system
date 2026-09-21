@@ -18,19 +18,145 @@ const TECH_TERM_PATTERNS = [
 ];
 
 const ANCHOR_STOP_WORDS = new Set([
-  "the", "a", "an", "is", "are", "was", "were", "be", "been", "have", "has", "had",
-  "do", "does", "did", "will", "would", "could", "should", "can", "to", "of", "in",
-  "for", "on", "with", "at", "by", "from", "as", "into", "through", "during", "before",
-  "after", "and", "or", "but", "if", "when", "where", "why", "how", "this", "that",
-  "these", "those", "what", "which", "who", "there", "here", "i", "you", "he", "she",
-  "it", "we", "they", "me", "him", "her", "us", "them", "my", "your", "our", "their",
-  "some", "any", "all", "most", "other", "such", "only", "same", "so", "than", "too",
-  "very", "just", "also", "now", "then", "up", "down", "out", "about", "more", "less",
-  "new", "old", "first", "last", "long", "great", "little", "own", "good", "bad",
-  "get", "got", "make", "made", "need", "needed", "use", "used", "using", "work",
-  "worked", "working", "try", "tried", "trying", "want", "wanted", "think", "thought",
-  "know", "knew", "see", "saw", "look", "looked", "find", "found", "give", "gave",
-  "take", "took", "come", "came", "way", "well", "back", "even", "still", "while"
+  "the",
+  "a",
+  "an",
+  "is",
+  "are",
+  "was",
+  "were",
+  "be",
+  "been",
+  "have",
+  "has",
+  "had",
+  "do",
+  "does",
+  "did",
+  "will",
+  "would",
+  "could",
+  "should",
+  "can",
+  "to",
+  "of",
+  "in",
+  "for",
+  "on",
+  "with",
+  "at",
+  "by",
+  "from",
+  "as",
+  "into",
+  "through",
+  "during",
+  "before",
+  "after",
+  "and",
+  "or",
+  "but",
+  "if",
+  "when",
+  "where",
+  "why",
+  "how",
+  "this",
+  "that",
+  "these",
+  "those",
+  "what",
+  "which",
+  "who",
+  "there",
+  "here",
+  "i",
+  "you",
+  "he",
+  "she",
+  "it",
+  "we",
+  "they",
+  "me",
+  "him",
+  "her",
+  "us",
+  "them",
+  "my",
+  "your",
+  "our",
+  "their",
+  "some",
+  "any",
+  "all",
+  "most",
+  "other",
+  "such",
+  "only",
+  "same",
+  "so",
+  "than",
+  "too",
+  "very",
+  "just",
+  "also",
+  "now",
+  "then",
+  "up",
+  "down",
+  "out",
+  "about",
+  "more",
+  "less",
+  "new",
+  "old",
+  "first",
+  "last",
+  "long",
+  "great",
+  "little",
+  "own",
+  "good",
+  "bad",
+  "get",
+  "got",
+  "make",
+  "made",
+  "need",
+  "needed",
+  "use",
+  "used",
+  "using",
+  "work",
+  "worked",
+  "working",
+  "try",
+  "tried",
+  "trying",
+  "want",
+  "wanted",
+  "think",
+  "thought",
+  "know",
+  "knew",
+  "see",
+  "saw",
+  "look",
+  "looked",
+  "find",
+  "found",
+  "give",
+  "gave",
+  "take",
+  "took",
+  "come",
+  "came",
+  "way",
+  "well",
+  "back",
+  "even",
+  "still",
+  "while",
 ]);
 
 interface DiaryExtraction {
@@ -91,7 +217,8 @@ function extractSearchAnchors(diary: DiaryExtraction): string[] {
     anchorScores.set(match, (anchorScores.get(match) || 0) + 2);
   }
 
-  const phrasePattern = /\b(?:[A-Za-z]+\s+){1,2}(?:error|bug|fix|issue|config|setting|option|function|method|class|component|hook|service|controller|model|schema|type|interface|api|endpoint|route|middleware)\b/gi;
+  const phrasePattern =
+    /\b(?:[A-Za-z]+\s+){1,2}(?:error|bug|fix|issue|config|setting|option|function|method|class|component|hook|service|controller|model|schema|type|interface|api|endpoint|route|middleware)\b/gi;
   const phraseMatches = combinedText.match(phrasePattern) || [];
   for (const match of phraseMatches) {
     const normalized = match.toLowerCase().trim();
@@ -148,7 +275,7 @@ describe("extractSearchAnchors", () => {
       decisions: ["Used TypeScript for type safety", "Chose Prisma as ORM"],
       challenges: ["CORS configuration was tricky", "Async/await timeout issues"],
       keyLearnings: ["Always validate tokens", "Use vitest for testing"],
-      tags: ["auth", "react", "typescript"]
+      tags: ["auth", "react", "typescript"],
     };
 
     const anchors = extractSearchAnchors(diary);
@@ -156,7 +283,7 @@ describe("extractSearchAnchors", () => {
     expect(anchors.length).toBeGreaterThan(0);
     expect(anchors.length).toBeLessThanOrEqual(15);
 
-    const lowerAnchors = anchors.map(a => a.toLowerCase());
+    const lowerAnchors = anchors.map((a) => a.toLowerCase());
     expect(lowerAnchors).toContain("jwt");
     expect(lowerAnchors).toContain("react");
     expect(lowerAnchors).toContain("typescript");
@@ -170,11 +297,11 @@ describe("extractSearchAnchors", () => {
 
   it("returns tags when no other content available", () => {
     const diary: DiaryExtraction = {
-      tags: ["testing", "api", "database"]
+      tags: ["testing", "api", "database"],
     };
     const anchors = extractSearchAnchors(diary);
 
-    const lowerAnchors = anchors.map(a => a.toLowerCase());
+    const lowerAnchors = anchors.map((a) => a.toLowerCase());
     expect(lowerAnchors).toContain("testing");
     expect(lowerAnchors).toContain("api");
     expect(lowerAnchors).toContain("database");
@@ -183,23 +310,23 @@ describe("extractSearchAnchors", () => {
   it("extracts file patterns", () => {
     const diary: DiaryExtraction = {
       accomplishments: ["Updated package.json", "Fixed config.yaml settings"],
-      challenges: ["Issues with test.ts file"]
+      challenges: ["Issues with test.ts file"],
     };
 
     const anchors = extractSearchAnchors(diary);
-    const lowerAnchors = anchors.map(a => a.toLowerCase());
+    const lowerAnchors = anchors.map((a) => a.toLowerCase());
 
-    expect(lowerAnchors.some(a => a.includes("package.json"))).toBe(true);
+    expect(lowerAnchors.some((a) => a.includes("package.json"))).toBe(true);
   });
 
   it("prioritizes technical terms over common words", () => {
     const diary: DiaryExtraction = {
       accomplishments: ["The authentication system is now working with OAuth2"],
-      keyLearnings: ["The error handling for GraphQL was important"]
+      keyLearnings: ["The error handling for GraphQL was important"],
     };
 
     const anchors = extractSearchAnchors(diary);
-    const lowerAnchors = anchors.map(a => a.toLowerCase());
+    const lowerAnchors = anchors.map((a) => a.toLowerCase());
 
     expect(lowerAnchors).toContain("authentication");
     expect(lowerAnchors).toContain("oauth2");
@@ -218,9 +345,9 @@ describe("extractSearchAnchors", () => {
         "Set up Docker, Kubernetes, AWS infrastructure",
         "Configured PostgreSQL, MongoDB, Redis databases",
         "Added JWT, OAuth, CORS security",
-        "Wrote Jest, Vitest, Mocha tests"
+        "Wrote Jest, Vitest, Mocha tests",
       ],
-      tags: ["tag1", "tag2", "tag3", "tag4", "tag5"]
+      tags: ["tag1", "tag2", "tag3", "tag4", "tag5"],
     };
 
     const anchors = extractSearchAnchors(diary);
@@ -230,11 +357,11 @@ describe("extractSearchAnchors", () => {
   it("deduplicates similar anchors", () => {
     const diary: DiaryExtraction = {
       accomplishments: ["Used React for frontend", "react hooks implementation"],
-      decisions: ["REACT components are best"]
+      decisions: ["REACT components are best"],
     };
 
     const anchors = extractSearchAnchors(diary);
-    const reactCount = anchors.filter(a => a.toLowerCase() === "react").length;
+    const reactCount = anchors.filter((a) => a.toLowerCase() === "react").length;
     expect(reactCount).toBeLessThanOrEqual(1);
   });
 });

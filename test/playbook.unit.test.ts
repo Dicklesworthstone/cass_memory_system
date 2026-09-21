@@ -1,18 +1,18 @@
-import { describe, test, expect } from "bun:test";
-import fs from "node:fs/promises";
-import path from "node:path";
-import os from "node:os";
-import { fileURLToPath } from "node:url";
+import { describe, expect, test } from "bun:test";
 import { execSync } from "node:child_process";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
-  createEmptyPlaybook,
-  loadPlaybook,
-  savePlaybook,
   addBullet,
+  createEmptyPlaybook,
   loadMergedPlaybook,
-  removeFromBlockedLog
+  loadPlaybook,
+  removeFromBlockedLog,
+  savePlaybook,
 } from "../src/playbook.js";
-import { createTestConfig, createTestBullet } from "./helpers/factories.js";
+import { createTestBullet, createTestConfig } from "./helpers/factories.js";
 
 function tempFile(name: string) {
   return path.join(os.tmpdir(), `cm-playbook-${Date.now()}-${name}.yaml`);
@@ -48,7 +48,7 @@ describe("playbook.ts CRUD and loading", () => {
     const pb = createEmptyPlaybook("add");
     const added = addBullet(pb, { content: "Rule", category: "testing" }, "session-1", 90);
     expect(added.id).toBeTruthy();
-    expect(pb.bullets.find(b => b.id === added.id)).toBeTruthy();
+    expect(pb.bullets.find((b) => b.id === added.id)).toBeTruthy();
   });
 
   test("loadMergedPlaybook merges repo playbook if present", async () => {
@@ -75,8 +75,8 @@ describe("playbook.ts CRUD and loading", () => {
       const config = createTestConfig({ playbookPath: globalPath });
 
       const merged = await loadMergedPlaybook(config);
-      expect(merged.bullets.find(b => b.id === "g1")).toBeTruthy();
-      const repoRule = merged.bullets.find(b => b.content === "Repo rule");
+      expect(merged.bullets.find((b) => b.id === "g1")).toBeTruthy();
+      const repoRule = merged.bullets.find((b) => b.content === "Repo rule");
       expect(repoRule).toBeTruthy();
     } finally {
       process.chdir(originalCwd);
@@ -100,15 +100,18 @@ describe("removeFromBlockedLog", () => {
     const entries = [
       { id: "b-1", reason: "harmful", timestamp: "2025-01-01" },
       { id: "b-2", reason: "forgot", timestamp: "2025-01-02" },
-      { id: "b-3", reason: "expired", timestamp: "2025-01-03" }
+      { id: "b-3", reason: "expired", timestamp: "2025-01-03" },
     ];
-    await fs.writeFile(logPath, entries.map(e => JSON.stringify(e)).join("\n") + "\n");
+    await fs.writeFile(logPath, entries.map((e) => JSON.stringify(e)).join("\n") + "\n");
 
     const result = await removeFromBlockedLog("b-2", logPath);
     expect(result).toBe(true);
 
     const content = await fs.readFile(logPath, "utf-8");
-    const remaining = content.trim().split("\n").map(l => JSON.parse(l));
+    const remaining = content
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l));
     expect(remaining.length).toBe(2);
     expect(remaining.find((e: any) => e.id === "b-2")).toBeUndefined();
     expect(remaining.find((e: any) => e.id === "b-1")).toBeTruthy();
@@ -117,10 +120,8 @@ describe("removeFromBlockedLog", () => {
 
   test("returns false if entry not found", async () => {
     const logPath = tempBlockedLog("notfound");
-    const entries = [
-      { id: "b-1", reason: "test" }
-    ];
-    await fs.writeFile(logPath, entries.map(e => JSON.stringify(e)).join("\n") + "\n");
+    const entries = [{ id: "b-1", reason: "test" }];
+    await fs.writeFile(logPath, entries.map((e) => JSON.stringify(e)).join("\n") + "\n");
 
     const result = await removeFromBlockedLog("b-nonexistent", logPath);
     expect(result).toBe(false);
@@ -132,7 +133,8 @@ describe("removeFromBlockedLog", () => {
 
   test("preserves malformed lines", async () => {
     const logPath = tempBlockedLog("malformed");
-    const content = '{"id":"b-1","reason":"test"}\nmalformed garbage\n{"id":"b-2","reason":"test"}\n';
+    const content =
+      '{"id":"b-1","reason":"test"}\nmalformed garbage\n{"id":"b-2","reason":"test"}\n';
     await fs.writeFile(logPath, content);
 
     const result = await removeFromBlockedLog("b-1", logPath);
@@ -155,4 +157,3 @@ describe("removeFromBlockedLog", () => {
     expect(content).toBe("");
   });
 });
-

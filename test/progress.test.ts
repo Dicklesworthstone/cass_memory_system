@@ -1,4 +1,4 @@
-import { describe, test, expect } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { Writable } from "node:stream";
 
 import { createProgress } from "../src/progress.js";
@@ -10,7 +10,11 @@ import { createProgress } from "../src/progress.js";
 function createCaptureStream(): { stream: Writable; getOutput: () => string } {
   const chunks: Buffer[] = [];
   const stream = new Writable({
-    write(chunk: Buffer, _encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
+    write(
+      chunk: Buffer,
+      _encoding: BufferEncoding,
+      callback: (error?: Error | null) => void,
+    ): void {
       chunks.push(chunk);
       callback();
     },
@@ -24,10 +28,17 @@ function createCaptureStream(): { stream: Writable; getOutput: () => string } {
 /**
  * Helper to create a mock TTY stream for spinner tests.
  */
-function createMockTtyStream(): { stream: Writable & { isTTY: true; columns: number }; getOutput: () => string } {
+function createMockTtyStream(): {
+  stream: Writable & { isTTY: true; columns: number };
+  getOutput: () => string;
+} {
   const chunks: Buffer[] = [];
   const stream = new Writable({
-    write(chunk: Buffer, _encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
+    write(
+      chunk: Buffer,
+      _encoding: BufferEncoding,
+      callback: (error?: Error | null) => void,
+    ): void {
       chunks.push(chunk);
       callback();
     },

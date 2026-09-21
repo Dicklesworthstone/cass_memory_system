@@ -42,9 +42,9 @@ type IconName =
   | "thumbsUp"
   | "clock"
   | "merge"
-  | "success"   // Simple checkmark for success messages
-  | "failure"   // Simple X for failure messages
-  | "skipped";  // Circle-slash for skipped items
+  | "success" // Simple checkmark for success messages
+  | "failure" // Simple X for failure messages
+  | "skipped"; // Circle-slash for skipped items
 
 const ICONS: Record<IconName, { emoji: string; plain: string }> = {
   chart: { emoji: "📊", plain: "" },
@@ -151,7 +151,7 @@ export function formatMaturityIcon(maturity: string): string {
 
 export function formatRule(
   char: string = "─",
-  options: { width?: number; maxWidth?: number; minWidth?: number } = {}
+  options: { width?: number; maxWidth?: number; minWidth?: number } = {},
 ): string {
   const baseWidth = options.width ?? getOutputStyle().width;
   const minWidth = options.minWidth ?? 10;
@@ -191,7 +191,7 @@ export function wrapText(text: string, width: number): string[] {
 
 export function formatKv(
   rows: Array<{ key: string; value: string }>,
-  options: { indent?: string; separator?: string; keyWidth?: number; width?: number } = {}
+  options: { indent?: string; separator?: string; keyWidth?: number; width?: number } = {},
 ): string {
   const indent = options.indent ?? "";
   const separator = options.separator ?? ": ";

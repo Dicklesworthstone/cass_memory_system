@@ -1,11 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { createTestConfig } from "./helpers/factories.js";
 import {
   cassAvailable,
   cassNeedsIndex,
   handleCassUnavailable,
   safeCassSearchWithDegraded,
 } from "../src/cass.js";
+import { createTestConfig } from "./helpers/factories.js";
 
 const hasRealCass = cassAvailable();
 const cassReady = hasRealCass && !cassNeedsIndex();
@@ -19,7 +19,12 @@ describe("cass integration (real cass)", () => {
 
   it.skipIf(!cassReady)("safeCassSearchWithDegraded runs against real cass", async () => {
     const config = createTestConfig();
-    const result = await safeCassSearchWithDegraded("definitely-nonexistent-query", { limit: 1, days: 1 }, "cass", config);
+    const result = await safeCassSearchWithDegraded(
+      "definitely-nonexistent-query",
+      { limit: 1, days: 1 },
+      "cass",
+      config,
+    );
     expect(Array.isArray(result.hits)).toBe(true);
   });
 });

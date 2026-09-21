@@ -4,22 +4,12 @@
   "timestamp": "2025-01-02T10:00:00.000Z",
   "agent": "claude-code",
   "status": "success",
-  "accomplishments": [
-    "Implemented feature X",
-    "All tests passing"
-  ],
-  "decisions": [
-    "Chose atomic writes for config"
-  ],
+  "accomplishments": ["Implemented feature X", "All tests passing"],
+  "decisions": ["Chose atomic writes for config"],
   "challenges": [],
   "preferences": [],
-  "keyLearnings": [
-    "Atomic writes prevent partial config corruption"
-  ],
+  "keyLearnings": ["Atomic writes prevent partial config corruption"],
   "relatedSessions": [],
-  "tags": [
-    "testing",
-    "io"
-  ],
+  "tags": ["testing", "io"],
   "searchAnchors": []
 }

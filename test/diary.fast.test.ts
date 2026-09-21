@@ -1,8 +1,8 @@
-import { describe, test, expect } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { diaryCommand } from "../src/commands/diary.js";
-import { formatRawSession, inferOutcome, generateDiaryFromContent } from "../src/diary.js";
+import { formatRawSession, generateDiaryFromContent, inferOutcome } from "../src/diary.js";
 import { createTestConfig, withTempCassHome, withTempDir } from "./helpers/index.js";
 
 describe("Fast Diary Extraction", () => {
@@ -65,20 +65,25 @@ describe("Fast Diary Extraction", () => {
     test("throws when content is empty after sanitization", async () => {
       await withTempDir("diary-empty", async (tmp) => {
         const config = createTestConfig({ diaryDir: tmp });
-        await expect(generateDiaryFromContent("/tmp/session.jsonl", "   ", config))
-          .rejects
-          .toThrow("Session content is empty after sanitization");
+        await expect(generateDiaryFromContent("/tmp/session.jsonl", "   ", config)).rejects.toThrow(
+          "Session content is empty after sanitization",
+        );
       });
     });
 
     describe("agent provenance (#73)", () => {
-      const content = "**user**: Please fix the failing build.\n\n**assistant**: Done, the build passes now.";
+      const content =
+        "**user**: Please fix the failing build.\n\n**assistant**: Done, the build passes now.";
 
-      async function withFastDiary<T>(fn: (config: ReturnType<typeof createTestConfig>) => Promise<T>): Promise<T> {
+      async function withFastDiary<T>(
+        fn: (config: ReturnType<typeof createTestConfig>) => Promise<T>,
+      ): Promise<T> {
         const prev = process.env.CASS_MEMORY_LLM;
         process.env.CASS_MEMORY_LLM = "none";
         try {
-          return await withTempDir("diary-agent", async (tmp) => fn(createTestConfig({ diaryDir: tmp })));
+          return await withTempDir("diary-agent", async (tmp) =>
+            fn(createTestConfig({ diaryDir: tmp })),
+          );
         } finally {
           if (prev === undefined) delete process.env.CASS_MEMORY_LLM;
           else process.env.CASS_MEMORY_LLM = prev;
@@ -90,7 +95,7 @@ describe("Fast Diary Extraction", () => {
           const diary = await generateDiaryFromContent(
             "/Users/u/.omp/agent/sessions/--Users-u-repo--/2026-09-01T10-00-00.jsonl",
             content,
-            config
+            config,
           );
           expect(diary.agent).toBe("omp");
         });
@@ -102,7 +107,7 @@ describe("Fast Diary Extraction", () => {
             "/tmp/exported/session.jsonl",
             content,
             config,
-            { agent: "omp" }
+            { agent: "omp" },
           );
           expect(diary.agent).toBe("omp");
         });
@@ -114,7 +119,7 @@ describe("Fast Diary Extraction", () => {
             "/Users/u/.claude/projects/p/s.jsonl",
             content,
             config,
-            { agent: "claude_code" }
+            { agent: "claude_code" },
           );
           expect(diary.agent).toBe("claude");
         });
@@ -126,7 +131,7 @@ describe("Fast Diary Extraction", () => {
             "C:\\Users\\u\\.omp\\agent\\sessions\\ws\\s.jsonl",
             content,
             config,
-            { agent: "unknown" }
+            { agent: "unknown" },
           );
           expect(fromUnknown.agent).toBe("omp");
 
@@ -134,7 +139,7 @@ describe("Fast Diary Extraction", () => {
             "/Users/u/.codex/sessions/s.jsonl",
             content,
             config,
-            { agent: "  " }
+            { agent: "  " },
           );
           expect(fromEmpty.agent).toBe("codex");
 
@@ -149,7 +154,7 @@ describe("Fast Diary Extraction", () => {
             "/tmp/exported/session.jsonl",
             content,
             config,
-            { agent: "omp", workspace: "/Users/u/repo" }
+            { agent: "omp", workspace: "/Users/u/repo" },
           );
           expect(diary.workspace).toBe("/Users/u/repo");
         });
@@ -168,7 +173,7 @@ describe("Fast Diary Extraction", () => {
       const lines = [
         JSON.stringify({ role: "user", content: "Hello" }),
         JSON.stringify({ role: "assistant", content: "Hi there" }),
-        "{not:json}"
+        "{not:json}",
       ].join("\n");
       const formatted = formatRawSession(lines, ".jsonl");
       expect(formatted).toContain("**user**: Hello");
@@ -180,9 +185,12 @@ describe("Fast Diary Extraction", () => {
       const lines = [
         JSON.stringify({
           role: "user",
-          content: [{ type: "text", text: "Hello" }, { type: "text", text: "World" }]
+          content: [
+            { type: "text", text: "Hello" },
+            { type: "text", text: "World" },
+          ],
         }),
-        JSON.stringify({ role: "assistant", content: [{ text: "Ack" }] })
+        JSON.stringify({ role: "assistant", content: [{ text: "Ack" }] }),
       ].join("\n");
       const formatted = formatRawSession(lines, ".jsonl");
       expect(formatted).toContain("**user**: Hello\nWorld");
@@ -193,7 +201,7 @@ describe("Fast Diary Extraction", () => {
       const lines = [
         JSON.stringify({ type: "session_meta", session_id: "abc123", timestamp: 1234567890 }),
         JSON.stringify({ role: "user", content: "Hello" }),
-        JSON.stringify({ role: "assistant", content: "Hi" })
+        JSON.stringify({ role: "assistant", content: "Hi" }),
       ].join("\n");
       const formatted = formatRawSession(lines, ".jsonl");
       expect(formatted).not.toContain("session_meta");
@@ -206,12 +214,12 @@ describe("Fast Diary Extraction", () => {
       const lines = [
         JSON.stringify({
           type: "response_item",
-          payload: { type: "message", role: "assistant", content: "I'll help with that" }
+          payload: { type: "message", role: "assistant", content: "I'll help with that" },
         }),
         JSON.stringify({
           type: "response_item",
-          payload: { type: "message", role: "user", content: [{ text: "Thanks" }] }
-        })
+          payload: { type: "message", role: "user", content: [{ text: "Thanks" }] },
+        }),
       ].join("\n");
       const formatted = formatRawSession(lines, ".jsonl");
       expect(formatted).toContain("**assistant**: I'll help with that");
@@ -222,9 +230,9 @@ describe("Fast Diary Extraction", () => {
       const lines = [
         JSON.stringify({
           type: "response_item",
-          payload: { type: "function_call", name: "read_file" }
+          payload: { type: "function_call", name: "read_file" },
         }),
-        JSON.stringify({ role: "user", content: "Hello" })
+        JSON.stringify({ role: "user", content: "Hello" }),
       ].join("\n");
       const formatted = formatRawSession(lines, ".jsonl");
       expect(formatted).not.toContain("function_call");
@@ -237,8 +245,8 @@ describe("Fast Diary Extraction", () => {
       const lines = [
         JSON.stringify({
           role: "assistant",
-          content: { content: [{ text: "Nested" }, { text: "Content" }] }
-        })
+          content: { content: [{ text: "Nested" }, { text: "Content" }] },
+        }),
       ].join("\n");
       const formatted = formatRawSession(lines, ".jsonl");
       expect(formatted).toContain("**assistant**: Nested\nContent");
@@ -248,8 +256,8 @@ describe("Fast Diary Extraction", () => {
       const payload = JSON.stringify({
         messages: [
           { role: "system", content: "System note" },
-          { role: "user", content: "Do work" }
-        ]
+          { role: "user", content: "Do work" },
+        ],
       });
       const formatted = formatRawSession(payload, ".json");
       expect(formatted).toContain("**system**: System note");
@@ -260,8 +268,8 @@ describe("Fast Diary Extraction", () => {
       const payload = JSON.stringify({
         messages: [
           { role: "user", content: [{ type: "text", text: "Run tests" }] },
-          { role: "assistant", content: [{ text: "Running..." }, { text: "Done" }] }
-        ]
+          { role: "assistant", content: [{ text: "Running..." }, { text: "Done" }] },
+        ],
       });
       const formatted = formatRawSession(payload, ".json");
       expect(formatted).toContain("**user**: Run tests");
@@ -291,7 +299,7 @@ describe("Fast Diary Extraction", () => {
           const secret = "sk-test-12345678901234567890";
           const sessionLines = [
             JSON.stringify({ role: "user", content: `Please fix the bug. apiKey=${secret}` }),
-            JSON.stringify({ role: "assistant", content: "Working on it." })
+            JSON.stringify({ role: "assistant", content: "Working on it." }),
           ].join("\n");
 
           await writeFile(sessionPath, sessionLines, "utf-8");

@@ -1,6 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
-import { PlaybookSchema, PlaybookBulletSchema, ConfigSchema } from "../../src/types.js";
-import type { Playbook, PlaybookBullet, Config } from "../../src/types.js";
+import type { Config, Playbook, PlaybookBullet } from "../../src/types.js";
+import { ConfigSchema, PlaybookBulletSchema, PlaybookSchema } from "../../src/types.js";
 
 /**
  * Assert that a value is a valid Playbook according to the schema.
@@ -45,10 +45,7 @@ export function expectValidConfig(value: unknown): asserts value is Config {
 /**
  * Assert that a file exists and contains the expected content.
  */
-export async function expectFileContains(
-  filePath: string,
-  expectedContent: string
-): Promise<void> {
+export async function expectFileContains(filePath: string, expectedContent: string): Promise<void> {
   let content: string;
   try {
     content = await readFile(filePath, "utf-8");
@@ -59,8 +56,8 @@ export async function expectFileContains(
   if (!content.includes(expectedContent)) {
     throw new Error(
       `File ${filePath} does not contain expected content.\n` +
-      `Expected to find: "${expectedContent.slice(0, 100)}..."\n` +
-      `Actual content: "${content.slice(0, 200)}..."`
+        `Expected to find: "${expectedContent.slice(0, 100)}..."\n` +
+        `Actual content: "${content.slice(0, 200)}..."`,
     );
   }
 }
@@ -101,8 +98,8 @@ export function expectSameElements<T>(actual: T[], expected: T[]): void {
   if (JSON.stringify(sortedActual) !== JSON.stringify(sortedExpected)) {
     throw new Error(
       `Arrays don't have same elements.\n` +
-      `Expected: ${JSON.stringify(sortedExpected)}\n` +
-      `Actual: ${JSON.stringify(sortedActual)}`
+        `Expected: ${JSON.stringify(sortedExpected)}\n` +
+        `Actual: ${JSON.stringify(sortedActual)}`,
     );
   }
 }

@@ -47,7 +47,11 @@ function formatDuration(ms: number): string {
   return `${seconds}s`;
 }
 
-function computeEtaMs(params: { startedAtMs: number; current: number; total: number }): number | null {
+function computeEtaMs(params: {
+  startedAtMs: number;
+  current: number;
+  total: number;
+}): number | null {
   if (params.current <= 0) return null;
   const elapsedMs = Date.now() - params.startedAtMs;
   if (!Number.isFinite(elapsedMs) || elapsedMs <= 0) return null;
@@ -68,7 +72,11 @@ function formatProgressLine(params: {
 
   pieces.push(`${params.frame} ${params.state.message}`);
 
-  if (typeof params.state.total === "number" && Number.isFinite(params.state.total) && params.state.total > 0) {
+  if (
+    typeof params.state.total === "number" &&
+    Number.isFinite(params.state.total) &&
+    params.state.total > 0
+  ) {
     const total = params.state.total;
     const current = Math.min(total, Math.max(0, Math.floor(params.state.current)));
     const percent = Math.round((current / total) * 100);
@@ -92,7 +100,8 @@ function writeJsonLine(stream: NodeJS.WritableStream, payload: unknown): void {
 export function createProgress(options: ProgressOptions): ProgressReporter {
   const format: ProgressFormat = options.format ?? "text";
   const stream = options.stream ?? process.stderr;
-  const delayMs = typeof options.delayMs === "number" ? Math.max(0, Math.floor(options.delayMs)) : 2000;
+  const delayMs =
+    typeof options.delayMs === "number" ? Math.max(0, Math.floor(options.delayMs)) : 2000;
   const spinnerIntervalMs =
     typeof options.spinnerIntervalMs === "number"
       ? Math.max(40, Math.floor(options.spinnerIntervalMs))

@@ -9,16 +9,15 @@
  *
  * Uses isolated temp directories and mocked dependencies.
  */
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { writeFile } from "node:fs/promises";
-
+import type { CassRunner } from "../src/cass.js";
 import { auditCommand } from "../src/commands/audit.js";
-import { withTempCassHome } from "./helpers/temp.js";
-import { createTestBullet, createTestPlaybook, createTestConfig } from "./helpers/factories.js";
+import type { LLMIO } from "../src/llm.js";
 import { savePlaybook } from "../src/playbook.js";
 import { createE2ELogger } from "./helpers/e2e-logger.js";
-import type { CassRunner } from "../src/cass.js";
-import type { LLMIO } from "../src/llm.js";
+import { createTestBullet, createTestConfig, createTestPlaybook } from "./helpers/factories.js";
+import { withTempCassHome } from "./helpers/temp.js";
 
 // --- Helper Functions ---
 
@@ -45,7 +44,7 @@ function captureConsole() {
     restore: () => {
       console.log = originalLog;
       console.error = originalError;
-    }
+    },
   };
 }
 
@@ -58,10 +57,12 @@ function createMockCassRunner(options: {
   searchResults?: object[];
 }): CassRunner {
   const timeline = options.timeline ?? {
-    groups: [{
-      date: "2025-01-01",
-      sessions: [{ path: "/sessions/test.jsonl", agent: "claude" }]
-    }]
+    groups: [
+      {
+        date: "2025-01-01",
+        sessions: [{ path: "/sessions/test.jsonl", agent: "claude" }],
+      },
+    ],
   };
   const exportContent = options.exportContent ?? "# Test session content";
   const searchResults = options.searchResults ?? [];
@@ -83,7 +84,7 @@ function createMockCassRunner(options: {
       return { stdout: "", stderr: "" };
     },
     spawnSync: () => ({ status: 0, stdout: "", stderr: "" }),
-    spawn: (() => {}) as any
+    spawn: (() => {}) as any,
   };
 }
 
@@ -97,8 +98,8 @@ function createMockLLMIO(results: {
   return {
     generateObject: async <T>() => ({
       object: results as unknown as T,
-      usage: { promptTokens: 100, completionTokens: 50 }
-    })
+      usage: { promptTokens: 100, completionTokens: 50 },
+    }),
   };
 }
 
@@ -114,23 +115,20 @@ describe("E2E: CLI audit command", () => {
 
           const config = createTestConfig({
             playbookPath: env.playbookPath,
-            cassPath: "cass"
+            cassPath: "cass",
           });
           await writeFile(env.configPath, JSON.stringify(config));
           await savePlaybook(createTestPlaybook([]), env.playbookPath);
 
           // Mock cass runner with clean session content (no dangerous patterns)
           const cassRunner = createMockCassRunner({
-            exportContent: "This is a normal session with no dangerous commands."
+            exportContent: "This is a normal session with no dangerous commands.",
           });
 
           log.step("Execute: Run audit --trauma");
           const capture = captureConsole();
           try {
-            await auditCommand(
-              { days: 7, trauma: true, json: false },
-              { cassRunner }
-            );
+            await auditCommand({ days: 7, trauma: true, json: false }, { cassRunner });
           } finally {
             capture.restore();
           }
@@ -152,7 +150,7 @@ describe("E2E: CLI audit command", () => {
 
           const config = createTestConfig({
             playbookPath: env.playbookPath,
-            cassPath: "cass"
+            cassPath: "cass",
           });
           await writeFile(env.configPath, JSON.stringify(config));
           await savePlaybook(createTestPlaybook([]), env.playbookPath);
@@ -166,16 +164,13 @@ describe("E2E: CLI audit command", () => {
               This removed the important files.
               $ git push --force
               Force pushed to main.
-            `
+            `,
           });
 
           log.step("Execute: Run audit --trauma");
           const capture = captureConsole();
           try {
-            await auditCommand(
-              { days: 7, trauma: true, json: false },
-              { cassRunner }
-            );
+            await auditCommand({ days: 7, trauma: true, json: false }, { cassRunner });
           } finally {
             capture.restore();
           }
@@ -198,22 +193,19 @@ describe("E2E: CLI audit command", () => {
 
           const config = createTestConfig({
             playbookPath: env.playbookPath,
-            cassPath: "cass"
+            cassPath: "cass",
           });
           await writeFile(env.configPath, JSON.stringify(config));
           await savePlaybook(createTestPlaybook([]), env.playbookPath);
 
           const cassRunner = createMockCassRunner({
-            exportContent: "Normal session content."
+            exportContent: "Normal session content.",
           });
 
           log.step("Execute: Run audit --trauma --json");
           const capture = captureConsole();
           try {
-            await auditCommand(
-              { days: 7, trauma: true, json: true },
-              { cassRunner }
-            );
+            await auditCommand({ days: 7, trauma: true, json: true }, { cassRunner });
           } finally {
             capture.restore();
           }
@@ -242,39 +234,38 @@ describe("E2E: CLI audit command", () => {
           const bullet = createTestBullet({
             id: "b-test-rule",
             content: "Always use TypeScript strict mode",
-            maturity: "proven"
+            maturity: "proven",
           });
           const config = createTestConfig({
             playbookPath: env.playbookPath,
             cassPath: "cass",
-            apiKey: "test-api-key"
+            apiKey: "test-api-key",
           });
           await writeFile(env.configPath, JSON.stringify(config));
           await savePlaybook(createTestPlaybook([bullet]), env.playbookPath);
 
           const cassRunner = createMockCassRunner({
             timeline: {
-              groups: [{
-                date: "2025-01-01",
-                sessions: [{ path: "/sessions/s1.jsonl", agent: "claude" }]
-              }]
+              groups: [
+                {
+                  date: "2025-01-01",
+                  sessions: [{ path: "/sessions/s1.jsonl", agent: "claude" }],
+                },
+              ],
             },
-            exportContent: "Session with strict TypeScript code."
+            exportContent: "Session with strict TypeScript code.",
           });
 
           const io = createMockLLMIO({
             results: [
-              { ruleId: "b-test-rule", status: "followed", evidence: "Strict mode was used" }
-            ]
+              { ruleId: "b-test-rule", status: "followed", evidence: "Strict mode was used" },
+            ],
           });
 
           log.step("Execute: Run audit");
           const capture = captureConsole();
           try {
-            await auditCommand(
-              { days: 7, json: false },
-              { cassRunner, io }
-            );
+            await auditCommand({ days: 7, json: false }, { cassRunner, io });
           } finally {
             capture.restore();
           }
@@ -297,24 +288,26 @@ describe("E2E: CLI audit command", () => {
           const bullet = createTestBullet({
             id: "b-strict-mode",
             content: "Always use TypeScript strict mode",
-            maturity: "proven"
+            maturity: "proven",
           });
           const config = createTestConfig({
             playbookPath: env.playbookPath,
             cassPath: "cass",
-            apiKey: "test-api-key"
+            apiKey: "test-api-key",
           });
           await writeFile(env.configPath, JSON.stringify(config));
           await savePlaybook(createTestPlaybook([bullet]), env.playbookPath);
 
           const cassRunner = createMockCassRunner({
             timeline: {
-              groups: [{
-                date: "2025-01-01",
-                sessions: [{ path: "/sessions/violation.jsonl", agent: "claude" }]
-              }]
+              groups: [
+                {
+                  date: "2025-01-01",
+                  sessions: [{ path: "/sessions/violation.jsonl", agent: "claude" }],
+                },
+              ],
             },
-            exportContent: "Session where strict mode was not used."
+            exportContent: "Session where strict mode was not used.",
           });
 
           const io = createMockLLMIO({
@@ -322,18 +315,15 @@ describe("E2E: CLI audit command", () => {
               {
                 ruleId: "b-strict-mode",
                 status: "violated",
-                evidence: "TypeScript config had strict: false"
-              }
-            ]
+                evidence: "TypeScript config had strict: false",
+              },
+            ],
           });
 
           log.step("Execute: Run audit");
           const capture = captureConsole();
           try {
-            await auditCommand(
-              { days: 7, json: false },
-              { cassRunner, io }
-            );
+            await auditCommand({ days: 7, json: false }, { cassRunner, io });
           } finally {
             capture.restore();
           }
@@ -358,24 +348,26 @@ describe("E2E: CLI audit command", () => {
           const bullet = createTestBullet({
             id: "b-test-json",
             content: "Test rule for JSON output",
-            maturity: "candidate"
+            maturity: "candidate",
           });
           const config = createTestConfig({
             playbookPath: env.playbookPath,
             cassPath: "cass",
-            apiKey: "test-api-key"
+            apiKey: "test-api-key",
           });
           await writeFile(env.configPath, JSON.stringify(config));
           await savePlaybook(createTestPlaybook([bullet]), env.playbookPath);
 
           const cassRunner = createMockCassRunner({
             timeline: {
-              groups: [{
-                date: "2025-01-01",
-                sessions: [{ path: "/sessions/s1.jsonl", agent: "claude" }]
-              }]
+              groups: [
+                {
+                  date: "2025-01-01",
+                  sessions: [{ path: "/sessions/s1.jsonl", agent: "claude" }],
+                },
+              ],
             },
-            exportContent: "Test session content."
+            exportContent: "Test session content.",
           });
 
           const io = createMockLLMIO({
@@ -383,18 +375,15 @@ describe("E2E: CLI audit command", () => {
               {
                 ruleId: "b-test-json",
                 status: "violated",
-                evidence: "Rule was not followed"
-              }
-            ]
+                evidence: "Rule was not followed",
+              },
+            ],
           });
 
           log.step("Execute: Run audit --json");
           const capture = captureConsole();
           try {
-            await auditCommand(
-              { days: 7, json: true },
-              { cassRunner, io }
-            );
+            await auditCommand({ days: 7, json: true }, { cassRunner, io });
           } finally {
             capture.restore();
           }
@@ -427,22 +416,19 @@ describe("E2E: CLI audit command", () => {
           const config = createTestConfig({
             playbookPath: env.playbookPath,
             cassPath: "cass",
-            apiKey: "test-api-key"
+            apiKey: "test-api-key",
           });
           await writeFile(env.configPath, JSON.stringify(config));
           await savePlaybook(createTestPlaybook([]), env.playbookPath);
 
           const cassRunner = createMockCassRunner({
-            timeline: { groups: [] }
+            timeline: { groups: [] },
           });
 
           log.step("Execute: Run audit");
           const capture = captureConsole();
           try {
-            await auditCommand(
-              { days: 7, json: false },
-              { cassRunner }
-            );
+            await auditCommand({ days: 7, json: false }, { cassRunner });
           } finally {
             capture.restore();
           }
@@ -465,22 +451,19 @@ describe("E2E: CLI audit command", () => {
           const config = createTestConfig({
             playbookPath: env.playbookPath,
             cassPath: "cass",
-            apiKey: "test-api-key"
+            apiKey: "test-api-key",
           });
           await writeFile(env.configPath, JSON.stringify(config));
           await savePlaybook(createTestPlaybook([]), env.playbookPath);
 
           const cassRunner = createMockCassRunner({
-            timeline: { groups: [] }
+            timeline: { groups: [] },
           });
 
           log.step("Execute: Run audit --json");
           const capture = captureConsole();
           try {
-            await auditCommand(
-              { days: 7, json: true },
-              { cassRunner }
-            );
+            await auditCommand({ days: 7, json: true }, { cassRunner });
           } finally {
             capture.restore();
           }
@@ -505,7 +488,7 @@ describe("E2E: CLI audit command", () => {
 
           const config = createTestConfig({
             playbookPath: env.playbookPath,
-            cassPath: "cass"
+            cassPath: "cass",
           });
           await writeFile(env.configPath, JSON.stringify(config));
           await savePlaybook(createTestPlaybook([]), env.playbookPath);
@@ -513,10 +496,7 @@ describe("E2E: CLI audit command", () => {
           log.step("Execute: Run audit with invalid days");
           const capture = captureConsole();
           try {
-            await auditCommand(
-              { days: -5, json: false },
-              {}
-            );
+            await auditCommand({ days: -5, json: false }, {});
           } finally {
             capture.restore();
           }
@@ -539,7 +519,7 @@ describe("E2E: CLI audit command", () => {
 
           const config = createTestConfig({
             playbookPath: env.playbookPath,
-            cassPath: "cass"
+            cassPath: "cass",
           });
           await writeFile(env.configPath, JSON.stringify(config));
           await savePlaybook(createTestPlaybook([]), env.playbookPath);
@@ -547,10 +527,7 @@ describe("E2E: CLI audit command", () => {
           log.step("Execute: Run audit --json with invalid days");
           const capture = captureConsole();
           try {
-            await auditCommand(
-              { days: 0, json: true },
-              {}
-            );
+            await auditCommand({ days: 0, json: true }, {});
           } finally {
             capture.restore();
           }
@@ -575,7 +552,7 @@ describe("E2E: CLI audit command", () => {
           const config = createTestConfig({
             playbookPath: env.playbookPath,
             cassPath: "cass",
-            apiKey: "test-api-key"
+            apiKey: "test-api-key",
           });
           await writeFile(env.configPath, JSON.stringify(config));
           await savePlaybook(createTestPlaybook([]), env.playbookPath);
@@ -590,16 +567,13 @@ describe("E2E: CLI audit command", () => {
               return { stdout: "", stderr: "" };
             },
             spawnSync: () => ({ status: 0, stdout: "", stderr: "" }),
-            spawn: (() => {}) as any
+            spawn: (() => {}) as any,
           };
 
           log.step("Execute: Run audit");
           const capture = captureConsole();
           try {
-            await auditCommand(
-              { days: 7, json: false },
-              { cassRunner }
-            );
+            await auditCommand({ days: 7, json: false }, { cassRunner });
           } finally {
             capture.restore();
           }
@@ -625,22 +599,19 @@ describe("E2E: CLI audit command", () => {
           const config = createTestConfig({
             playbookPath: env.playbookPath,
             cassPath: "cass",
-            apiKey: "test-api-key"
+            apiKey: "test-api-key",
           });
           await writeFile(env.configPath, JSON.stringify(config));
           await savePlaybook(createTestPlaybook([]), env.playbookPath);
 
           const cassRunner = createMockCassRunner({
-            timeline: { groups: [] }
+            timeline: { groups: [] },
           });
 
           log.step("Execute: Run audit without days");
           const capture = captureConsole();
           try {
-            await auditCommand(
-              { json: false },
-              { cassRunner }
-            );
+            await auditCommand({ json: false }, { cassRunner });
           } finally {
             capture.restore();
           }
@@ -664,22 +635,19 @@ describe("E2E: CLI audit command", () => {
           const config = createTestConfig({
             playbookPath: env.playbookPath,
             cassPath: "cass",
-            apiKey: "test-api-key"
+            apiKey: "test-api-key",
           });
           await writeFile(env.configPath, JSON.stringify(config));
           await savePlaybook(createTestPlaybook([]), env.playbookPath);
 
           const cassRunner = createMockCassRunner({
-            timeline: { groups: [] }
+            timeline: { groups: [] },
           });
 
           log.step("Execute: Run audit with 30 days");
           const capture = captureConsole();
           try {
-            await auditCommand(
-              { days: 30, json: false },
-              { cassRunner }
-            );
+            await auditCommand({ days: 30, json: false }, { cassRunner });
           } finally {
             capture.restore();
           }
@@ -704,39 +672,36 @@ describe("E2E: CLI audit command", () => {
           const bullet = createTestBullet({
             id: "b-proven-rule",
             content: "Critical security rule",
-            maturity: "proven"
+            maturity: "proven",
           });
           const config = createTestConfig({
             playbookPath: env.playbookPath,
             cassPath: "cass",
-            apiKey: "test-api-key"
+            apiKey: "test-api-key",
           });
           await writeFile(env.configPath, JSON.stringify(config));
           await savePlaybook(createTestPlaybook([bullet]), env.playbookPath);
 
           const cassRunner = createMockCassRunner({
             timeline: {
-              groups: [{
-                date: "2025-01-01",
-                sessions: [{ path: "/sessions/s1.jsonl", agent: "claude" }]
-              }]
+              groups: [
+                {
+                  date: "2025-01-01",
+                  sessions: [{ path: "/sessions/s1.jsonl", agent: "claude" }],
+                },
+              ],
             },
-            exportContent: "Session content."
+            exportContent: "Session content.",
           });
 
           const io = createMockLLMIO({
-            results: [
-              { ruleId: "b-proven-rule", status: "violated", evidence: "Security issue" }
-            ]
+            results: [{ ruleId: "b-proven-rule", status: "violated", evidence: "Security issue" }],
           });
 
           log.step("Execute: Run audit --json");
           const capture = captureConsole();
           try {
-            await auditCommand(
-              { days: 7, json: true },
-              { cassRunner, io }
-            );
+            await auditCommand({ days: 7, json: true }, { cassRunner, io });
           } finally {
             capture.restore();
           }
@@ -760,39 +725,38 @@ describe("E2E: CLI audit command", () => {
           const bullet = createTestBullet({
             id: "b-candidate-rule",
             content: "New experimental rule",
-            maturity: "candidate"
+            maturity: "candidate",
           });
           const config = createTestConfig({
             playbookPath: env.playbookPath,
             cassPath: "cass",
-            apiKey: "test-api-key"
+            apiKey: "test-api-key",
           });
           await writeFile(env.configPath, JSON.stringify(config));
           await savePlaybook(createTestPlaybook([bullet]), env.playbookPath);
 
           const cassRunner = createMockCassRunner({
             timeline: {
-              groups: [{
-                date: "2025-01-01",
-                sessions: [{ path: "/sessions/s1.jsonl", agent: "claude" }]
-              }]
+              groups: [
+                {
+                  date: "2025-01-01",
+                  sessions: [{ path: "/sessions/s1.jsonl", agent: "claude" }],
+                },
+              ],
             },
-            exportContent: "Session content."
+            exportContent: "Session content.",
           });
 
           const io = createMockLLMIO({
             results: [
-              { ruleId: "b-candidate-rule", status: "violated", evidence: "Rule not followed" }
-            ]
+              { ruleId: "b-candidate-rule", status: "violated", evidence: "Rule not followed" },
+            ],
           });
 
           log.step("Execute: Run audit --json");
           const capture = captureConsole();
           try {
-            await auditCommand(
-              { days: 7, json: true },
-              { cassRunner, io }
-            );
+            await auditCommand({ days: 7, json: true }, { cassRunner, io });
           } finally {
             capture.restore();
           }

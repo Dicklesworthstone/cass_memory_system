@@ -3,11 +3,11 @@
  *
  * We keep these deterministic by exercising keyword-mode behavior (no model downloads).
  */
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { writeFile } from "node:fs/promises";
 import yaml from "yaml";
-import { withTempCassHome } from "./helpers/temp.js";
 import { generateSimilarResults, similarCommand } from "../src/commands/similar.js";
+import { withTempCassHome } from "./helpers/temp.js";
 
 function captureConsole() {
   const logs: string[] = [];
@@ -47,7 +47,9 @@ function createTestPlaybook(bullets: any[] = []) {
   };
 }
 
-function createBullet(overrides: Partial<{ id: string; content: string; category: string; scope: string }> = {}) {
+function createBullet(
+  overrides: Partial<{ id: string; content: string; category: string; scope: string }> = {},
+) {
   const now = new Date().toISOString();
   return {
     id: overrides.id || `b-${Math.random().toString(36).slice(2)}`,
@@ -70,28 +72,48 @@ describe("generateSimilarResults input validation", () => {
   });
 
   it("throws error for invalid limit (non-integer)", async () => {
-    await expect(generateSimilarResults("test", { limit: 1.5 })).rejects.toThrow("--limit must be an integer >= 1");
-    await expect(generateSimilarResults("test", { limit: NaN })).rejects.toThrow("--limit must be an integer >= 1");
-    await expect(generateSimilarResults("test", { limit: Infinity })).rejects.toThrow("--limit must be an integer >= 1");
+    await expect(generateSimilarResults("test", { limit: 1.5 })).rejects.toThrow(
+      "--limit must be an integer >= 1",
+    );
+    await expect(generateSimilarResults("test", { limit: NaN })).rejects.toThrow(
+      "--limit must be an integer >= 1",
+    );
+    await expect(generateSimilarResults("test", { limit: Infinity })).rejects.toThrow(
+      "--limit must be an integer >= 1",
+    );
   });
 
   it("throws error for invalid limit (less than 1)", async () => {
-    await expect(generateSimilarResults("test", { limit: 0 })).rejects.toThrow("--limit must be an integer >= 1");
-    await expect(generateSimilarResults("test", { limit: -1 })).rejects.toThrow("--limit must be an integer >= 1");
+    await expect(generateSimilarResults("test", { limit: 0 })).rejects.toThrow(
+      "--limit must be an integer >= 1",
+    );
+    await expect(generateSimilarResults("test", { limit: -1 })).rejects.toThrow(
+      "--limit must be an integer >= 1",
+    );
   });
 
   it("throws error for invalid threshold (non-number)", async () => {
-    await expect(generateSimilarResults("test", { threshold: NaN })).rejects.toThrow("--threshold must be between 0 and 1");
-    await expect(generateSimilarResults("test", { threshold: Infinity })).rejects.toThrow("--threshold must be between 0 and 1");
+    await expect(generateSimilarResults("test", { threshold: NaN })).rejects.toThrow(
+      "--threshold must be between 0 and 1",
+    );
+    await expect(generateSimilarResults("test", { threshold: Infinity })).rejects.toThrow(
+      "--threshold must be between 0 and 1",
+    );
   });
 
   it("throws error for threshold out of range", async () => {
-    await expect(generateSimilarResults("test", { threshold: -0.1 })).rejects.toThrow("--threshold must be between 0 and 1");
-    await expect(generateSimilarResults("test", { threshold: 1.1 })).rejects.toThrow("--threshold must be between 0 and 1");
+    await expect(generateSimilarResults("test", { threshold: -0.1 })).rejects.toThrow(
+      "--threshold must be between 0 and 1",
+    );
+    await expect(generateSimilarResults("test", { threshold: 1.1 })).rejects.toThrow(
+      "--threshold must be between 0 and 1",
+    );
   });
 
   it("throws error for invalid scope", async () => {
-    await expect(generateSimilarResults("test", { scope: "invalid" as any })).rejects.toThrow('Invalid --scope "invalid"');
+    await expect(generateSimilarResults("test", { scope: "invalid" as any })).rejects.toThrow(
+      'Invalid --scope "invalid"',
+    );
   });
 });
 
@@ -129,7 +151,7 @@ describe("E2E: CLI similar command", () => {
 
       await writeFile(
         env.configPath,
-        JSON.stringify({ semanticSearchEnabled: true, embeddingModel: "none" }, null, 2)
+        JSON.stringify({ semanticSearchEnabled: true, embeddingModel: "none" }, null, 2),
       );
 
       const playbook = createTestPlaybook([
@@ -178,7 +200,11 @@ describe("E2E: CLI similar command", () => {
     await withTempCassHome(async (env) => {
       const query = "handle jwt authentication errors";
       const playbook = createTestPlaybook([
-        createBullet({ id: "b-jwt", content: "Handle jwt authentication errors gracefully", category: "security" }),
+        createBullet({
+          id: "b-jwt",
+          content: "Handle jwt authentication errors gracefully",
+          category: "security",
+        }),
       ]);
       await writeFile(env.playbookPath, yaml.stringify(playbook));
 
@@ -206,7 +232,11 @@ describe("E2E: CLI similar command", () => {
     await withTempCassHome(async (env) => {
       const query = "handle jwt authentication errors";
       const playbook = createTestPlaybook([
-        createBullet({ id: "b-jwt", content: "Handle jwt authentication errors gracefully", category: "security" }),
+        createBullet({
+          id: "b-jwt",
+          content: "Handle jwt authentication errors gracefully",
+          category: "security",
+        }),
       ]);
       await writeFile(env.playbookPath, yaml.stringify(playbook));
 
@@ -234,7 +264,11 @@ describe("E2E: CLI similar command", () => {
     await withTempCassHome(async (env) => {
       const query = "handle jwt authentication errors";
       const playbook = createTestPlaybook([
-        createBullet({ id: "b-jwt", content: "Handle jwt authentication errors gracefully", category: "security" }),
+        createBullet({
+          id: "b-jwt",
+          content: "Handle jwt authentication errors gracefully",
+          category: "security",
+        }),
       ]);
       await writeFile(env.playbookPath, yaml.stringify(playbook));
 

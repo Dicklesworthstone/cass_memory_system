@@ -1,4 +1,4 @@
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -27,7 +27,12 @@ describe("ProcessedLog", () => {
     const logPath = path.join(dir, "log.processed.log");
 
     const log = new ProcessedLog(logPath);
-    log.add({ sessionPath: "s1", processedAt: "2025-12-01T00:00:00Z", diaryId: "d1", deltasGenerated: 3 });
+    log.add({
+      sessionPath: "s1",
+      processedAt: "2025-12-01T00:00:00Z",
+      diaryId: "d1",
+      deltasGenerated: 3,
+    });
     log.add({ sessionPath: "s2", processedAt: "2025-12-02T00:00:00Z", deltasGenerated: 0 });
     await log.save();
 

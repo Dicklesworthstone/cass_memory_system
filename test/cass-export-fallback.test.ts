@@ -1,4 +1,4 @@
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -17,8 +17,8 @@ describe("handleSessionExportFailure", () => {
       ".jsonl",
       [
         JSON.stringify({ type: "user", content: "hello" }),
-        JSON.stringify({ type: "assistant", content: "hi there" })
-      ].join("\n")
+        JSON.stringify({ type: "assistant", content: "hi there" }),
+      ].join("\n"),
     );
 
     const result = await handleSessionExportFailure(file, new Error("export failed"));
@@ -32,8 +32,8 @@ describe("handleSessionExportFailure", () => {
       ".json",
       JSON.stringify([
         { role: "user", content: "json content" },
-        { role: "assistant", content: "json reply" }
-      ])
+        { role: "assistant", content: "json reply" },
+      ]),
     );
 
     const result = await handleSessionExportFailure(file, new Error("export failed"));
@@ -55,7 +55,7 @@ describe("cassExport fallback integration", () => {
   it("falls back to direct parsing when cass binary is missing", async () => {
     const file = await writeTempSession(
       ".jsonl",
-      JSON.stringify({ type: "user", content: "fallback check" })
+      JSON.stringify({ type: "user", content: "fallback check" }),
     );
 
     const result = await cassExport(file, "text", "/nonexistent/cass");

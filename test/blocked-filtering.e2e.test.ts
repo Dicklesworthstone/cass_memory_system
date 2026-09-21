@@ -4,24 +4,23 @@
  * Tests that blocked bullets prevent similar content from surfacing
  * using exact hash match and Jaccard similarity (>0.85 threshold).
  */
-import { describe, it, expect, afterEach } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
+import { execSync } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { execSync } from "node:child_process";
-
+import yaml from "yaml";
 import {
-  loadMergedPlaybook,
-  createEmptyPlaybook,
-  loadBlockedLog,
   appendBlockedLog,
-  BlockedEntry,
+  type BlockedEntry,
+  createEmptyPlaybook,
   getActiveBullets,
+  loadBlockedLog,
+  loadMergedPlaybook,
 } from "../src/playbook.js";
+import type { Playbook } from "../src/types.js";
 import { jaccardSimilarity } from "../src/utils.js";
 import { createTestBullet, createTestConfig } from "./helpers/index.js";
-import { Playbook } from "../src/types.js";
-import yaml from "yaml";
 
 // --- Helper Functions ---
 
@@ -92,13 +91,13 @@ describe("Blocked Bullet Filtering - E2E", () => {
         const merged = await loadMergedPlaybook(config);
 
         // Eval bullet should be deprecated (blocked)
-        const evalBullet = merged.bullets.find(b => b.content === "Never use eval()");
+        const evalBullet = merged.bullets.find((b) => b.content === "Never use eval()");
         expect(evalBullet).toBeDefined();
         expect(evalBullet?.deprecated).toBe(true);
         expect(evalBullet?.deprecationReason).toBe("BLOCKED_CONTENT");
 
         // But getActiveBullets should exclude it
-        const activeContents = getActiveBullets(merged).map(b => b.content);
+        const activeContents = getActiveBullets(merged).map((b) => b.content);
         expect(activeContents).not.toContain("Never use eval()");
         expect(activeContents).toContain("Always validate inputs");
       } finally {
@@ -143,10 +142,10 @@ describe("Blocked Bullet Filtering - E2E", () => {
         const merged = await loadMergedPlaybook(config);
 
         // Should be deprecated due to hash normalization
-        const activeContents = getActiveBullets(merged).map(b => b.content.toLowerCase().trim());
+        const activeContents = getActiveBullets(merged).map((b) => b.content.toLowerCase().trim());
         expect(activeContents).not.toContain("never use var");
-        
-        const blockedBullet = merged.bullets.find(b => b.id === "b-var");
+
+        const blockedBullet = merged.bullets.find((b) => b.id === "b-var");
         expect(blockedBullet?.deprecated).toBe(true);
         expect(blockedBullet?.deprecationReason).toBe("BLOCKED_CONTENT");
       } finally {
@@ -200,11 +199,11 @@ describe("Blocked Bullet Filtering - E2E", () => {
         const merged = await loadMergedPlaybook(config);
 
         // Similar content should be blocked (deprecated)
-        const activeContents = getActiveBullets(merged).map(b => b.content);
+        const activeContents = getActiveBullets(merged).map((b) => b.content);
         expect(activeContents).not.toContain(similarContent);
         expect(activeContents).toContain("Use proper error handling");
 
-        const blockedBullet = merged.bullets.find(b => b.id === "b-similar");
+        const blockedBullet = merged.bullets.find((b) => b.id === "b-similar");
         expect(blockedBullet?.deprecated).toBe(true);
         expect(blockedBullet?.deprecationReason).toBe("BLOCKED_CONTENT");
       } finally {
@@ -236,9 +235,7 @@ describe("Blocked Bullet Filtering - E2E", () => {
 
         const globalPath = path.join(home, ".cass-memory", "playbook.yaml");
         const playbook = createEmptyPlaybook("test");
-        playbook.bullets = [
-          createTestBullet({ id: "b-different", content: differentIntent }),
-        ];
+        playbook.bullets = [createTestBullet({ id: "b-different", content: differentIntent })];
         await writePlaybookFile(globalPath, playbook);
 
         const blockedPath = path.join(home, ".cass-memory", "blocked.log");
@@ -292,9 +289,7 @@ describe("Blocked Bullet Filtering - E2E", () => {
         ];
 
         const repoPb = createEmptyPlaybook("repo");
-        repoPb.bullets = [
-          createTestBullet({ id: "r-1", content: "Repo rule kept" }),
-        ];
+        repoPb.bullets = [createTestBullet({ id: "r-1", content: "Repo rule kept" })];
 
         await writePlaybookFile(globalPath, globalPb);
         await writePlaybookFile(repoPath, repoPb);
@@ -329,8 +324,8 @@ describe("Blocked Bullet Filtering - E2E", () => {
         expect(activeContents).not.toContain("Global rule blocked by repo");
         expect(activeContents).toContain("Global rule kept");
         expect(activeContents).toContain("Repo rule kept");
-        
-        const b1 = merged.bullets.find(b => b.id === "g-1");
+
+        const b1 = merged.bullets.find((b) => b.id === "g-1");
         expect(b1?.deprecated).toBe(true);
         expect(b1?.deprecationReason).toBe("BLOCKED_CONTENT");
       } finally {
@@ -400,7 +395,12 @@ describe("Blocked Bullet Filtering - E2E", () => {
       const content = [
         JSON.stringify({ id: "b-1", content: "Valid", reason: "r", forgottenAt: "2024-01-01" }),
         "not valid json",
-        JSON.stringify({ id: "b-2", content: "Also valid", reason: "r", forgottenAt: "2024-01-02" }),
+        JSON.stringify({
+          id: "b-2",
+          content: "Also valid",
+          reason: "r",
+          forgottenAt: "2024-01-02",
+        }),
       ].join("\n");
       await fs.writeFile(logPath, content);
 
@@ -427,7 +427,7 @@ describe("Blocked Bullet Filtering - E2E", () => {
       // Test high similarity should be > 0.85
       const highSim = jaccardSimilarity(
         "avoid using any type in code",
-        "avoid using any type in code files"
+        "avoid using any type in code files",
       );
       expect(highSim).toBeGreaterThan(0.85);
     });

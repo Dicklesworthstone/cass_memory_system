@@ -13,11 +13,11 @@
  * 6. Dev runs cm doctor (sees repo rules)
  * 7. Dev gets context (uses merged rules)
  */
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { spawnSync, execSync } from "node:child_process";
-import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { execSync, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import yaml from "yaml";
 import { createTestLogger } from "./helpers/logger.js";
 
@@ -192,11 +192,9 @@ describe("E2E: Team Workflow", () => {
         // Step 7: Dev gets context and sees the repo rule
         process.chdir(cloneDir);
         try {
-          const contextResult = runCm(
-            ["context", "typescript configuration", "--json"],
-            cloneDir,
-            { HOME: devHome }
-          );
+          const contextResult = runCm(["context", "typescript configuration", "--json"], cloneDir, {
+            HOME: devHome,
+          });
           expect(contextResult.exitCode).toBe(0);
 
           const contextPayload = JSON.parse(contextResult.stdout);
@@ -206,8 +204,7 @@ describe("E2E: Team Workflow", () => {
           // The repo rule about TypeScript strict mode should be included
           const hasProjectRule = contextResponse.relevantBullets.some(
             (b: any) =>
-              b.content.includes("TypeScript strict mode") ||
-              b.content.includes("strict mode")
+              b.content.includes("TypeScript strict mode") || b.content.includes("strict mode"),
           );
           expect(hasProjectRule).toBe(true);
           logger.info("Step 7: Dev context includes repo rules", {
@@ -220,7 +217,7 @@ describe("E2E: Team Workflow", () => {
 
         logger.info("Complete team workflow test PASSED");
       },
-      { timeout: 60000 }
+      { timeout: 60000 },
     );
   });
 
@@ -303,9 +300,16 @@ describe("E2E: Team Workflow", () => {
       // Lead adds a global rule
       runCm(["init", "--json"], leadHome, { HOME: leadHome });
       runCm(
-        ["playbook", "add", "Always write tests for new features", "--category", "testing", "--json"],
+        [
+          "playbook",
+          "add",
+          "Always write tests for new features",
+          "--category",
+          "testing",
+          "--json",
+        ],
         leadHome,
-        { HOME: leadHome }
+        { HOME: leadHome },
       );
       logger.info("Added global rule to lead's playbook");
 
@@ -314,9 +318,16 @@ describe("E2E: Team Workflow", () => {
       try {
         runCm(["init", "--repo", "--json"], repoDir, { HOME: leadHome });
         runCm(
-          ["playbook", "add", "Use Jest for testing in this project", "--category", "testing", "--json"],
+          [
+            "playbook",
+            "add",
+            "Use Jest for testing in this project",
+            "--category",
+            "testing",
+            "--json",
+          ],
           repoDir,
-          { HOME: leadHome }
+          { HOME: leadHome },
         );
         logger.info("Added repo rule");
       } finally {
@@ -337,7 +348,7 @@ describe("E2E: Team Workflow", () => {
 
         // Check that we see rules from both global and repo
         const hasGlobalRule = bulletContents.some((c: string) =>
-          c.includes("write tests for new features")
+          c.includes("write tests for new features"),
         );
         const hasRepoRule = bulletContents.some((c: string) => c.includes("Jest"));
 
@@ -410,25 +421,13 @@ describe("E2E: Team Workflow", () => {
 
       // Setup: global + repo rules
       runCm(["init", "--json"], leadHome, { HOME: leadHome });
-      runCm(
-        ["playbook", "add", "Global rule 1", "--json"],
-        leadHome,
-        { HOME: leadHome }
-      );
-      runCm(
-        ["playbook", "add", "Global rule 2", "--json"],
-        leadHome,
-        { HOME: leadHome }
-      );
+      runCm(["playbook", "add", "Global rule 1", "--json"], leadHome, { HOME: leadHome });
+      runCm(["playbook", "add", "Global rule 2", "--json"], leadHome, { HOME: leadHome });
 
       process.chdir(repoDir);
       try {
         runCm(["init", "--repo", "--json"], repoDir, { HOME: leadHome });
-        runCm(
-          ["playbook", "add", "Repo rule 1", "--json"],
-          repoDir,
-          { HOME: leadHome }
-        );
+        runCm(["playbook", "add", "Repo rule 1", "--json"], repoDir, { HOME: leadHome });
 
         const statsResult = runCm(["stats", "--json"], repoDir, { HOME: leadHome });
         expect(statsResult.exitCode).toBe(0);

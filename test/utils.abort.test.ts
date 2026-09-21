@@ -1,15 +1,15 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   AbortError,
   checkAbort,
+  combineAbortSignals,
+  createTimeoutSignal,
+  getAbortSignal,
   isAborted,
   requestAbort,
   resetAbort,
-  getAbortSignal,
-  createTimeoutSignal,
-  combineAbortSignals,
-  withAbortCheck,
   withAbortableSequence,
+  withAbortCheck,
 } from "../src/utils.js";
 
 describe("AbortController Integration", () => {
@@ -160,27 +160,18 @@ describe("AbortController Integration", () => {
 
   describe("combineAbortSignals", () => {
     test("returns an AbortSignal", () => {
-      const signal = combineAbortSignals([
-        getAbortSignal(),
-        createTimeoutSignal(1000),
-      ]);
+      const signal = combineAbortSignals([getAbortSignal(), createTimeoutSignal(1000)]);
       expect(signal).toBeInstanceOf(AbortSignal);
     });
 
     test("is not aborted when no source is aborted", () => {
-      const signal = combineAbortSignals([
-        getAbortSignal(),
-        createTimeoutSignal(1000),
-      ]);
+      const signal = combineAbortSignals([getAbortSignal(), createTimeoutSignal(1000)]);
       expect(signal.aborted).toBe(false);
     });
 
     test("is aborted when any source is aborted", () => {
       requestAbort();
-      const signal = combineAbortSignals([
-        getAbortSignal(),
-        createTimeoutSignal(10000),
-      ]);
+      const signal = combineAbortSignals([getAbortSignal(), createTimeoutSignal(10000)]);
       expect(signal.aborted).toBe(true);
     });
   });
@@ -193,9 +184,7 @@ describe("AbortController Integration", () => {
 
     test("throws before operation if already aborted", async () => {
       requestAbort();
-      await expect(withAbortCheck(async () => "success")).rejects.toThrow(
-        AbortError
-      );
+      await expect(withAbortCheck(async () => "success")).rejects.toThrow(AbortError);
     });
 
     test("throws after operation if aborted during", async () => {
@@ -215,13 +204,10 @@ describe("AbortController Integration", () => {
     });
 
     test("works with checkIntervalMs option", async () => {
-      const result = await withAbortCheck(
-        async () => {
-          await new Promise((resolve) => setTimeout(resolve, 50));
-          return "done";
-        },
-        10
-      );
+      const result = await withAbortCheck(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return "done";
+      }, 10);
       expect(result).toBe("done");
     });
   });
@@ -235,10 +221,7 @@ describe("AbortController Integration", () => {
 
     test("provides index to processor", async () => {
       const items = ["a", "b", "c"];
-      const results = await withAbortableSequence(
-        items,
-        async (item, index) => `${item}${index}`
-      );
+      const results = await withAbortableSequence(items, async (item, index) => `${item}${index}`);
       expect(results).toEqual(["a0", "b1", "c2"]);
     });
 
@@ -251,7 +234,7 @@ describe("AbortController Integration", () => {
           if (n === 3) requestAbort();
           processed.push(n);
           return n;
-        })
+        }),
       ).rejects.toThrow(AbortError);
 
       // Should have processed items 1 and 2, then aborted before checking item 3
@@ -263,9 +246,7 @@ describe("AbortController Integration", () => {
 
     test("throws if already aborted", async () => {
       requestAbort();
-      await expect(
-        withAbortableSequence([1, 2, 3], async (n) => n)
-      ).rejects.toThrow(AbortError);
+      await expect(withAbortableSequence([1, 2, 3], async (n) => n)).rejects.toThrow(AbortError);
     });
 
     test("handles empty array", async () => {

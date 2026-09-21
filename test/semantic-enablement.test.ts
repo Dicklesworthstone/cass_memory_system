@@ -13,23 +13,23 @@
  * readiness probe (no ~23 MB model download), and the Ollama cases talk to a
  * real Bun.serve stub on localhost.
  */
-import { describe, test, expect, afterEach } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import yaml from "yaml";
 import {
-  resolveSemanticEnabled,
-  resetSemanticResolutionCache,
-  semanticReadinessProbes,
-  type SemanticConfigInput,
-} from "../src/semantic.js";
-import {
-  scoreBulletsEnhanced,
-  generateContextResult,
   contextCommand,
+  generateContextResult,
   type ScoreBulletsMeta,
+  scoreBulletsEnhanced,
 } from "../src/commands/context.js";
+import {
+  resetSemanticResolutionCache,
+  resolveSemanticEnabled,
+  type SemanticConfigInput,
+  semanticReadinessProbes,
+} from "../src/semantic.js";
+import { createTestBullet, createTestConfig, createTestPlaybook } from "./helpers/factories.js";
 import { withTempCassHome } from "./helpers/temp.js";
-import { createTestConfig, createTestBullet, createTestPlaybook } from "./helpers/factories.js";
 
 const realXenovaProbe = semanticReadinessProbes.xenova;
 const realOllamaProbe = semanticReadinessProbes.ollama;
@@ -64,8 +64,14 @@ afterEach(() => {
 function semanticFixture() {
   const query = [1, 0, 0];
   const bullets = [
-    { ...createTestBullet({ id: "b-far", content: "alpha topic", tags: ["alpha"] }), embedding: [0, 1, 0] },
-    { ...createTestBullet({ id: "b-near", content: "alpha topic", tags: ["alpha"] }), embedding: [1, 0, 0] },
+    {
+      ...createTestBullet({ id: "b-far", content: "alpha topic", tags: ["alpha"] }),
+      embedding: [0, 1, 0],
+    },
+    {
+      ...createTestBullet({ id: "b-near", content: "alpha topic", tags: ["alpha"] }),
+      embedding: [1, 0, 0],
+    },
   ];
   return { query, bullets };
 }
@@ -74,7 +80,7 @@ describe("resolveSemanticEnabled: tri-state posture (#75)", () => {
   test("cached model + no explicit setting -> automatic on", async () => {
     const probe = stubXenovaProbe(true);
     const status = await resolveSemanticEnabled(
-      createTestConfig({ semanticSearchEnabled: undefined })
+      createTestConfig({ semanticSearchEnabled: undefined }),
     );
 
     expect(status.enabled).toBe(true);
@@ -87,7 +93,7 @@ describe("resolveSemanticEnabled: tri-state posture (#75)", () => {
   test("uncached model + no explicit setting -> automatic off, with an actionable hint", async () => {
     stubXenovaProbe(false);
     const status = await resolveSemanticEnabled(
-      createTestConfig({ semanticSearchEnabled: undefined })
+      createTestConfig({ semanticSearchEnabled: undefined }),
     );
 
     expect(status.enabled).toBe(false);
@@ -119,7 +125,7 @@ describe("resolveSemanticEnabled: tri-state posture (#75)", () => {
     const probe = stubXenovaProbe(true);
     for (const flag of [undefined, true, false] as const) {
       const status = await resolveSemanticEnabled(
-        createTestConfig({ semanticSearchEnabled: flag, embeddingModel: "none" })
+        createTestConfig({ semanticSearchEnabled: flag, embeddingModel: "none" }),
       );
       expect(status.enabled).toBe(false);
       expect(status.posture).toBe("model-none");
@@ -173,7 +179,7 @@ describe("resolveSemanticEnabled: tri-state posture (#75)", () => {
     resetSemanticResolutionCache();
 
     const status = await resolveSemanticEnabled(
-      createTestConfig({ semanticSearchEnabled: undefined })
+      createTestConfig({ semanticSearchEnabled: undefined }),
     );
     expect(status.enabled).toBe(false);
     expect(status.posture).toBe("auto-off");
@@ -184,7 +190,7 @@ describe("resolveSemanticEnabled: Ollama auto-on (#75)", () => {
   /** Stand up a throwaway daemon that answers /api/tags with `models`. */
   async function withTagServer<T>(
     handler: (url: URL) => Response | undefined,
-    fn: (baseUrl: string) => Promise<T>
+    fn: (baseUrl: string) => Promise<T>,
   ): Promise<T> {
     const server = Bun.serve({
       port: 0,
@@ -213,7 +219,7 @@ describe("resolveSemanticEnabled: Ollama auto-on (#75)", () => {
           // The default Xenova model name maps onto Ollama's official tag.
           embeddingModel: "Xenova/all-MiniLM-L6-v2",
           ollamaBaseUrl: `${baseUrl}/`,
-        })
+        }),
       );
 
       expect(status.enabled).toBe(true);
@@ -231,7 +237,7 @@ describe("resolveSemanticEnabled: Ollama auto-on (#75)", () => {
           semanticSearchEnabled: undefined,
           embeddingBackend: "ollama",
           ollamaBaseUrl: baseUrl,
-        })
+        }),
       );
 
       expect(status.enabled).toBe(false);
@@ -248,7 +254,7 @@ describe("resolveSemanticEnabled: Ollama auto-on (#75)", () => {
         embeddingBackend: "ollama",
         // Port 1 is reserved and never bound; the probe must fail closed.
         ollamaBaseUrl: "http://127.0.0.1:1",
-      })
+      }),
     );
 
     expect(status.enabled).toBe(false);
@@ -267,7 +273,7 @@ describe("scoreBulletsEnhanced honours the resolved posture (#75)", () => {
       "alpha topic",
       ["alpha"],
       createTestConfig({ semanticSearchEnabled: undefined }),
-      { queryEmbedding: query, skipEmbeddingLoad: true, meta }
+      { queryEmbedding: query, skipEmbeddingLoad: true, meta },
     );
 
     expect(meta.semanticMode).toBe("semantic");
@@ -288,7 +294,7 @@ describe("scoreBulletsEnhanced honours the resolved posture (#75)", () => {
       "alpha topic",
       ["alpha"],
       createTestConfig({ semanticSearchEnabled: undefined }),
-      { queryEmbedding: query, skipEmbeddingLoad: true, meta }
+      { queryEmbedding: query, skipEmbeddingLoad: true, meta },
     );
 
     expect(meta.semanticMode).toBe("keyword");
@@ -310,7 +316,7 @@ describe("scoreBulletsEnhanced honours the resolved posture (#75)", () => {
       "alpha topic",
       ["alpha"],
       createTestConfig({ semanticSearchEnabled: false }),
-      { queryEmbedding: query, skipEmbeddingLoad: true, meta }
+      { queryEmbedding: query, skipEmbeddingLoad: true, meta },
     );
 
     expect(meta.semanticMode).toBe("keyword");
@@ -330,7 +336,7 @@ describe("scoreBulletsEnhanced honours the resolved posture (#75)", () => {
       "alpha topic",
       ["alpha"],
       createTestConfig({ semanticSearchEnabled: true }),
-      { queryEmbedding: query, skipEmbeddingLoad: true, meta }
+      { queryEmbedding: query, skipEmbeddingLoad: true, meta },
     );
 
     expect(meta.semanticMode).toBe("semantic");
@@ -353,7 +359,7 @@ describe("scoreBulletsEnhanced honours the resolved posture (#75)", () => {
         semanticSearchEnabled: true,
         embeddingModel: "invalid-nonexistent-model",
       }),
-      { meta }
+      { meta },
     );
 
     expect(meta.semanticMode).toBe("keyword");
@@ -371,9 +377,14 @@ describe("cm context surfaces the automatic posture (#75)", () => {
         env.playbookPath,
         yaml.stringify(
           createTestPlaybook([
-            createTestBullet({ id: "b-1", content: "alpha topic", tags: ["alpha"], state: "active" }),
-          ])
-        )
+            createTestBullet({
+              id: "b-1",
+              content: "alpha topic",
+              tags: ["alpha"],
+              state: "active",
+            }),
+          ]),
+        ),
       );
 
       const { result } = await generateContextResult("alpha topic", { json: true });
@@ -392,9 +403,14 @@ describe("cm context surfaces the automatic posture (#75)", () => {
         env.playbookPath,
         yaml.stringify(
           createTestPlaybook([
-            createTestBullet({ id: "b-1", content: "alpha topic", tags: ["alpha"], state: "active" }),
-          ])
-        )
+            createTestBullet({
+              id: "b-1",
+              content: "alpha topic",
+              tags: ["alpha"],
+              state: "active",
+            }),
+          ]),
+        ),
       );
 
       // Structured output is routed through console.log by test/setup.ts.
@@ -426,9 +442,14 @@ describe("cm context surfaces the automatic posture (#75)", () => {
         env.playbookPath,
         yaml.stringify(
           createTestPlaybook([
-            createTestBullet({ id: "b-1", content: "alpha topic", tags: ["alpha"], state: "active" }),
-          ])
-        )
+            createTestBullet({
+              id: "b-1",
+              content: "alpha topic",
+              tags: ["alpha"],
+              state: "active",
+            }),
+          ]),
+        ),
       );
 
       const { result } = await generateContextResult("alpha topic", { json: true });

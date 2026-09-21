@@ -1,11 +1,11 @@
-import { describe, test, expect } from "bun:test";
-import fs from "node:fs/promises";
-import path from "node:path";
-import os from "node:os";
+import { describe, expect, test } from "bun:test";
 import { execSync } from "node:child_process";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { generateContextResult } from "../../src/commands/context.js";
-import { applyOutcomeFeedback, OutcomeRecord } from "../../src/outcome.js";
-import { savePlaybook, createEmptyPlaybook } from "../../src/playbook.js";
+import { applyOutcomeFeedback, type OutcomeRecord } from "../../src/outcome.js";
+import { createEmptyPlaybook, savePlaybook } from "../../src/playbook.js";
 
 async function withTempEnv(run: (ctx: { home: string; repo: string }) => Promise<void>) {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "cass-home-"));
@@ -54,7 +54,7 @@ describe("Integration: context logging + outcome feedback", () => {
         pinned: false,
         sourceSessions: [],
         sourceAgents: [],
-        tags: []
+        tags: [],
       });
       await savePlaybook(pb, playbookPath);
 
@@ -93,4 +93,3 @@ describe("Integration: context logging + outcome feedback", () => {
     });
   });
 });
-

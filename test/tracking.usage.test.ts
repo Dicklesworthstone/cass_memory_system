@@ -1,22 +1,22 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import {
-  trackEvent,
+  getUsageLogPath,
+  getUsageStats,
+  loadUsageEvents,
+  setUsageLogPath,
   trackBulletMarked,
   trackCommandRun,
-  trackSessionCount,
-  trackReflectionStats,
-  trackPlaybookChange,
   trackError,
-  loadUsageEvents,
-  getUsageStats,
-  getUsageLogPath,
-  setUsageLogPath,
+  trackEvent,
+  trackPlaybookChange,
+  trackReflectionStats,
+  trackSessionCount,
   type UsageEvent,
   type UsageEventType,
 } from "../src/tracking.js";
-import fs from "node:fs/promises";
-import path from "node:path";
-import os from "node:os";
 
 describe("Usage Analytics Tracking", () => {
   let originalLogPath: string;
@@ -96,7 +96,7 @@ describe("Usage Analytics Tracking", () => {
             command: `test-${i}`,
             duration_ms: i * 10,
             success: true,
-          })
+          }),
         );
       }
 
@@ -330,7 +330,7 @@ describe("Usage Analytics Tracking", () => {
       const events = await loadUsageEvents({ since: beforeTime });
       // Should include the event tracked after beforeTime
       const hasAfterEvent = events.some(
-        (e) => e.event === "command_run" && (e as any).data.command === "after"
+        (e) => e.event === "command_run" && (e as any).data.command === "after",
       );
       expect(hasAfterEvent).toBe(true);
     });
@@ -379,15 +379,15 @@ describe("Usage Analytics Tracking", () => {
 
       // Bullet feedback should increase
       expect(newStats.bulletFeedback.helpful).toBeGreaterThanOrEqual(
-        initialStats.bulletFeedback.helpful + 1
+        initialStats.bulletFeedback.helpful + 1,
       );
       expect(newStats.bulletFeedback.harmful).toBeGreaterThanOrEqual(
-        initialStats.bulletFeedback.harmful + 1
+        initialStats.bulletFeedback.harmful + 1,
       );
 
       // Command stats should increase
       expect(newStats.commandStats.total).toBeGreaterThanOrEqual(
-        initialStats.commandStats.total + 2
+        initialStats.commandStats.total + 2,
       );
     });
 
@@ -396,9 +396,7 @@ describe("Usage Analytics Tracking", () => {
 
       const stats = await getUsageStats();
       expect(stats.lastActivity).toBeDefined();
-      expect(new Date(stats.lastActivity!).getTime()).toBeLessThanOrEqual(
-        Date.now()
-      );
+      expect(new Date(stats.lastActivity!).getTime()).toBeLessThanOrEqual(Date.now());
     });
   });
 

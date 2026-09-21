@@ -1,15 +1,30 @@
-import { loadConfig } from "../config.js";
-import { loadPlaybook, savePlaybook, findBullet, addBullet, deprecateBullet, appendBlockedLog } from "../playbook.js";
 import path from "node:path";
-import { fileExists, now, resolveRepoDir, resolveGlobalDir, expandPath, printJsonResult, reportError } from "../utils.js";
-import { ErrorCode } from "../types.js";
-import { withLock } from "../lock.js";
 import chalk from "chalk";
+import { loadConfig } from "../config.js";
+import { withLock } from "../lock.js";
 import { icon } from "../output.js";
+import {
+  addBullet,
+  appendBlockedLog,
+  deprecateBullet,
+  findBullet,
+  loadPlaybook,
+  savePlaybook,
+} from "../playbook.js";
+import { ErrorCode } from "../types.js";
+import {
+  expandPath,
+  fileExists,
+  now,
+  printJsonResult,
+  reportError,
+  resolveGlobalDir,
+  resolveRepoDir,
+} from "../utils.js";
 
 export async function forgetCommand(
-  bulletId: string, 
-  flags: { reason?: string; invert?: boolean; json?: boolean }
+  bulletId: string,
+  flags: { reason?: string; invert?: boolean; json?: boolean },
 ) {
   const startedAtMs = Date.now();
   const command = "forget";
@@ -25,14 +40,14 @@ export async function forgetCommand(
   }
 
   const config = await loadConfig();
-  
+
   // Resolve save path safely
   const globalPath = expandPath(config.playbookPath);
   const repoDir = await resolveRepoDir();
   const repoPath = repoDir ? path.join(repoDir, "playbook.yaml") : null;
 
   let savePath = globalPath;
-  
+
   // Check if bullet exists in repo first (pre-check, repeated inside lock)
   if (repoPath && (await fileExists(repoPath))) {
     try {
@@ -64,27 +79,36 @@ export async function forgetCommand(
       }
 
       // 1. Add to blocked log
-      const blockedLogPath = savePath === repoPath
-        ? path.join(path.dirname(repoPath!), "blocked.log")
-        : path.join(resolveGlobalDir(), "blocked.log");
+      const blockedLogPath =
+        savePath === repoPath
+          ? path.join(path.dirname(repoPath!), "blocked.log")
+          : path.join(resolveGlobalDir(), "blocked.log");
 
-      await appendBlockedLog({
-        id: bullet.id,
-        content: bullet.content,
-        reason: flags.reason!,
-        forgottenAt: now()
-      }, blockedLogPath);
+      await appendBlockedLog(
+        {
+          id: bullet.id,
+          content: bullet.content,
+          reason: flags.reason!,
+          forgottenAt: now(),
+        },
+        blockedLogPath,
+      );
 
       // 2. Invert if requested
       let antiPatternId: string | undefined;
       if (flags.invert) {
-        const antiPattern = addBullet(playbook, {
-          content: `AVOID: ${bullet.content}. ${flags.reason}`,
-          category: bullet.category,
-          type: "anti-pattern",
-          isNegative: true,
-          tags: [...bullet.tags, "inverted"]
-        }, "forget-command", config.defaultDecayHalfLife);
+        const antiPattern = addBullet(
+          playbook,
+          {
+            content: `AVOID: ${bullet.content}. ${flags.reason}`,
+            category: bullet.category,
+            type: "anti-pattern",
+            isNegative: true,
+            tags: [...bullet.tags, "inverted"],
+          },
+          "forget-command",
+          config.defaultDecayHalfLife,
+        );
         antiPatternId = antiPattern.id;
       }
 
@@ -102,7 +126,7 @@ export async function forgetCommand(
             inverted: !!antiPatternId,
             antiPatternId,
           },
-          { startedAtMs }
+          { startedAtMs },
         );
       } else {
         console.log(chalk.green(`${icon("success")} Forgot bullet ${bulletId}`));
@@ -113,7 +137,15 @@ export async function forgetCommand(
     });
   } catch (err: any) {
     const message = err?.message || String(err);
-    const code = message.includes("not found") ? ErrorCode.BULLET_NOT_FOUND : ErrorCode.INTERNAL_ERROR;
-    reportError(err instanceof Error ? err : message, { code, details: { bulletId }, json: flags.json, command, startedAtMs });
+    const code = message.includes("not found")
+      ? ErrorCode.BULLET_NOT_FOUND
+      : ErrorCode.INTERNAL_ERROR;
+    reportError(err instanceof Error ? err : message, {
+      code,
+      details: { bulletId },
+      json: flags.json,
+      command,
+      startedAtMs,
+    });
   }
 }

@@ -4,13 +4,13 @@
  * Tests the `cm playbook` command for listing, adding, removing,
  * getting, exporting, and importing playbook bullets.
  */
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { writeFile, readFile, rm, mkdir } from "node:fs/promises";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
 import { playbookCommand } from "../src/commands/playbook.js";
-import { withTempCassHome, TestEnv } from "./helpers/temp.js";
 import { createE2ELogger } from "./helpers/e2e-logger.js";
+import { TestEnv, withTempCassHome } from "./helpers/temp.js";
 
 // Helper to capture console output
 function captureConsole() {
@@ -32,7 +32,7 @@ function captureConsole() {
     restore: () => {
       console.log = originalLog;
       console.error = originalError;
-    }
+    },
   };
 }
 
@@ -46,29 +46,31 @@ function createTestPlaybook(bullets: any[] = []) {
     metadata: {
       createdAt: now,
       totalReflections: 0,
-      totalSessionsProcessed: 0
+      totalSessionsProcessed: 0,
     },
     bullets: bullets,
-    deprecatedPatterns: []
+    deprecatedPatterns: [],
   };
 }
 
 // Helper to create a valid test bullet
-function createTestBullet(overrides: Partial<{
-  id: string;
-  content: string;
-  kind: string;
-  category: string;
-  scope: string;
-  workspace?: string;
-  tags: string[];
-  maturity: string;
-  isNegative?: boolean;
-  effectiveScore?: number;
-  helpfulCount?: number;
-  harmfulCount?: number;
-  deprecated?: boolean;
-}> = {}) {
+function createTestBullet(
+  overrides: Partial<{
+    id: string;
+    content: string;
+    kind: string;
+    category: string;
+    scope: string;
+    workspace?: string;
+    tags: string[];
+    maturity: string;
+    isNegative?: boolean;
+    effectiveScore?: number;
+    helpfulCount?: number;
+    harmfulCount?: number;
+    deprecated?: boolean;
+  }> = {},
+) {
   const now = new Date().toISOString();
   return {
     id: overrides.id || `test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -87,7 +89,7 @@ function createTestBullet(overrides: Partial<{
     harmfulCount: overrides.harmfulCount ?? 0,
     deprecated: overrides.deprecated ?? false,
     createdAt: now,
-    updatedAt: now
+    updatedAt: now,
   };
 }
 
@@ -126,18 +128,18 @@ describe("E2E: CLI playbook command", () => {
           createTestBullet({
             id: "bullet-1",
             content: "First rule content",
-            category: "security"
+            category: "security",
           }),
           createTestBullet({
             id: "bullet-2",
             content: "Second rule content",
-            category: "testing"
+            category: "testing",
           }),
           createTestBullet({
             id: "bullet-3",
             content: "Third rule content",
-            category: "security"
-          })
+            category: "security",
+          }),
         ]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
@@ -164,13 +166,13 @@ describe("E2E: CLI playbook command", () => {
           createTestBullet({
             id: "bullet-1",
             content: "First rule content",
-            category: "security"
+            category: "security",
           }),
           createTestBullet({
             id: "bullet-2",
             content: "Second rule content",
-            category: "testing"
-          })
+            category: "testing",
+          }),
         ]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
@@ -196,13 +198,13 @@ describe("E2E: CLI playbook command", () => {
           createTestBullet({
             id: "sec-1",
             content: "Security rule",
-            category: "security"
+            category: "security",
           }),
           createTestBullet({
             id: "test-1",
             content: "Testing rule",
-            category: "testing"
-          })
+            category: "testing",
+          }),
         ]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
@@ -225,8 +227,8 @@ describe("E2E: CLI playbook command", () => {
           createTestBullet({
             id: "json-bullet",
             content: "Test for JSON output",
-            category: "testing"
-          })
+            category: "testing",
+          }),
         ]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
@@ -254,14 +256,14 @@ describe("E2E: CLI playbook command", () => {
           createTestBullet({
             id: "active-bullet",
             content: "Active rule",
-            category: "testing"
+            category: "testing",
           }),
           createTestBullet({
             id: "deprecated-bullet",
             content: "Deprecated rule",
             category: "testing",
-            deprecated: true
-          })
+            deprecated: true,
+          }),
         ]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
@@ -319,7 +321,10 @@ describe("E2E: CLI playbook command", () => {
 
         const capture = captureConsole();
         try {
-          await playbookCommand("add", ["Use bun for testing"], { category: "tooling", json: true });
+          await playbookCommand("add", ["Use bun for testing"], {
+            category: "tooling",
+            json: true,
+          });
         } finally {
           capture.restore();
         }
@@ -411,7 +416,7 @@ describe("E2E: CLI playbook command", () => {
         const batchRules = [
           { content: "Always use strict TypeScript" },
           { content: "Write tests for new features", category: "testing" },
-          { content: "Document public APIs", category: "documentation" }
+          { content: "Document public APIs", category: "documentation" },
         ];
         const batchPath = path.join(env.cassMemoryDir, "batch.json");
         await writeFile(batchPath, JSON.stringify(batchRules));
@@ -446,7 +451,7 @@ describe("E2E: CLI playbook command", () => {
 
         const batchRules = [
           { content: "Rule without category" },
-          { content: "Rule with category", category: "specific" }
+          { content: "Rule with category", category: "specific" },
         ];
         const batchPath = path.join(env.cassMemoryDir, "batch.json");
         await writeFile(batchPath, JSON.stringify(batchRules));
@@ -527,7 +532,7 @@ describe("E2E: CLI playbook command", () => {
           { content: "Valid rule" },
           { content: "" }, // Empty content - invalid
           { notContent: "Missing content field" }, // Wrong field
-          { content: "Another valid rule" }
+          { content: "Another valid rule" },
         ];
         const batchPath = path.join(env.cassMemoryDir, "batch.json");
         await writeFile(batchPath, JSON.stringify(batchRules));
@@ -603,10 +608,7 @@ describe("E2E: CLI playbook command", () => {
         const playbook = createTestPlaybook([]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
-        const batchRules = [
-          { content: "First batch rule" },
-          { content: "Second batch rule" }
-        ];
+        const batchRules = [{ content: "First batch rule" }, { content: "Second batch rule" }];
         const batchPath = path.join(env.cassMemoryDir, "batch.json");
         await writeFile(batchPath, JSON.stringify(batchRules));
 
@@ -632,8 +634,8 @@ describe("E2E: CLI playbook command", () => {
           createTestBullet({
             id: "to-remove",
             content: "This will be deprecated",
-            category: "testing"
-          })
+            category: "testing",
+          }),
         ]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
@@ -665,8 +667,8 @@ describe("E2E: CLI playbook command", () => {
           createTestBullet({
             id: "to-delete",
             content: "This will be deleted",
-            category: "testing"
-          })
+            category: "testing",
+          }),
         ]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
@@ -697,8 +699,8 @@ describe("E2E: CLI playbook command", () => {
           createTestBullet({
             id: "to-delete",
             content: "This will NOT be deleted",
-            category: "testing"
-          })
+            category: "testing",
+          }),
         ]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
@@ -732,8 +734,8 @@ describe("E2E: CLI playbook command", () => {
           createTestBullet({
             id: "obsolete-rule",
             content: "Old rule",
-            category: "testing"
-          })
+            category: "testing",
+          }),
         ]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
@@ -741,7 +743,7 @@ describe("E2E: CLI playbook command", () => {
         try {
           await playbookCommand("remove", ["obsolete-rule"], {
             reason: "No longer applicable",
-            json: true
+            json: true,
           });
         } finally {
           capture.restore();
@@ -760,8 +762,8 @@ describe("E2E: CLI playbook command", () => {
           createTestBullet({
             id: "existing-bullet",
             content: "Existing rule",
-            category: "testing"
-          })
+            category: "testing",
+          }),
         ]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
@@ -774,7 +776,7 @@ describe("E2E: CLI playbook command", () => {
         }
 
         expect(process.exitCode as number | undefined).toBe(2);
-        expect(capture.errors.some(e => e.includes("not found"))).toBe(true);
+        expect(capture.errors.some((e) => e.includes("not found"))).toBe(true);
         process.exitCode = 0;
       });
     });
@@ -787,8 +789,8 @@ describe("E2E: CLI playbook command", () => {
             content: "This bullet will not be deprecated",
             category: "testing",
             helpfulCount: 5,
-            harmfulCount: 1
-          })
+            harmfulCount: 1,
+          }),
         ]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
@@ -825,14 +827,18 @@ describe("E2E: CLI playbook command", () => {
           createTestBullet({
             id: "dry-run-hard-test",
             content: "This bullet will not be deleted",
-            category: "testing"
-          })
+            category: "testing",
+          }),
         ]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
         const capture = captureConsole();
         try {
-          await playbookCommand("remove", ["dry-run-hard-test"], { dryRun: true, hard: true, json: true });
+          await playbookCommand("remove", ["dry-run-hard-test"], {
+            dryRun: true,
+            hard: true,
+            json: true,
+          });
         } finally {
           capture.restore();
         }
@@ -863,8 +869,8 @@ describe("E2E: CLI playbook command", () => {
           createTestBullet({
             id: "human-dry-run",
             content: "Human readable dry run test",
-            category: "security"
-          })
+            category: "security",
+          }),
         ]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
@@ -899,8 +905,8 @@ describe("E2E: CLI playbook command", () => {
             content: "Detailed rule content",
             category: "security",
             helpfulCount: 5,
-            harmfulCount: 1
-          })
+            harmfulCount: 1,
+          }),
         ]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
@@ -931,8 +937,8 @@ describe("E2E: CLI playbook command", () => {
           createTestBullet({
             id: "human-bullet",
             content: "Human readable test",
-            category: "testing"
-          })
+            category: "testing",
+          }),
         ]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
@@ -957,13 +963,13 @@ describe("E2E: CLI playbook command", () => {
           createTestBullet({
             id: "auth-rule-1",
             content: "Auth rule",
-            category: "security"
+            category: "security",
           }),
           createTestBullet({
             id: "auth-rule-2",
             content: "Another auth rule",
-            category: "security"
-          })
+            category: "security",
+          }),
         ]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
@@ -994,8 +1000,8 @@ describe("E2E: CLI playbook command", () => {
           createTestBullet({
             id: "export-bullet",
             content: "Rule to export",
-            category: "testing"
-          })
+            category: "testing",
+          }),
         ]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
@@ -1021,8 +1027,8 @@ describe("E2E: CLI playbook command", () => {
           createTestBullet({
             id: "json-export",
             content: "JSON export test",
-            category: "testing"
-          })
+            category: "testing",
+          }),
         ]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
@@ -1048,14 +1054,14 @@ describe("E2E: CLI playbook command", () => {
           createTestBullet({
             id: "active-export",
             content: "Active rule",
-            category: "testing"
+            category: "testing",
           }),
           createTestBullet({
             id: "deprecated-export",
             content: "Deprecated rule",
             category: "testing",
-            deprecated: true
-          })
+            deprecated: true,
+          }),
         ]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
@@ -1081,14 +1087,14 @@ describe("E2E: CLI playbook command", () => {
           createTestBullet({
             id: "active-all",
             content: "Active rule",
-            category: "testing"
+            category: "testing",
           }),
           createTestBullet({
             id: "deprecated-all",
             content: "Deprecated rule",
             category: "testing",
-            deprecated: true
-          })
+            deprecated: true,
+          }),
         ]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
@@ -1121,14 +1127,14 @@ describe("E2E: CLI playbook command", () => {
             createTestBullet({
               id: "imported-1",
               content: "Imported rule 1",
-              category: "imported"
+              category: "imported",
             }),
             createTestBullet({
               id: "imported-2",
               content: "Imported rule 2",
-              category: "imported"
-            })
-          ]
+              category: "imported",
+            }),
+          ],
         };
         const importPath = path.join(env.cassMemoryDir, "import.json");
         await writeFile(importPath, JSON.stringify(importData, null, 2));
@@ -1164,9 +1170,9 @@ describe("E2E: CLI playbook command", () => {
             createTestBullet({
               id: "yaml-import",
               content: "YAML imported rule",
-              category: "yaml"
-            })
-          ]
+              category: "yaml",
+            }),
+          ],
         };
         const importPath = path.join(env.cassMemoryDir, "import.yaml");
         await writeFile(importPath, yaml.stringify(importData));
@@ -1193,8 +1199,8 @@ describe("E2E: CLI playbook command", () => {
           createTestBullet({
             id: "existing-bullet",
             content: "Existing rule",
-            category: "testing"
-          })
+            category: "testing",
+          }),
         ]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
@@ -1203,14 +1209,14 @@ describe("E2E: CLI playbook command", () => {
             createTestBullet({
               id: "existing-bullet",
               content: "Duplicate rule",
-              category: "testing"
+              category: "testing",
             }),
             createTestBullet({
               id: "new-bullet",
               content: "New rule",
-              category: "testing"
-            })
-          ]
+              category: "testing",
+            }),
+          ],
         };
         const importPath = path.join(env.cassMemoryDir, "import.json");
         await writeFile(importPath, JSON.stringify(importData, null, 2));
@@ -1238,8 +1244,8 @@ describe("E2E: CLI playbook command", () => {
           createTestBullet({
             id: "to-replace",
             content: "Original content",
-            category: "testing"
-          })
+            category: "testing",
+          }),
         ]);
         await writeFile(env.playbookPath, yaml.stringify(playbook));
 
@@ -1248,9 +1254,9 @@ describe("E2E: CLI playbook command", () => {
             createTestBullet({
               id: "to-replace",
               content: "Updated content",
-              category: "testing"
-            })
-          ]
+              category: "testing",
+            }),
+          ],
         };
         const importPath = path.join(env.cassMemoryDir, "import.json");
         await writeFile(importPath, JSON.stringify(importData, null, 2));

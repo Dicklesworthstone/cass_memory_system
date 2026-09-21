@@ -1,4 +1,4 @@
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { curatePlaybook } from "../src/curate.js";
 import { normalizeValidatorVerdict } from "../src/validate.js";
 

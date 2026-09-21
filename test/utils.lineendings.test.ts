@@ -1,4 +1,4 @@
-import { describe, test, expect } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { normalizeLineEndings, normalizeLineEndingsTo } from "../src/utils.js";
 
 describe("normalizeLineEndings", () => {
@@ -34,4 +34,3 @@ describe("normalizeLineEndingsTo", () => {
     expect(output.includes("\r\r")).toBe(false);
   });
 });
-

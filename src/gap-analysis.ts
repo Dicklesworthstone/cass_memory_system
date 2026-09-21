@@ -5,8 +5,8 @@
  * and provides guidance for targeted rule extraction.
  */
 
-import { Playbook, PlaybookBullet } from "./types.js";
 import { getActiveBullets } from "./playbook.js";
+import { type Playbook, PlaybookBullet } from "./types.js";
 
 /**
  * Standard categories for playbook rules
@@ -31,46 +31,150 @@ export type RuleCategory = (typeof RULE_CATEGORIES)[number];
  */
 export const CATEGORY_KEYWORDS: Record<RuleCategory, string[]> = {
   debugging: [
-    "debug", "error", "fix", "bug", "issue", "trace", "stack",
-    "breakpoint", "log", "exception", "crash", "fault", "problem",
+    "debug",
+    "error",
+    "fix",
+    "bug",
+    "issue",
+    "trace",
+    "stack",
+    "breakpoint",
+    "log",
+    "exception",
+    "crash",
+    "fault",
+    "problem",
   ],
   testing: [
-    "test", "spec", "mock", "assert", "expect", "jest", "vitest",
-    "unit", "integration", "e2e", "coverage", "fixture", "stub",
+    "test",
+    "spec",
+    "mock",
+    "assert",
+    "expect",
+    "jest",
+    "vitest",
+    "unit",
+    "integration",
+    "e2e",
+    "coverage",
+    "fixture",
+    "stub",
   ],
   architecture: [
-    "architecture", "design", "pattern", "structure", "module",
-    "component", "layer", "service", "interface", "abstraction",
-    "dependency", "coupling", "cohesion", "separation",
+    "architecture",
+    "design",
+    "pattern",
+    "structure",
+    "module",
+    "component",
+    "layer",
+    "service",
+    "interface",
+    "abstraction",
+    "dependency",
+    "coupling",
+    "cohesion",
+    "separation",
   ],
   workflow: [
-    "workflow", "process", "task", "priority", "order", "step",
-    "sequence", "pipeline", "automation", "ci", "cd", "deploy",
+    "workflow",
+    "process",
+    "task",
+    "priority",
+    "order",
+    "step",
+    "sequence",
+    "pipeline",
+    "automation",
+    "ci",
+    "cd",
+    "deploy",
   ],
   documentation: [
-    "document", "doc", "readme", "comment", "jsdoc", "typedoc",
-    "api", "reference", "guide", "tutorial", "example",
+    "document",
+    "doc",
+    "readme",
+    "comment",
+    "jsdoc",
+    "typedoc",
+    "api",
+    "reference",
+    "guide",
+    "tutorial",
+    "example",
   ],
   integration: [
-    "api", "http", "rest", "graphql", "fetch", "request", "response",
-    "json", "parse", "serialize", "endpoint", "client", "server",
+    "api",
+    "http",
+    "rest",
+    "graphql",
+    "fetch",
+    "request",
+    "response",
+    "json",
+    "parse",
+    "serialize",
+    "endpoint",
+    "client",
+    "server",
   ],
   collaboration: [
-    "team", "review", "pr", "merge", "conflict", "coordinate",
-    "communicate", "share", "handoff", "pair", "mob",
+    "team",
+    "review",
+    "pr",
+    "merge",
+    "conflict",
+    "coordinate",
+    "communicate",
+    "share",
+    "handoff",
+    "pair",
+    "mob",
   ],
   git: [
-    "git", "commit", "branch", "merge", "rebase", "push", "pull",
-    "checkout", "stash", "diff", "log", "blame", "bisect",
+    "git",
+    "commit",
+    "branch",
+    "merge",
+    "rebase",
+    "push",
+    "pull",
+    "checkout",
+    "stash",
+    "diff",
+    "log",
+    "blame",
+    "bisect",
   ],
   security: [
-    "security", "auth", "token", "password", "encrypt", "permission",
-    "access", "secret", "vulnerability", "sanitize", "validate",
-    "xss", "csrf", "injection", "owasp",
+    "security",
+    "auth",
+    "token",
+    "password",
+    "encrypt",
+    "permission",
+    "access",
+    "secret",
+    "vulnerability",
+    "sanitize",
+    "validate",
+    "xss",
+    "csrf",
+    "injection",
+    "owasp",
   ],
   performance: [
-    "performance", "optimize", "cache", "slow", "memory", "profile",
-    "benchmark", "latency", "throughput", "scale", "efficient",
+    "performance",
+    "optimize",
+    "cache",
+    "slow",
+    "memory",
+    "profile",
+    "benchmark",
+    "latency",
+    "throughput",
+    "scale",
+    "efficient",
   ],
 };
 
@@ -83,9 +187,9 @@ export type CategoryStatus = "critical" | "underrepresented" | "adequate" | "wel
  * Thresholds for category status
  */
 const STATUS_THRESHOLDS = {
-  critical: 0,          // 0 rules
-  underrepresented: 3,  // 1-2 rules
-  adequate: 10,         // 3-10 rules
+  critical: 0, // 0 rules
+  underrepresented: 3, // 1-2 rules
+  adequate: 10, // 3-10 rules
   // well-covered: > 10 rules
 };
 
@@ -180,7 +284,7 @@ export function analyzePlaybookGaps(playbook: Playbook): PlaybookGapAnalysis {
  */
 function generateSuggestions(
   gaps: { critical: string[]; underrepresented: string[] },
-  totalRules: number
+  totalRules: number,
 ): string {
   if (totalRules === 0) {
     return "Your playbook is empty! Start by adding foundational rules across all categories.";
@@ -260,7 +364,7 @@ export function getGapSearchQueries(gaps: PlaybookGapAnalysis): string[] {
  */
 export function scoreSessionForGaps(
   sessionSnippet: string,
-  gaps: PlaybookGapAnalysis
+  gaps: PlaybookGapAnalysis,
 ): { score: number; matchedCategories: RuleCategory[]; reason: string } {
   const detectedCategories = detectCategories(sessionSnippet);
 
@@ -290,9 +394,10 @@ export function scoreSessionForGaps(
     }
   }
 
-  const reason = reasons.length > 0
-    ? `Contains ${reasons.join(", ")} patterns`
-    : "Contains patterns in well-covered categories";
+  const reason =
+    reasons.length > 0
+      ? `Contains ${reasons.join(", ")} patterns`
+      : "Contains patterns in well-covered categories";
 
   return { score, matchedCategories, reason };
 }

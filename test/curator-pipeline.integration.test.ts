@@ -5,15 +5,15 @@
  * Philosophy: NO MOCKS - real implementations with validation disabled
  * to avoid external dependencies (cass, LLM)
  */
-import { describe, it, expect, beforeEach } from "bun:test";
+import { beforeEach, describe, expect, it } from "bun:test";
 import { curatePlaybook } from "../src/curate.js";
-import { validateDelta, normalizeValidatorVerdict } from "../src/validate.js";
-import { PlaybookDelta, Config } from "../src/types.js";
+import type { Config, PlaybookDelta } from "../src/types.js";
+import { normalizeValidatorVerdict, validateDelta } from "../src/validate.js";
 import {
-  createTestConfig,
   createTestBullet,
+  createTestConfig,
+  createTestFeedbackEvent,
   createTestPlaybook,
-  createTestFeedbackEvent
 } from "./helpers/factories.js";
 
 const isoNow = () => new Date().toISOString();
@@ -38,13 +38,14 @@ describe("Curator Pipeline Integration", () => {
       const addDelta: PlaybookDelta = {
         type: "add",
         bullet: {
-          content: "Always validate user input before processing to prevent security vulnerabilities",
+          content:
+            "Always validate user input before processing to prevent security vulnerabilities",
           category: "security",
           scope: "global",
-          kind: "workflow_rule"
+          kind: "workflow_rule",
         },
         sourceSession: "/session/1.jsonl",
-        reason: "Security best practice"
+        reason: "Security best practice",
       };
 
       // Run curator
@@ -66,21 +67,21 @@ describe("Curator Pipeline Integration", () => {
     it("helpful/harmful deltas bypass validation (only add is validated)", async () => {
       const bullet = createTestBullet({
         id: "test-bullet",
-        content: "Test rule for validation"
+        content: "Test rule for validation",
       });
       const playbook = createTestPlaybook([bullet]);
 
       const helpfulDelta: PlaybookDelta = {
         type: "helpful",
         bulletId: "test-bullet",
-        sourceSession: "/session/1.jsonl"
+        sourceSession: "/session/1.jsonl",
       };
 
       const harmfulDelta: PlaybookDelta = {
         type: "harmful",
         bulletId: "test-bullet",
         sourceSession: "/session/2.jsonl",
-        reason: "outdated"
+        reason: "outdated",
       };
 
       // Both should pass validation since they're not "add" type
@@ -104,10 +105,10 @@ describe("Curator Pipeline Integration", () => {
           content: "Short rule", // Less than 20 chars
           category: "test",
           scope: "global",
-          kind: "workflow_rule"
+          kind: "workflow_rule",
         },
         sourceSession: "/session/1.jsonl",
-        reason: "Test"
+        reason: "Test",
       };
 
       // Short content bypasses validation
@@ -128,9 +129,9 @@ describe("Curator Pipeline Integration", () => {
         category: "typescript",
         harmfulCount: 5,
         helpfulCount: 0,
-        feedbackEvents: Array(5).fill(null).map(() =>
-          createTestFeedbackEvent("harmful", { timestamp: isoNow() })
-        )
+        feedbackEvents: Array(5)
+          .fill(null)
+          .map(() => createTestFeedbackEvent("harmful", { timestamp: isoNow() })),
       });
       const playbook = createTestPlaybook([harmfulBullet]);
 
@@ -140,7 +141,7 @@ describe("Curator Pipeline Integration", () => {
       expect(result.inversions).toHaveLength(1);
 
       // Find the new anti-pattern bullet
-      const antiPattern = result.playbook.bullets.find(b => b.kind === "anti_pattern");
+      const antiPattern = result.playbook.bullets.find((b) => b.kind === "anti_pattern");
       expect(antiPattern).toBeDefined();
       expect(antiPattern?.content).toContain("AVOID:");
       expect(antiPattern?.isNegative).toBe(true);
@@ -153,10 +154,10 @@ describe("Curator Pipeline Integration", () => {
           content: antiPattern!.content,
           category: antiPattern!.category,
           scope: antiPattern!.scope,
-          kind: "anti_pattern"
+          kind: "anti_pattern",
         },
         sourceSession: "inversion",
-        reason: "Anti-pattern from inversion"
+        reason: "Anti-pattern from inversion",
       };
 
       // With validation disabled, it passes
@@ -170,16 +171,16 @@ describe("Curator Pipeline Integration", () => {
         content: "Use var for all declarations",
         category: "javascript",
         harmfulCount: 4,
-        feedbackEvents: Array(4).fill(null).map(() =>
-          createTestFeedbackEvent("harmful", { timestamp: isoNow() })
-        )
+        feedbackEvents: Array(4)
+          .fill(null)
+          .map(() => createTestFeedbackEvent("harmful", { timestamp: isoNow() })),
       });
       const playbook = createTestPlaybook([harmfulBullet]);
 
       const result = curatePlaybook(playbook, [], config);
 
       // Original should be deprecated
-      const original = result.playbook.bullets.find(b => b.id === "to-invert");
+      const original = result.playbook.bullets.find((b) => b.id === "to-invert");
       expect(original?.deprecated).toBe(true);
       expect(original?.maturity).toBe("deprecated");
       expect(original?.deprecationReason).toContain("anti-pattern");
@@ -191,9 +192,9 @@ describe("Curator Pipeline Integration", () => {
         content: "Important rule that should never be inverted",
         pinned: true,
         harmfulCount: 10,
-        feedbackEvents: Array(10).fill(null).map(() =>
-          createTestFeedbackEvent("harmful", { timestamp: isoNow() })
-        )
+        feedbackEvents: Array(10)
+          .fill(null)
+          .map(() => createTestFeedbackEvent("harmful", { timestamp: isoNow() })),
       });
       const playbook = createTestPlaybook([pinnedBullet]);
 
@@ -215,9 +216,9 @@ describe("Curator Pipeline Integration", () => {
         content: "Good coding practice",
         maturity: "candidate",
         helpfulCount: 4,
-        feedbackEvents: Array(4).fill(null).map(() =>
-          createTestFeedbackEvent("helpful", { timestamp: isoNow() })
-        )
+        feedbackEvents: Array(4)
+          .fill(null)
+          .map(() => createTestFeedbackEvent("helpful", { timestamp: isoNow() })),
       });
       const playbook = createTestPlaybook([candidateBullet]);
 
@@ -225,7 +226,7 @@ describe("Curator Pipeline Integration", () => {
       const helpfulDelta: PlaybookDelta = {
         type: "helpful",
         bulletId: "promotable",
-        sourceSession: "/session/new.jsonl"
+        sourceSession: "/session/new.jsonl",
       };
 
       const result = curatePlaybook(playbook, [helpfulDelta], config);
@@ -245,21 +246,21 @@ describe("Curator Pipeline Integration", () => {
         helpfulCount: 1,
         feedbackEvents: [
           createTestFeedbackEvent("helpful", { timestamp: isoNow() }),
-          ...Array(8).fill(null).map(() =>
-            createTestFeedbackEvent("harmful", { timestamp: isoNow() })
-          )
-        ]
+          ...Array(8)
+            .fill(null)
+            .map(() => createTestFeedbackEvent("harmful", { timestamp: isoNow() })),
+        ],
       });
       const playbook = createTestPlaybook([negativeBullet]);
 
       const result = curatePlaybook(playbook, [], config);
 
       // Should be either demoted, deprecated, or inverted
-      const bullet = result.playbook.bullets.find(b => b.id === "negative");
+      const bullet = result.playbook.bullets.find((b) => b.id === "negative");
       const isHandled =
         bullet?.deprecated === true ||
         bullet?.maturity === "candidate" ||
-        result.inversions.some(i => i.originalId === "negative");
+        result.inversions.some((i) => i.originalId === "negative");
 
       expect(isHandled).toBe(true);
     });
@@ -270,9 +271,9 @@ describe("Curator Pipeline Integration", () => {
         content: "First rule with good feedback",
         maturity: "candidate",
         helpfulCount: 5,
-        feedbackEvents: Array(5).fill(null).map(() =>
-          createTestFeedbackEvent("helpful", { timestamp: isoNow() })
-        )
+        feedbackEvents: Array(5)
+          .fill(null)
+          .map(() => createTestFeedbackEvent("helpful", { timestamp: isoNow() })),
       });
 
       const bullet2 = createTestBullet({
@@ -280,24 +281,23 @@ describe("Curator Pipeline Integration", () => {
         content: "Second rule with bad feedback",
         maturity: "candidate",
         harmfulCount: 5,
-        feedbackEvents: Array(5).fill(null).map(() =>
-          createTestFeedbackEvent("harmful", { timestamp: isoNow() })
-        )
+        feedbackEvents: Array(5)
+          .fill(null)
+          .map(() => createTestFeedbackEvent("harmful", { timestamp: isoNow() })),
       });
 
       const playbook = createTestPlaybook([bullet1, bullet2]);
       const result = curatePlaybook(playbook, [], config);
 
       // b1 should be promoted
-      const b1Result = result.playbook.bullets.find(b => b.id === "b1");
+      const b1Result = result.playbook.bullets.find((b) => b.id === "b1");
       expect(b1Result).toBeDefined();
       expect(["established", "proven"]).toContain(b1Result!.maturity);
 
       // b2 should be handled (inverted or deprecated)
-      const b2Result = result.playbook.bullets.find(b => b.id === "b2");
+      const b2Result = result.playbook.bullets.find((b) => b.id === "b2");
       const b2Handled =
-        b2Result?.deprecated === true ||
-        result.inversions.some(i => i.originalId === "b2");
+        b2Result?.deprecated === true || result.inversions.some((i) => i.originalId === "b2");
       expect(b2Handled).toBe(true);
     });
   });
@@ -312,7 +312,7 @@ describe("Curator Pipeline Integration", () => {
         valid: true,
         confidence: 0.8,
         reason: "Needs refinement",
-        evidence: []
+        evidence: [],
       };
 
       const normalized = normalizeValidatorVerdict(refineResult);
@@ -328,7 +328,7 @@ describe("Curator Pipeline Integration", () => {
         valid: true,
         confidence: 0.95,
         reason: "Good rule",
-        evidence: []
+        evidence: [],
       };
 
       const normalized = normalizeValidatorVerdict(acceptResult);
@@ -343,7 +343,7 @@ describe("Curator Pipeline Integration", () => {
         valid: false,
         confidence: 0.9,
         reason: "Bad rule",
-        evidence: []
+        evidence: [],
       };
 
       const normalized = normalizeValidatorVerdict(rejectResult);
@@ -365,19 +365,19 @@ describe("Curator Pipeline Integration", () => {
         maturity: "candidate",
         harmfulCount: 20,
         helpfulCount: 0,
-        feedbackEvents: Array(20).fill(null).map(() =>
-          createTestFeedbackEvent("harmful", { timestamp: isoNow() })
-        )
+        feedbackEvents: Array(20)
+          .fill(null)
+          .map(() => createTestFeedbackEvent("harmful", { timestamp: isoNow() })),
       });
       const playbook = createTestPlaybook([veryBadBullet]);
 
       const result = curatePlaybook(playbook, [], config);
 
       // Should be either inverted (becomes anti-pattern) or pruned
-      const bullet = result.playbook.bullets.find(b => b.id === "prune-me");
+      const bullet = result.playbook.bullets.find((b) => b.id === "prune-me");
       const wasHandled =
         bullet?.deprecated === true ||
-        result.inversions.some(i => i.originalId === "prune-me") ||
+        result.inversions.some((i) => i.originalId === "prune-me") ||
         result.pruned > 0;
 
       expect(wasHandled).toBe(true);
@@ -389,18 +389,18 @@ describe("Curator Pipeline Integration", () => {
         id: "good",
         content: "Good rule",
         helpfulCount: 5,
-        feedbackEvents: Array(5).fill(null).map(() =>
-          createTestFeedbackEvent("helpful", { timestamp: isoNow() })
-        )
+        feedbackEvents: Array(5)
+          .fill(null)
+          .map(() => createTestFeedbackEvent("helpful", { timestamp: isoNow() })),
       });
 
       const badBullet = createTestBullet({
         id: "bad",
         content: "Bad rule that will be handled",
         harmfulCount: 15,
-        feedbackEvents: Array(15).fill(null).map(() =>
-          createTestFeedbackEvent("harmful", { timestamp: isoNow() })
-        )
+        feedbackEvents: Array(15)
+          .fill(null)
+          .map(() => createTestFeedbackEvent("harmful", { timestamp: isoNow() })),
       });
 
       const playbook = createTestPlaybook([goodBullet, badBullet]);
@@ -410,7 +410,7 @@ describe("Curator Pipeline Integration", () => {
       expect(result.playbook.bullets.length).toBeGreaterThanOrEqual(2);
 
       // Good bullet should remain active
-      const goodResult = result.playbook.bullets.find(b => b.id === "good");
+      const goodResult = result.playbook.bullets.find((b) => b.id === "good");
       expect(goodResult?.deprecated).toBeFalsy();
     });
   });
@@ -428,10 +428,10 @@ describe("Curator Pipeline Integration", () => {
           content: "First rule in empty playbook with enough content to validate",
           category: "general",
           scope: "global",
-          kind: "workflow_rule"
+          kind: "workflow_rule",
         },
         sourceSession: "/session/1.jsonl",
-        reason: "First rule"
+        reason: "First rule",
       };
 
       // Validate then curate
@@ -446,7 +446,7 @@ describe("Curator Pipeline Integration", () => {
     it("handles concurrent add and feedback deltas", async () => {
       const existingBullet = createTestBullet({
         id: "existing",
-        content: "Existing rule"
+        content: "Existing rule",
       });
       const playbook = createTestPlaybook([existingBullet]);
 
@@ -457,22 +457,22 @@ describe("Curator Pipeline Integration", () => {
             content: "Brand new rule about testing best practices",
             category: "testing",
             scope: "global",
-            kind: "workflow_rule"
+            kind: "workflow_rule",
           },
           sourceSession: "/session/1.jsonl",
-          reason: "New"
+          reason: "New",
         },
         {
           type: "helpful",
           bulletId: "existing",
-          sourceSession: "/session/2.jsonl"
+          sourceSession: "/session/2.jsonl",
         },
         {
           type: "harmful",
           bulletId: "existing",
           sourceSession: "/session/3.jsonl",
-          reason: "outdated"
-        }
+          reason: "outdated",
+        },
       ];
 
       const result = curatePlaybook(playbook, deltas, configWithValidationDisabled);
@@ -480,7 +480,7 @@ describe("Curator Pipeline Integration", () => {
       expect(result.applied).toBe(3);
       expect(result.playbook.bullets).toHaveLength(2);
 
-      const existing = result.playbook.bullets.find(b => b.id === "existing");
+      const existing = result.playbook.bullets.find((b) => b.id === "existing");
       expect(existing?.helpfulCount).toBe(1);
       expect(existing?.harmfulCount).toBe(1);
     });

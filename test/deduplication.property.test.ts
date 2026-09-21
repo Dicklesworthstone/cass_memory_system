@@ -6,9 +6,9 @@
  * - hashContent: determinism, normalization consistency
  */
 
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import fc from "fast-check";
-import { jaccardSimilarity, hashContent, tokenize } from "../src/utils.js";
+import { hashContent, jaccardSimilarity, tokenize } from "../src/utils.js";
 
 describe("Property-based deduplication tests", () => {
   // =========================================================================
@@ -25,9 +25,9 @@ describe("Property-based deduplication tests", () => {
             const ab = jaccardSimilarity(a, b);
             const ba = jaccardSimilarity(b, a);
             return ab === ba;
-          }
+          },
         ),
-        { numRuns: 500 }
+        { numRuns: 500 },
       );
     });
 
@@ -39,24 +39,21 @@ describe("Property-based deduplication tests", () => {
           (a, b) => {
             const similarity = jaccardSimilarity(a, b);
             return similarity >= 0 && similarity <= 1;
-          }
+          },
         ),
-        { numRuns: 500 }
+        { numRuns: 500 },
       );
     });
 
     it("identical strings have similarity 1.0", () => {
       fc.assert(
-        fc.property(
-          fc.string({ minLength: 1, maxLength: 200 }),
-          (s) => {
-            // Only test non-empty strings that produce tokens
-            const tokens = tokenize(s);
-            if (tokens.length === 0) return true; // Skip strings with no tokens
-            return jaccardSimilarity(s, s) === 1.0;
-          }
-        ),
-        { numRuns: 500 }
+        fc.property(fc.string({ minLength: 1, maxLength: 200 }), (s) => {
+          // Only test non-empty strings that produce tokens
+          const tokens = tokenize(s);
+          if (tokens.length === 0) return true; // Skip strings with no tokens
+          return jaccardSimilarity(s, s) === 1.0;
+        }),
+        { numRuns: 500 },
       );
     });
 
@@ -67,15 +64,12 @@ describe("Property-based deduplication tests", () => {
 
     it("empty vs non-empty string has similarity 0.0", () => {
       fc.assert(
-        fc.property(
-          fc.string({ minLength: 1, maxLength: 200 }),
-          (s) => {
-            const tokens = tokenize(s);
-            if (tokens.length === 0) return true; // Skip strings with no useful tokens
-            return jaccardSimilarity("", s) === 0.0;
-          }
-        ),
-        { numRuns: 200 }
+        fc.property(fc.string({ minLength: 1, maxLength: 200 }), (s) => {
+          const tokens = tokenize(s);
+          if (tokens.length === 0) return true; // Skip strings with no useful tokens
+          return jaccardSimilarity("", s) === 0.0;
+        }),
+        { numRuns: 200 },
       );
     });
 
@@ -92,9 +86,9 @@ describe("Property-based deduplication tests", () => {
             const selfSimilarity = jaccardSimilarity(a, a);
             const crossSimilarity = jaccardSimilarity(a, b);
             return selfSimilarity >= crossSimilarity;
-          }
+          },
         ),
-        { numRuns: 300 }
+        { numRuns: 300 },
       );
     });
 
@@ -112,9 +106,9 @@ describe("Property-based deduplication tests", () => {
             const baseExtended = jaccardSimilarity(base, extended);
 
             return baseSelf >= baseExtended;
-          }
+          },
         ),
-        { numRuns: 300 }
+        { numRuns: 300 },
       );
     });
   });
@@ -126,26 +120,20 @@ describe("Property-based deduplication tests", () => {
   describe("hashContent properties", () => {
     it("is deterministic: hashContent(s) === hashContent(s)", () => {
       fc.assert(
-        fc.property(
-          fc.string({ minLength: 0, maxLength: 500 }),
-          (s) => {
-            return hashContent(s) === hashContent(s);
-          }
-        ),
-        { numRuns: 500 }
+        fc.property(fc.string({ minLength: 0, maxLength: 500 }), (s) => {
+          return hashContent(s) === hashContent(s);
+        }),
+        { numRuns: 500 },
       );
     });
 
     it("produces 16-character hex strings", () => {
       fc.assert(
-        fc.property(
-          fc.string({ minLength: 0, maxLength: 500 }),
-          (s) => {
-            const hash = hashContent(s);
-            return hash.length === 16 && /^[0-9a-f]+$/.test(hash);
-          }
-        ),
-        { numRuns: 300 }
+        fc.property(fc.string({ minLength: 0, maxLength: 500 }), (s) => {
+          const hash = hashContent(s);
+          return hash.length === 16 && /^[0-9a-f]+$/.test(hash);
+        }),
+        { numRuns: 300 },
       );
     });
 
@@ -158,45 +146,43 @@ describe("Property-based deduplication tests", () => {
             const multiSpace = words.join("   ");
             const mixedSpace = words.join(" \t\n ");
 
-            return hashContent(singleSpace) === hashContent(multiSpace) &&
-                   hashContent(singleSpace) === hashContent(mixedSpace);
-          }
+            return (
+              hashContent(singleSpace) === hashContent(multiSpace) &&
+              hashContent(singleSpace) === hashContent(mixedSpace)
+            );
+          },
         ),
-        { numRuns: 200 }
+        { numRuns: 200 },
       );
     });
 
     it("normalizes case: 'ABC' and 'abc' produce same hash", () => {
       fc.assert(
-        fc.property(
-          fc.string({ minLength: 1, maxLength: 100 }),
-          (s) => {
-            return hashContent(s.toLowerCase()) === hashContent(s.toUpperCase());
-          }
-        ),
-        { numRuns: 200 }
+        fc.property(fc.string({ minLength: 1, maxLength: 100 }), (s) => {
+          return hashContent(s.toLowerCase()) === hashContent(s.toUpperCase());
+        }),
+        { numRuns: 200 },
       );
     });
 
     it("trims leading/trailing whitespace", () => {
       fc.assert(
-        fc.property(
-          fc.string({ minLength: 1, maxLength: 100 }),
-          (s) => {
-            const trimmed = s.trim();
-            if (trimmed.length === 0) return true;
+        fc.property(fc.string({ minLength: 1, maxLength: 100 }), (s) => {
+          const trimmed = s.trim();
+          if (trimmed.length === 0) return true;
 
-            const paddedLeading = "   " + trimmed;
-            const paddedTrailing = trimmed + "   ";
-            const paddedBoth = "   " + trimmed + "   ";
+          const paddedLeading = "   " + trimmed;
+          const paddedTrailing = trimmed + "   ";
+          const paddedBoth = "   " + trimmed + "   ";
 
-            const baseHash = hashContent(trimmed);
-            return hashContent(paddedLeading) === baseHash &&
-                   hashContent(paddedTrailing) === baseHash &&
-                   hashContent(paddedBoth) === baseHash;
-          }
-        ),
-        { numRuns: 200 }
+          const baseHash = hashContent(trimmed);
+          return (
+            hashContent(paddedLeading) === baseHash &&
+            hashContent(paddedTrailing) === baseHash &&
+            hashContent(paddedBoth) === baseHash
+          );
+        }),
+        { numRuns: 200 },
       );
     });
 
@@ -207,27 +193,24 @@ describe("Property-based deduplication tests", () => {
       const collisions: Array<{ hash: string; first: string; second: string }> = [];
 
       fc.assert(
-        fc.property(
-          fc.string({ minLength: 5, maxLength: 100 }),
-          (s) => {
-            // Normalize like hashContent does
-            const normalized = s.toLowerCase().replace(/\s+/g, " ").trim();
-            if (normalized.length < 3) return true; // Skip very short strings
+        fc.property(fc.string({ minLength: 5, maxLength: 100 }), (s) => {
+          // Normalize like hashContent does
+          const normalized = s.toLowerCase().replace(/\s+/g, " ").trim();
+          if (normalized.length < 3) return true; // Skip very short strings
 
-            const hash = hashContent(s);
+          const hash = hashContent(s);
 
-            // Only treat this as a collision if two *different normalized strings*
-            // map to the same hash. Repeats due to normalization are expected.
-            const existing = hashToNormalized.get(hash);
-            if (existing && existing !== normalized) {
-              collisions.push({ hash, first: existing, second: normalized });
-            }
-            if (!existing) hashToNormalized.set(hash, normalized);
-
-            return true; // Always pass, we check collisions at the end
+          // Only treat this as a collision if two *different normalized strings*
+          // map to the same hash. Repeats due to normalization are expected.
+          const existing = hashToNormalized.get(hash);
+          if (existing && existing !== normalized) {
+            collisions.push({ hash, first: existing, second: normalized });
           }
-        ),
-        { numRuns: 1000 }
+          if (!existing) hashToNormalized.set(hash, normalized);
+
+          return true; // Always pass, we check collisions at the end
+        }),
+        { numRuns: 1000 },
       );
 
       // Allow very few collisions (SHA-256 truncated to 16 hex chars = 64 bits)
@@ -243,28 +226,22 @@ describe("Property-based deduplication tests", () => {
   describe("tokenize properties", () => {
     it("is deterministic", () => {
       fc.assert(
-        fc.property(
-          fc.string({ minLength: 0, maxLength: 200 }),
-          (s) => {
-            const tokens1 = tokenize(s);
-            const tokens2 = tokenize(s);
-            return JSON.stringify(tokens1) === JSON.stringify(tokens2);
-          }
-        ),
-        { numRuns: 300 }
+        fc.property(fc.string({ minLength: 0, maxLength: 200 }), (s) => {
+          const tokens1 = tokenize(s);
+          const tokens2 = tokenize(s);
+          return JSON.stringify(tokens1) === JSON.stringify(tokens2);
+        }),
+        { numRuns: 300 },
       );
     });
 
     it("returns array for any input", () => {
       fc.assert(
-        fc.property(
-          fc.string({ minLength: 0, maxLength: 200 }),
-          (s) => {
-            const tokens = tokenize(s);
-            return Array.isArray(tokens);
-          }
-        ),
-        { numRuns: 300 }
+        fc.property(fc.string({ minLength: 0, maxLength: 200 }), (s) => {
+          const tokens = tokenize(s);
+          return Array.isArray(tokens);
+        }),
+        { numRuns: 300 },
       );
     });
 
@@ -282,14 +259,11 @@ describe("Property-based deduplication tests", () => {
 
     it("tokens are lowercase", () => {
       fc.assert(
-        fc.property(
-          fc.string({ minLength: 1, maxLength: 200 }),
-          (s) => {
-            const tokens = tokenize(s);
-            return tokens.every(t => t === t.toLowerCase());
-          }
-        ),
-        { numRuns: 300 }
+        fc.property(fc.string({ minLength: 1, maxLength: 200 }), (s) => {
+          const tokens = tokenize(s);
+          return tokens.every((t) => t === t.toLowerCase());
+        }),
+        { numRuns: 300 },
       );
     });
   });
@@ -301,15 +275,12 @@ describe("Property-based deduplication tests", () => {
   describe("deduplication integration", () => {
     it("exact duplicates are always detected via hash equality", () => {
       fc.assert(
-        fc.property(
-          fc.string({ minLength: 1, maxLength: 200 }),
-          (content) => {
-            const hash1 = hashContent(content);
-            const hash2 = hashContent(content);
-            return hash1 === hash2;
-          }
-        ),
-        { numRuns: 500 }
+        fc.property(fc.string({ minLength: 1, maxLength: 200 }), (content) => {
+          const hash1 = hashContent(content);
+          const hash2 = hashContent(content);
+          return hash1 === hash2;
+        }),
+        { numRuns: 500 },
       );
     });
 
@@ -320,16 +291,16 @@ describe("Property-based deduplication tests", () => {
           (words) => {
             const variant1 = words.join(" ");
             const variant2 = words.join("   "); // Extra spaces
-            const variant3 = words.map(w => w.toUpperCase()).join(" "); // Uppercase
+            const variant3 = words.map((w) => w.toUpperCase()).join(" "); // Uppercase
 
             const hash1 = hashContent(variant1);
             const hash2 = hashContent(variant2);
             const hash3 = hashContent(variant3);
 
             return hash1 === hash2 && hash1 === hash3;
-          }
+          },
         ),
-        { numRuns: 300 }
+        { numRuns: 300 },
       );
     });
 
@@ -339,30 +310,30 @@ describe("Property-based deduplication tests", () => {
       const wordArbitrary = fc.stringMatching(/^[a-z]{3,10}$/);
 
       fc.assert(
-        fc.property(
-          fc.array(wordArbitrary, { minLength: 5, maxLength: 10 }),
-          (words) => {
-            // Filter out any empty strings just in case
-            const validWords = words.filter(w => w.length >= 3);
-            if (validWords.length < 5) return true; // Skip if not enough words
+        fc.property(fc.array(wordArbitrary, { minLength: 5, maxLength: 10 }), (words) => {
+          // Filter out any empty strings just in case
+          const validWords = words.filter((w) => w.length >= 3);
+          if (validWords.length < 5) return true; // Skip if not enough words
 
-            const sentence1 = validWords.join(" ");
-            const sentence2 = validWords.slice(0, -1).join(" "); // Remove last word
+          const sentence1 = validWords.join(" ");
+          const sentence2 = validWords.slice(0, -1).join(" "); // Remove last word
 
-            const similarity = jaccardSimilarity(sentence1, sentence2);
-            // Removing one word from N words should give similarity of (N-1)/N
-            // which for 5+ words is at least 0.8
-            return similarity >= 0.6;
-          }
-        ),
-        { numRuns: 200 }
+          const similarity = jaccardSimilarity(sentence1, sentence2);
+          // Removing one word from N words should give similarity of (N-1)/N
+          // which for 5+ words is at least 0.8
+          return similarity >= 0.6;
+        }),
+        { numRuns: 200 },
       );
     });
 
     it("completely different strings have low similarity", () => {
       fc.assert(
         fc.property(
-          fc.array(fc.constantFrom("alpha", "beta", "gamma", "delta"), { minLength: 3, maxLength: 5 }),
+          fc.array(fc.constantFrom("alpha", "beta", "gamma", "delta"), {
+            minLength: 3,
+            maxLength: 5,
+          }),
           fc.array(fc.constantFrom("one", "two", "three", "four"), { minLength: 3, maxLength: 5 }),
           (words1, words2) => {
             const sentence1 = words1.join(" ");
@@ -371,9 +342,9 @@ describe("Property-based deduplication tests", () => {
             const similarity = jaccardSimilarity(sentence1, sentence2);
             // Disjoint word sets should have 0 similarity
             return similarity === 0;
-          }
+          },
         ),
-        { numRuns: 100 }
+        { numRuns: 100 },
       );
     });
   });

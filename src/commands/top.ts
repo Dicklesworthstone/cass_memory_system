@@ -4,9 +4,19 @@
  * Quick command to see which rules are most effective based on
  * current scores with decay applied.
  */
+
+import chalk from "chalk";
 import { loadConfig } from "../config.js";
-import { loadMergedPlaybook, getActiveBullets } from "../playbook.js";
+import {
+  formatMaturityIcon,
+  formatRule,
+  formatTipPrefix,
+  getOutputStyle,
+  wrapText,
+} from "../output.js";
+import { getActiveBullets, loadMergedPlaybook } from "../playbook.js";
 import { getEffectiveScore } from "../scoring.js";
+import { ErrorCode } from "../types.js";
 import {
   formatLastHelpful,
   getCliName,
@@ -16,9 +26,6 @@ import {
   validateOneOf,
   validatePositiveInt,
 } from "../utils.js";
-import { ErrorCode } from "../types.js";
-import chalk from "chalk";
-import { formatMaturityIcon, formatRule, formatTipPrefix, getOutputStyle, wrapText } from "../output.js";
 
 export interface TopFlags {
   scope?: "global" | "workspace" | "all";
@@ -38,10 +45,7 @@ interface RankedBullet {
   lastUsed: string;
 }
 
-export async function topCommand(
-  count: number = 10,
-  flags: TopFlags = {}
-): Promise<void> {
+export async function topCommand(count: number = 10, flags: TopFlags = {}): Promise<void> {
   const startedAtMs = Date.now();
   const command = "top";
   const cli = getCliName();
@@ -76,7 +80,9 @@ export async function topCommand(
     return;
   }
 
-  const categoryCheck = validateNonEmptyString(flags.category, "category", { allowUndefined: true });
+  const categoryCheck = validateNonEmptyString(flags.category, "category", {
+    allowUndefined: true,
+  });
   if (!categoryCheck.ok) {
     reportError(categoryCheck.message, {
       code: ErrorCode.INVALID_INPUT,
@@ -102,17 +108,17 @@ export async function topCommand(
 
   // Apply filters
   if (normalizedFlags.scope && normalizedFlags.scope !== "all") {
-    bullets = bullets.filter(b => b.scope === normalizedFlags.scope);
+    bullets = bullets.filter((b) => b.scope === normalizedFlags.scope);
   }
   if (normalizedFlags.category) {
     const cat = normalizedFlags.category.toLowerCase();
-    bullets = bullets.filter(b => b.category?.toLowerCase() === cat);
+    bullets = bullets.filter((b) => b.category?.toLowerCase() === cat);
   }
 
   // Calculate scores and rank
-  const scored = bullets.map(b => ({
+  const scored = bullets.map((b) => ({
     bullet: b,
-    score: getEffectiveScore(b, config)
+    score: getEffectiveScore(b, config),
   }));
 
   // Sort by score descending
@@ -132,20 +138,24 @@ export async function topCommand(
     maturity: s.bullet.maturity || "candidate",
     feedback: {
       helpful: s.bullet.helpfulCount || 0,
-      harmful: s.bullet.harmfulCount || 0
+      harmful: s.bullet.harmfulCount || 0,
     },
-    lastUsed: formatLastHelpful(s.bullet)
+    lastUsed: formatLastHelpful(s.bullet),
   }));
 
   if (flags.json) {
-    printJsonResult(command, {
-      count: ranked.length,
-      filters: {
-        scope: normalizedFlags.scope || "all",
-        category: normalizedFlags.category || null
+    printJsonResult(
+      command,
+      {
+        count: ranked.length,
+        filters: {
+          scope: normalizedFlags.scope || "all",
+          category: normalizedFlags.category || null,
+        },
+        bullets: ranked,
       },
-      bullets: ranked
-    }, { startedAtMs });
+      { startedAtMs },
+    );
     return;
   }
 
@@ -163,7 +173,9 @@ function printTopBullets(bullets: RankedBullet[], flags: TopFlags): void {
   if (bullets.length === 0) {
     console.log(chalk.yellow("No bullets found matching the criteria."));
     if (flags.scope || flags.category) {
-      console.log(chalk.gray(`Filters: scope=${flags.scope || "all"}, category=${flags.category || "any"}`));
+      console.log(
+        chalk.gray(`Filters: scope=${flags.scope || "all"}, category=${flags.category || "any"}`),
+      );
     }
     return;
   }
@@ -181,12 +193,19 @@ function printTopBullets(bullets: RankedBullet[], flags: TopFlags): void {
   for (const b of bullets) {
     const maturityIcon = formatMaturityIcon(b.maturity);
     const maturityPrefix = maturityIcon ? `${maturityIcon} ` : "";
-    const scoreColor = b.score >= 10 ? chalk.green : b.score >= 5 ? chalk.blue : b.score >= 0 ? chalk.white : chalk.red;
+    const scoreColor =
+      b.score >= 10
+        ? chalk.green
+        : b.score >= 5
+          ? chalk.blue
+          : b.score >= 0
+            ? chalk.white
+            : chalk.red;
 
     console.log(
       `${chalk.bold(`${b.rank}. [${b.id}]`)}${chalk.dim(
-        ` • score ${scoreColor(b.score.toFixed(1))} • ${maturityPrefix}${b.maturity} • ${b.category}/${b.scope}`
-      )}`
+        ` • score ${scoreColor(b.score.toFixed(1))} • ${maturityPrefix}${b.maturity} • ${b.category}/${b.scope}`,
+      )}`,
     );
 
     for (const line of wrapText(b.content.trim().replace(/\s+/g, " "), wrapWidth)) {
@@ -195,11 +214,15 @@ function printTopBullets(bullets: RankedBullet[], flags: TopFlags): void {
 
     console.log(
       chalk.dim(
-        `  Feedback: ${b.feedback.helpful}× helpful, ${b.feedback.harmful}× harmful • Last used: ${b.lastUsed}`
-      )
+        `  Feedback: ${b.feedback.helpful}× helpful, ${b.feedback.harmful}× harmful • Last used: ${b.lastUsed}`,
+      ),
     );
     console.log("");
   }
 
-  console.log(chalk.gray(`${formatTipPrefix()}Use '${cli} playbook get <id>' to inspect, or '${cli} why <id>' for provenance.`));
+  console.log(
+    chalk.gray(
+      `${formatTipPrefix()}Use '${cli} playbook get <id>' to inspect, or '${cli} why <id>' for provenance.`,
+    ),
+  );
 }

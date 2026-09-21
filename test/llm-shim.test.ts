@@ -4,22 +4,22 @@
  * Verifies that the LLM shim correctly intercepts and mocks LLM API calls
  * for offline testing.
  */
-import { describe, it, expect } from "bun:test";
-import {
-  withLlmShim,
-  getLlmCallLog,
-  createOfflineShim,
-  createDiarySuccessShim,
-  createReflectorAddDeltaShim,
-  createValidatorRejectShim,
-  createErrorShim,
-  DEFAULT_DIARY_RESPONSE,
-  DEFAULT_REFLECTOR_RESPONSE,
-  DEFAULT_VALIDATOR_RESPONSE
-} from "./helpers/llm-shim.js";
+import { describe, expect, it } from "bun:test";
+import { DEFAULT_CONFIG } from "../src/config.js";
 import { extractDiary } from "../src/llm.js";
 import { DiaryEntrySchema } from "../src/types.js";
-import { DEFAULT_CONFIG } from "../src/config.js";
+import {
+  createDiarySuccessShim,
+  createErrorShim,
+  createOfflineShim,
+  createReflectorAddDeltaShim,
+  createValidatorRejectShim,
+  DEFAULT_DIARY_RESPONSE,
+  DEFAULT_REFLECTOR_RESPONSE,
+  DEFAULT_VALIDATOR_RESPONSE,
+  getLlmCallLog,
+  withLlmShim,
+} from "./helpers/llm-shim.js";
 
 describe("LLM Shim", () => {
   describe("Default Responses", () => {
@@ -46,7 +46,7 @@ describe("LLM Shim", () => {
         const result = await io.generateObject({
           prompt: "Extract diary from session accomplishments",
           schema: {} as any,
-          model: {} as any
+          model: {} as any,
         });
 
         expect((result.object as any).status).toBe("success");
@@ -56,20 +56,18 @@ describe("LLM Shim", () => {
 
     it("mocks generateObject for reflector prompts", async () => {
       await withLlmShim(
-        createReflectorAddDeltaShim([
-          { content: "Always use TypeScript", category: "typescript" }
-        ]),
+        createReflectorAddDeltaShim([{ content: "Always use TypeScript", category: "typescript" }]),
         async (io) => {
           const result = await io.generateObject({
             prompt: "Reflect on playbook and generate deltas",
             schema: {} as any,
-            model: {} as any
+            model: {} as any,
           });
 
           expect((result.object as any).deltas).toHaveLength(1);
           expect((result.object as any).deltas[0].type).toBe("add");
           expect((result.object as any).deltas[0].bullet.content).toBe("Always use TypeScript");
-        }
+        },
       );
     });
 
@@ -78,7 +76,7 @@ describe("LLM Shim", () => {
         const result = await io.generateObject({
           prompt: "Validate this rule with evidence",
           schema: {} as any,
-          model: {} as any
+          model: {} as any,
         });
 
         expect((result.object as any).verdict).toBe("REJECT");
@@ -92,8 +90,8 @@ describe("LLM Shim", () => {
           io.generateObject({
             prompt: "Any prompt",
             schema: {} as any,
-            model: {} as any
-          })
+            model: {} as any,
+          }),
         ).rejects.toThrow("Rate limit exceeded");
       });
     });
@@ -105,7 +103,7 @@ describe("LLM Shim", () => {
         await io.generateObject({
           prompt: "Extract diary",
           schema: {} as any,
-          model: {} as any
+          model: {} as any,
         });
       });
 
@@ -120,13 +118,13 @@ describe("LLM Shim", () => {
         await io.generateObject({
           prompt: "Extract diary from session",
           schema: {} as any,
-          model: {} as any
+          model: {} as any,
         });
 
         await io.generateObject({
           prompt: "Reflect on playbook",
           schema: {} as any,
-          model: {} as any
+          model: {} as any,
         });
 
         const log = getLlmCallLog();
@@ -141,7 +139,7 @@ describe("LLM Shim", () => {
         await io.generateObject({
           prompt: "Extract diary",
           schema: {} as any,
-          model: {} as any
+          model: {} as any,
         });
 
         const log = getLlmCallLog();
@@ -173,7 +171,7 @@ describe("LLM Shim", () => {
     it("createReflectorAddDeltaShim creates add delta config", () => {
       const config = createReflectorAddDeltaShim([
         { content: "Rule 1", category: "cat1" },
-        { content: "Rule 2" }
+        { content: "Rule 2" },
       ]);
 
       expect(config.reflector).toBeDefined();
@@ -192,27 +190,42 @@ describe("LLM Shim", () => {
       const result = await withLlmShim(
         {
           extractDiary: (prompt) => {
-            if (prompt.includes("Processed:")) return {
-              status: "success",
-              accomplishments: ["Processed: data"],
+            if (prompt.includes("Processed:"))
+              return {
+                status: "success",
+                accomplishments: ["Processed: data"],
+                decisions: [],
+                challenges: [],
+                keyLearnings: [],
+                preferences: [],
+                tags: [],
+              };
+            return {
+              status: "failure",
+              accomplishments: [],
               decisions: [],
               challenges: [],
-              keyLearnings: [],
               preferences: [],
-              tags: []
+              keyLearnings: [],
+              tags: [],
             };
-            return { status: "failure", accomplishments: [], decisions: [], challenges: [], preferences: [], keyLearnings: [], tags: [] };
-          }
+          },
         },
         async (io) => {
           return extractDiary(
-            DiaryEntrySchema.omit({ id: true, sessionPath: true, timestamp: true, relatedSessions: true, searchAnchors: true }),
+            DiaryEntrySchema.omit({
+              id: true,
+              sessionPath: true,
+              timestamp: true,
+              relatedSessions: true,
+              searchAnchors: true,
+            }),
             "Processed: something",
             { agent: "claude", sessionPath: "/s1" },
             config,
-            io
+            io,
           );
-        }
+        },
       );
 
       const obj = result as any;

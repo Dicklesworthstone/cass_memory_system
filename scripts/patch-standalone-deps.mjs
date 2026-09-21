@@ -12,8 +12,8 @@
  * This script runs automatically via the `postinstall` hook in package.json.
  */
 
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -48,18 +48,25 @@ if (existsSync(onnxPath)) {
       ].join("\n"),
     );
     if (src === beforeStep1) {
-      warnPatch("onnx.js", "Step 1 (import replacement) did not match — @xenova/transformers may have changed format");
+      warnPatch(
+        "onnx.js",
+        "Step 1 (import replacement) did not match — @xenova/transformers may have changed format",
+      );
     }
 
     // Step 2: Add ONNX_NODE null guard to the if condition
-    const ifBlockRegex = /if\s*\(typeof process !== 'undefined' && process\?\.release\?\.name === 'node'\)\s*\{[\s\S]*?ONNX = ONNX_NODE\.default \?\? ONNX_NODE;/;
+    const ifBlockRegex =
+      /if\s*\(typeof process !== 'undefined' && process\?\.release\?\.name === 'node'\)\s*\{[\s\S]*?ONNX = ONNX_NODE\.default \?\? ONNX_NODE;/;
     if (ifBlockRegex.test(src)) {
       src = src.replace(
         ifBlockRegex,
         `if (typeof process !== 'undefined' && process?.release?.name === 'node' && ONNX_NODE) {\n    // Native onnxruntime-node available\n    ONNX = ONNX_NODE.default ?? ONNX_NODE;`,
       );
     } else {
-      warnPatch("onnx.js", "Step 2 (if-block guard) regex did not match — runtime fallback may not work correctly");
+      warnPatch(
+        "onnx.js",
+        "Step 2 (if-block guard) regex did not match — runtime fallback may not work correctly",
+      );
     }
 
     // Step 3: Add a WASM safety net AFTER the entire if/else block.
@@ -76,10 +83,15 @@ if (existsSync(onnxPath)) {
 
     writeFileSync(onnxPath, src);
     patched++;
-    console.log("[patch-standalone-deps] Patched onnx.js: onnxruntime-node → dynamic import with WASM fallback");
+    console.log(
+      "[patch-standalone-deps] Patched onnx.js: onnxruntime-node → dynamic import with WASM fallback",
+    );
   }
 } else {
-  warnPatch("onnx.js", `File not found at ${onnxPath} — @xenova/transformers may have changed structure or is not installed`);
+  warnPatch(
+    "onnx.js",
+    `File not found at ${onnxPath} — @xenova/transformers may have changed structure or is not installed`,
+  );
 }
 
 // --- Patch 2: image.js ---
@@ -117,23 +129,35 @@ if (existsSync(imagePath)) {
         ].join("\n    "),
       );
     } else {
-      warnPatch("image.js", "Could not find 'Unable to load image processing library' throw — load-time crash may still occur in standalone binaries");
+      warnPatch(
+        "image.js",
+        "Could not find 'Unable to load image processing library' throw — load-time crash may still occur in standalone binaries",
+      );
     }
 
     writeFileSync(imagePath, src);
     patched++;
-    console.log("[patch-standalone-deps] Patched image.js: sharp → dynamic import + deferred image error");
+    console.log(
+      "[patch-standalone-deps] Patched image.js: sharp → dynamic import + deferred image error",
+    );
   }
 } else {
-  warnPatch("image.js", `File not found at ${imagePath} — @xenova/transformers may have changed structure or is not installed`);
+  warnPatch(
+    "image.js",
+    `File not found at ${imagePath} — @xenova/transformers may have changed structure or is not installed`,
+  );
 }
 
 if (patched > 0) {
-  console.log(`[patch-standalone-deps] Done: ${patched} file(s) patched for standalone binary compatibility`);
+  console.log(
+    `[patch-standalone-deps] Done: ${patched} file(s) patched for standalone binary compatibility`,
+  );
 } else {
   console.log("[patch-standalone-deps] No patches needed (already patched or files not found)");
 }
 
 if (warnings > 0) {
-  console.warn(`[patch-standalone-deps] ${warnings} warning(s) — standalone binary may have issues. Check @xenova/transformers version compatibility.`);
+  console.warn(
+    `[patch-standalone-deps] ${warnings} warning(s) — standalone binary may have issues. Check @xenova/transformers version compatibility.`,
+  );
 }

@@ -3,15 +3,21 @@
  *
  * Tests the `cm why` command for showing the origin evidence for a playbook bullet.
  */
-import { describe, it, expect } from "bun:test";
-import { readFile, writeFile, readdir } from "node:fs/promises";
+import { describe, expect, it } from "bun:test";
+import { readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
-import { whyCommand } from "../src/commands/why.js";
 import { recordFeedback } from "../src/commands/mark.js";
-import { withTempCassHome, type TestEnv } from "./helpers/temp.js";
+import { whyCommand } from "../src/commands/why.js";
 import { createE2ELogger } from "./helpers/e2e-logger.js";
-import { createTestConfig, createTestPlaybook, createBullet, createTestDiary, daysAgo } from "./helpers/factories.js";
+import {
+  createBullet,
+  createTestConfig,
+  createTestDiary,
+  createTestPlaybook,
+  daysAgo,
+} from "./helpers/factories.js";
+import { type TestEnv, withTempCassHome } from "./helpers/temp.js";
 
 function captureConsole() {
   const logs: string[] = [];
@@ -46,12 +52,20 @@ async function writeTestConfig(env: TestEnv): Promise<void> {
   await writeFile(env.configPath, JSON.stringify(config, null, 2), "utf-8");
 }
 
-async function snapshotPlaybook(log: ReturnType<typeof createE2ELogger>, env: TestEnv, name: string): Promise<void> {
+async function snapshotPlaybook(
+  log: ReturnType<typeof createE2ELogger>,
+  env: TestEnv,
+  name: string,
+): Promise<void> {
   const contents = await readFile(env.playbookPath, "utf-8").catch(() => "");
   log.snapshot(name, contents);
 }
 
-async function snapshotDiaryDir(log: ReturnType<typeof createE2ELogger>, env: TestEnv, name: string): Promise<void> {
+async function snapshotDiaryDir(
+  log: ReturnType<typeof createE2ELogger>,
+  env: TestEnv,
+  name: string,
+): Promise<void> {
   const files = await readdir(env.diaryDir).catch(() => []);
   log.snapshot(name, files.sort());
 }
@@ -120,8 +134,16 @@ describe("E2E: CLI why command", () => {
           timestamp: daysAgo(44),
           accomplishments: ["Refactored tests to be deterministic."],
         });
-        await writeFile(path.join(env.diaryDir, `${diary1.id}.json`), JSON.stringify(diary1, null, 2), "utf-8");
-        await writeFile(path.join(env.diaryDir, `${diary2.id}.json`), JSON.stringify(diary2, null, 2), "utf-8");
+        await writeFile(
+          path.join(env.diaryDir, `${diary1.id}.json`),
+          JSON.stringify(diary1, null, 2),
+          "utf-8",
+        );
+        await writeFile(
+          path.join(env.diaryDir, `${diary2.id}.json`),
+          JSON.stringify(diary2, null, 2),
+          "utf-8",
+        );
         await snapshotDiaryDir(log, env, "diary.files");
 
         log.step("Mark bullet as helpful", { bulletId });

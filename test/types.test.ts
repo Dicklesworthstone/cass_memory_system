@@ -1,25 +1,25 @@
 import { describe, expect, it } from "bun:test";
 import {
-  FeedbackEventSchema,
-  PlaybookBulletSchema,
-  PlaybookSchema,
-  ConfigSchema,
-  DiaryEntrySchema,
-  PlaybookDeltaSchema,
   AddDeltaSchema,
-  HelpfulDeltaSchema,
-  HarmfulDeltaSchema,
-  ReplaceDeltaSchema,
-  DeprecateDeltaSchema,
-  MergeDeltaSchema,
-  HarmfulReasonEnum,
-  BulletScopeEnum,
-  BulletTypeEnum,
   BulletKindEnum,
-  BulletStateEnum,
   BulletMaturityEnum,
-  SessionStatusEnum,
+  BulletScopeEnum,
+  BulletStateEnum,
+  BulletTypeEnum,
+  ConfigSchema,
+  DeprecateDeltaSchema,
+  DiaryEntrySchema,
+  FeedbackEventSchema,
+  HarmfulDeltaSchema,
+  HarmfulReasonEnum,
+  HelpfulDeltaSchema,
   LLMProviderEnum,
+  MergeDeltaSchema,
+  PlaybookBulletSchema,
+  PlaybookDeltaSchema,
+  PlaybookSchema,
+  ReplaceDeltaSchema,
+  SessionStatusEnum,
 } from "../src/types.js";
 
 // =============================================================================
@@ -226,9 +226,7 @@ describe("PlaybookBulletSchema", () => {
       promotedAt: "2024-06-01T00:00:00Z",
       helpfulCount: 10,
       harmfulCount: 1,
-      feedbackEvents: [
-        { type: "helpful", timestamp: "2024-01-15T00:00:00Z" },
-      ],
+      feedbackEvents: [{ type: "helpful", timestamp: "2024-01-15T00:00:00Z" }],
       lastValidatedAt: "2024-12-01T00:00:00Z",
       confidenceDecayHalfLifeDays: 60,
       pinned: true,
@@ -332,9 +330,7 @@ describe("PlaybookBulletSchema", () => {
   it("rejects invalid feedbackEvents", () => {
     const bullet = {
       ...minimalBullet,
-      feedbackEvents: [
-        { type: "invalid", timestamp: "2024-01-15T00:00:00Z" },
-      ],
+      feedbackEvents: [{ type: "invalid", timestamp: "2024-01-15T00:00:00Z" }],
     };
     expect(PlaybookBulletSchema.safeParse(bullet).success).toBe(false);
   });
@@ -413,9 +409,7 @@ describe("PlaybookSchema", () => {
   it("rejects playbook with invalid bullet", () => {
     const playbook = {
       metadata: minimalMetadata,
-      bullets: [
-        { invalid: "bullet" },
-      ],
+      bullets: [{ invalid: "bullet" }],
     };
     expect(PlaybookSchema.safeParse(playbook).success).toBe(false);
   });
@@ -496,8 +490,8 @@ describe("ConfigSchema", () => {
   it("validates nested budget config", () => {
     const config = {
       budget: {
-        dailyLimit: 0.50,
-        monthlyLimit: 10.00,
+        dailyLimit: 0.5,
+        monthlyLimit: 10.0,
         warningThreshold: 90,
         currency: "EUR",
       },
@@ -714,7 +708,12 @@ describe("Delta Schemas", () => {
   describe("PlaybookDeltaSchema (discriminated union)", () => {
     it("validates all delta types", () => {
       const deltas = [
-        { type: "add", bullet: { content: "Test", category: "test" }, reason: "R", sourceSession: "S" },
+        {
+          type: "add",
+          bullet: { content: "Test", category: "test" },
+          reason: "R",
+          sourceSession: "S",
+        },
         { type: "helpful", bulletId: "b-1" },
         { type: "harmful", bulletId: "b-1" },
         { type: "replace", bulletId: "b-1", newContent: "New" },

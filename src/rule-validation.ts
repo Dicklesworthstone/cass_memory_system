@@ -5,10 +5,10 @@
  * Uses existing infrastructure: semantic search for similarity, keyword matching for categories.
  */
 
-import { Playbook } from "./types.js";
-import { findSimilarBulletsSemantic } from "./semantic.js";
-import { detectCategories, RuleCategory } from "./gap-analysis.js";
+import { detectCategories, type RuleCategory } from "./gap-analysis.js";
 import { getActiveBullets } from "./playbook.js";
+import { findSimilarBulletsSemantic } from "./semantic.js";
+import type { Playbook } from "./types.js";
 
 /**
  * Severity levels for validation warnings
@@ -68,16 +68,42 @@ export interface ValidateRuleOptions {
 }
 
 /** Context words that indicate specific applicability */
-const CONTEXT_WORDS = ["when", "if", "before", "after", "always", "never", "only", "unless", "during", "while"];
+const CONTEXT_WORDS = [
+  "when",
+  "if",
+  "before",
+  "after",
+  "always",
+  "never",
+  "only",
+  "unless",
+  "during",
+  "while",
+];
 
 /** Generic/vague words that don't add specificity */
-const VAGUE_WORDS = ["thing", "stuff", "good", "bad", "nice", "better", "best", "use", "make", "do", "get"];
+const VAGUE_WORDS = [
+  "thing",
+  "stuff",
+  "good",
+  "bad",
+  "nice",
+  "better",
+  "best",
+  "use",
+  "make",
+  "do",
+  "get",
+];
 
 /**
  * Count words in text (simple tokenization)
  */
 function countWords(text: string): number {
-  return text.trim().split(/\s+/).filter(w => w.length > 0).length;
+  return text
+    .trim()
+    .split(/\s+/)
+    .filter((w) => w.length > 0).length;
 }
 
 /**
@@ -85,7 +111,7 @@ function countWords(text: string): number {
  */
 function containsAny(text: string, words: string[]): boolean {
   const lower = text.toLowerCase();
-  return words.some(word => {
+  return words.some((word) => {
     // Match word boundaries to avoid partial matches
     const regex = new RegExp(`\\b${word}\\b`, "i");
     return regex.test(lower);
@@ -96,20 +122,20 @@ function containsAny(text: string, words: string[]): boolean {
  * Check if text is mostly vague words
  */
 function isTooVague(text: string): boolean {
-  const words = text.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+  const words = text
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((w) => w.length > 2);
   if (words.length < 5) return false; // Too short to judge
 
-  const vagueCount = words.filter(w => VAGUE_WORDS.includes(w)).length;
+  const vagueCount = words.filter((w) => VAGUE_WORDS.includes(w)).length;
   return vagueCount / words.length > 0.4; // More than 40% vague words
 }
 
 /**
  * Validate a rule's quality using heuristics
  */
-function validateQuality(
-  content: string,
-  options: ValidateRuleOptions
-): ValidationWarning[] {
+function validateQuality(content: string, options: ValidateRuleOptions): ValidationWarning[] {
   const warnings: ValidationWarning[] = [];
   const minWords = options.minWords ?? 10;
   const maxWords = options.maxWords ?? 100;
@@ -159,7 +185,7 @@ function validateQuality(
  */
 function validateCategory(
   content: string,
-  providedCategory: string
+  providedCategory: string,
 ): { warnings: ValidationWarning[]; suggestedCategory?: RuleCategory } {
   const warnings: ValidationWarning[] = [];
   const detectedCategories = detectCategories(content);
@@ -167,12 +193,14 @@ function validateCategory(
   // If no category provided and we detected some, suggest one
   if (!providedCategory && detectedCategories.length > 0) {
     return {
-      warnings: [{
-        type: "category",
-        message: `No category provided. Based on content, consider: ${detectedCategories[0]}`,
-        severity: "suggestion",
-        details: { suggestedCategory: detectedCategories[0], detectedCategories },
-      }],
+      warnings: [
+        {
+          type: "category",
+          message: `No category provided. Based on content, consider: ${detectedCategories[0]}`,
+          severity: "suggestion",
+          details: { suggestedCategory: detectedCategories[0], detectedCategories },
+        },
+      ],
       suggestedCategory: detectedCategories[0],
     };
   }
@@ -180,7 +208,7 @@ function validateCategory(
   // If category provided but doesn't match detected categories
   if (providedCategory && detectedCategories.length > 0) {
     const providedLower = providedCategory.toLowerCase();
-    const matchesProvided = detectedCategories.some(c => c === providedLower);
+    const matchesProvided = detectedCategories.some((c) => c === providedLower);
 
     if (!matchesProvided && detectedCategories[0] !== providedLower) {
       // Only warn if the detected category is significantly different
@@ -216,7 +244,7 @@ export async function validateRule(
   content: string,
   category: string,
   playbook: Playbook,
-  options: ValidateRuleOptions = {}
+  options: ValidateRuleOptions = {},
 ): Promise<ValidationResult> {
   const warnings: ValidationWarning[] = [];
   const threshold = options.similarityThreshold ?? 0.8;
@@ -231,7 +259,7 @@ export async function validateRule(
           content,
           activeBullets,
           1, // Only need top match
-          { threshold, model: options.model }
+          { threshold, model: options.model },
         );
 
         if (similar.length > 0 && similar[0].similarity >= threshold) {
@@ -261,7 +289,7 @@ export async function validateRule(
   warnings.push(...categoryWarnings);
 
   // Determine if valid (no errors)
-  const hasErrors = warnings.some(w => w.severity === "error");
+  const hasErrors = warnings.some((w) => w.severity === "error");
   const valid = !hasErrors;
 
   // Build suggestions
@@ -286,9 +314,7 @@ export function formatValidationResult(result: ValidationResult): string {
   }
 
   for (const warning of result.warnings) {
-    const icon = warning.severity === "error" ? "x"
-      : warning.severity === "warning" ? "!"
-      : "?";
+    const icon = warning.severity === "error" ? "x" : warning.severity === "warning" ? "!" : "?";
     lines.push(`  ${icon} ${warning.message}`);
   }
 
@@ -309,5 +335,5 @@ export function hasWarnings(result: ValidationResult): boolean {
  * Check if validation result has errors or warnings (excludes suggestions)
  */
 export function hasIssues(result: ValidationResult): boolean {
-  return result.warnings.some(w => w.severity === "error" || w.severity === "warning");
+  return result.warnings.some((w) => w.severity === "error" || w.severity === "warning");
 }

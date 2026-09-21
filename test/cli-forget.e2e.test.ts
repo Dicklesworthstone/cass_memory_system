@@ -6,14 +6,14 @@
  * - Optionally inverts the rule to an anti-pattern
  * - Logs to blocked.log for audit trail
  */
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { forgetCommand } from "../src/commands/forget.js";
-import { withTempCassHome } from "./helpers/temp.js";
-import { createTestBullet, createTestPlaybook } from "./helpers/factories.js";
-import { savePlaybook, loadPlaybook, findBullet } from "../src/playbook.js";
+import { findBullet, loadPlaybook, savePlaybook } from "../src/playbook.js";
 import { createE2ELogger } from "./helpers/e2e-logger.js";
+import { createTestBullet, createTestPlaybook } from "./helpers/factories.js";
+import { withTempCassHome } from "./helpers/temp.js";
 
 // Helper to capture console output
 function captureConsole() {
@@ -35,7 +35,7 @@ function captureConsole() {
     restore: () => {
       console.log = originalLog;
       console.error = originalError;
-    }
+    },
   };
 }
 
@@ -123,7 +123,7 @@ describe("E2E: CLI forget command", () => {
             // Create a playbook with a bullet
             const bullet = createTestBullet({
               id: "bullet-to-forget",
-              content: "Always use semicolons in JavaScript"
+              content: "Always use semicolons in JavaScript",
             });
             const playbook = createTestPlaybook([bullet]);
             await savePlaybook(playbook, env.playbookPath);
@@ -173,7 +173,7 @@ describe("E2E: CLI forget command", () => {
             const bullet = createTestBullet({
               id: "bullet-to-invert",
               content: "Use var instead of let/const",
-              category: "javascript"
+              category: "javascript",
             });
             const playbook = createTestPlaybook([bullet]);
             await savePlaybook(playbook, env.playbookPath);
@@ -184,7 +184,7 @@ describe("E2E: CLI forget command", () => {
             try {
               await forgetCommand("bullet-to-invert", {
                 reason: "var has function scoping issues",
-                invert: true
+                invert: true,
               });
             } finally {
               capture.restore();
@@ -199,17 +199,19 @@ describe("E2E: CLI forget command", () => {
 
             // Verify anti-pattern was created
             const updatedPlaybook = await loadPlaybook(env.playbookPath);
-            log.snapshot("bullets after invert", updatedPlaybook.bullets?.map(b => ({
-              id: b.id,
-              type: b.type,
-              content: b.content?.slice(0, 50),
-              isNegative: b.isNegative
-            })));
+            log.snapshot(
+              "bullets after invert",
+              updatedPlaybook.bullets?.map((b) => ({
+                id: b.id,
+                type: b.type,
+                content: b.content?.slice(0, 50),
+                isNegative: b.isNegative,
+              })),
+            );
 
             // Find the anti-pattern
-            const antiPattern = updatedPlaybook.bullets?.find(b =>
-              b.type === "anti-pattern" &&
-              b.content?.includes("AVOID:")
+            const antiPattern = updatedPlaybook.bullets?.find(
+              (b) => b.type === "anti-pattern" && b.content?.includes("AVOID:"),
             );
 
             expect(antiPattern).toBeDefined();
@@ -236,7 +238,7 @@ describe("E2E: CLI forget command", () => {
             // Create a playbook with a bullet
             const bullet = createTestBullet({
               id: "bullet-for-log",
-              content: "Log this bullet when forgotten"
+              content: "Log this bullet when forgotten",
             });
             const playbook = createTestPlaybook([bullet]);
             await savePlaybook(playbook, env.playbookPath);
@@ -250,7 +252,10 @@ describe("E2E: CLI forget command", () => {
 
             // Verify blocked.log was created
             const blockedLogPath = path.join(env.cassMemoryDir, "blocked.log");
-            const blockedLogExists = await fs.stat(blockedLogPath).then(() => true).catch(() => false);
+            const blockedLogExists = await fs
+              .stat(blockedLogPath)
+              .then(() => true)
+              .catch(() => false);
 
             log.step("Checked blocked.log", { path: blockedLogPath, exists: blockedLogExists });
             expect(blockedLogExists).toBe(true);
@@ -289,7 +294,7 @@ describe("E2E: CLI forget command", () => {
             try {
               await forgetCommand("json-test-bullet", {
                 reason: "Testing JSON output",
-                json: true
+                json: true,
               });
             } finally {
               capture.restore();
@@ -298,7 +303,7 @@ describe("E2E: CLI forget command", () => {
             log.snapshot("output", { logs: capture.logs, errors: capture.errors });
 
             // Find and parse JSON output
-            const jsonOutput = capture.logs.find(l => l.startsWith("{"));
+            const jsonOutput = capture.logs.find((l) => l.startsWith("{"));
             expect(jsonOutput).toBeDefined();
 
             const parsed = JSON.parse(jsonOutput!);
@@ -333,7 +338,7 @@ describe("E2E: CLI forget command", () => {
             try {
               await forgetCommand("nonexistent", {
                 reason: "Testing",
-                json: true
+                json: true,
               });
             } finally {
               capture.restore();
@@ -378,7 +383,7 @@ describe("E2E: CLI forget command", () => {
               await forgetCommand("invert-json-bullet", {
                 reason: "Testing JSON with invert",
                 invert: true,
-                json: true
+                json: true,
               });
             } finally {
               capture.restore();
@@ -387,7 +392,7 @@ describe("E2E: CLI forget command", () => {
             log.snapshot("output", { logs: capture.logs, errors: capture.errors });
 
             // Find and parse JSON output
-            const jsonOutput = capture.logs.find(l => l.startsWith("{"));
+            const jsonOutput = capture.logs.find((l) => l.startsWith("{"));
             expect(jsonOutput).toBeDefined();
 
             const parsed = JSON.parse(jsonOutput!);

@@ -5,15 +5,17 @@
 // marker piped with the prompt), so these tests assert on the tag rather than
 // on any "looks internal" heuristic.
 
-import { describe, it, expect } from "bun:test";
-import path from "node:path";
+import { describe, expect, it } from "bun:test";
 import os from "node:os";
+import path from "node:path";
+import { type CassRunner, findUnprocessedSessions } from "../src/cass.js";
+import { extractRuleIdsFromTranscript } from "../src/outcome.js";
 import {
   CM_SUBPROCESS_PAYLOAD_BEGIN,
   CM_SUBPROCESS_PAYLOAD_END,
-  DEFAULT_CLI_SUBPROCESS_CWD,
-  containsCmSubprocessPayload,
   cmSubprocessPathFragments,
+  containsCmSubprocessPayload,
+  DEFAULT_CLI_SUBPROCESS_CWD,
   isCmSubprocessTranscriptPath,
   isValidCliSubprocessCwd,
   resolveCliSubprocessCwd,
@@ -21,8 +23,6 @@ import {
   stripCmSubprocessPayloads,
   tagCmSubprocessPrompt,
 } from "../src/subprocess-tag.js";
-import { findUnprocessedSessions, type CassRunner } from "../src/cass.js";
-import { extractRuleIdsFromTranscript } from "../src/outcome.js";
 import { ConfigSchema } from "../src/types.js";
 
 const HOME = process.env.HOME || os.homedir();
@@ -59,23 +59,23 @@ describe("#76 subprocess tagging — slug derivation", () => {
     // /Users/<u>/.cass-memory/llm-subprocess-cwd produced the transcript
     // directory ~/.claude/projects/-Users-<u>--cass-memory-llm-subprocess-cwd/
     expect(slugifyProjectDir("/home/ubuntu/.cass-memory/llm-subprocess-cwd")).toBe(
-      "-home-ubuntu--cass-memory-llm-subprocess-cwd"
+      "-home-ubuntu--cass-memory-llm-subprocess-cwd",
     );
     expect(slugifyProjectDir("/Users/j/projects/cass_memory_system")).toBe(
-      "-Users-j-projects-cass-memory-system"
+      "-Users-j-projects-cass-memory-system",
     );
     expect(slugifyProjectDir("/Users/j/projects/asimposium.org")).toBe(
-      "-Users-j-projects-asimposium-org"
+      "-Users-j-projects-asimposium-org",
     );
   });
 
   it("defaults to a cm-owned directory and expands ~", () => {
     expect(DEFAULT_CLI_SUBPROCESS_CWD).toBe("~/.cass-memory/llm-subprocess-cwd");
     expect(resolveCliSubprocessCwd(undefined)).toBe(
-      path.join(HOME, ".cass-memory", "llm-subprocess-cwd")
+      path.join(HOME, ".cass-memory", "llm-subprocess-cwd"),
     );
     expect(resolveCliSubprocessCwd("~/.cass-memory/other")).toBe(
-      path.join(HOME, ".cass-memory", "other")
+      path.join(HOME, ".cass-memory", "other"),
     );
   });
 
@@ -92,7 +92,7 @@ describe("#76 subprocess tagging — slug derivation", () => {
     // ...and a hand-built Config falls back to the default rather than to a
     // path that moves with process.cwd().
     expect(resolveCliSubprocessCwd("./llm-cwd")).toBe(
-      path.join(HOME, ".cass-memory", "llm-subprocess-cwd")
+      path.join(HOME, ".cass-memory", "llm-subprocess-cwd"),
     );
   });
 
@@ -102,11 +102,11 @@ describe("#76 subprocess tagging — slug derivation", () => {
     // The literal shipped in sessionExcludePatterns must match the real slug.
     const slug = defaultSubprocessSlug();
     const shipped = parsed.sessionExcludePatterns.find((p) =>
-      p.includes("cass-memory-llm-subprocess-cwd")
+      p.includes("cass-memory-llm-subprocess-cwd"),
     );
     expect(shipped).toBeDefined();
     expect(`${HOME}/.claude/projects/${slug}/x.jsonl`.toLowerCase()).toContain(
-      shipped!.toLowerCase()
+      shipped!.toLowerCase(),
     );
   });
 
@@ -141,17 +141,28 @@ describe("#76 subprocess tagging — path recognition", () => {
   it("does NOT match an ordinary session, including one whose cwd is $HOME", () => {
     // The reporter's workaround excluded the whole `-home-ubuntu` slug, which
     // also drops the sessions of anyone whose project cwd genuinely is $HOME.
-    expect(isCmSubprocessTranscriptPath("/home/ubuntu/.claude/projects/-home-ubuntu/s.jsonl", undefined)).toBe(false);
-    expect(isCmSubprocessTranscriptPath("/home/u/.claude/projects/-home-u-projects-app/s.jsonl", undefined)).toBe(false);
+    expect(
+      isCmSubprocessTranscriptPath("/home/ubuntu/.claude/projects/-home-ubuntu/s.jsonl", undefined),
+    ).toBe(false);
+    expect(
+      isCmSubprocessTranscriptPath(
+        "/home/u/.claude/projects/-home-u-projects-app/s.jsonl",
+        undefined,
+      ),
+    ).toBe(false);
     expect(isCmSubprocessTranscriptPath("", undefined)).toBe(false);
   });
 
   it("follows a relocated cliSubprocessCwd", () => {
     const custom = "~/.cass-memory/elsewhere";
     const customSlug = slugifyProjectDir(path.join(HOME, ".cass-memory", "elsewhere"));
-    expect(isCmSubprocessTranscriptPath(`${HOME}/.claude/projects/${customSlug}/x.jsonl`, custom)).toBe(true);
+    expect(
+      isCmSubprocessTranscriptPath(`${HOME}/.claude/projects/${customSlug}/x.jsonl`, custom),
+    ).toBe(true);
     // ...and stops matching the default location once moved.
-    expect(isCmSubprocessTranscriptPath(`${HOME}/.claude/projects/${slug}/x.jsonl`, custom)).toBe(false);
+    expect(isCmSubprocessTranscriptPath(`${HOME}/.claude/projects/${slug}/x.jsonl`, custom)).toBe(
+      false,
+    );
   });
 });
 
@@ -172,7 +183,7 @@ describe("#76 session discovery excludes cm's own subprocess transcripts", () =>
       new Set(),
       { includeAll: true, excludePatterns: [] },
       "cass",
-      runner
+      runner,
     );
     expect(result.map((s) => s.path)).toEqual([realPath]);
   });
@@ -183,7 +194,7 @@ describe("#76 session discovery excludes cm's own subprocess transcripts", () =>
       new Set(),
       { excludePatterns: ["something-unrelated"] },
       "cass",
-      runner
+      runner,
     );
     expect(result.map((s) => s.path)).toEqual([realPath]);
   });
@@ -199,7 +210,12 @@ describe("#76 session discovery excludes cm's own subprocess transcripts", () =>
 
   it("still discovers genuine sessions when cliSubprocessCwd is disabled", async () => {
     const runner = timelineRunner([{ path: ownPath }, { path: realPath }]);
-    const result = await findUnprocessedSessions(new Set(), { cliSubprocessCwd: "" }, "cass", runner);
+    const result = await findUnprocessedSessions(
+      new Set(),
+      { cliSubprocessCwd: "" },
+      "cass",
+      runner,
+    );
     expect(result.map((s) => s.path)).toEqual([ownPath, realPath]);
   });
 });
@@ -213,7 +229,9 @@ describe("#76 payload marker", () => {
   });
 
   it("does not fire on an ordinary transcript", () => {
-    expect(containsCmSubprocessPayload("I ran cm reflect and it worked, b-abc123 helped")).toBe(false);
+    expect(containsCmSubprocessPayload("I ran cm reflect and it worked, b-abc123 helped")).toBe(
+      false,
+    );
     expect(containsCmSubprocessPayload("")).toBe(false);
   });
 
@@ -264,7 +282,7 @@ describe("#76 auto-outcome guard", () => {
     const transcript = [
       "user: fix the flaky test",
       tagCmSubprocessPrompt(
-        "Existing playbook:\n- b-aaa111 always run the linter\n- b-bbb222 prefer explicit imports"
+        "Existing playbook:\n- b-aaa111 always run the linter\n- b-bbb222 prefer explicit imports",
       ),
       "assistant: done",
     ].join("\n");
@@ -277,9 +295,13 @@ describe("#76 auto-outcome guard", () => {
     const transcript = [
       "user: fix the flaky test",
       "assistant: following b-aaa111, running the linter first",
-      tagCmSubprocessPrompt("Existing playbook:\n- b-aaa111 always run the linter\n- b-bbb222 prefer explicit imports"),
+      tagCmSubprocessPrompt(
+        "Existing playbook:\n- b-aaa111 always run the linter\n- b-bbb222 prefer explicit imports",
+      ),
     ].join("\n");
 
-    expect(extractRuleIdsFromTranscript(stripCmSubprocessPayloads(transcript))).toEqual(["b-aaa111"]);
+    expect(extractRuleIdsFromTranscript(stripCmSubprocessPayloads(transcript))).toEqual([
+      "b-aaa111",
+    ]);
   });
 });

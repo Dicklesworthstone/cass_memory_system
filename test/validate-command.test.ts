@@ -7,13 +7,13 @@
  * Note: Many tests focus on input validation and error handling paths
  * since the full validation flow requires LLM API access.
  */
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { validateCommand } from "../src/commands/validate.js";
-import { evidenceCountGate } from "../src/validate.js";
-import type { EvidenceGateResult } from "../src/types.js";
-import { withTempCassHome, TestEnv } from "./helpers/temp.js";
-import { withTempGitRepo } from "./helpers/git.js";
 import { loadConfig } from "../src/config.js";
+import type { EvidenceGateResult } from "../src/types.js";
+import { evidenceCountGate } from "../src/validate.js";
+import { withTempGitRepo } from "./helpers/git.js";
+import { TestEnv, withTempCassHome } from "./helpers/temp.js";
 
 /**
  * Capture console.log output during async function execution.
@@ -53,7 +53,7 @@ describe("validateCommand", () => {
 
           try {
             await expect(validateCommand("", { json: false })).rejects.toThrow(
-              "Proposed rule text is required"
+              "Proposed rule text is required",
             );
           } finally {
             process.chdir(originalCwd);
@@ -69,9 +69,9 @@ describe("validateCommand", () => {
           process.chdir(repoDir);
 
           try {
-            await expect(
-              validateCommand("   \t\n  ", { json: false })
-            ).rejects.toThrow("Proposed rule text is required");
+            await expect(validateCommand("   \t\n  ", { json: false })).rejects.toThrow(
+              "Proposed rule text is required",
+            );
           } finally {
             process.chdir(originalCwd);
           }
@@ -165,7 +165,7 @@ describe("evidenceCountGate", () => {
           // Rule with keywords but no cass history to match
           const result = await evidenceCountGate(
             "Always use TypeScript for all new projects",
-            config
+            config,
           );
 
           expect(result.passed).toBe(true);
@@ -188,10 +188,7 @@ describe("evidenceCountGate", () => {
 
         try {
           const config = await loadConfig();
-          const result = await evidenceCountGate(
-            "Handle authentication errors gracefully",
-            config
-          );
+          const result = await evidenceCountGate("Handle authentication errors gracefully", config);
 
           expect(typeof result.sessionCount).toBe("number");
           expect(typeof result.successCount).toBe("number");
@@ -214,10 +211,7 @@ describe("evidenceCountGate", () => {
 
         try {
           const config = await loadConfig();
-          const result = await evidenceCountGate(
-            "Use async/await instead of callbacks",
-            config
-          );
+          const result = await evidenceCountGate("Use async/await instead of callbacks", config);
 
           expect(typeof result.reason).toBe("string");
           expect(result.reason.length).toBeGreaterThan(0);
@@ -238,7 +232,7 @@ describe("evidenceCountGate", () => {
           const config = await loadConfig();
           const result = await evidenceCountGate(
             "Prefer composition over inheritance for code reuse",
-            config
+            config,
           );
 
           // Check all required fields exist
@@ -275,7 +269,7 @@ describe("classifyOutcome (via validate module)", () => {
           // Run gate which internally uses pattern matching
           const result = await evidenceCountGate(
             "Fixed the authentication bug successfully",
-            config
+            config,
           );
 
           // Result should be valid regardless of actual cass data
@@ -308,7 +302,7 @@ describe("validateCommand with dependency injection", () => {
             line_number: idx + 1,
             agent: "test-agent",
             snippet: h.snippet,
-            score: h.score ?? 0.8
+            score: h.score ?? 0.8,
           }));
           return { stdout: JSON.stringify(hits), stderr: "" };
         }
@@ -341,10 +335,10 @@ describe("validateCommand with dependency injection", () => {
             confidence: validatorResponse.confidence,
             reason: validatorResponse.reason,
             suggestedRefinement: validatorResponse.suggestedRefinement ?? null,
-            valid: validatorResponse.verdict !== "REJECT"
-          } as unknown as T
+            valid: validatorResponse.verdict !== "REJECT",
+          } as unknown as T,
         };
-      }
+      },
     };
   }
 
@@ -364,7 +358,7 @@ describe("validateCommand with dependency injection", () => {
                 { source_path: "/sess/3.jsonl", snippet: "Crashed during deployment" },
                 { source_path: "/sess/4.jsonl", snippet: "Error: threw an error parsing" },
                 { source_path: "/sess/5.jsonl", snippet: "doesn't work with older versions" },
-              ]
+              ],
             });
 
             const capture = captureConsole();
@@ -372,7 +366,7 @@ describe("validateCommand with dependency injection", () => {
               await validateCommand(
                 "Always skip testing in production environments",
                 { json: true },
-                { cassRunner }
+                { cassRunner },
               );
             } finally {
               capture.restore();
@@ -410,7 +404,7 @@ describe("validateCommand with dependency injection", () => {
                 { source_path: "/sess/3.jsonl", snippet: "Resolved the user login problem" },
                 { source_path: "/sess/4.jsonl", snippet: "Works correctly after the change" },
                 { source_path: "/sess/5.jsonl", snippet: "Working now in production" },
-              ]
+              ],
             });
 
             const capture = captureConsole();
@@ -418,7 +412,7 @@ describe("validateCommand with dependency injection", () => {
               await validateCommand(
                 "Use TypeScript for all new features",
                 { json: true },
-                { cassRunner }
+                { cassRunner },
               );
             } finally {
               capture.restore();
@@ -452,13 +446,13 @@ describe("validateCommand with dependency injection", () => {
               searchHits: [
                 { source_path: "/sess/1.jsonl", snippet: "Used the new pattern today" },
                 { source_path: "/sess/2.jsonl", snippet: "Tried the approach successfully" },
-              ]
+              ],
             });
 
             const io = createLLMIOStub({
               verdict: "ACCEPT",
               confidence: 0.85,
-              reason: "The rule is well-supported by evidence"
+              reason: "The rule is well-supported by evidence",
             });
 
             const capture = captureConsole();
@@ -466,7 +460,7 @@ describe("validateCommand with dependency injection", () => {
               await validateCommand(
                 "Use dependency injection for testability",
                 { json: true },
-                { cassRunner, io }
+                { cassRunner, io },
               );
             } finally {
               capture.restore();
@@ -494,23 +488,19 @@ describe("validateCommand with dependency injection", () => {
             const cassRunner = createCassRunnerStub({
               searchHits: [
                 { source_path: "/sess/1.jsonl", snippet: "Partially applied the pattern" },
-              ]
+              ],
             });
 
             const io = createLLMIOStub({
               verdict: "REFINE",
               confidence: 0.7,
               reason: "The rule needs refinement",
-              suggestedRefinement: "Use dependency injection for unit testing"
+              suggestedRefinement: "Use dependency injection for unit testing",
             });
 
             const capture = captureConsole();
             try {
-              await validateCommand(
-                "Use dependency injection",
-                { json: true },
-                { cassRunner, io }
-              );
+              await validateCommand("Use dependency injection", { json: true }, { cassRunner, io });
             } finally {
               capture.restore();
             }
@@ -539,13 +529,13 @@ describe("validateCommand with dependency injection", () => {
             const cassRunner = createCassRunnerStub({
               searchHits: [
                 { source_path: "/sess/1.jsonl", snippet: "The approach was problematic" },
-              ]
+              ],
             });
 
             const io = createLLMIOStub({
               verdict: "REJECT",
               confidence: 0.9,
-              reason: "This rule contradicts established patterns"
+              reason: "This rule contradicts established patterns",
             });
 
             const capture = captureConsole();
@@ -553,7 +543,7 @@ describe("validateCommand with dependency injection", () => {
               await validateCommand(
                 "Never write tests for simple functions",
                 { json: true },
-                { cassRunner, io }
+                { cassRunner, io },
               );
             } finally {
               capture.restore();
@@ -583,13 +573,13 @@ describe("validateCommand with dependency injection", () => {
                 { source_path: "/sess/1.jsonl", snippet: "Fixed the bug in auth module" },
                 { source_path: "/sess/2.jsonl", snippet: "Successfully resolved the issue" },
                 { source_path: "/sess/3.jsonl", snippet: "Completed the migration task" },
-              ]
+              ],
             });
 
             const io = createLLMIOStub({
               verdict: "ACCEPT",
               confidence: 0.8,
-              reason: "Rule validated"
+              reason: "Rule validated",
             });
 
             const capture = captureConsole();
@@ -597,7 +587,7 @@ describe("validateCommand with dependency injection", () => {
               await validateCommand(
                 "Fix bugs before deploying",
                 { json: true },
-                { cassRunner, io }
+                { cassRunner, io },
               );
             } finally {
               capture.restore();
@@ -629,13 +619,13 @@ describe("validateCommand with dependency injection", () => {
                 { source_path: "/sess/1.jsonl", snippet: "Error: failed to compile the code" },
                 { source_path: "/sess/2.jsonl", snippet: "The feature is broken" },
                 { source_path: "/sess/3.jsonl", snippet: "Regression found after update" },
-              ]
+              ],
             });
 
             const io = createLLMIOStub({
               verdict: "ACCEPT",
               confidence: 0.7,
-              reason: "Rule validated despite failures"
+              reason: "Rule validated despite failures",
             });
 
             const capture = captureConsole();
@@ -643,7 +633,7 @@ describe("validateCommand with dependency injection", () => {
               await validateCommand(
                 "Test code before deploying",
                 { json: true },
-                { cassRunner, io }
+                { cassRunner, io },
               );
             } finally {
               capture.restore();
@@ -674,13 +664,13 @@ describe("validateCommand with dependency injection", () => {
               searchHits: [
                 { source_path: "/sess/1.jsonl", snippet: "Discussed the architecture approach" },
                 { source_path: "/sess/2.jsonl", snippet: "Reviewed the pull request" },
-              ]
+              ],
             });
 
             const io = createLLMIOStub({
               verdict: "ACCEPT",
               confidence: 0.75,
-              reason: "Rule seems reasonable"
+              reason: "Rule seems reasonable",
             });
 
             const capture = captureConsole();
@@ -688,7 +678,7 @@ describe("validateCommand with dependency injection", () => {
               await validateCommand(
                 "Review code before merging",
                 { json: true },
-                { cassRunner, io }
+                { cassRunner, io },
               );
             } finally {
               capture.restore();
@@ -719,15 +709,19 @@ describe("validateCommand with dependency injection", () => {
           try {
             const cassRunner = createCassRunnerStub({
               searchHits: [
-                { source_path: "/sess/1.jsonl", snippet: "Applied the pattern successfully", score: 0.9 },
-              ]
+                {
+                  source_path: "/sess/1.jsonl",
+                  snippet: "Applied the pattern successfully",
+                  score: 0.9,
+                },
+              ],
             });
 
             const io = createLLMIOStub({
               verdict: "ACCEPT_WITH_CAUTION",
               confidence: 0.75,
               reason: "Rule is valid but needs care",
-              suggestedRefinement: "Apply this rule carefully in legacy code"
+              suggestedRefinement: "Apply this rule carefully in legacy code",
             });
 
             const capture = captureConsole();
@@ -735,7 +729,7 @@ describe("validateCommand with dependency injection", () => {
               await validateCommand(
                 "Refactor legacy code incrementally",
                 { json: true },
-                { cassRunner, io }
+                { cassRunner, io },
               );
             } finally {
               capture.restore();
@@ -767,14 +761,18 @@ describe("validateCommand with dependency injection", () => {
           try {
             const cassRunner = createCassRunnerStub({
               searchHits: [
-                { source_path: "/sess/1.jsonl", snippet: "Used the pattern successfully", score: 0.85 },
-              ]
+                {
+                  source_path: "/sess/1.jsonl",
+                  snippet: "Used the pattern successfully",
+                  score: 0.85,
+                },
+              ],
             });
 
             const io = createLLMIOStub({
               verdict: "ACCEPT",
               confidence: 0.9,
-              reason: "Strong evidence for this rule"
+              reason: "Strong evidence for this rule",
             });
 
             const capture = captureConsole();
@@ -782,7 +780,7 @@ describe("validateCommand with dependency injection", () => {
               await validateCommand(
                 "Write comprehensive tests",
                 { json: false },
-                { cassRunner, io }
+                { cassRunner, io },
               );
             } finally {
               capture.restore();
@@ -810,23 +808,19 @@ describe("validateCommand with dependency injection", () => {
             const cassRunner = createCassRunnerStub({
               searchHits: [
                 { source_path: "/sess/1.jsonl", snippet: "Partially followed the approach" },
-              ]
+              ],
             });
 
             const io = createLLMIOStub({
               verdict: "REFINE",
               confidence: 0.6,
               reason: "Rule needs refinement",
-              suggestedRefinement: "Use TypeScript for all production code"
+              suggestedRefinement: "Use TypeScript for all production code",
             });
 
             const capture = captureConsole();
             try {
-              await validateCommand(
-                "Use TypeScript",
-                { json: false },
-                { cassRunner, io }
-              );
+              await validateCommand("Use TypeScript", { json: false }, { cassRunner, io });
             } finally {
               capture.restore();
             }
@@ -852,13 +846,13 @@ describe("validateCommand with dependency injection", () => {
               searchHits: [
                 { source_path: "/sess/1.jsonl", snippet: "Fixed the auth bug successfully" },
                 { source_path: "/sess/2.jsonl", snippet: "Resolved the login issue" },
-              ]
+              ],
             });
 
             const io = createLLMIOStub({
               verdict: "ACCEPT",
               confidence: 0.88,
-              reason: "Well-evidenced rule"
+              reason: "Well-evidenced rule",
             });
 
             const capture = captureConsole();
@@ -866,7 +860,7 @@ describe("validateCommand with dependency injection", () => {
               await validateCommand(
                 "Fix security bugs promptly",
                 { json: false },
-                { cassRunner, io }
+                { cassRunner, io },
               );
             } finally {
               capture.restore();

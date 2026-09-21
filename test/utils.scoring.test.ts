@@ -7,7 +7,7 @@
  * - Partial substring match in content: +1 point
  * - Tag match: +5 points
  */
-import { describe, test, expect } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { scoreBulletRelevance } from "../src/utils.js";
 
 describe("scoreBulletRelevance", () => {
@@ -37,7 +37,11 @@ describe("scoreBulletRelevance", () => {
     });
 
     test("scores multiple exact matches", () => {
-      const score = scoreBulletRelevance("Use typescript for authentication", [], ["typescript", "authentication"]);
+      const score = scoreBulletRelevance(
+        "Use typescript for authentication",
+        [],
+        ["typescript", "authentication"],
+      );
       expect(score).toBe(6); // 3 + 3
     });
 

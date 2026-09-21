@@ -1,9 +1,8 @@
-import { describe, test, expect } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-
-import { listStarters, loadStarter, applyStarter } from "../src/starters.js";
 import { createEmptyPlaybook } from "../src/playbook.js";
+import { applyStarter, listStarters, loadStarter } from "../src/starters.js";
 import { withTempCassHome } from "./helpers/temp.js";
 
 describe("starters module (unit)", () => {
@@ -13,13 +12,15 @@ describe("starters module (unit)", () => {
       const names = starters.map((s) => s.name);
 
       expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b)));
-      expect(starters).toEqual(expect.arrayContaining([
-        expect.objectContaining({ name: "general", source: "builtin", bulletCount: 5 }),
-        expect.objectContaining({ name: "node", source: "builtin", bulletCount: 4 }),
-        expect.objectContaining({ name: "python", source: "builtin", bulletCount: 4 }),
-        expect.objectContaining({ name: "react", source: "builtin", bulletCount: 4 }),
-        expect.objectContaining({ name: "rust", source: "builtin", bulletCount: 4 }),
-      ]));
+      expect(starters).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: "general", source: "builtin", bulletCount: 5 }),
+          expect.objectContaining({ name: "node", source: "builtin", bulletCount: 4 }),
+          expect.objectContaining({ name: "python", source: "builtin", bulletCount: 4 }),
+          expect.objectContaining({ name: "react", source: "builtin", bulletCount: 4 }),
+          expect.objectContaining({ name: "rust", source: "builtin", bulletCount: 4 }),
+        ]),
+      );
     }, "starters-list-builtin");
   });
 
@@ -64,9 +65,11 @@ describe("starters module (unit)", () => {
       await writeFile(path.join(startersDir, "file-name.yaml"), yamlContents);
 
       const summaries = await listStarters();
-      expect(summaries).toEqual(expect.arrayContaining([
-        expect.objectContaining({ name: "MyCustom", source: "custom", bulletCount: 2 }),
-      ]));
+      expect(summaries).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: "MyCustom", source: "custom", bulletCount: 2 }),
+        ]),
+      );
 
       const byDeclared = await loadStarter("mycustom");
       expect(byDeclared).not.toBeNull();
@@ -92,7 +95,9 @@ describe("starters module (unit)", () => {
 
       const summaries = await listStarters();
       expect(summaries.map((s) => s.name)).toContain("general");
-      expect(summaries.some((s) => s.source === "custom" && s.path?.endsWith("broken.yaml"))).toBe(false);
+      expect(summaries.some((s) => s.source === "custom" && s.path?.endsWith("broken.yaml"))).toBe(
+        false,
+      );
 
       const loaded = await loadStarter("broken");
       expect(loaded).toBeNull();

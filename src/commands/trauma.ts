@@ -1,40 +1,37 @@
+import crypto from "node:crypto";
+import fs from "node:fs/promises";
 import chalk from "chalk";
-import { 
-  TraumaEntry, 
-  ErrorCode 
-} from "../types.js";
-import { 
-  loadTraumas, 
+import {
+  loadTraumas,
+  removeTraumaById,
   saveTrauma,
   saveTraumas,
   setTraumaStatusById,
-  removeTraumaById
 } from "../trauma.js";
-import { 
+import { ErrorCode, type TraumaEntry } from "../types.js";
+import {
   confirmDangerousAction,
   expandPath,
   fileExists,
-  getCliName, 
-  reportError, 
-  printJsonResult, 
-  validateNonEmptyString, 
+  getCliName,
+  now,
+  printJsonResult,
+  reportError,
+  validateNonEmptyString,
   validateOneOf,
-  now
 } from "../utils.js";
-import crypto from "node:crypto";
-import fs from "node:fs/promises";
 
 export async function traumaCommand(
-  action: string | undefined, 
-  args: string[], 
-  flags: { 
-    severity?: string; 
-    message?: string; 
-    scope?: string; 
+  action: string | undefined,
+  args: string[],
+  flags: {
+    severity?: string;
+    message?: string;
+    scope?: string;
     force?: boolean;
     yes?: boolean;
-    json?: boolean 
-  }
+    json?: boolean;
+  },
 ) {
   const startedAtMs = Date.now();
   const command = "trauma";
@@ -92,12 +89,12 @@ export async function traumaCommand(
 async function listTraumas(json?: boolean) {
   const allTraumas = await loadTraumas();
   const traumas = allTraumas.filter((t) => t.status === "active");
-  
+
   if (json) {
     printJsonResult(
       "trauma list",
       { traumas, healedCount: allTraumas.length - traumas.length },
-      { startedAtMs: Date.now() }
+      { startedAtMs: Date.now() },
     );
     return;
   }
@@ -121,7 +118,10 @@ async function listTraumas(json?: boolean) {
   }
 }
 
-async function addTrauma(args: string[], flags: { severity?: string; message?: string; scope?: string; json?: boolean }) {
+async function addTrauma(
+  args: string[],
+  flags: { severity?: string; message?: string; scope?: string; json?: boolean },
+) {
   const pattern = args[0];
   const patternCheck = validateNonEmptyString(pattern, "pattern");
   if (!patternCheck.ok) {
@@ -137,13 +137,17 @@ async function addTrauma(args: string[], flags: { severity?: string; message?: s
     throw new Error(`Invalid regex pattern: ${err?.message || String(err)}`);
   }
 
-  const severityCheck = validateOneOf(flags.severity, "severity", ["CRITICAL", "FATAL"] as const, { allowUndefined: true });
+  const severityCheck = validateOneOf(flags.severity, "severity", ["CRITICAL", "FATAL"] as const, {
+    allowUndefined: true,
+  });
   if (!severityCheck.ok) {
     throw new Error(severityCheck.message);
   }
   const severity = severityCheck.value || "CRITICAL";
 
-  const scopeCheck = validateOneOf(flags.scope, "scope", ["global", "project"] as const, { allowUndefined: true });
+  const scopeCheck = validateOneOf(flags.scope, "scope", ["global", "project"] as const, {
+    allowUndefined: true,
+  });
   if (!scopeCheck.ok) {
     throw new Error(scopeCheck.message);
   }
@@ -160,9 +164,9 @@ async function addTrauma(args: string[], flags: { severity?: string; message?: s
     trigger_event: {
       session_path: "manual-entry",
       timestamp: now(),
-      human_message: message
+      human_message: message,
     },
-    created_at: now()
+    created_at: now(),
   };
 
   await saveTrauma(entry);
@@ -177,7 +181,7 @@ async function addTrauma(args: string[], flags: { severity?: string; message?: s
 
 async function healTrauma(
   args: string[],
-  flags: { scope?: string; json?: boolean }
+  flags: { scope?: string; json?: boolean },
 ): Promise<void> {
   const cli = getCliName();
   const idRaw = args[0];
@@ -221,7 +225,11 @@ async function healTrauma(
     return;
   }
 
-  console.log(chalk.green(`✓ Healed trauma ${idCheck.value} (${result.updated} entr${result.updated === 1 ? "y" : "ies"})`));
+  console.log(
+    chalk.green(
+      `✓ Healed trauma ${idCheck.value} (${result.updated} entr${result.updated === 1 ? "y" : "ies"})`,
+    ),
+  );
   for (const p of result.updatedPaths) {
     console.log(chalk.gray(`  Updated: ${p}`));
   }
@@ -230,7 +238,7 @@ async function healTrauma(
 
 async function removeTrauma(
   args: string[],
-  flags: { scope?: string; force?: boolean; yes?: boolean; json?: boolean }
+  flags: { scope?: string; force?: boolean; yes?: boolean; json?: boolean },
 ): Promise<void> {
   const startedAtMs = Date.now();
   const cli = getCliName();
@@ -271,10 +279,7 @@ async function removeTrauma(
 
   const confirmed = await confirmDangerousAction({
     action: `Remove trauma ${idCheck.value} (delete entry from registry)`,
-    details: [
-      `Trauma id: ${idCheck.value}`,
-      `Scope: ${scope}`,
-    ],
+    details: [`Trauma id: ${idCheck.value}`, `Scope: ${scope}`],
     confirmPhrase: "REMOVE",
     yes: flags.yes,
     json: flags.json,
@@ -284,7 +289,7 @@ async function removeTrauma(
       printJsonResult(
         "trauma remove",
         { removed: 0, checkedPaths: [], updatedPaths: [] },
-        { startedAtMs, effect: false, reason: "User did not confirm removal" }
+        { startedAtMs, effect: false, reason: "User did not confirm removal" },
       );
     }
     return;
@@ -308,7 +313,11 @@ async function removeTrauma(
     return;
   }
 
-  console.log(chalk.green(`✓ Removed trauma ${idCheck.value} (${result.removed} entr${result.removed === 1 ? "y" : "ies"})`));
+  console.log(
+    chalk.green(
+      `✓ Removed trauma ${idCheck.value} (${result.removed} entr${result.removed === 1 ? "y" : "ies"})`,
+    ),
+  );
   for (const p of result.updatedPaths) {
     console.log(chalk.gray(`  Updated: ${p}`));
   }
@@ -316,7 +325,7 @@ async function removeTrauma(
 
 async function importTraumas(
   args: string[],
-  flags: { severity?: string; message?: string; scope?: string; json?: boolean }
+  flags: { severity?: string; message?: string; scope?: string; json?: boolean },
 ): Promise<void> {
   const startedAtMs = Date.now();
   const cli = getCliName();
@@ -357,7 +366,7 @@ async function importTraumas(
     reportError(`File not found: ${fileCheck.value}`, {
       code: ErrorCode.FILE_NOT_FOUND,
       details: { file: fileCheck.value },
-      hint: `Provide a readable file path (one pattern per line, or JSONL objects with {\"pattern\": \"...\"}).`,
+      hint: `Provide a readable file path (one pattern per line, or JSONL objects with {"pattern": "..."}).`,
       json: flags.json,
       command: "trauma",
       startedAtMs,
@@ -406,7 +415,9 @@ async function importTraumas(
     try {
       new RegExp(pattern, "i");
     } catch (err: any) {
-      warnings.push(`Line ${lineNumber}: invalid regex pattern (skipped): ${err?.message || String(err)}`);
+      warnings.push(
+        `Line ${lineNumber}: invalid regex pattern (skipped): ${err?.message || String(err)}`,
+      );
       continue;
     }
 
@@ -436,7 +447,7 @@ async function importTraumas(
     printJsonResult(
       "trauma import",
       { imported, warningsCount: warnings.length },
-      { startedAtMs, ...(warnings.length > 0 ? { warnings } : {}) }
+      { startedAtMs, ...(warnings.length > 0 ? { warnings } : {}) },
     );
     return;
   }

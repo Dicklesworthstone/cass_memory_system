@@ -4,12 +4,12 @@
  * Tests the `cm starters` command which lists available starter
  * rule packs (built-in and custom) for seeding playbooks.
  */
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { startersCommand } from "../src/commands/starters.js";
-import { withTempCassHome } from "./helpers/temp.js";
 import { createE2ELogger } from "./helpers/e2e-logger.js";
+import { withTempCassHome } from "./helpers/temp.js";
 
 // Helper to capture console output
 function captureConsole() {
@@ -31,7 +31,7 @@ function captureConsole() {
     restore: () => {
       console.log = originalLog;
       console.error = originalError;
-    }
+    },
   };
 }
 
@@ -88,15 +88,17 @@ describe("E2E: CLI starters command", () => {
             description: "Team-specific coding standards",
             bullets: [
               { content: "Always use TypeScript strict mode", category: "typescript" },
-              { content: "Prefer composition over inheritance", category: "architecture" }
-            ]
+              { content: "Prefer composition over inheritance", category: "architecture" },
+            ],
           };
 
           await writeFile(
             path.join(startersDir, "my-team.yaml"),
             `name: ${customStarter.name}\ndescription: ${customStarter.description}\nbullets:\n` +
-            customStarter.bullets.map(b => `  - content: "${b.content}"\n    category: ${b.category}`).join("\n"),
-            "utf-8"
+              customStarter.bullets
+                .map((b) => `  - content: "${b.content}"\n    category: ${b.category}`)
+                .join("\n"),
+            "utf-8",
           );
 
           log.step("Created custom starter", { path: startersDir });
@@ -139,7 +141,7 @@ describe("E2E: CLI starters command", () => {
           log.snapshot("output", { logs: capture.logs, errors: capture.errors });
 
           // Find and parse JSON output
-          const jsonOutput = capture.logs.find(l => l.startsWith("{"));
+          const jsonOutput = capture.logs.find((l) => l.startsWith("{"));
           expect(jsonOutput).toBeDefined();
 
           const parsed = JSON.parse(jsonOutput!);
@@ -168,7 +170,7 @@ describe("E2E: CLI starters command", () => {
             capture.restore();
           }
 
-          const jsonOutput = capture.logs.find(l => l.startsWith("{"));
+          const jsonOutput = capture.logs.find((l) => l.startsWith("{"));
           const parsed = JSON.parse(jsonOutput!);
           const starters = parsed.data.starters;
 
@@ -209,11 +211,9 @@ describe("E2E: CLI starters command", () => {
             JSON.stringify({
               name: "custom-rules",
               description: "Custom rules for testing",
-              bullets: [
-                { content: "Test rule 1", category: "testing" }
-              ]
+              bullets: [{ content: "Test rule 1", category: "testing" }],
             }),
-            "utf-8"
+            "utf-8",
           );
 
           log.step("Created custom starter", { path: customPath });
@@ -225,7 +225,7 @@ describe("E2E: CLI starters command", () => {
             capture.restore();
           }
 
-          const jsonOutput = capture.logs.find(l => l.startsWith("{"));
+          const jsonOutput = capture.logs.find((l) => l.startsWith("{"));
           const parsed = JSON.parse(jsonOutput!);
           const starters = parsed.data.starters;
 
@@ -255,7 +255,7 @@ describe("E2E: CLI starters command", () => {
             capture.restore();
           }
 
-          const jsonOutput = capture.logs.find(l => l.startsWith("{"));
+          const jsonOutput = capture.logs.find((l) => l.startsWith("{"));
           const parsed = JSON.parse(jsonOutput!);
           const starters = parsed.data.starters;
           const names = starters.map((s: any) => s.name);
@@ -282,7 +282,7 @@ describe("E2E: CLI starters command", () => {
             capture.restore();
           }
 
-          const jsonOutput = capture.logs.find(l => l.startsWith("{"));
+          const jsonOutput = capture.logs.find((l) => l.startsWith("{"));
           const parsed = JSON.parse(jsonOutput!);
           const starters = parsed.data.starters;
 
@@ -322,7 +322,7 @@ describe("E2E: CLI starters command", () => {
           }
 
           // Should not throw
-          const jsonOutput = capture.logs.find(l => l.startsWith("{"));
+          const jsonOutput = capture.logs.find((l) => l.startsWith("{"));
           expect(jsonOutput).toBeDefined();
 
           const parsed = JSON.parse(jsonOutput!);
@@ -345,17 +345,13 @@ describe("E2E: CLI starters command", () => {
           await mkdir(startersDir, { recursive: true });
 
           // Write invalid YAML
-          await writeFile(
-            path.join(startersDir, "broken.yaml"),
-            "name: [invalid yaml",
-            "utf-8"
-          );
+          await writeFile(path.join(startersDir, "broken.yaml"), "name: [invalid yaml", "utf-8");
 
           // Write valid one for comparison
           await writeFile(
             path.join(startersDir, "valid.yaml"),
             "name: valid\ndescription: Valid starter\nbullets:\n  - content: Rule 1\n    category: test",
-            "utf-8"
+            "utf-8",
           );
 
           log.step("Created broken and valid starters");
@@ -367,7 +363,7 @@ describe("E2E: CLI starters command", () => {
             capture.restore();
           }
 
-          const jsonOutput = capture.logs.find(l => l.startsWith("{"));
+          const jsonOutput = capture.logs.find((l) => l.startsWith("{"));
           const parsed = JSON.parse(jsonOutput!);
           const names = parsed.data.starters.map((s: any) => s.name);
 

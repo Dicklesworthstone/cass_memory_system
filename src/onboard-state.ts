@@ -10,8 +10,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
-import { resolveGlobalDir, atomicWrite, warn, expandPath } from "./utils.js";
 import { withLock } from "./lock.js";
+import { atomicWrite, expandPath, resolveGlobalDir, warn } from "./utils.js";
 
 // Schema version for future migrations
 const STATE_VERSION = 1;
@@ -93,7 +93,9 @@ export async function loadOnboardState(): Promise<OnboardState> {
 
     // Check version for future migrations
     if (result.data.version !== STATE_VERSION) {
-      warn(`[onboard] State version mismatch (${result.data.version} vs ${STATE_VERSION}); starting fresh`);
+      warn(
+        `[onboard] State version mismatch (${result.data.version} vs ${STATE_VERSION}); starting fresh`,
+      );
       return createEmptyState();
     }
 
@@ -118,10 +120,7 @@ export async function saveOnboardState(state: OnboardState): Promise<void> {
   // Recompute stats from processedSessions for consistency
   state.stats = {
     totalSessionsProcessed: state.processedSessions.length,
-    totalRulesExtracted: state.processedSessions.reduce(
-      (sum, s) => sum + s.rulesExtracted,
-      0
-    ),
+    totalRulesExtracted: state.processedSessions.reduce((sum, s) => sum + s.rulesExtracted, 0),
   };
 
   try {
@@ -139,9 +138,7 @@ export function isSessionProcessed(state: OnboardState, sessionPath: string): bo
   // Normalize path for comparison (expand ~ + resolve to stable absolute)
   const normalizedPath = normalizeSessionPath(sessionPath);
   if (!normalizedPath) return false;
-  return state.processedSessions.some(
-    (s) => normalizeSessionPath(s.path) === normalizedPath
-  );
+  return state.processedSessions.some((s) => normalizeSessionPath(s.path) === normalizedPath);
 }
 
 /**
@@ -150,7 +147,7 @@ export function isSessionProcessed(state: OnboardState, sessionPath: string): bo
 export async function markSessionProcessed(
   sessionPath: string,
   rulesExtracted: number,
-  options: { skipped?: boolean } = {}
+  options: { skipped?: boolean } = {},
 ): Promise<OnboardState> {
   const statePath = getStatePath();
   return await withLock(statePath, async () => {
@@ -160,7 +157,7 @@ export async function markSessionProcessed(
 
     // Check if already processed (idempotent)
     const existingIndex = state.processedSessions.findIndex(
-      (s) => normalizeSessionPath(s.path) === normalizedPath
+      (s) => normalizeSessionPath(s.path) === normalizedPath,
     );
 
     const entry: ProcessedSession = {
@@ -224,17 +221,15 @@ export async function getOnboardProgress(): Promise<OnboardProgress> {
  */
 export function filterUnprocessedSessions<T extends { path: string }>(
   sessions: T[],
-  state: OnboardState
+  state: OnboardState,
 ): T[] {
   const processedPaths = new Set(
-    state.processedSessions.map((s) => normalizeSessionPath(s.path)).filter(Boolean)
+    state.processedSessions.map((s) => normalizeSessionPath(s.path)).filter(Boolean),
   );
 
-  return sessions.filter(
-    (session) => {
-      const normalized = normalizeSessionPath(session.path);
-      if (!normalized) return true;
-      return !processedPaths.has(normalized);
-    }
-  );
+  return sessions.filter((session) => {
+    const normalized = normalizeSessionPath(session.path);
+    if (!normalized) return true;
+    return !processedPaths.has(normalized);
+  });
 }

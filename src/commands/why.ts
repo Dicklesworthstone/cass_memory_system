@@ -4,16 +4,23 @@
  * Answers "Why was this rule learned?" by showing original reasoning,
  * source sessions, evidence quotes, and feedback history.
  */
-import { loadConfig } from "../config.js";
-import { findDiaryBySession, loadDiary, loadAllDiaries } from "../diary.js";
-import { loadMergedPlaybook, findBullet } from "../playbook.js";
-import { getEffectiveScore } from "../scoring.js";
-import { truncate, printJsonResult, reportError, expandPath, getCliName } from "../utils.js";
-import { ErrorCode } from "../types.js";
-import { PlaybookBullet, DiaryEntry, Config } from "../types.js";
-import chalk from "chalk";
-import { formatKv, formatRule, formatTipPrefix, getOutputStyle, icon, wrapText } from "../output.js";
+
 import path from "node:path";
+import chalk from "chalk";
+import { loadConfig } from "../config.js";
+import { findDiaryBySession, loadAllDiaries, loadDiary } from "../diary.js";
+import {
+  formatKv,
+  formatRule,
+  formatTipPrefix,
+  getOutputStyle,
+  icon,
+  wrapText,
+} from "../output.js";
+import { findBullet, loadMergedPlaybook } from "../playbook.js";
+import { getEffectiveScore } from "../scoring.js";
+import { type Config, type DiaryEntry, ErrorCode, type PlaybookBullet } from "../types.js";
+import { expandPath, getCliName, printJsonResult, reportError, truncate } from "../utils.js";
 
 export interface WhyFlags {
   verbose?: boolean;
@@ -69,10 +76,7 @@ function getEffectiveness(score: number, helpfulCount: number): string {
   return "Negative";
 }
 
-export async function whyCommand(
-  bulletId: string,
-  flags: WhyFlags = {}
-): Promise<void> {
+export async function whyCommand(bulletId: string, flags: WhyFlags = {}): Promise<void> {
   const startedAtMs = Date.now();
   const command = "why";
   const config = await loadConfig();
@@ -145,7 +149,7 @@ export async function whyCommand(
 async function buildWhyResult(
   bullet: PlaybookBullet,
   config: Config,
-  verbose?: boolean
+  verbose?: boolean,
 ): Promise<WhyResult> {
   const score = getEffectiveScore(bullet, config);
   const sourceSessions = bullet.sourceSessions || [];
@@ -166,7 +170,10 @@ async function buildWhyResult(
         const resolved = path.resolve(expandPath(ref));
         const rel = path.relative(diaryDir, resolved);
         const isDiaryFile =
-          resolved.endsWith(".json") && rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+          resolved.endsWith(".json") &&
+          rel !== "" &&
+          !rel.startsWith("..") &&
+          !path.isAbsolute(rel);
         if (isDiaryFile) {
           diary = await loadDiary(resolved, config);
         }
@@ -179,37 +186,35 @@ async function buildWhyResult(
     sessionDetails.push({
       path: sessionPath,
       date: diary?.timestamp?.slice(0, 10) || null,
-      snippet: diary?.keyLearnings?.[0] || diary?.accomplishments?.[0] || null
+      snippet: diary?.keyLearnings?.[0] || diary?.accomplishments?.[0] || null,
     });
   }
 
   // Find related diary entries around bullet creation
   const createdAt = new Date(bullet.createdAt);
   const allDiaries = await loadAllDiaries(config.diaryDir, 50);
-  const relatedDiaries = allDiaries.filter(d => {
+  const relatedDiaries = allDiaries.filter((d) => {
     const diaryDate = new Date(d.timestamp);
-    const daysDiff = Math.abs(
-      (diaryDate.getTime() - createdAt.getTime()) / (1000 * 60 * 60 * 24)
-    );
+    const daysDiff = Math.abs((diaryDate.getTime() - createdAt.getTime()) / (1000 * 60 * 60 * 24));
     return daysDiff <= 7;
   });
 
   // Extract diary entries that might be related
-  const diaryEntries = relatedDiaries.slice(0, 5).map(d => ({
+  const diaryEntries = relatedDiaries.slice(0, 5).map((d) => ({
     date: d.timestamp.slice(0, 10),
-    content: d.keyLearnings?.[0] || d.accomplishments?.[0] || "Session recorded"
+    content: d.keyLearnings?.[0] || d.accomplishments?.[0] || "Session recorded",
   }));
 
   // Feedback history
   const feedbackHistory = (bullet.feedbackEvents || [])
     .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
     .slice(0, verbose ? 20 : 8)
-    .map(e => ({
+    .map((e) => ({
       type: e.type,
       timestamp: e.timestamp,
       sessionPath: e.sessionPath,
       reason: e.reason,
-      context: e.context
+      context: e.context,
     }));
 
   // Extract evidence from bullet tags/reasoning
@@ -217,7 +222,7 @@ async function buildWhyResult(
   if (bullet.reasoning) {
     // Extract quoted phrases from reasoning
     const quotes = bullet.reasoning.match(/"[^"]+"/g) || [];
-    evidence.push(...quotes.map(q => q.replace(/"/g, "")));
+    evidence.push(...quotes.map((q) => q.replace(/"/g, "")));
   }
 
   return {
@@ -228,7 +233,7 @@ async function buildWhyResult(
       maturity: bullet.maturity || "candidate",
       score: Number(score.toFixed(2)),
       createdAt: bullet.createdAt,
-      daysAgo: daysSince(bullet.createdAt)
+      daysAgo: daysSince(bullet.createdAt),
     },
     reasoning: bullet.reasoning || null,
     sourceSessions: sessionDetails,
@@ -238,8 +243,8 @@ async function buildWhyResult(
     currentStatus: {
       helpfulCount: bullet.helpfulCount || 0,
       harmfulCount: bullet.harmfulCount || 0,
-      effectiveness: getEffectiveness(score, bullet.helpfulCount || 0)
-    }
+      effectiveness: getEffectiveness(score, bullet.helpfulCount || 0),
+    },
   };
 }
 
@@ -259,9 +264,9 @@ function printWhyResult(result: WhyResult, verbose?: boolean): void {
     chalk.bold(`[${result.bullet.id}]`) +
       chalk.dim(
         ` ${result.bullet.category} • ${result.bullet.maturity} • score ${scoreColor(
-          result.bullet.score.toFixed(1)
-        )}`
-      )
+          result.bullet.score.toFixed(1),
+        )}`,
+      ),
   );
   console.log("");
 
@@ -279,8 +284,8 @@ function printWhyResult(result: WhyResult, verbose?: boolean): void {
           value: `${result.currentStatus.helpfulCount} helpful / ${result.currentStatus.harmfulCount} harmful • ${result.currentStatus.effectiveness}`,
         },
       ],
-      { indent: "  ", width: maxWidth }
-    )
+      { indent: "  ", width: maxWidth },
+    ),
   );
   console.log("");
 
@@ -311,9 +316,7 @@ function printWhyResult(result: WhyResult, verbose?: boolean): void {
     for (let i = 0; i < result.sourceSessions.length; i++) {
       const s = result.sourceSessions[i];
       const pathShort = s.path.split(/[\\/]/).slice(-2).join("/");
-      console.log(
-        `  ${i + 1}. ${chalk.blue(pathShort)}${s.date ? chalk.dim(` • ${s.date}`) : ""}`
-      );
+      console.log(`  ${i + 1}. ${chalk.blue(pathShort)}${s.date ? chalk.dim(` • ${s.date}`) : ""}`);
       if (s.snippet) {
         for (const line of wrapText(`"${truncate(s.snippet, 140)}"`, wrapWidth - 2)) {
           console.log(chalk.dim(`     ${line}`));
@@ -348,13 +351,14 @@ function printWhyResult(result: WhyResult, verbose?: boolean): void {
   if (result.feedbackHistory.length > 0) {
     console.log(
       chalk.bold(
-        `Feedback history (${result.currentStatus.helpfulCount} helpful, ${result.currentStatus.harmfulCount} harmful)`
-      )
+        `Feedback history (${result.currentStatus.helpfulCount} helpful, ${result.currentStatus.harmfulCount} harmful)`,
+      ),
     );
     console.log(divider);
 
     for (const f of result.feedbackHistory.slice(0, verbose ? 10 : 5)) {
-      const badge = f.type === "helpful" ? chalk.green(icon("success")) : chalk.red(icon("failure"));
+      const badge =
+        f.type === "helpful" ? chalk.green(icon("success")) : chalk.red(icon("failure"));
       const session = f.sessionPath ? ` • ${path.basename(f.sessionPath)}` : "";
       const detail =
         f.type === "harmful"
@@ -379,7 +383,7 @@ function printWhyResult(result: WhyResult, verbose?: boolean): void {
 
   console.log(
     chalk.gray(
-      `${formatTipPrefix()}Next: '${cli} playbook get ${result.bullet.id}' or '${cli} mark ${result.bullet.id} --helpful|--harmful --reason \"...\"'`
-    )
+      `${formatTipPrefix()}Next: '${cli} playbook get ${result.bullet.id}' or '${cli} mark ${result.bullet.id} --helpful|--harmful --reason "..."'`,
+    ),
   );
 }

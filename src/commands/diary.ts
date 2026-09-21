@@ -1,15 +1,15 @@
 // src/commands/diary.ts
 // Diary generation command - Generate a structured diary from a coding session
 
-import { loadConfig, getSanitizeConfig } from "../config.js";
-import { generateDiary, generateDiaryFromContent, formatRawSession } from "../diary.js";
-import { sanitize, compileExtraPatterns } from "../sanitize.js";
-import { expandPath, printJsonResult, reportError } from "../utils.js";
-import { ErrorCode } from "../types.js";
-import path from "node:path";
 import fs from "node:fs/promises";
+import path from "node:path";
 import chalk from "chalk";
+import { getSanitizeConfig, loadConfig } from "../config.js";
+import { formatRawSession, generateDiary, generateDiaryFromContent } from "../diary.js";
 import { iconPrefix } from "../output.js";
+import { compileExtraPatterns, sanitize } from "../sanitize.js";
+import { ErrorCode } from "../types.js";
+import { expandPath, printJsonResult, reportError } from "../utils.js";
 
 export interface DiaryCommandOptions {
   /** Output format: json or human-readable */
@@ -33,7 +33,7 @@ export interface DiaryCommandOptions {
  */
 export async function diaryCommand(
   sessionPath: string,
-  options: DiaryCommandOptions = {}
+  options: DiaryCommandOptions = {},
 ): Promise<void> {
   const startedAtMs = Date.now();
   const command = "diary";
@@ -65,7 +65,7 @@ export async function diaryCommand(
       const sanitizeConfig = getSanitizeConfig(config);
       const compiledConfig = {
         ...sanitizeConfig,
-        extraPatterns: compileExtraPatterns(sanitizeConfig.extraPatterns)
+        extraPatterns: compileExtraPatterns(sanitizeConfig.extraPatterns),
       };
       const sanitized = sanitize(formatted, compiledConfig);
 
@@ -76,7 +76,6 @@ export async function diaryCommand(
 
     // Handle output
     await handleDiaryOutput(diary, options, config, { command, startedAtMs });
-
   } catch (err: any) {
     const message = err?.message || String(err);
     reportError(`Failed to generate diary: ${message}`, {
@@ -125,7 +124,7 @@ export async function handleDiaryOutput(
   diary: import("../types.js").DiaryEntry,
   options: DiaryCommandOptions,
   config: import("../types.js").Config,
-  meta: { command: string; startedAtMs: number }
+  meta: { command: string; startedAtMs: number },
 ): Promise<void> {
   const savedPath = config.diaryDir
     ? path.join(expandPath(config.diaryDir), `${diary.id}.json`)
@@ -149,37 +148,41 @@ export async function handleDiaryOutput(
   console.log(chalk.dim(`Workspace: ${diary.workspace}`));
   console.log(chalk.dim(`Timestamp: ${diary.timestamp}`));
 
-  const statusColor = diary.status === "success" ? chalk.green :
-    diary.status === "failure" ? chalk.red : chalk.yellow;
+  const statusColor =
+    diary.status === "success"
+      ? chalk.green
+      : diary.status === "failure"
+        ? chalk.red
+        : chalk.yellow;
   console.log(`Status: ${statusColor(diary.status)}\n`);
 
   if (diary.accomplishments.length > 0) {
     console.log(chalk.green.bold(`${iconPrefix("check")}Accomplishments:`));
-    diary.accomplishments.forEach(a => console.log(`  • ${a}`));
+    diary.accomplishments.forEach((a) => console.log(`  • ${a}`));
     console.log();
   }
 
   if (diary.decisions.length > 0) {
     console.log(chalk.blue.bold(`${iconPrefix("target")}Decisions:`));
-    diary.decisions.forEach(d => console.log(`  • ${d}`));
+    diary.decisions.forEach((d) => console.log(`  • ${d}`));
     console.log();
   }
 
   if (diary.challenges.length > 0) {
     console.log(chalk.yellow.bold(`${iconPrefix("warning")}Challenges:`));
-    diary.challenges.forEach(c => console.log(`  • ${c}`));
+    diary.challenges.forEach((c) => console.log(`  • ${c}`));
     console.log();
   }
 
   if (diary.keyLearnings.length > 0) {
     console.log(chalk.magenta.bold(`${iconPrefix("tip")}Key Learnings:`));
-    diary.keyLearnings.forEach(l => console.log(`  • ${l}`));
+    diary.keyLearnings.forEach((l) => console.log(`  • ${l}`));
     console.log();
   }
 
   if (diary.preferences.length > 0) {
     console.log(chalk.cyan.bold(`${iconPrefix("palette")}Preferences:`));
-    diary.preferences.forEach(p => console.log(`  • ${p}`));
+    diary.preferences.forEach((p) => console.log(`  • ${p}`));
     console.log();
   }
 
@@ -189,7 +192,7 @@ export async function handleDiaryOutput(
 
   if (diary.relatedSessions.length > 0) {
     console.log(chalk.dim(`\nRelated Sessions: ${diary.relatedSessions.length} found`));
-    diary.relatedSessions.slice(0, 3).forEach(r => {
+    diary.relatedSessions.slice(0, 3).forEach((r) => {
       console.log(chalk.dim(`  • ${r.agent}: ${r.snippet.slice(0, 50)}...`));
     });
   }

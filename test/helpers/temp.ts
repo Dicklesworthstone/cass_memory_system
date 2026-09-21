@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile, mkdir, chmod } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -18,7 +18,11 @@ export async function withTempDir<T>(prefix: string, fn: (dir: string) => Promis
   }
 }
 
-export async function writeFileInDir(dir: string, relative: string, contents: string | Buffer): Promise<string> {
+export async function writeFileInDir(
+  dir: string,
+  relative: string,
+  contents: string | Buffer,
+): Promise<string> {
   const full = path.join(dir, relative);
   await mkdir(path.dirname(full), { recursive: true });
   await writeFile(full, contents);
@@ -27,7 +31,7 @@ export async function writeFileInDir(dir: string, relative: string, contents: st
 
 /**
  * Creates a dummy executable file that can be used as a stub for CLI tools.
- * 
+ *
  * @param dir - Directory to create the stub in
  * @param outputs - Map of command args to stdout, or simple stdout string, or legacy exit code
  * @param outputOrName - (Legacy) stdout or name
@@ -47,7 +51,7 @@ export async function makeCassStub(
   dir: string,
   outputs: any = 0,
   outputOrName: any = "",
-  nameArg = "cass"
+  nameArg = "cass",
 ): Promise<string> {
   let name = nameArg;
   let scriptContent = "";
@@ -56,7 +60,7 @@ export async function makeCassStub(
     outputs &&
     typeof outputs === "object" &&
     ["exitCode", "healthExit", "indexExit", "search", "export", "expand", "timeline"].some(
-      key => key in outputs
+      (key) => key in outputs,
     );
 
   if (looksLikeLegacy) {
@@ -64,10 +68,14 @@ export async function makeCassStub(
     const exitCode = opts.exitCode ?? 0;
     const healthExit = opts.healthExit ?? exitCode;
     const indexExit = opts.indexExit ?? exitCode;
-    const searchOut = opts.search ?? '[{"source_path":"/sessions/s1.jsonl","line_number":1,"agent":"stub","snippet":"hello","score":0.9}]';
+    const searchOut =
+      opts.search ??
+      '[{"source_path":"/sessions/s1.jsonl","line_number":1,"agent":"stub","snippet":"hello","score":0.9}]';
     const exportOut = opts.export ?? "# Session transcript";
     const expandOut = opts.expand ?? "context lines";
-    const timelineOut = opts.timeline ?? '{"groups":[{"date":"2025-01-01","sessions":[{"path":"/sessions/s1.jsonl","agent":"stub"}]}]}';
+    const timelineOut =
+      opts.timeline ??
+      '{"groups":[{"date":"2025-01-01","sessions":[{"path":"/sessions/s1.jsonl","agent":"stub"}]}]}';
 
     const quote = (text: string) => text.replace(/'/g, "'\\''");
 
@@ -97,14 +105,16 @@ esac
     // Complex mode: outputs is a map of subcommand -> stdout
     // Example: { search: '[...]', timeline: '{...}' }
     // We generate a shell script case statement
-    
-    const cases = Object.entries(outputs).map(([cmd, out]) => {
-      // Escape single quotes
-      const safeOut = String(out).replace(/'/g, "'\\''");
-      return `  *${cmd}*) 
+
+    const cases = Object.entries(outputs)
+      .map(([cmd, out]) => {
+        // Escape single quotes
+        const safeOut = String(out).replace(/'/g, "'\\''");
+        return `  *${cmd}*) 
     echo '${safeOut}'
     ;;`;
-    }).join("\n");
+      })
+      .join("\n");
 
     scriptContent = `#!/bin/sh
 case "$*" in
@@ -196,7 +206,7 @@ export async function cleanupEnvironment(env: TestEnv): Promise<void> {
  */
 export async function withTempCassHome<T>(
   fn: (env: TestEnv) => Promise<T>,
-  prefix = "cass-test"
+  prefix = "cass-test",
 ): Promise<T> {
   const env = await createIsolatedEnvironment(prefix);
   const originalHome = process.env.HOME;

@@ -1,17 +1,24 @@
-import { loadConfig } from "../config.js";
-import { loadMergedPlaybook, getActiveBullets } from "../playbook.js";
-import {
-  analyzeScoreDistribution,
-  getEffectiveScore,
-  isStale
-} from "../scoring.js";
-import { findSemanticDuplicates, resolveSemanticEnabled } from "../semantic.js";
-import { isJsonOutput, isToonOutput, tokenize, printStructuredResult, reportError, validateOneOf } from "../utils.js";
 import chalk from "chalk";
+import { loadConfig } from "../config.js";
 import { iconPrefix } from "../output.js";
+import { getActiveBullets, loadMergedPlaybook } from "../playbook.js";
+import { analyzeScoreDistribution, getEffectiveScore, isStale } from "../scoring.js";
+import { findSemanticDuplicates, resolveSemanticEnabled } from "../semantic.js";
 import { ErrorCode } from "../types.js";
+import {
+  isJsonOutput,
+  isToonOutput,
+  printStructuredResult,
+  reportError,
+  tokenize,
+  validateOneOf,
+} from "../utils.js";
 
-export async function statsCommand(options: { json?: boolean; format?: "json" | "toon"; stats?: boolean }): Promise<void> {
+export async function statsCommand(options: {
+  json?: boolean;
+  format?: "json" | "toon";
+  stats?: boolean;
+}): Promise<void> {
   const startedAtMs = Date.now();
   const formatCheck = validateOneOf(options.format, "format", ["json", "toon"] as const, {
     allowUndefined: true,
@@ -48,7 +55,7 @@ export async function statsCommand(options: { json?: boolean; format?: "json" | 
   // Health metrics should reflect active bullets (aligned with scoreDistribution and merge candidates).
   const scores = activeBullets.map((b) => ({
     bullet: b,
-    score: getEffectiveScore(b, config)
+    score: getEffectiveScore(b, config),
   }));
 
   const topPerformers = scores
@@ -59,7 +66,7 @@ export async function statsCommand(options: { json?: boolean; format?: "json" | 
       id: bullet.id,
       content: bullet.content,
       score,
-      helpfulCount: bullet.helpfulCount || 0
+      helpfulCount: bullet.helpfulCount || 0,
     }));
 
   const mostHelpful = [...activeBullets]
@@ -68,7 +75,7 @@ export async function statsCommand(options: { json?: boolean; format?: "json" | 
     .map((b) => ({ id: b.id, content: b.content, helpfulCount: b.helpfulCount || 0 }));
 
   const atRisk = scores.filter((s) => s.score < 0).map((s) => s.bullet);
-  
+
   // Use config-aware staleness check
   const staleThresholdDays = config.scoring?.decayHalfLifeDays || 90;
   const stale = activeBullets.filter((b) => isStale(b, staleThresholdDays));
@@ -106,7 +113,7 @@ export async function statsCommand(options: { json?: boolean; format?: "json" | 
     atRiskCount: atRisk.length,
     staleCount: stale.length,
     mergeCandidates,
-    semanticMergeCandidates
+    semanticMergeCandidates,
   };
 
   const wantsJson = isJsonOutput(normalizedOptions);
@@ -130,32 +137,32 @@ function countBy<T>(items: T[], keyFn: (item: T) => string): Record<string, numb
 function findMergeCandidates(
   bullets: any[],
   threshold: number,
-  limit: number
+  limit: number,
 ): Array<{ a: string; b: string; similarity: number }> {
   // Pre-tokenize to avoid O(N^2) tokenization overhead
-  const tokenized = bullets.map(b => ({
+  const tokenized = bullets.map((b) => ({
     id: b.id,
-    tokens: new Set(tokenize(b.content))
+    tokens: new Set(tokenize(b.content)),
   }));
 
   const pairs: Array<{ a: string; b: string; similarity: number }> = [];
-  
+
   // Cap comparisons to prevent hanging on huge playbooks
   // Comparing top 2000 bullets = 2M checks, manageable with pre-tokenization
-  const maxScan = Math.min(tokenized.length, 2000); 
+  const maxScan = Math.min(tokenized.length, 2000);
 
   for (let i = 0; i < maxScan; i++) {
     for (let j = i + 1; j < maxScan; j++) {
       const tA = tokenized[i].tokens;
       const tB = tokenized[j].tokens;
-      
+
       if (tA.size === 0 || tB.size === 0) continue;
-      
+
       let intersection = 0;
       for (const t of tA) {
         if (tB.has(t)) intersection++;
       }
-      
+
       const union = tA.size + tB.size - intersection;
       const sim = intersection / union;
 
@@ -163,7 +170,7 @@ function findMergeCandidates(
         pairs.push({
           a: tokenized[i].id,
           b: tokenized[j].id,
-          similarity: Number(sim.toFixed(2))
+          similarity: Number(sim.toFixed(2)),
         });
       }
       if (pairs.length >= limit) break;
@@ -173,19 +180,22 @@ function findMergeCandidates(
   return pairs;
 }
 
-function printHumanStats(stats: {
-  total: number;
-  byScope: Record<string, number>;
-  byState: Record<string, number>;
-  byKind: Record<string, number>;
-  scoreDistribution: ReturnType<typeof analyzeScoreDistribution>;
-  topPerformers: Array<{ id: string; content: string; score: number; helpfulCount?: number }>;
-  mostHelpful: Array<{ id: string; content: string; helpfulCount: number }>;
-  atRiskCount: number;
-  staleCount: number;
-  mergeCandidates: Array<{ a: string; b: string; similarity: number }>;
-  semanticMergeCandidates: Array<{ a: string; b: string; similarity: number }>;
-}, staleThresholdDays: number) {
+function printHumanStats(
+  stats: {
+    total: number;
+    byScope: Record<string, number>;
+    byState: Record<string, number>;
+    byKind: Record<string, number>;
+    scoreDistribution: ReturnType<typeof analyzeScoreDistribution>;
+    topPerformers: Array<{ id: string; content: string; score: number; helpfulCount?: number }>;
+    mostHelpful: Array<{ id: string; content: string; helpfulCount: number }>;
+    atRiskCount: number;
+    staleCount: number;
+    mergeCandidates: Array<{ a: string; b: string; similarity: number }>;
+    semanticMergeCandidates: Array<{ a: string; b: string; similarity: number }>;
+  },
+  staleThresholdDays: number,
+) {
   console.log(chalk.bold(`\n${iconPrefix("chart")}Playbook Health Dashboard`));
   console.log(`Total Bullets: ${stats.total}`);
 
@@ -225,7 +235,9 @@ function printHumanStats(stats: {
   }
 
   console.log(chalk.bold(`\n${iconPrefix("warning")}At Risk: ${stats.atRiskCount}`));
-  console.log(chalk.bold(`${iconPrefix("clock")}Stale (${staleThresholdDays}d+): ${stats.staleCount}`));
+  console.log(
+    chalk.bold(`${iconPrefix("clock")}Stale (${staleThresholdDays}d+): ${stats.staleCount}`),
+  );
 
   if (stats.mergeCandidates.length > 0) {
     console.log(chalk.bold(`\n${iconPrefix("merge")}Merge Candidates (similarity ≥ 0.8):`));
@@ -235,7 +247,9 @@ function printHumanStats(stats: {
   }
 
   if (stats.semanticMergeCandidates.length > 0) {
-    console.log(chalk.bold(`\n${iconPrefix("brain")}Semantic Merge Candidates (similarity ≥ 0.85):`));
+    console.log(
+      chalk.bold(`\n${iconPrefix("brain")}Semantic Merge Candidates (similarity ≥ 0.85):`),
+    );
     stats.semanticMergeCandidates.forEach((p) => {
       console.log(`  - ${p.a} ↔ ${p.b} (sim ${p.similarity})`);
     });

@@ -1,29 +1,26 @@
 import { describe, expect, it } from "bun:test";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { mkdir, writeFile, readFile } from "node:fs/promises";
+import type { CassRunner } from "../src/cass.js";
 import {
   DOOM_PATTERNS,
-  loadTraumas,
-  saveTrauma,
   findMatchingTrauma,
+  healTraumaById,
+  loadTraumas,
+  removeTraumaById,
+  saveTrauma,
   scanForTraumas,
   setTraumaStatusById,
-  healTraumaById,
-  removeTraumaById,
-  type TraumaCandidate
+  type TraumaCandidate,
 } from "../src/trauma.js";
-import { TraumaEntry } from "../src/types.js";
-import { type CassRunner } from "../src/cass.js";
-import { withTempDir, withTempCassHome, createTestConfig } from "./helpers/index.js";
+import type { TraumaEntry } from "../src/types.js";
+import { createTestConfig, withTempCassHome, withTempDir } from "./helpers/index.js";
 
 /**
  * Create a CassRunner stub for trauma tests.
  * Supports search and export commands with predefined outputs.
  */
-function createCassRunnerStub(opts: {
-  searchOutput?: string;
-  exportOutput?: string;
-}): CassRunner {
+function createCassRunnerStub(opts: { searchOutput?: string; exportOutput?: string }): CassRunner {
   return {
     execFile: async (_file, args) => {
       const cmd = args[0] ?? "";
@@ -47,7 +44,7 @@ function createCassRunnerStub(opts: {
     },
     spawn: () => {
       throw new Error("spawn not implemented in stub");
-    }
+    },
   };
 }
 
@@ -56,90 +53,94 @@ function createCassRunnerStub(opts: {
 // =============================================================================
 describe("DOOM_PATTERNS - Pattern Validation", () => {
   it("has required pattern categories", () => {
-    const descriptions = DOOM_PATTERNS.map(p => p.description);
+    const descriptions = DOOM_PATTERNS.map((p) => p.description);
 
     // Filesystem destruction
-    expect(descriptions.some(d => d.includes("deletion"))).toBe(true);
+    expect(descriptions.some((d) => d.includes("deletion"))).toBe(true);
 
     // Database destruction
-    expect(descriptions.some(d => d.includes("database") || d.includes("table"))).toBe(true);
+    expect(descriptions.some((d) => d.includes("database") || d.includes("table"))).toBe(true);
 
     // Git destruction
-    expect(descriptions.some(d => d.includes("Git"))).toBe(true);
+    expect(descriptions.some((d) => d.includes("Git"))).toBe(true);
 
     // Infrastructure
-    expect(descriptions.some(d => d.includes("Terraform") || d.includes("Kubernetes"))).toBe(true);
+    expect(descriptions.some((d) => d.includes("Terraform") || d.includes("Kubernetes"))).toBe(
+      true,
+    );
   });
 
   it("matches rm -rf / commands", () => {
-    const rmPatterns = DOOM_PATTERNS.filter(p => p.pattern.includes("rm"));
+    const rmPatterns = DOOM_PATTERNS.filter((p) => p.pattern.includes("rm"));
 
     const dangerousCommands = [
       "rm -rf /etc/passwd",
       "rm -rf /usr/local",
       "rm -rf /home/user",
       "rm -rf ~",
-      "rm -rf /var/log"
+      "rm -rf /var/log",
     ];
 
     for (const cmd of dangerousCommands) {
-      const matched = rmPatterns.some(p => new RegExp(p.pattern, "mi").test(cmd));
+      const matched = rmPatterns.some((p) => new RegExp(p.pattern, "mi").test(cmd));
       expect(matched).toBe(true);
     }
   });
 
   it("matches git force push commands", () => {
-    const gitPatterns = DOOM_PATTERNS.filter(p => p.pattern.includes("git"));
+    const gitPatterns = DOOM_PATTERNS.filter((p) => p.pattern.includes("git"));
 
     const dangerousCommands = [
       "git push --force",
       "git push -f origin main",
       "git reset --hard HEAD~5",
-      "git clean -fd"
+      "git clean -fd",
     ];
 
     for (const cmd of dangerousCommands) {
-      const matched = gitPatterns.some(p => new RegExp(p.pattern, "mi").test(cmd));
+      const matched = gitPatterns.some((p) => new RegExp(p.pattern, "mi").test(cmd));
       expect(matched).toBe(true);
     }
   });
 
   it("matches database destruction commands", () => {
-    const dbPatterns = DOOM_PATTERNS.filter(p =>
-      p.pattern.includes("DROP") ||
-      p.pattern.includes("TRUNCATE") ||
-      p.pattern.includes("DELETE")
+    const dbPatterns = DOOM_PATTERNS.filter(
+      (p) =>
+        p.pattern.includes("DROP") ||
+        p.pattern.includes("TRUNCATE") ||
+        p.pattern.includes("DELETE"),
     );
 
     const dangerousCommands = [
       "DROP DATABASE production",
       "DROP SCHEMA public CASCADE",
       "TRUNCATE TABLE users",
-      "DELETE FROM orders;"
+      "DELETE FROM orders;",
     ];
 
     for (const cmd of dangerousCommands) {
-      const matched = dbPatterns.some(p => new RegExp(p.pattern, "mi").test(cmd));
+      const matched = dbPatterns.some((p) => new RegExp(p.pattern, "mi").test(cmd));
       expect(matched).toBe(true);
     }
   });
 
   it("matches infrastructure destruction commands", () => {
-    const infraPatterns = DOOM_PATTERNS.filter(p =>
-      p.pattern.includes("terraform") ||
-      p.pattern.includes("kubectl") ||
-      p.pattern.includes("docker")
+    const infraPatterns = DOOM_PATTERNS.filter(
+      (p) =>
+        p.pattern.includes("terraform") ||
+        p.pattern.includes("kubectl") ||
+        p.pattern.includes("docker"),
     );
 
     const dangerousCommands = [
       "terraform destroy -auto-approve",
       "kubectl delete node worker-1",
       "kubectl delete namespace production",
-      "docker system prune -a --volumes"
+      "docker system prune -a --volumes",
     ];
 
     for (const cmd of dangerousCommands) {
-      const matched = infraPatterns.some(p => new RegExp(p.pattern, "mi").test(cmd));
+      const matched = infraPatterns.some((p) => new RegExp(p.pattern, "mi").test(cmd));
       expect(matched).toBe(true);
     }
   });
@@ -152,11 +153,11 @@ describe("DOOM_PATTERNS - Pattern Validation", () => {
       "git status",
       "SELECT * FROM users",
       "docker ps",
-      "kubectl get pods"
+      "kubectl get pods",
     ];
 
     for (const cmd of safeCommands) {
-      const matched = DOOM_PATTERNS.some(p => new RegExp(p.pattern, "mi").test(cmd));
+      const matched = DOOM_PATTERNS.some((p) => new RegExp(p.pattern, "mi").test(cmd));
       expect(matched).toBe(false);
     }
   });
@@ -184,15 +185,12 @@ describe("loadTraumas - Loading from JSONL files", () => {
         trigger_event: {
           session_path: "/sessions/bad-day.jsonl",
           timestamp: new Date().toISOString(),
-          human_message: "Never again"
+          human_message: "Never again",
         },
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
       };
 
-      await writeFile(
-        join(env.cassMemoryDir, "traumas.jsonl"),
-        JSON.stringify(traumaEntry) + "\n"
-      );
+      await writeFile(join(env.cassMemoryDir, "traumas.jsonl"), JSON.stringify(traumaEntry) + "\n");
 
       const traumas = await loadTraumas();
       expect(traumas.length).toBe(1);
@@ -211,9 +209,9 @@ describe("loadTraumas - Loading from JSONL files", () => {
         status: "active",
         trigger_event: {
           session_path: "/sessions/s1.jsonl",
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
         },
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
       };
 
       const trauma2: TraumaEntry = {
@@ -224,9 +222,9 @@ describe("loadTraumas - Loading from JSONL files", () => {
         status: "active",
         trigger_event: {
           session_path: "/sessions/s2.jsonl",
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
         },
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
       };
 
       const content = JSON.stringify(trauma1) + "\n" + JSON.stringify(trauma2) + "\n";
@@ -234,7 +232,7 @@ describe("loadTraumas - Loading from JSONL files", () => {
 
       const traumas = await loadTraumas();
       expect(traumas.length).toBe(2);
-      expect(traumas.map(t => t.id).sort()).toEqual(["trauma-001", "trauma-002"]);
+      expect(traumas.map((t) => t.id).sort()).toEqual(["trauma-001", "trauma-002"]);
     });
   });
 
@@ -248,9 +246,9 @@ describe("loadTraumas - Loading from JSONL files", () => {
         status: "active",
         trigger_event: {
           session_path: "/sessions/s1.jsonl",
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
         },
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
       };
 
       const content = "not valid json\n" + JSON.stringify(validTrauma) + "\n{malformed\n";
@@ -272,9 +270,9 @@ describe("loadTraumas - Loading from JSONL files", () => {
         status: "active",
         trigger_event: {
           session_path: "/sessions/s1.jsonl",
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
         },
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
       };
 
       // Missing required fields
@@ -322,9 +320,9 @@ describe("saveTrauma - Atomic persistence", () => {
         status: "active",
         trigger_event: {
           session_path: "/sessions/test.jsonl",
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
         },
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
       };
 
       await saveTrauma(trauma);
@@ -346,14 +344,14 @@ describe("saveTrauma - Atomic persistence", () => {
         status: "active",
         trigger_event: {
           session_path: "/sessions/old.jsonl",
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
         },
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
       };
 
       await writeFile(
         join(env.cassMemoryDir, "traumas.jsonl"),
-        JSON.stringify(existingTrauma) + "\n"
+        JSON.stringify(existingTrauma) + "\n",
       );
 
       const newTrauma: TraumaEntry = {
@@ -364,9 +362,9 @@ describe("saveTrauma - Atomic persistence", () => {
         status: "active",
         trigger_event: {
           session_path: "/sessions/new.jsonl",
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
         },
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
       };
 
       await saveTrauma(newTrauma);
@@ -401,9 +399,9 @@ describe("saveTrauma - Atomic persistence", () => {
         status: "active",
         trigger_event: {
           session_path: "/sessions/test.jsonl",
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
         },
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
       };
 
       await saveTrauma(trauma);
@@ -429,9 +427,9 @@ describe("saveTrauma - Atomic persistence", () => {
         status: "active",
         trigger_event: {
           session_path: "/sessions/test.jsonl",
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
         },
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
       };
 
       await saveTrauma(trauma);
@@ -447,7 +445,11 @@ describe("saveTrauma - Atomic persistence", () => {
 // findMatchingTrauma - Pattern matching
 // =============================================================================
 describe("findMatchingTrauma - Pattern matching", () => {
-  const createTestTrauma = (id: string, pattern: string, status: "active" | "healed" = "active"): TraumaEntry => ({
+  const createTestTrauma = (
+    id: string,
+    pattern: string,
+    status: "active" | "healed" = "active",
+  ): TraumaEntry => ({
     id,
     severity: "CRITICAL",
     pattern,
@@ -455,26 +457,20 @@ describe("findMatchingTrauma - Pattern matching", () => {
     status,
     trigger_event: {
       session_path: "/sessions/test.jsonl",
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     },
-    created_at: new Date().toISOString()
+    created_at: new Date().toISOString(),
   });
 
   it("returns null when no traumas match", () => {
-    const traumas = [
-      createTestTrauma("t1", "rm -rf /"),
-      createTestTrauma("t2", "DROP DATABASE")
-    ];
+    const traumas = [createTestTrauma("t1", "rm -rf /"), createTestTrauma("t2", "DROP DATABASE")];
 
     const result = findMatchingTrauma("git status", traumas);
     expect(result).toBeNull();
   });
 
   it("returns matching trauma for exact pattern", () => {
-    const traumas = [
-      createTestTrauma("t1", "rm -rf"),
-      createTestTrauma("t2", "DROP DATABASE")
-    ];
+    const traumas = [createTestTrauma("t1", "rm -rf"), createTestTrauma("t2", "DROP DATABASE")];
 
     const result = findMatchingTrauma("rm -rf /home/user", traumas);
     expect(result).not.toBeNull();
@@ -482,9 +478,7 @@ describe("findMatchingTrauma - Pattern matching", () => {
   });
 
   it("matches case-insensitively", () => {
-    const traumas = [
-      createTestTrauma("t1", "DROP DATABASE")
-    ];
+    const traumas = [createTestTrauma("t1", "DROP DATABASE")];
 
     const result = findMatchingTrauma("drop database production", traumas);
     expect(result).not.toBeNull();
@@ -494,7 +488,7 @@ describe("findMatchingTrauma - Pattern matching", () => {
   it("ignores healed traumas", () => {
     const traumas = [
       createTestTrauma("t1", "rm -rf", "healed"),
-      createTestTrauma("t2", "DROP DATABASE", "active")
+      createTestTrauma("t2", "DROP DATABASE", "active"),
     ];
 
     const result = findMatchingTrauma("rm -rf /home", traumas);
@@ -508,7 +502,7 @@ describe("findMatchingTrauma - Pattern matching", () => {
     const traumas = [
       createTestTrauma("t1", "rm"),
       createTestTrauma("t2", "rm -rf"),
-      createTestTrauma("t3", "rm.*-rf")
+      createTestTrauma("t3", "rm.*-rf"),
     ];
 
     const result = findMatchingTrauma("rm -rf /", traumas);
@@ -517,9 +511,7 @@ describe("findMatchingTrauma - Pattern matching", () => {
   });
 
   it("handles regex patterns", () => {
-    const traumas = [
-      createTestTrauma("t1", "git\\s+push\\s+.*--force")
-    ];
+    const traumas = [createTestTrauma("t1", "git\\s+push\\s+.*--force")];
 
     const result = findMatchingTrauma("git push origin main --force", traumas);
     expect(result).not.toBeNull();
@@ -531,7 +523,7 @@ describe("findMatchingTrauma - Pattern matching", () => {
   it("handles invalid regex patterns gracefully", () => {
     const traumas = [
       createTestTrauma("t1", "[invalid(regex"),
-      createTestTrauma("t2", "valid-pattern")
+      createTestTrauma("t2", "valid-pattern"),
     ];
 
     // Should not throw, should skip invalid pattern
@@ -559,15 +551,12 @@ describe("setTraumaStatusById - Status updates", () => {
         status: "active",
         trigger_event: {
           session_path: "/sessions/test.jsonl",
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
         },
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
       };
 
-      await writeFile(
-        join(env.cassMemoryDir, "traumas.jsonl"),
-        JSON.stringify(trauma) + "\n"
-      );
+      await writeFile(join(env.cassMemoryDir, "traumas.jsonl"), JSON.stringify(trauma) + "\n");
 
       const result = await setTraumaStatusById("trauma-to-heal", "healed");
       expect(result.updated).toBe(1);
@@ -588,15 +577,12 @@ describe("setTraumaStatusById - Status updates", () => {
         status: "active",
         trigger_event: {
           session_path: "/sessions/test.jsonl",
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
         },
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
       };
 
-      await writeFile(
-        join(env.cassMemoryDir, "traumas.jsonl"),
-        JSON.stringify(trauma) + "\n"
-      );
+      await writeFile(join(env.cassMemoryDir, "traumas.jsonl"), JSON.stringify(trauma) + "\n");
 
       const result = await healTraumaById("trauma-heal-test");
       expect(result.updated).toBe(1);
@@ -616,15 +602,12 @@ describe("setTraumaStatusById - Status updates", () => {
         status: "active",
         trigger_event: {
           session_path: "/sessions/test.jsonl",
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
         },
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
       };
 
-      await writeFile(
-        join(env.cassMemoryDir, "traumas.jsonl"),
-        JSON.stringify(trauma) + "\n"
-      );
+      await writeFile(join(env.cassMemoryDir, "traumas.jsonl"), JSON.stringify(trauma) + "\n");
 
       const result = await setTraumaStatusById("nonexistent-id", "healed");
       expect(result.updated).toBe(0);
@@ -641,15 +624,12 @@ describe("setTraumaStatusById - Status updates", () => {
         status: "active",
         trigger_event: {
           session_path: "/sessions/test.jsonl",
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
         },
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
       };
 
-      await writeFile(
-        join(env.cassMemoryDir, "traumas.jsonl"),
-        JSON.stringify(trauma) + "\n"
-      );
+      await writeFile(join(env.cassMemoryDir, "traumas.jsonl"), JSON.stringify(trauma) + "\n");
 
       // Try to update with project scope only - should not find it
       const result = await setTraumaStatusById("global-trauma", "healed", { scope: "project" });
@@ -676,9 +656,9 @@ describe("removeTraumaById - Removal", () => {
         status: "active",
         trigger_event: {
           session_path: "/sessions/test.jsonl",
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
         },
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
       };
 
       const trauma2: TraumaEntry = {
@@ -689,14 +669,14 @@ describe("removeTraumaById - Removal", () => {
         status: "active",
         trigger_event: {
           session_path: "/sessions/test.jsonl",
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
         },
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
       };
 
       await writeFile(
         join(env.cassMemoryDir, "traumas.jsonl"),
-        JSON.stringify(trauma1) + "\n" + JSON.stringify(trauma2) + "\n"
+        JSON.stringify(trauma1) + "\n" + JSON.stringify(trauma2) + "\n",
       );
 
       const result = await removeTraumaById("remove-this");
@@ -718,15 +698,12 @@ describe("removeTraumaById - Removal", () => {
         status: "active",
         trigger_event: {
           session_path: "/sessions/test.jsonl",
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
         },
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
       };
 
-      await writeFile(
-        join(env.cassMemoryDir, "traumas.jsonl"),
-        JSON.stringify(trauma) + "\n"
-      );
+      await writeFile(join(env.cassMemoryDir, "traumas.jsonl"), JSON.stringify(trauma) + "\n");
 
       const result = await removeTraumaById("nonexistent");
       expect(result.removed).toBe(0);
@@ -747,15 +724,12 @@ describe("removeTraumaById - Removal", () => {
         status: "active",
         trigger_event: {
           session_path: "/sessions/test.jsonl",
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
         },
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
       };
 
-      await writeFile(
-        join(env.cassMemoryDir, "traumas.jsonl"),
-        JSON.stringify(trauma) + "\n"
-      );
+      await writeFile(join(env.cassMemoryDir, "traumas.jsonl"), JSON.stringify(trauma) + "\n");
 
       const result = await removeTraumaById("only-one");
       expect(result.removed).toBe(1);
@@ -780,9 +754,9 @@ describe("scanForTraumas - Cass history scanning", () => {
           line_number: 42,
           agent: "claude",
           snippet: "I'm sorry, I made a terrible mistake",
-          score: 0.95
-        }
-      ]
+          score: 0.95,
+        },
+      ],
     });
 
     // The export will return session content with a dangerous command
@@ -797,7 +771,7 @@ I'm so sorry, I made a mistake. The data is gone.
 
     const runner = createCassRunnerStub({
       searchOutput: searchResults,
-      exportOutput: sessionContent
+      exportOutput: sessionContent,
     });
 
     const config = createTestConfig();
@@ -812,7 +786,7 @@ I'm so sorry, I made a mistake. The data is gone.
   it("returns empty array when no matches found", async () => {
     const runner = createCassRunnerStub({
       searchOutput: JSON.stringify({ count: 0, hits: [] }),
-      exportOutput: "Normal session with no issues"
+      exportOutput: "Normal session with no issues",
     });
 
     const config = createTestConfig();
@@ -831,14 +805,14 @@ I'm so sorry, I made a mistake. The data is gone.
           line_number: 1,
           agent: "claude",
           snippet: "sorry",
-          score: 0.9
-        }
-      ]
+          score: 0.9,
+        },
+      ],
     });
 
     const runner = createCassRunnerStub({
       searchOutput: searchResults,
-      exportOutput: "" // Empty export simulates no dangerous content
+      exportOutput: "", // Empty export simulates no dangerous content
     });
 
     const config = createTestConfig();
@@ -857,9 +831,9 @@ I'm so sorry, I made a mistake. The data is gone.
           line_number: 1,
           agent: "claude",
           snippet: "I apologize for the disaster",
-          score: 0.99
-        }
-      ]
+          score: 0.99,
+        },
+      ],
     });
 
     // NOTE: DOOM_PATTERNS use ^ anchor - commands must be at line start
@@ -874,7 +848,7 @@ I'm so sorry for this disaster.
 
     const runner = createCassRunnerStub({
       searchOutput: searchResults,
-      exportOutput: sessionContent
+      exportOutput: sessionContent,
     });
 
     const config = createTestConfig();
@@ -884,10 +858,10 @@ I'm so sorry for this disaster.
     // Should find multiple dangerous patterns
     expect(candidates.length).toBeGreaterThanOrEqual(3);
 
-    const evidences = candidates.map(c => c.evidence);
-    expect(evidences.some(e => e.includes("rm -rf"))).toBe(true);
-    expect(evidences.some(e => e.includes("DROP DATABASE"))).toBe(true);
-    expect(evidences.some(e => e.includes("--force"))).toBe(true);
+    const evidences = candidates.map((c) => c.evidence);
+    expect(evidences.some((e) => e.includes("rm -rf"))).toBe(true);
+    expect(evidences.some((e) => e.includes("DROP DATABASE"))).toBe(true);
+    expect(evidences.some((e) => e.includes("--force"))).toBe(true);
   });
 });
 
@@ -905,20 +879,26 @@ describe("Edge Cases", () => {
         status: "active" as const,
         trigger_event: {
           session_path: `/sessions/s${i}.jsonl`,
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
         },
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
       }));
 
       // Save all concurrently
-      await Promise.all(traumas.map(t => saveTrauma(t)));
+      await Promise.all(traumas.map((t) => saveTrauma(t)));
 
       const loaded = await loadTraumas();
       expect(loaded.length).toBe(5);
 
       // All IDs should be present
-      const ids = loaded.map(t => t.id).sort();
-      expect(ids).toEqual(["concurrent-0", "concurrent-1", "concurrent-2", "concurrent-3", "concurrent-4"]);
+      const ids = loaded.map((t) => t.id).sort();
+      expect(ids).toEqual([
+        "concurrent-0",
+        "concurrent-1",
+        "concurrent-2",
+        "concurrent-3",
+        "concurrent-4",
+      ]);
     });
   });
 
@@ -932,9 +912,9 @@ describe("Edge Cases", () => {
         status: "active",
         trigger_event: {
           session_path: "/sessions/test.jsonl",
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
         },
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
       };
 
       await saveTrauma(trauma);
@@ -958,9 +938,9 @@ describe("Edge Cases", () => {
         status: "active",
         trigger_event: {
           session_path: "/sessions/test.jsonl",
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
         },
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
       };
 
       // Write file with a comment line (defensive - file shouldn't have this but be safe)
@@ -985,9 +965,9 @@ describe("Edge Cases", () => {
         status: "active",
         trigger_event: {
           session_path: "/sessions/test.jsonl",
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
         },
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
       };
 
       // Write with Windows line endings
@@ -1011,9 +991,9 @@ describe("Edge Cases", () => {
         trigger_event: {
           session_path: "/sessions/test.jsonl",
           timestamp: new Date().toISOString(),
-          human_message: "永远不要这样做！🔥"
+          human_message: "永远不要这样做！🔥",
         },
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
       };
 
       await saveTrauma(trauma);

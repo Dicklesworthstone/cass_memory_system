@@ -1,7 +1,10 @@
-import { loadConfig, isBudgetBakedInConfig, bakeBudgetIntoConfig } from "../config.js";
-import { orchestrateReflection } from "../orchestrator.js";
-import { getUsageStats, formatCostSummary } from "../cost.js";
 import chalk from "chalk";
+import { bakeBudgetIntoConfig, isBudgetBakedInConfig, loadConfig } from "../config.js";
+import { formatCostSummary, getUsageStats } from "../cost.js";
+import { orchestrateReflection } from "../orchestrator.js";
+import { formatKv, formatRule, getOutputStyle, icon, iconPrefix, wrapText } from "../output.js";
+import { createProgress, type ProgressReporter } from "../progress.js";
+import { ErrorCode, type PlaybookDelta } from "../types.js";
 import {
   getCliName,
   printJson,
@@ -11,9 +14,6 @@ import {
   validatePositiveInt,
   warn,
 } from "../utils.js";
-import { formatKv, formatRule, getOutputStyle, iconPrefix, icon, wrapText } from "../output.js";
-import { createProgress, type ProgressReporter } from "../progress.js";
-import { ErrorCode, type PlaybookDelta } from "../types.js";
 
 type DeltaType = PlaybookDelta["type"];
 
@@ -67,7 +67,7 @@ export async function reflectCommand(
     json?: boolean;
     llm?: boolean; // Ignored, always uses LLM if validation enabled
     session?: string;
-  } = {}
+  } = {},
 ): Promise<void> {
   const startedAtMs = Date.now();
   const command = "reflect";
@@ -86,7 +86,10 @@ export async function reflectCommand(
     return;
   }
 
-  const maxSessionsCheck = validatePositiveInt(options.maxSessions, "max-sessions", { min: 1, allowUndefined: true });
+  const maxSessionsCheck = validatePositiveInt(options.maxSessions, "max-sessions", {
+    min: 1,
+    allowUndefined: true,
+  });
   if (!maxSessionsCheck.ok) {
     reportError(maxSessionsCheck.message, {
       code: ErrorCode.INVALID_INPUT,
@@ -112,7 +115,9 @@ export async function reflectCommand(
     return;
   }
 
-  const workspaceCheck = validateNonEmptyString(options.workspace, "workspace", { allowUndefined: true });
+  const workspaceCheck = validateNonEmptyString(options.workspace, "workspace", {
+    allowUndefined: true,
+  });
   if (!workspaceCheck.ok) {
     reportError(workspaceCheck.message, {
       code: ErrorCode.INVALID_INPUT,
@@ -164,8 +169,8 @@ export async function reflectCommand(
         `Note: reflect budget limits are code defaults ($${b.dailyLimit.toFixed(2)}/day, ` +
           `$${b.monthlyLimit.toFixed(2)}/month ${b.currency}) — they are not set in your config file. ` +
           `They will be saved to your config after the first successful reflect so future ` +
-          `default changes never apply retroactively.`
-      )
+          `default changes never apply retroactively.`,
+      ),
     );
   }
 
@@ -177,7 +182,8 @@ export async function reflectCommand(
     console.log(divider);
     console.log(chalk.dim(`Workspace: ${normalizedOptions.workspace || "global"}`));
     if (normalizedOptions.session) console.log(chalk.dim(`Session: ${normalizedOptions.session}`));
-    if (normalizedOptions.dryRun) console.log(chalk.dim("Mode: dry-run (no changes will be written)"));
+    if (normalizedOptions.dryRun)
+      console.log(chalk.dim("Mode: dry-run (no changes will be written)"));
     console.log("");
   }
 
@@ -231,16 +237,26 @@ export async function reflectCommand(
         return;
       }
       if (event.phase === "session_skip") {
-        console.log(chalk.dim(`• [${event.index}/${event.totalSessions}] skipped (${event.reason})`));
+        console.log(
+          chalk.dim(`• [${event.index}/${event.totalSessions}] skipped (${event.reason})`),
+        );
         return;
       }
       if (event.phase === "session_done") {
         const suffix = event.deltasGenerated > 0 ? ` (${event.deltasGenerated} deltas)` : "";
-        console.log(chalk.dim(`${icon("success")} [${event.index}/${event.totalSessions}] processed${suffix}`));
+        console.log(
+          chalk.dim(
+            `${icon("success")} [${event.index}/${event.totalSessions}] processed${suffix}`,
+          ),
+        );
         return;
       }
       if (event.phase === "session_error") {
-        console.error(chalk.yellow(`${iconPrefix("warning")}[${event.index}/${event.totalSessions}] ${event.error}`));
+        console.error(
+          chalk.yellow(
+            `${iconPrefix("warning")}[${event.index}/${event.totalSessions}] ${event.error}`,
+          ),
+        );
       }
     },
   });
@@ -288,8 +304,8 @@ export async function reflectCommand(
             { key: "Sessions processed", value: String(result.sessionsProcessed) },
             { key: "Proposed changes", value: String(deltas.length) },
           ],
-          { indent: "  ", width: maxWidth }
-        )
+          { indent: "  ", width: maxWidth },
+        ),
       );
 
       console.log("");
@@ -304,8 +320,8 @@ export async function reflectCommand(
             { key: "harmful", value: String(byType.harmful) },
             { key: "merge", value: String(byType.merge) },
           ],
-          { indent: "  ", width: maxWidth }
-        )
+          { indent: "  ", width: maxWidth },
+        ),
       );
 
       if (deltas.length > 0) {
@@ -346,7 +362,7 @@ export async function reflectCommand(
         errors: result.errors,
         autoOutcome: result.autoOutcome,
       },
-      { startedAtMs }
+      { startedAtMs },
     );
     return;
   }
@@ -362,8 +378,8 @@ export async function reflectCommand(
           { key: "Sessions processed", value: String(result.sessionsProcessed) },
           { key: "Deltas generated", value: String(result.deltasGenerated) },
         ],
-        { indent: "  ", width: maxWidth }
-      )
+        { indent: "  ", width: maxWidth },
+      ),
     );
     console.log("");
 
@@ -376,11 +392,13 @@ export async function reflectCommand(
             { key: "Skipped", value: String(result.globalResult.skipped) },
             { key: "Inversions", value: String(result.globalResult.inversions.length) },
           ],
-          { indent: "  ", width: maxWidth }
-        )
+          { indent: "  ", width: maxWidth },
+        ),
       );
       if (result.globalResult.inversions.length > 0) {
-        console.log(chalk.yellow(`  Inverted ${result.globalResult.inversions.length} harmful rules.`));
+        console.log(
+          chalk.yellow(`  Inverted ${result.globalResult.inversions.length} harmful rules.`),
+        );
       }
     }
 
@@ -393,11 +411,13 @@ export async function reflectCommand(
             { key: "Skipped", value: String(result.repoResult.skipped) },
             { key: "Inversions", value: String(result.repoResult.inversions.length) },
           ],
-          { indent: "  ", width: maxWidth }
-        )
+          { indent: "  ", width: maxWidth },
+        ),
       );
       if (result.repoResult.inversions.length > 0) {
-        console.log(chalk.yellow(`  Inverted ${result.repoResult.inversions.length} harmful rules.`));
+        console.log(
+          chalk.yellow(`  Inverted ${result.repoResult.inversions.length} harmful rules.`),
+        );
       }
     }
 
@@ -417,8 +437,8 @@ export async function reflectCommand(
               ? [{ key: "Missing rules", value: ao.missingRules.join(", ") }]
               : []),
           ],
-          { indent: "  ", width: maxWidth }
-        )
+          { indent: "  ", width: maxWidth },
+        ),
       );
     }
 

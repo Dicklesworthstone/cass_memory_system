@@ -7,45 +7,58 @@
  * The agent itself does the reflection work - no API costs!
  */
 
+import fs from "node:fs/promises";
+import path from "node:path";
 import chalk from "chalk";
-import { loadConfig } from "../config.js";
-import { loadMergedPlaybook, getActiveBullets } from "../playbook.js";
-import { cassExport, handleCassUnavailable, cassTimeline, CassSearchOptions, safeCassSearchWithDegraded } from "../cass.js";
 import {
-  getCliName,
+  type CassSearchOptions,
+  cassExport,
+  cassTimeline,
+  handleCassUnavailable,
+  safeCassSearchWithDegraded,
+} from "../cass.js";
+import { loadConfig } from "../config.js";
+import {
+  analyzePlaybookGaps,
+  detectCategories,
+  getGapSearchQueries,
+  type PlaybookGapAnalysis,
+  RULE_CATEGORIES,
+  type RuleCategory,
+  scoreSessionForGaps,
+} from "../gap-analysis.js";
+import {
+  filterUnprocessedSessions,
+  getOnboardProgress,
+  loadOnboardState,
+  markSessionProcessed,
+  type OnboardProgress,
+  resetOnboardState,
+} from "../onboard-state.js";
+import {
+  agentIconPrefix,
+  formatKv,
+  formatRule,
+  getOutputStyle,
+  icon,
+  iconPrefix,
+} from "../output.js";
+import { getActiveBullets, loadMergedPlaybook } from "../playbook.js";
+import { createProgress, type ProgressReporter } from "../progress.js";
+import { findSimilarBulletsSemantic, resolveSemanticEnabled } from "../semantic.js";
+import { getProcessedLogPath, ProcessedLog } from "../tracking.js";
+import { ErrorCode } from "../types.js";
+import {
   expandPath,
   formatRelativeTime,
+  getCliName,
+  now,
   printJson,
   printJsonResult,
   reportError,
   validateNonEmptyString,
   validatePositiveInt,
-  now
 } from "../utils.js";
-import { agentIconPrefix, formatKv, formatRule, getOutputStyle, icon, iconPrefix } from "../output.js";
-import { createProgress, type ProgressReporter } from "../progress.js";
-import { ErrorCode } from "../types.js";
-import {
-  loadOnboardState,
-  markSessionProcessed,
-  resetOnboardState,
-  getOnboardProgress,
-  filterUnprocessedSessions,
-  OnboardProgress,
-} from "../onboard-state.js";
-import {
-  analyzePlaybookGaps,
-  getGapSearchQueries,
-  scoreSessionForGaps,
-  detectCategories,
-  RULE_CATEGORIES,
-  type PlaybookGapAnalysis,
-  type RuleCategory,
-} from "../gap-analysis.js";
-import { findSimilarBulletsSemantic, resolveSemanticEnabled } from "../semantic.js";
-import { ProcessedLog, getProcessedLogPath } from "../tracking.js";
-import path from "node:path";
-import fs from "node:fs/promises";
 
 interface OnboardStatus {
   cassAvailable: boolean;
@@ -84,12 +97,27 @@ interface OnboardJsonOutput {
 // RULE_CATEGORIES is imported from gap-analysis.ts (single source of truth)
 
 const EXAMPLE_RULES = [
-  { rule: "Before implementing a fix, search the codebase to verify the issue still exists", category: "debugging" },
-  { rule: "When claiming a task, first check its current status - another agent may have completed it", category: "workflow" },
-  { rule: "When parsing JSON from external CLIs, handle both arrays and wrapper objects", category: "integration" },
+  {
+    rule: "Before implementing a fix, search the codebase to verify the issue still exists",
+    category: "debugging",
+  },
+  {
+    rule: "When claiming a task, first check its current status - another agent may have completed it",
+    category: "workflow",
+  },
+  {
+    rule: "When parsing JSON from external CLIs, handle both arrays and wrapper objects",
+    category: "integration",
+  },
   { rule: "Always run the full test suite before committing", category: "testing" },
-  { rule: "Use centralized constant files instead of hardcoding magic strings", category: "architecture" },
-  { rule: "AVOID: Mocking entire modules in tests - prefer mocking specific functions", category: "testing" },
+  {
+    rule: "Use centralized constant files instead of hardcoding magic strings",
+    category: "architecture",
+  },
+  {
+    rule: "AVOID: Mocking entire modules in tests - prefer mocking specific functions",
+    category: "testing",
+  },
 ];
 
 async function getOnboardStatus(): Promise<OnboardStatus> {
@@ -169,13 +197,7 @@ async function sampleDiverseSessions(options: SampleOptions = {}): Promise<{
     queries = getGapSearchQueries(options.gapAnalysis);
     // Fall back to default queries if no gaps
     if (queries.length === 0) {
-      queries = [
-        "fix bug error",
-        "implement feature",
-        "refactor",
-        "test",
-        "documentation",
-      ];
+      queries = ["fix bug error", "implement feature", "refactor", "test", "documentation"];
     }
   } else {
     queries = [
@@ -196,7 +218,7 @@ async function sampleDiverseSessions(options: SampleOptions = {}): Promise<{
 
   const totalQueries = queries.length;
   let queriesCompleted = 0;
-  
+
   if (typeof options.onProgress === "function") {
     try {
       options.onProgress({ current: 0, total: totalQueries, message: "Sampling sessions..." });
@@ -211,54 +233,61 @@ async function sampleDiverseSessions(options: SampleOptions = {}): Promise<{
     if (sessions.size >= limit * 2) break;
 
     const batch = queries.slice(i, i + BATCH_SIZE);
-    await Promise.all(batch.map(async (query) => {
-      // Check limit inside the parallel execution too (optimization)
-      if (sessions.size >= limit * 2) return;
+    await Promise.all(
+      batch.map(async (query) => {
+        // Check limit inside the parallel execution too (optimization)
+        if (sessions.size >= limit * 2) return;
 
-      try {
-        const searchOpts: CassSearchOptions = {
-          limit: 5,
-          days,
-          workspace: options.workspace,
-          agent: options.agent,
-        };
-        const { hits } = await safeCassSearchWithDegraded(query, searchOpts, config.cassPath, config);
-        
-        for (const hit of hits) {
-          if (sessions.size >= limit * 2) break; // strict limit check
-          
-          if (!sessions.has(hit.source_path)) {
-            const session: SessionSample = {
-              path: hit.source_path,
-              agent: hit.agent,
-              workspace: hit.workspace || path.dirname(hit.source_path),
-              snippet: hit.snippet,
-              score: hit.score ?? 0,
-            };
+        try {
+          const searchOpts: CassSearchOptions = {
+            limit: 5,
+            days,
+            workspace: options.workspace,
+            agent: options.agent,
+          };
+          const { hits } = await safeCassSearchWithDegraded(
+            query,
+            searchOpts,
+            config.cassPath,
+            config,
+          );
 
-            // Score against gaps if analysis is provided
-            if (options.gapAnalysis) {
-              const gapResult = scoreSessionForGaps(hit.snippet, options.gapAnalysis);
-              session.gapScore = gapResult.score;
-              session.matchedCategories = gapResult.matchedCategories;
-              session.gapReason = gapResult.reason;
+          for (const hit of hits) {
+            if (sessions.size >= limit * 2) break; // strict limit check
+
+            if (!sessions.has(hit.source_path)) {
+              const session: SessionSample = {
+                path: hit.source_path,
+                agent: hit.agent,
+                workspace: hit.workspace || path.dirname(hit.source_path),
+                snippet: hit.snippet,
+                score: hit.score ?? 0,
+              };
+
+              // Score against gaps if analysis is provided
+              if (options.gapAnalysis) {
+                const gapResult = scoreSessionForGaps(hit.snippet, options.gapAnalysis);
+                session.gapScore = gapResult.score;
+                session.matchedCategories = gapResult.matchedCategories;
+                session.gapReason = gapResult.reason;
+              }
+
+              sessions.set(hit.source_path, session);
             }
-
-            sessions.set(hit.source_path, session);
           }
+        } catch {
+          // Ignore search errors
         }
-      } catch {
-        // Ignore search errors
-      }
-    }));
+      }),
+    );
 
     queriesCompleted += batch.length;
     if (typeof options.onProgress === "function") {
       try {
-        options.onProgress({ 
-          current: Math.min(queriesCompleted, totalQueries), 
-          total: totalQueries, 
-          message: `Sampling sessions (${sessions.size} found)...` 
+        options.onProgress({
+          current: Math.min(queriesCompleted, totalQueries),
+          total: totalQueries,
+          message: `Sampling sessions (${sessions.size} found)...`,
         });
       } catch {
         // Best-effort
@@ -304,26 +333,32 @@ async function exportSessionForAgent(sessionPath: string): Promise<string | null
  */
 function generateSuggestedFocus(
   gapAnalysis: PlaybookGapAnalysis,
-  topicHints: RuleCategory[]
+  topicHints: RuleCategory[],
 ): string {
   const parts: string[] = [];
 
   // Check for overlap between detected topics and gaps
-  const criticalOverlap = topicHints.filter(t => gapAnalysis.gaps.critical.includes(t));
-  const underrepOverlap = topicHints.filter(t => gapAnalysis.gaps.underrepresented.includes(t));
+  const criticalOverlap = topicHints.filter((t) => gapAnalysis.gaps.critical.includes(t));
+  const underrepOverlap = topicHints.filter((t) => gapAnalysis.gaps.underrepresented.includes(t));
 
   if (criticalOverlap.length > 0) {
-    parts.push(`This session may contain ${criticalOverlap.join(", ")} patterns - you have NO rules in these areas!`);
+    parts.push(
+      `This session may contain ${criticalOverlap.join(", ")} patterns - you have NO rules in these areas!`,
+    );
   }
 
   if (underrepOverlap.length > 0) {
-    parts.push(`Look for ${underrepOverlap.join(", ")} insights - these categories need more rules.`);
+    parts.push(
+      `Look for ${underrepOverlap.join(", ")} insights - these categories need more rules.`,
+    );
   }
 
   if (parts.length === 0) {
     // No gap overlap, give general guidance based on topics
     if (topicHints.length > 0) {
-      parts.push(`Focus on extracting ${topicHints.slice(0, 2).join(" and ")} patterns from this session.`);
+      parts.push(
+        `Focus on extracting ${topicHints.slice(0, 2).join(" and ")} patterns from this session.`,
+      );
     } else {
       parts.push("Look for debugging strategies, workflow insights, or tool-specific knowledge.");
     }
@@ -331,7 +366,9 @@ function generateSuggestedFocus(
 
   // Add general gaps if we have room
   if (gapAnalysis.gaps.critical.length > 0 && criticalOverlap.length === 0) {
-    parts.push(`Also note: you have NO rules for ${gapAnalysis.gaps.critical.slice(0, 3).join(", ")}.`);
+    parts.push(
+      `Also note: you have NO rules for ${gapAnalysis.gaps.critical.slice(0, 3).join(", ")}.`,
+    );
   }
 
   return parts.join(" ");
@@ -374,11 +411,11 @@ You are analyzing a coding session to extract reusable rules for the playbook.
 
 ## Categories to Use
 
-${RULE_CATEGORIES.map(c => `- ${c}`).join("\n")}
+${RULE_CATEGORIES.map((c) => `- ${c}`).join("\n")}
 
 ## Example Rules
 
-${EXAMPLE_RULES.map(e => `- [${e.category}] "${e.rule}"`).join("\n")}
+${EXAMPLE_RULES.map((e) => `- [${e.category}] "${e.rule}"`).join("\n")}
 
 ## After Analysis
 
@@ -459,11 +496,11 @@ Process 10-20 diverse sessions for a good initial playbook.
 
 ## Categories
 
-${RULE_CATEGORIES.map(c => `- \`${c}\``).join("\n")}
+${RULE_CATEGORIES.map((c) => `- \`${c}\``).join("\n")}
 
 ## Example Rules
 
-${EXAMPLE_RULES.map(e => `- **${e.category}**: "${e.rule}"`).join("\n")}
+${EXAMPLE_RULES.map((e) => `- **${e.category}**: "${e.rule}"`).join("\n")}
 `.trim();
 }
 
@@ -496,47 +533,50 @@ export async function onboardCommand(
     fillGaps?: boolean;
     gaps?: boolean;
     template?: boolean;
-  } = {}
+  } = {},
 ): Promise<void> {
   const startedAtMs = Date.now();
   const cli = getCliName();
 
   // Handle --reset first (destructive operation)
-	  if (options.reset) {
-	    const canPrompt = Boolean(!options.json && process.stdin.isTTY && process.stdout.isTTY);
-	
-	    if (!options.yes) {
-	      if (canPrompt) {
-	        // Interactive confirmation
-	        const readline = await import("node:readline");
-	        const rl = readline.createInterface({
-	          input: process.stdin,
-	          output: process.stdout,
-	        });
-	        const answer = await new Promise<string>((resolve) => {
-	          rl.question(chalk.yellow("Reset onboarding progress? This cannot be undone. [y/N] "), resolve);
-	        });
-	        rl.close();
-	        if (answer.toLowerCase() !== "y") {
-	          console.log(chalk.dim("Cancelled."));
-	          return;
-	        }
-	      } else {
-	        reportError("Confirmation required to reset onboarding progress", {
-	          code: ErrorCode.MISSING_REQUIRED,
-	          hint: "Re-run with --yes",
-	          details: { missing: "confirmation" },
-	          json: options.json,
-            command: "onboard:reset",
-            startedAtMs,
-	        });
-	        return;
-	      }
-	    }
-	    await resetOnboardState();
-	    if (options.json) {
-	      printJsonResult("onboard:reset", { message: "Onboarding progress reset" }, { startedAtMs });
-	    } else {
+  if (options.reset) {
+    const canPrompt = Boolean(!options.json && process.stdin.isTTY && process.stdout.isTTY);
+
+    if (!options.yes) {
+      if (canPrompt) {
+        // Interactive confirmation
+        const readline = await import("node:readline");
+        const rl = readline.createInterface({
+          input: process.stdin,
+          output: process.stdout,
+        });
+        const answer = await new Promise<string>((resolve) => {
+          rl.question(
+            chalk.yellow("Reset onboarding progress? This cannot be undone. [y/N] "),
+            resolve,
+          );
+        });
+        rl.close();
+        if (answer.toLowerCase() !== "y") {
+          console.log(chalk.dim("Cancelled."));
+          return;
+        }
+      } else {
+        reportError("Confirmation required to reset onboarding progress", {
+          code: ErrorCode.MISSING_REQUIRED,
+          hint: "Re-run with --yes",
+          details: { missing: "confirmation" },
+          json: options.json,
+          command: "onboard:reset",
+          startedAtMs,
+        });
+        return;
+      }
+    }
+    await resetOnboardState();
+    if (options.json) {
+      printJsonResult("onboard:reset", { message: "Onboarding progress reset" }, { startedAtMs });
+    } else {
       console.log(chalk.green(`${icon("success")} Onboarding progress reset`));
     }
     return;
@@ -566,16 +606,20 @@ export async function onboardCommand(
     await processedLog.append({
       sessionPath,
       processedAt: now(),
-      deltasGenerated: 0
+      deltasGenerated: 0,
     });
 
     if (options.json) {
-      printJsonResult("onboard:mark-done", {
-        message: "Session marked as processed",
-        sessionPath,
-        rulesExtracted: 0,
-        skipped: true,
-      }, { startedAtMs });
+      printJsonResult(
+        "onboard:mark-done",
+        {
+          message: "Session marked as processed",
+          sessionPath,
+          rulesExtracted: 0,
+          skipped: true,
+        },
+        { startedAtMs },
+      );
     } else {
       console.log(chalk.green(`${icon("success")} Marked as processed: ${sessionPath}`));
       console.log(chalk.dim("  (0 rules extracted - session skipped)"));
@@ -635,17 +679,24 @@ export async function onboardCommand(
       console.log(chalk.bold("CATEGORY BREAKDOWN:"));
       for (const cat of RULE_CATEGORIES) {
         const analysis = gapAnalysis.byCategory[cat];
-        const bar = "█".repeat(Math.min(20, analysis.count)) + "░".repeat(Math.max(0, 20 - analysis.count));
-        const statusColor = analysis.status === "critical" ? chalk.red
-          : analysis.status === "underrepresented" ? chalk.yellow
-          : analysis.status === "adequate" ? chalk.blue
-          : chalk.green;
+        const bar =
+          "█".repeat(Math.min(20, analysis.count)) + "░".repeat(Math.max(0, 20 - analysis.count));
+        const statusColor =
+          analysis.status === "critical"
+            ? chalk.red
+            : analysis.status === "underrepresented"
+              ? chalk.yellow
+              : analysis.status === "adequate"
+                ? chalk.blue
+                : chalk.green;
         console.log(`  ${cat.padEnd(15)} ${statusColor(bar)} ${analysis.count}`);
       }
 
       console.log("");
       console.log(chalk.yellow(gapAnalysis.suggestions));
-      console.log(chalk.dim(`\nTo sample sessions that fill gaps: ${cli} onboard sample --fill-gaps`));
+      console.log(
+        chalk.dim(`\nTo sample sessions that fill gaps: ${cli} onboard sample --fill-gaps`),
+      );
     }
     return;
   }
@@ -659,11 +710,14 @@ export async function onboardCommand(
       console.log(chalk.bold("ONBOARDING STATUS"));
       console.log(chalk.dim(formatRule("─", { maxWidth })));
       console.log(
-        formatKv([
-          { key: "cass available", value: status.cassAvailable ? "yes" : "no" },
-          { key: "Playbook rules", value: String(status.playbookRules) },
-          { key: "Needs onboarding", value: status.needsOnboarding ? "yes" : "no" },
-        ], { indent: "  ", width: maxWidth })
+        formatKv(
+          [
+            { key: "cass available", value: status.cassAvailable ? "yes" : "no" },
+            { key: "Playbook rules", value: String(status.playbookRules) },
+            { key: "Needs onboarding", value: status.needsOnboarding ? "yes" : "no" },
+          ],
+          { indent: "  ", width: maxWidth },
+        ),
       );
 
       // Show progress if we have any
@@ -672,12 +726,21 @@ export async function onboardCommand(
         console.log(chalk.bold("PROGRESS"));
         console.log(chalk.dim(formatRule("─", { maxWidth })));
         console.log(
-          formatKv([
-            { key: "Sessions analyzed", value: String(progress.sessionsProcessed) },
-            { key: "Rules extracted", value: String(progress.rulesExtracted) },
-            { key: "Started", value: progress.startedAt ? formatRelativeTime(progress.startedAt) : "never" },
-            { key: "Last activity", value: progress.lastActivity ? formatRelativeTime(progress.lastActivity) : "never" },
-          ], { indent: "  ", width: maxWidth })
+          formatKv(
+            [
+              { key: "Sessions analyzed", value: String(progress.sessionsProcessed) },
+              { key: "Rules extracted", value: String(progress.rulesExtracted) },
+              {
+                key: "Started",
+                value: progress.startedAt ? formatRelativeTime(progress.startedAt) : "never",
+              },
+              {
+                key: "Last activity",
+                value: progress.lastActivity ? formatRelativeTime(progress.lastActivity) : "never",
+              },
+            ],
+            { indent: "  ", width: maxWidth },
+          ),
         );
       }
 
@@ -702,7 +765,10 @@ export async function onboardCommand(
 
   // Sample sessions
   if (options.sample) {
-    const limitCheck = validatePositiveInt(options.limit, "limit", { min: 1, allowUndefined: true });
+    const limitCheck = validatePositiveInt(options.limit, "limit", {
+      min: 1,
+      allowUndefined: true,
+    });
     if (!limitCheck.ok) {
       reportError(limitCheck.message, {
         code: ErrorCode.INVALID_INPUT,
@@ -728,7 +794,9 @@ export async function onboardCommand(
       return;
     }
 
-    const workspaceCheck = validateNonEmptyString(options.workspace, "workspace", { allowUndefined: true });
+    const workspaceCheck = validateNonEmptyString(options.workspace, "workspace", {
+      allowUndefined: true,
+    });
     if (!workspaceCheck.ok) {
       reportError(workspaceCheck.message, {
         code: ErrorCode.INVALID_INPUT,
@@ -782,23 +850,29 @@ export async function onboardCommand(
     sampleProgressRef.current = null;
 
     if (options.json) {
-      printJsonResult("onboard:sample", {
-        status,
-        progress,
-        step: "sample",
-        sessions,
-        totalFound,
-        filtered,
-        sessionsRemaining: sessions.length,
-        gapAnalysis: options.fillGaps ? gapAnalysis : undefined,
-      }, { startedAtMs });
+      printJsonResult(
+        "onboard:sample",
+        {
+          status,
+          progress,
+          step: "sample",
+          sessions,
+          totalFound,
+          filtered,
+          sessionsRemaining: sessions.length,
+          gapAnalysis: options.fillGaps ? gapAnalysis : undefined,
+        },
+        { startedAtMs },
+      );
     } else {
       const title = options.fillGaps
         ? "SAMPLED SESSIONS FOR GAP-FILLING"
         : "SAMPLED SESSIONS FOR ANALYSIS";
       console.log(chalk.bold(title));
       if (options.fillGaps) {
-        const priorityCategories = gapAnalysis.gaps.critical.concat(gapAnalysis.gaps.underrepresented).slice(0, 3);
+        const priorityCategories = gapAnalysis.gaps.critical
+          .concat(gapAnalysis.gaps.underrepresented)
+          .slice(0, 3);
         if (priorityCategories.length > 0) {
           console.log(chalk.dim(`(prioritized for: ${priorityCategories.join(", ")})`));
         } else {
@@ -814,11 +888,15 @@ export async function onboardCommand(
         console.log(chalk.yellow("No unprocessed sessions found."));
         if (progress.sessionsProcessed > 0) {
           console.log(chalk.dim(`You've analyzed ${progress.sessionsProcessed} sessions so far.`));
-          console.log(chalk.dim(`Use --include-processed to see all sessions, or --reset to start over.`));
+          console.log(
+            chalk.dim(`Use --include-processed to see all sessions, or --reset to start over.`),
+          );
         }
       } else {
         for (const s of sessions) {
-          console.log(chalk.cyan(`${agentIconPrefix(s.agent)}[${s.agent}] ${path.basename(s.workspace)}`));
+          console.log(
+            chalk.cyan(`${agentIconPrefix(s.agent)}[${s.agent}] ${path.basename(s.workspace)}`),
+          );
           console.log(chalk.dim(`  ${s.path}`));
           if (options.fillGaps && s.gapScore !== undefined && s.gapScore > 0) {
             const cats = s.matchedCategories?.join(", ") || "";
@@ -876,7 +954,7 @@ export async function onboardCommand(
 
       // Extract metadata from session content
       const lines = content.split("\n");
-      const messageCount = lines.filter(l => l.trim().length > 0).length;
+      const messageCount = lines.filter((l) => l.trim().length > 0).length;
 
       // Detect topics from session content (first ~5000 chars)
       const contentSnippet = content.slice(0, 5000);
@@ -895,15 +973,12 @@ export async function onboardCommand(
         });
         relatedProgress.update(0, "Searching for related rules...");
         try {
-          const matches = await findSimilarBulletsSemantic(
-            contentSnippet,
-            activeBullets,
-            5,
-            { model: config.embeddingModel }
-          );
+          const matches = await findSimilarBulletsSemantic(contentSnippet, activeBullets, 5, {
+            model: config.embeddingModel,
+          });
           relatedRules = matches
-            .filter(m => m.similarity >= 0.3)
-            .map(m => ({
+            .filter((m) => m.similarity >= 0.3)
+            .map((m) => ({
               id: m.bullet.id,
               content: m.bullet.content,
               similarity: Math.round(m.similarity * 100) / 100,
@@ -970,12 +1045,18 @@ export async function onboardCommand(
           console.log(chalk.red(`  Critical gaps: ${gapAnalysis.gaps.critical.join(", ")}`));
         }
         if (gapAnalysis.gaps.underrepresented.length > 0) {
-          console.log(chalk.yellow(`  Low coverage: ${gapAnalysis.gaps.underrepresented.join(", ")}`));
+          console.log(
+            chalk.yellow(`  Low coverage: ${gapAnalysis.gaps.underrepresented.join(", ")}`),
+          );
         }
         if (relatedRules.length > 0) {
           console.log(chalk.cyan("  Related rules:"));
           for (const r of relatedRules.slice(0, 3)) {
-            console.log(chalk.dim(`    • "${r.content.slice(0, 60)}..." (${Math.round(r.similarity * 100)}%)`));
+            console.log(
+              chalk.dim(
+                `    • "${r.content.slice(0, 60)}..." (${Math.round(r.similarity * 100)}%)`,
+              ),
+            );
           }
         }
         console.log("");
@@ -1003,13 +1084,17 @@ export async function onboardCommand(
 
     // Standard read (non-template)
     if (options.json) {
-      printJsonResult("onboard:read", {
-        status,
-        step: "read",
-        sessionPath: options.read,
-        sessionContent: content,
-        extractionPrompt: getExtractionPrompt(),
-      }, { startedAtMs });
+      printJsonResult(
+        "onboard:read",
+        {
+          status,
+          step: "read",
+          sessionPath: options.read,
+          sessionContent: content,
+          extractionPrompt: getExtractionPrompt(),
+        },
+        { startedAtMs },
+      );
     } else {
       if (content) {
         console.log(chalk.bold(`SESSION: ${options.read}`));
@@ -1032,13 +1117,17 @@ export async function onboardCommand(
   // Show extraction prompt
   if (options.prompt) {
     if (options.json) {
-      printJsonResult("onboard:prompt", {
-        status,
-        step: "prompt",
-        extractionPrompt: getExtractionPrompt(),
-        categories: [...RULE_CATEGORIES],
-        examples: EXAMPLE_RULES,
-      }, { startedAtMs });
+      printJsonResult(
+        "onboard:prompt",
+        {
+          status,
+          step: "prompt",
+          extractionPrompt: getExtractionPrompt(),
+          categories: [...RULE_CATEGORIES],
+          examples: EXAMPLE_RULES,
+        },
+        { startedAtMs },
+      );
     } else {
       console.log(getExtractionPrompt());
     }

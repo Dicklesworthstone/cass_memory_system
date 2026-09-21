@@ -1,25 +1,25 @@
-import http from "node:http";
 import { createHash, timingSafeEqual } from "node:crypto";
+import http from "node:http";
 import { performance } from "node:perf_hooks";
-import { generateContextResult } from "./context.js";
-import { recordFeedback } from "./mark.js";
-import { recordOutcome, loadOutcomes } from "../outcome.js";
-import { loadConfig } from "../config.js";
-import { loadMergedPlaybook, getActiveBullets } from "../playbook.js";
-import { loadAllDiaries } from "../diary.js";
 import { safeCassSearch } from "../cass.js";
+import { loadConfig } from "../config.js";
+import { loadAllDiaries } from "../diary.js";
+import { loadOutcomes, recordOutcome } from "../outcome.js";
+import { getActiveBullets, loadMergedPlaybook } from "../playbook.js";
+import { analyzeScoreDistribution, getEffectiveScore, isStale } from "../scoring.js";
+import { type Config, ErrorCode, type PlaybookBullet } from "../types.js";
 import {
+  getVersion,
   log,
-  warn,
   error as logError,
   reportError,
-  getVersion,
   validateNonEmptyString,
   validateOneOf,
   validatePositiveInt,
+  warn,
 } from "../utils.js";
-import { analyzeScoreDistribution, getEffectiveScore, isStale } from "../scoring.js";
-import { ErrorCode, type Config, type PlaybookBullet } from "../types.js";
+import { generateContextResult } from "./context.js";
+import { recordFeedback } from "./mark.js";
 
 // --- CASS-backed admission control (bounded concurrency) --------------------
 //
@@ -62,12 +62,12 @@ export class AdmissionBusyError extends Error {
   readonly retryable = true;
   constructor(
     readonly reason: "queue_full" | "queue_timeout",
-    readonly snapshot: AdmissionSnapshot
+    readonly snapshot: AdmissionSnapshot,
   ) {
     super(
       reason === "queue_full"
         ? "cass search server busy: admission queue is full; retry shortly"
-        : "cass search server busy: timed out waiting for an admission slot; retry shortly"
+        : "cass search server busy: timed out waiting for an admission slot; retry shortly",
     );
     this.name = "AdmissionBusyError";
   }
@@ -97,11 +97,16 @@ export class CassAdmissionController {
   constructor(
     readonly limit: number,
     readonly maxQueue: number, // 0 = unbounded queue
-    readonly queueTimeoutMs: number // 0 = wait indefinitely
+    readonly queueTimeoutMs: number, // 0 = wait indefinitely
   ) {}
 
   snapshot(): AdmissionSnapshot {
-    return { inFlight: this.inFlight, queued: this.queue.length, limit: this.limit, maxQueue: this.maxQueue };
+    return {
+      inFlight: this.inFlight,
+      queued: this.queue.length,
+      limit: this.limit,
+      maxQueue: this.maxQueue,
+    };
   }
 
   metrics(): AdmissionMetrics {
@@ -243,10 +248,7 @@ async function withCassAdmission<T>(label: string, fn: () => Promise<T>): Promis
 function assertArgs(args: any, required: Record<string, string>) {
   if (!args) throw new Error("missing arguments");
   for (const [key, type] of Object.entries(required)) {
-    const ok =
-      type === "array"
-        ? Array.isArray(args[key])
-        : typeof args[key] === type;
+    const ok = type === "array" ? Array.isArray(args[key]) : typeof args[key] === type;
     if (!ok) {
       throw new Error(`invalid or missing '${key}' (expected ${type})`);
     }
@@ -268,7 +270,11 @@ type JsonRpcRequest = {
 
 type JsonRpcResponse =
   | { jsonrpc: "2.0"; id: string | number | null; result: any }
-  | { jsonrpc: "2.0"; id: string | number | null; error: { code: number; message: string; data?: any } };
+  | {
+      jsonrpc: "2.0";
+      id: string | number | null;
+      error: { code: number; message: string; data?: any };
+    };
 
 // Latest MCP protocol version this server implements. We echo the client's
 // requested version when it is a string (per the MCP spec's version
@@ -292,10 +298,10 @@ const TOOL_DEFS = [
         limit: { type: "integer", minimum: 1, description: "Max rules to return" },
         top: { type: "integer", minimum: 1, description: "DEPRECATED: use limit" },
         history: { type: "integer", minimum: 1 },
-        days: { type: "integer", minimum: 1 }
+        days: { type: "integer", minimum: 1 },
       },
-      required: ["task"]
-    }
+      required: ["task"],
+    },
   },
   {
     name: "cm_feedback",
@@ -307,10 +313,10 @@ const TOOL_DEFS = [
         helpful: { type: "boolean" },
         harmful: { type: "boolean" },
         reason: { type: "string" },
-        session: { type: "string" }
+        session: { type: "string" },
       },
-      required: ["bulletId"]
-    }
+      required: ["bulletId"],
+    },
   },
   {
     name: "cm_outcome",
@@ -323,10 +329,10 @@ const TOOL_DEFS = [
         rulesUsed: { type: "array", items: { type: "string" } },
         notes: { type: "string" },
         task: { type: "string" },
-        durationSec: { type: "integer", minimum: 0 }
+        durationSec: { type: "integer", minimum: 0 },
       },
-      required: ["sessionId", "outcome"]
-    }
+      required: ["sessionId", "outcome"],
+    },
   },
   {
     name: "memory_search",
@@ -339,10 +345,10 @@ const TOOL_DEFS = [
         limit: { type: "integer", minimum: 1, maximum: 100, default: 10 },
         days: { type: "integer", minimum: 1, description: "Limit cass search to lookback days" },
         agent: { type: "string", description: "Filter cass search by agent" },
-        workspace: { type: "string", description: "Filter cass search by workspace" }
+        workspace: { type: "string", description: "Filter cass search by workspace" },
       },
-      required: ["query"]
-    }
+      required: ["query"],
+    },
   },
   {
     name: "memory_reflect",
@@ -350,53 +356,68 @@ const TOOL_DEFS = [
     inputSchema: {
       type: "object",
       properties: {
-        days: { type: "integer", minimum: 1, description: "Look back this many days for sessions", default: 7 },
-        maxSessions: { type: "integer", minimum: 1, maximum: 200, description: "Maximum sessions to process", default: 20 },
-        dryRun: { type: "boolean", description: "If true, return proposed changes without applying", default: false },
+        days: {
+          type: "integer",
+          minimum: 1,
+          description: "Look back this many days for sessions",
+          default: 7,
+        },
+        maxSessions: {
+          type: "integer",
+          minimum: 1,
+          maximum: 200,
+          description: "Maximum sessions to process",
+          default: 20,
+        },
+        dryRun: {
+          type: "boolean",
+          description: "If true, return proposed changes without applying",
+          default: false,
+        },
         workspace: { type: "string", description: "Workspace path to limit session search" },
-        session: { type: "string", description: "Specific session path to reflect on" }
-      }
-    }
-  }
+        session: { type: "string", description: "Specific session path to reflect on" },
+      },
+    },
+  },
 ];
 
 const RESOURCE_DEFS = [
   {
     uri: "cm://playbook",
-    description: "Merged playbook (global + repo)"
+    description: "Merged playbook (global + repo)",
   },
   {
     uri: "cm://diary",
-    description: "Recent diary entries"
+    description: "Recent diary entries",
   },
   {
     uri: "cm://outcomes",
-    description: "Recent recorded outcomes"
+    description: "Recent recorded outcomes",
   },
   {
     uri: "cm://stats",
     name: "Playbook Stats",
     description: "Playbook health metrics",
-    mimeType: "application/json"
+    mimeType: "application/json",
   },
   {
     uri: "memory://stats",
     name: "Playbook Stats (alias)",
     description: "Playbook health metrics",
-    mimeType: "application/json"
+    mimeType: "application/json",
   },
   {
     uri: "cm://serve",
     name: "Serve Admission Metrics",
     description: "CASS-backed concurrency limiter: in-flight, queue depth, wait latency, rejects",
-    mimeType: "application/json"
+    mimeType: "application/json",
   },
   {
     uri: "memory://serve",
     name: "Serve Admission Metrics (alias)",
     description: "CASS-backed concurrency limiter metrics",
-    mimeType: "application/json"
-  }
+    mimeType: "application/json",
+  },
 ];
 
 const MAX_BODY_BYTES = 5 * 1024 * 1024; // 5MB guard to avoid runaway payloads
@@ -498,11 +519,16 @@ async function handleToolCall(name: string, args: any): Promise<any> {
       if (!limit.ok) throw new Error(limit.message);
       const top = validatePositiveInt(args?.top, "top", { min: 1, allowUndefined: true });
       if (!top.ok) throw new Error(top.message);
-      const history = validatePositiveInt(args?.history, "history", { min: 1, allowUndefined: true });
+      const history = validatePositiveInt(args?.history, "history", {
+        min: 1,
+        allowUndefined: true,
+      });
       if (!history.ok) throw new Error(history.message);
       const days = validatePositiveInt(args?.days, "days", { min: 1, allowUndefined: true });
       if (!days.ok) throw new Error(days.message);
-      const workspace = validateNonEmptyString(args?.workspace, "workspace", { allowUndefined: true });
+      const workspace = validateNonEmptyString(args?.workspace, "workspace", {
+        allowUndefined: true,
+      });
       if (!workspace.ok) throw new Error(workspace.message);
 
       // cm_context fans out to cass history — gate it under the admission limiter.
@@ -512,8 +538,8 @@ async function handleToolCall(name: string, args: any): Promise<any> {
           history: history.value,
           days: days.value,
           workspace: workspace.value,
-          json: true
-        })
+          json: true,
+        }),
       );
       return context.result;
     }
@@ -524,7 +550,10 @@ async function handleToolCall(name: string, args: any): Promise<any> {
       if (helpful === harmful) {
         throw new Error("cm_feedback requires exactly one of helpful or harmful to be set");
       }
-      const reason = validateNonEmptyString(args?.reason, "reason", { allowUndefined: true, trim: false });
+      const reason = validateNonEmptyString(args?.reason, "reason", {
+        allowUndefined: true,
+        trim: false,
+      });
       if (!reason.ok) throw new Error(reason.message);
       const session = validateNonEmptyString(args?.session, "session", { allowUndefined: true });
       if (!session.ok) throw new Error(session.message);
@@ -532,7 +561,7 @@ async function handleToolCall(name: string, args: any): Promise<any> {
         helpful,
         harmful,
         reason: reason.value,
-        session: session.value
+        session: session.value,
       });
       return { success: true, ...result };
     }
@@ -541,23 +570,28 @@ async function handleToolCall(name: string, args: any): Promise<any> {
       if (!["success", "failure", "mixed", "partial"].includes(args.outcome)) {
         throw new Error("outcome must be success | failure | mixed | partial");
       }
-      const rulesUsed =
-        Array.isArray(args?.rulesUsed)
-          ? args.rulesUsed
-              .filter((r: unknown): r is string => typeof r === "string" && r.trim().length > 0)
-              .map((r: string) => r.trim())
-          : undefined;
-      const durationSec = validatePositiveInt(args?.durationSec, "durationSec", { min: 0, allowUndefined: true });
+      const rulesUsed = Array.isArray(args?.rulesUsed)
+        ? args.rulesUsed
+            .filter((r: unknown): r is string => typeof r === "string" && r.trim().length > 0)
+            .map((r: string) => r.trim())
+        : undefined;
+      const durationSec = validatePositiveInt(args?.durationSec, "durationSec", {
+        min: 0,
+        allowUndefined: true,
+      });
       if (!durationSec.ok) throw new Error(durationSec.message);
       const config = await loadConfig();
-      return recordOutcome({
-        sessionId: args?.sessionId,
-        outcome: args.outcome,
-        rulesUsed,
-        notes: typeof args?.notes === "string" ? args.notes : undefined,
-        task: typeof args?.task === "string" ? args.task : undefined,
-        durationSec: durationSec.value
-      }, config);
+      return recordOutcome(
+        {
+          sessionId: args?.sessionId,
+          outcome: args.outcome,
+          rulesUsed,
+          notes: typeof args?.notes === "string" ? args.notes : undefined,
+          task: typeof args?.task === "string" ? args.task : undefined,
+          durationSec: durationSec.value,
+        },
+        config,
+      );
     }
     case "memory_search": {
       assertArgs(args, { query: "string" });
@@ -570,7 +604,11 @@ async function handleToolCall(name: string, args: any): Promise<any> {
       if (!scopeCheck.ok) throw new Error(scopeCheck.message);
       const scope: "playbook" | "cass" | "both" = scopeCheck.value ?? "both";
 
-      const limitCheck = validatePositiveInt(args?.limit, "limit", { min: 1, max: 100, allowUndefined: true });
+      const limitCheck = validatePositiveInt(args?.limit, "limit", {
+        min: 1,
+        max: 100,
+        allowUndefined: true,
+      });
       if (!limitCheck.ok) throw new Error(limitCheck.message);
       const limit = limitCheck.value ?? 10;
 
@@ -582,7 +620,9 @@ async function handleToolCall(name: string, args: any): Promise<any> {
       if (!agentCheck.ok) throw new Error(agentCheck.message);
       const agent = agentCheck.value;
 
-      const workspaceCheck = validateNonEmptyString(args?.workspace, "workspace", { allowUndefined: true });
+      const workspaceCheck = validateNonEmptyString(args?.workspace, "workspace", {
+        allowUndefined: true,
+      });
       if (!workspaceCheck.ok) throw new Error(workspaceCheck.message);
       const workspace = workspaceCheck.value;
       const config = await loadConfig();
@@ -615,7 +655,12 @@ async function handleToolCall(name: string, args: any): Promise<any> {
         // Only the cass-backed branch contends on `cassPath`; a playbook-only
         // search stays unbounded and fast.
         const hits = await withCassAdmission("memory_search", () =>
-          safeCassSearch(queryCheck.value, { limit, days, agent, workspace }, config.cassPath, config)
+          safeCassSearch(
+            queryCheck.value,
+            { limit, days, agent, workspace },
+            config.cassPath,
+            config,
+          ),
         );
         maybeProfile("memory_search cass search", t0);
         result.cass = hits.map((h) => ({
@@ -635,34 +680,44 @@ async function handleToolCall(name: string, args: any): Promise<any> {
 
       const daysCheck = validatePositiveInt(args?.days, "days", { min: 1, allowUndefined: true });
       if (!daysCheck.ok) throw new Error(daysCheck.message);
-      const maxSessionsCheck = validatePositiveInt(args?.maxSessions, "maxSessions", { min: 1, max: 200, allowUndefined: true });
+      const maxSessionsCheck = validatePositiveInt(args?.maxSessions, "maxSessions", {
+        min: 1,
+        max: 200,
+        allowUndefined: true,
+      });
       if (!maxSessionsCheck.ok) throw new Error(maxSessionsCheck.message);
       const days = daysCheck.value ?? 7;
       const maxSessions = maxSessionsCheck.value ?? 20;
       const dryRun = Boolean(args?.dryRun);
-      const workspaceCheck = validateNonEmptyString(args?.workspace, "workspace", { allowUndefined: true });
+      const workspaceCheck = validateNonEmptyString(args?.workspace, "workspace", {
+        allowUndefined: true,
+      });
       if (!workspaceCheck.ok) throw new Error(workspaceCheck.message);
-      const sessionCheck = validateNonEmptyString(args?.session, "session", { allowUndefined: true });
+      const sessionCheck = validateNonEmptyString(args?.session, "session", {
+        allowUndefined: true,
+      });
       if (!sessionCheck.ok) throw new Error(sessionCheck.message);
       const workspace = workspaceCheck.value;
       const session = sessionCheck.value;
 
       // Delegate to orchestrator (reads cass sessions) under the admission limiter.
       const outcome = await withCassAdmission("memory_reflect", () =>
-        import("../orchestrator.js").then(m => m.orchestrateReflection(config, {
-          days,
-          maxSessions,
-          dryRun,
-          workspace,
-          session
-        }))
+        import("../orchestrator.js").then((m) =>
+          m.orchestrateReflection(config, {
+            days,
+            maxSessions,
+            dryRun,
+            workspace,
+            session,
+          }),
+        ),
       );
 
       // Construct response
       if (outcome.errors.length > 0) {
         // If no sessions processed but errors occurred, treat as error
         if (outcome.sessionsProcessed === 0) {
-           throw new Error(`Reflection failed: ${outcome.errors.join("; ")}`);
+          throw new Error(`Reflection failed: ${outcome.errors.join("; ")}`);
         }
         // Otherwise, just log them (partial success)
         logError(`Reflection partial errors: ${outcome.errors.join("; ")}`);
@@ -675,33 +730,49 @@ async function handleToolCall(name: string, args: any): Promise<any> {
           deltasGenerated: outcome.deltasGenerated,
           deltasApplied: 0,
           dryRun: true,
-          proposedDeltas: deltas.map(d => {
+          proposedDeltas: deltas.map((d) => {
             const base = { type: d.type };
             if (d.type === "add") {
-              return { ...base, content: d.bullet.content, category: d.bullet.category, reason: d.reason };
+              return {
+                ...base,
+                content: d.bullet.content,
+                category: d.bullet.category,
+                reason: d.reason,
+              };
             }
             if (d.type === "replace") {
               return { ...base, bulletId: d.bulletId, newContent: d.newContent, reason: d.reason };
             }
             if (d.type === "merge") {
-              return { ...base, bulletIds: d.bulletIds, mergedContent: d.mergedContent, reason: d.reason };
+              return {
+                ...base,
+                bulletIds: d.bulletIds,
+                mergedContent: d.mergedContent,
+                reason: d.reason,
+              };
             }
             if (d.type === "deprecate") {
               return { ...base, bulletId: d.bulletId, reason: d.reason };
             }
             // helpful/harmful
             if ("bulletId" in d) {
-              return { ...base, bulletId: d.bulletId, ...("reason" in d ? { reason: d.reason } : {}) };
+              return {
+                ...base,
+                bulletId: d.bulletId,
+                ...("reason" in d ? { reason: d.reason } : {}),
+              };
             }
             return base;
           }),
-          message: `Would apply ${outcome.deltasGenerated} changes from ${outcome.sessionsProcessed} sessions`
+          message: `Would apply ${outcome.deltasGenerated} changes from ${outcome.sessionsProcessed} sessions`,
         };
       }
 
       const applied = (outcome.globalResult?.applied || 0) + (outcome.repoResult?.applied || 0);
       const skipped = (outcome.globalResult?.skipped || 0) + (outcome.repoResult?.skipped || 0);
-      const inversions = (outcome.globalResult?.inversions?.length || 0) + (outcome.repoResult?.inversions?.length || 0);
+      const inversions =
+        (outcome.globalResult?.inversions?.length || 0) +
+        (outcome.repoResult?.inversions?.length || 0);
 
       maybeProfile("memory_reflect", t0);
 
@@ -711,9 +782,10 @@ async function handleToolCall(name: string, args: any): Promise<any> {
         deltasApplied: applied,
         skipped,
         inversions,
-        message: outcome.deltasGenerated > 0
-          ? `Applied ${applied} changes from ${outcome.sessionsProcessed} sessions`
-          : "No new insights found"
+        message:
+          outcome.deltasGenerated > 0
+            ? `Applied ${applied} changes from ${outcome.sessionsProcessed} sessions`
+            : "No new insights found",
       };
     }
     default:
@@ -721,7 +793,12 @@ async function handleToolCall(name: string, args: any): Promise<any> {
   }
 }
 
-function buildError(id: string | number | null, message: string, code = -32000, data?: any): JsonRpcResponse {
+function buildError(
+  id: string | number | null,
+  message: string,
+  code = -32000,
+  data?: any,
+): JsonRpcResponse {
   return { jsonrpc: "2.0", id, error: { code, message, data } };
 }
 
@@ -778,7 +855,10 @@ async function handleResourceRead(uri: string): Promise<any> {
  * `{ content: [{ type: "text", text: "..." }], isError?: boolean }`.
  * Returning the bare result object renders as "Tool ran without output".
  */
-function wrapToolResult(payload: unknown, isError = false): { content: Array<{ type: "text"; text: string }>; isError?: boolean } {
+function wrapToolResult(
+  payload: unknown,
+  isError = false,
+): { content: Array<{ type: "text"; text: string }>; isError?: boolean } {
   const text = typeof payload === "string" ? payload : JSON.stringify(payload);
   const wrapped: { content: Array<{ type: "text"; text: string }>; isError?: boolean } = {
     content: [{ type: "text", text }],
@@ -803,9 +883,8 @@ async function routeRequest(body: JsonRpcRequest): Promise<JsonRpcResponse> {
   // string (spec version negotiation), advertise the tools/resources we serve.
   if (body.method === "initialize") {
     const requested = body.params?.protocolVersion;
-    const protocolVersion = typeof requested === "string" && requested.trim() !== ""
-      ? requested
-      : MCP_PROTOCOL_VERSION;
+    const protocolVersion =
+      typeof requested === "string" && requested.trim() !== "" ? requested : MCP_PROTOCOL_VERSION;
     return {
       jsonrpc: "2.0",
       id: body.id ?? null,
@@ -909,7 +988,11 @@ export async function serveCommand(options: { port?: number; host?: string } = {
   const startedAtMs = Date.now();
   const command = "serve";
 
-  const portFromArgs = validatePositiveInt(options.port, "port", { min: 1, max: 65535, allowUndefined: true });
+  const portFromArgs = validatePositiveInt(options.port, "port", {
+    min: 1,
+    max: 65535,
+    allowUndefined: true,
+  });
   if (!portFromArgs.ok) {
     reportError(portFromArgs.message, {
       code: ErrorCode.INVALID_INPUT,
@@ -950,7 +1033,9 @@ export async function serveCommand(options: { port?: number; host?: string } = {
     });
     return;
   }
-  const hostFromEnv = validateNonEmptyString(process.env.MCP_HTTP_HOST, "MCP_HTTP_HOST", { allowUndefined: true });
+  const hostFromEnv = validateNonEmptyString(process.env.MCP_HTTP_HOST, "MCP_HTTP_HOST", {
+    allowUndefined: true,
+  });
   if (!hostFromEnv.ok) {
     reportError(hostFromEnv.message, {
       code: ErrorCode.INVALID_INPUT,
@@ -981,14 +1066,14 @@ export async function serveCommand(options: { port?: number; host?: string } = {
         hint: `Example: ${MCP_HTTP_TOKEN_ENV}='<random>' cm serve --host ${host} --port ${port}`,
         command,
         startedAtMs,
-      }
+      },
     );
     return;
   }
 
   if (!loopback && !token && allowInsecureNoToken) {
     warn(
-      `Warning: ${MCP_HTTP_UNSAFE_NO_TOKEN_ENV}=1 disables auth while binding to '${host}'. This exposes your playbook/diary/history to the network.`
+      `Warning: ${MCP_HTTP_UNSAFE_NO_TOKEN_ENV}=1 disables auth while binding to '${host}'. This exposes your playbook/diary/history to the network.`,
     );
   } else if (host === "0.0.0.0" && process.env.NODE_ENV !== "development") {
     warn("Warning: Binding to 0.0.0.0 exposes the server to the network. Ensure this is intended.");
@@ -1066,7 +1151,10 @@ export async function serveCommand(options: { port?: number; host?: string } = {
   const baseUrl = `http://${host}:${port}`;
   log(`MCP HTTP server listening on ${baseUrl}`, true);
   if (token) {
-    log(`Auth enabled via ${MCP_HTTP_TOKEN_ENV} (send: Authorization: Bearer <token> or X-MCP-Token)`, true);
+    log(
+      `Auth enabled via ${MCP_HTTP_TOKEN_ENV} (send: Authorization: Bearer <token> or X-MCP-Token)`,
+      true,
+    );
   }
   warn("Transport is HTTP-only; stdio/SSE are intentionally disabled.");
   {
@@ -1074,10 +1162,12 @@ export async function serveCommand(options: { port?: number; host?: string } = {
     if (c) {
       log(
         `CASS admission limiter: max ${c.limit} concurrent, queue ${c.maxQueue === 0 ? "unbounded" : c.maxQueue}, wait timeout ${c.queueTimeoutMs === 0 ? "none" : `${c.queueTimeoutMs}ms`} (metrics: resource cm://serve)`,
-        true
+        true,
       );
     } else {
-      warn("CASS admission limiter DISABLED (serve.maxConcurrentCassCalls <= 0): concurrent CASS calls are unbounded.");
+      warn(
+        "CASS admission limiter DISABLED (serve.maxConcurrentCassCalls <= 0): concurrent CASS calls are unbounded.",
+      );
     }
   }
   log(`Tools: ${TOOL_DEFS.map((t) => t.name).join(", ")}`, true);
@@ -1086,11 +1176,11 @@ export async function serveCommand(options: { port?: number; host?: string } = {
   const authHeaderExample = token ? ` -H "authorization: Bearer <token>"` : "";
   log(
     `  curl -sS -X POST ${baseUrl} -H "content-type: application/json"${authHeaderExample} -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'`,
-    true
+    true,
   );
   log("Example (call cm_context):", true);
   log(
     `  curl -sS -X POST ${baseUrl} -H "content-type: application/json"${authHeaderExample} -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"cm_context","arguments":{"task":"fix auth timeout","limit":5,"history":3}}}'`,
-    true
+    true,
   );
 }

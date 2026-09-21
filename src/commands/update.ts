@@ -1,12 +1,11 @@
-import chalk from "chalk";
 import { spawn } from "node:child_process";
+import chalk from "chalk";
+import { formatTipPrefix, iconPrefix } from "../output.js";
 import { getCliName, getVersion, printJsonResult, reportError } from "../utils.js";
-import { iconPrefix, formatTipPrefix } from "../output.js";
 
 export const UPDATE_REPO = "Dicklesworthstone/cass_memory_system";
 export const LATEST_RELEASE_API_URL = `https://api.github.com/repos/${UPDATE_REPO}/releases/latest`;
-export const INSTALL_COMMAND =
-  `curl -fsSL "https://raw.githubusercontent.com/${UPDATE_REPO}/main/install.sh" | bash -s -- --easy-mode --verify`;
+export const INSTALL_COMMAND = `curl -fsSL "https://raw.githubusercontent.com/${UPDATE_REPO}/main/install.sh" | bash -s -- --easy-mode --verify`;
 
 export interface UpdateOptions {
   check?: boolean;
@@ -103,7 +102,7 @@ export interface LatestReleaseInfo {
  * Fetch the latest release from GitHub. Injectable fetch for tests.
  */
 export async function fetchLatestRelease(
-  fetchImpl: typeof fetch = fetch
+  fetchImpl: typeof fetch = fetch,
 ): Promise<LatestReleaseInfo> {
   const response = await fetchImpl(LATEST_RELEASE_API_URL, {
     headers: {
@@ -114,7 +113,7 @@ export async function fetchLatestRelease(
   });
   if (!response.ok) {
     throw new Error(
-      `GitHub API returned HTTP ${response.status} while checking the latest release`
+      `GitHub API returned HTTP ${response.status} while checking the latest release`,
     );
   }
   const body = (await response.json()) as { tag_name?: string; html_url?: string };
@@ -151,14 +150,14 @@ function printManualInstructions(latest: LatestReleaseInfo): void {
   console.log(chalk.gray(`Release notes: ${latest.url}`));
   console.log(
     chalk.gray(
-      `${formatTipPrefix()}Homebrew installs update via 'brew upgrade dicklesworthstone/tap/cm' instead.`
-    )
+      `${formatTipPrefix()}Homebrew installs update via 'brew upgrade dicklesworthstone/tap/cm' instead.`,
+    ),
   );
 }
 
 export async function updateCommand(
   options: UpdateOptions = {},
-  deps: { fetchImpl?: typeof fetch } = {}
+  deps: { fetchImpl?: typeof fetch } = {},
 ): Promise<void> {
   const startedAtMs = Date.now();
   const command = "update";
@@ -181,22 +180,26 @@ export async function updateCommand(
 
   if (options.check) {
     if (options.json) {
-      printJsonResult(command, {
-        currentVersion,
-        latestVersion: latest.version,
-        updateAvailable,
-        releaseUrl: latest.url,
-        installCommand: INSTALL_COMMAND,
-      }, { startedAtMs });
+      printJsonResult(
+        command,
+        {
+          currentVersion,
+          latestVersion: latest.version,
+          updateAvailable,
+          releaseUrl: latest.url,
+          installCommand: INSTALL_COMMAND,
+        },
+        { startedAtMs },
+      );
     } else if (updateAvailable) {
       console.log(
-        `${iconPrefix("warning")}Update available: v${currentVersion} -> v${latest.version}`
+        `${iconPrefix("warning")}Update available: v${currentVersion} -> v${latest.version}`,
       );
       console.log(chalk.gray(`Run '${getCliName()} update' to install, or:`));
       console.log(chalk.gray(`  ${INSTALL_COMMAND}`));
     } else {
       console.log(
-        `${iconPrefix("check")}${getCliName()} is up to date (v${currentVersion}, latest release v${latest.version})`
+        `${iconPrefix("check")}${getCliName()} is up to date (v${currentVersion}, latest release v${latest.version})`,
       );
     }
     // Exit code signals update status for scripts: 0 = up to date, 1 = update available.
@@ -206,16 +209,20 @@ export async function updateCommand(
 
   if (!updateAvailable) {
     if (options.json) {
-      printJsonResult(command, {
-        currentVersion,
-        latestVersion: latest.version,
-        updateAvailable: false,
-        updated: false,
-        releaseUrl: latest.url,
-      }, { startedAtMs });
+      printJsonResult(
+        command,
+        {
+          currentVersion,
+          latestVersion: latest.version,
+          updateAvailable: false,
+          updated: false,
+          releaseUrl: latest.url,
+        },
+        { startedAtMs },
+      );
     } else {
       console.log(
-        `${iconPrefix("check")}Already up to date (v${currentVersion}, latest release v${latest.version})`
+        `${iconPrefix("check")}Already up to date (v${currentVersion}, latest release v${latest.version})`,
       );
     }
     return;
@@ -225,18 +232,22 @@ export async function updateCommand(
   // the installer; we print the exact instructions instead.
   if (options.json || !isInteractiveSession(options)) {
     if (options.json) {
-      printJsonResult(command, {
-        currentVersion,
-        latestVersion: latest.version,
-        updateAvailable: true,
-        updated: false,
-        reason: "non-interactive session: run the install command manually",
-        installCommand: INSTALL_COMMAND,
-        releaseUrl: latest.url,
-      }, { startedAtMs });
+      printJsonResult(
+        command,
+        {
+          currentVersion,
+          latestVersion: latest.version,
+          updateAvailable: true,
+          updated: false,
+          reason: "non-interactive session: run the install command manually",
+          installCommand: INSTALL_COMMAND,
+          releaseUrl: latest.url,
+        },
+        { startedAtMs },
+      );
     } else {
       console.log(
-        `${iconPrefix("warning")}Update available: v${currentVersion} -> v${latest.version}`
+        `${iconPrefix("warning")}Update available: v${currentVersion} -> v${latest.version}`,
       );
       console.log(chalk.yellow("Non-interactive session detected; not running the installer."));
       printManualInstructions(latest);
@@ -245,15 +256,13 @@ export async function updateCommand(
     return;
   }
 
-  console.log(
-    `${iconPrefix("warning")}Update available: v${currentVersion} -> v${latest.version}`
-  );
+  console.log(`${iconPrefix("warning")}Update available: v${currentVersion} -> v${latest.version}`);
   console.log(chalk.gray("Re-running the documented installer (install.sh from the repo)...\n"));
   try {
     const code = await runInstallScript();
     if (code === 0) {
       console.log(
-        `\n${iconPrefix("check")}Installer finished. Run '${getCliName()} --version' to confirm v${latest.version}.`
+        `\n${iconPrefix("check")}Installer finished. Run '${getCliName()} --version' to confirm v${latest.version}.`,
       );
     } else {
       console.log(chalk.red(`\nInstaller exited with code ${code}.`));
@@ -261,7 +270,11 @@ export async function updateCommand(
       process.exitCode = 1;
     }
   } catch (err) {
-    console.log(chalk.red(`\nFailed to run the installer: ${err instanceof Error ? err.message : String(err)}`));
+    console.log(
+      chalk.red(
+        `\nFailed to run the installer: ${err instanceof Error ? err.message : String(err)}`,
+      ),
+    );
     printManualInstructions(latest);
     process.exitCode = 1;
   }

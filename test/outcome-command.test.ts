@@ -6,13 +6,13 @@
  * - Input validation for applyOutcomeLogCommand
  * - Error handling paths
  */
-import { describe, test, expect } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import yaml from "yaml";
-import { outcomeCommand, applyOutcomeLogCommand } from "../src/commands/outcome.js";
-import { withTempCassHome } from "./helpers/temp.js";
+import { applyOutcomeLogCommand, outcomeCommand } from "../src/commands/outcome.js";
+import { createTestBullet, createTestPlaybook } from "./helpers/factories.js";
 import { withTempGitRepo } from "./helpers/git.js";
-import { createTestPlaybook, createTestBullet } from "./helpers/factories.js";
+import { withTempCassHome } from "./helpers/temp.js";
 
 /**
  * Capture console output during async function execution.
@@ -135,7 +135,7 @@ describe("outcomeCommand input validation", () => {
             status: "success",
             rules: "b-test",
             duration: -100,
-            json: true
+            json: true,
           });
           const output = capture.getOutput();
           expect(output).toContain("error");
@@ -160,7 +160,7 @@ describe("outcomeCommand input validation", () => {
             status: "failure",
             rules: "b-test",
             errors: -5,
-            json: true
+            json: true,
           });
           const output = capture.getOutput();
           expect(output).toContain("error");
@@ -185,7 +185,7 @@ describe("outcomeCommand input validation", () => {
             status: "success",
             rules: "b-test",
             sentiment: "invalid",
-            json: true
+            json: true,
           });
           const output = capture.getOutput();
           expect(output).toContain("error");
@@ -214,7 +214,7 @@ describe("outcomeCommand input validation", () => {
             await outcomeCommand({
               status: "success",
               rules: "b-success-test",
-              json: true
+              json: true,
             });
             const output = capture.getOutput();
             // Should either succeed or report no signal
@@ -245,7 +245,7 @@ describe("outcomeCommand input validation", () => {
               status: "failure",
               rules: "b-failure-test",
               errors: 5,
-              json: true
+              json: true,
             });
             const output = capture.getOutput();
             expect(output).toContain("success");
@@ -276,7 +276,7 @@ describe("outcomeCommand input validation", () => {
               rules: "b-mixed-test",
               sentiment: "negative",
               text: "it worked but was slow",
-              json: true
+              json: true,
             });
             const output = capture.getOutput();
             expect(output).toContain("success");
@@ -306,7 +306,7 @@ describe("outcomeCommand input validation", () => {
             await outcomeCommand({
               status: "success",
               rules: "b-rule-1,b-rule-2",
-              json: true
+              json: true,
             });
             const output = capture.getOutput();
             expect(output).toContain("success");
@@ -334,7 +334,7 @@ describe("outcomeCommand additional validation", () => {
             status: "success",
             rules: "b-test",
             session: "   ",
-            json: true
+            json: true,
           });
           const output = capture.getOutput();
           expect(output).toContain("error");
@@ -359,7 +359,7 @@ describe("outcomeCommand additional validation", () => {
             status: "success",
             rules: "b-test",
             text: "   ",
-            json: true
+            json: true,
           });
           const output = capture.getOutput();
           expect(output).toContain("error");
@@ -383,7 +383,7 @@ describe("outcomeCommand additional validation", () => {
           await outcomeCommand({
             status: "success",
             rules: " , , ",
-            json: true
+            json: true,
           });
           const output = capture.getOutput();
           expect(output).toContain("error");
@@ -413,7 +413,7 @@ describe("outcomeCommand additional validation", () => {
             await outcomeCommand({
               status: "mixed",
               rules: "b-neutral-test",
-              json: true
+              json: true,
             });
             const output = capture.getOutput();
             // Should succeed but may report no signal
@@ -443,7 +443,7 @@ describe("outcomeCommand additional validation", () => {
             // Success without --json flag
             await outcomeCommand({
               status: "success",
-              rules: "b-human-test"
+              rules: "b-human-test",
             });
             const output = capture.getOutput();
             const errors = capture.getErrors();
@@ -453,9 +453,9 @@ describe("outcomeCommand additional validation", () => {
             // Should contain either feedback confirmation or no-signal message
             expect(
               combined.includes("Recorded") ||
-              combined.includes("feedback") ||
-              combined.includes("signal") ||
-              combined.includes("No implicit")
+                combined.includes("feedback") ||
+                combined.includes("signal") ||
+                combined.includes("No implicit"),
             ).toBe(true);
           } finally {
             capture.restore();
@@ -547,7 +547,7 @@ describe("applyOutcomeLogCommand input validation", () => {
           try {
             await applyOutcomeLogCommand({
               session: "nonexistent-session",
-              json: true
+              json: true,
             });
             const output = capture.getOutput();
             expect(output).toContain("success");

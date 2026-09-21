@@ -1,46 +1,35 @@
-import path from "node:path";
 import fs from "node:fs/promises";
+import path from "node:path";
 import { z } from "zod";
-import { 
-  Config, 
-  DiaryEntry, 
-  DiaryEntrySchema, 
-  CassHit,
-  RelatedSession,
-  RelatedSessionSchema,
-  SanitizationConfig
-} from "./types.js";
-import { 
-  extractDiary, 
-  generateSearchQueries 
-} from "./llm.js";
-import { 
-  safeCassSearch, 
-  cassExport, 
-  cassSearch 
-} from "./cass.js";
-import { 
-  sanitize, 
-  verifySanitization,
-  compileExtraPatterns
-} from "./sanitize.js";
-import { 
-  generateDiaryId, 
-  extractKeywords, 
-  hashContent,
-  now, 
-  ensureDir, 
-  expandPath,
-  log,
-  warn,
-  error as logError,
-  atomicWrite,
-  resolveRepoDir,
-  resolveGlobalDir,
-  canonicalAgentName,
-  extractAgentFromPath
-} from "./utils.js";
+import { cassExport, cassSearch, safeCassSearch } from "./cass.js";
+import { extractDiary, generateSearchQueries } from "./llm.js";
 import { withLock } from "./lock.js";
+import { compileExtraPatterns, sanitize, verifySanitization } from "./sanitize.js";
+import {
+  CassHit,
+  type Config,
+  type DiaryEntry,
+  DiaryEntrySchema,
+  type RelatedSession,
+  RelatedSessionSchema,
+  SanitizationConfig,
+} from "./types.js";
+import {
+  atomicWrite,
+  canonicalAgentName,
+  ensureDir,
+  expandPath,
+  extractAgentFromPath,
+  extractKeywords,
+  generateDiaryId,
+  hashContent,
+  log,
+  error as logError,
+  now,
+  resolveGlobalDir,
+  resolveRepoDir,
+  warn,
+} from "./utils.js";
 
 // --- Helpers ---
 
@@ -51,7 +40,7 @@ function normalizeAgentName(agent: string | undefined): string {
 async function appendCrossAgentAuditLog(
   diary: DiaryEntry,
   related: RelatedSession[],
-  config: Config
+  config: Config,
 ): Promise<void> {
   try {
     if (config.crossAgent?.auditLog === false) return;
@@ -59,16 +48,14 @@ async function appendCrossAgentAuditLog(
     // Use resolveRepoDir to check for repo context
     const repoDir = await resolveRepoDir();
     const repoLog = repoDir ? path.join(repoDir, "privacy-audit.jsonl") : null;
-    
+
     // Fall back to global log if not in repo or repo-level logging disabled (policy)
-    const logPath = repoLog
-      ? repoLog
-      : path.join(resolveGlobalDir(), "privacy-audit.jsonl");
+    const logPath = repoLog ? repoLog : path.join(resolveGlobalDir(), "privacy-audit.jsonl");
 
     await ensureDir(path.dirname(logPath));
 
     const relatedAgents = Array.from(
-      new Set(related.map((r) => normalizeAgentName(r.agent)).filter(Boolean))
+      new Set(related.map((r) => normalizeAgentName(r.agent)).filter(Boolean)),
     ).sort();
 
     const payload = {
@@ -97,13 +84,16 @@ export function formatRawSession(content: string, ext: string): string {
     if (!value) return null;
     if (typeof value === "string") return value;
     if (Array.isArray(value)) {
-      const parts = value
-        .map((v) => coerceRawContent(v))
-        .filter((v): v is string => Boolean(v));
+      const parts = value.map((v) => coerceRawContent(v)).filter((v): v is string => Boolean(v));
       return parts.length ? parts.join("\n") : null;
     }
     if (typeof value === "object") {
-      const maybeText = (value as { text?: unknown; content?: unknown; message?: unknown; value?: unknown });
+      const maybeText = value as {
+        text?: unknown;
+        content?: unknown;
+        message?: unknown;
+        value?: unknown;
+      };
       if (typeof maybeText.text === "string") return maybeText.text;
       // Recurse into content if it's an array (e.g., Claude multi-block format)
       if (Array.isArray(maybeText.content)) return coerceRawContent(maybeText.content);
@@ -132,7 +122,9 @@ export function formatRawSession(content: string, ext: string): string {
     }
 
     const role = entry.role || entry.type || entry.agent || "[unknown]";
-    const msgContent = coerceRawContent(entry.content ?? entry.text ?? entry.message ?? entry.value);
+    const msgContent = coerceRawContent(
+      entry.content ?? entry.text ?? entry.message ?? entry.value,
+    );
     return `**${role}**: ${msgContent ?? "[empty]"}`;
   };
 
@@ -208,7 +200,7 @@ export interface SessionMetadataHint {
  */
 function extractSessionMetadata(
   sessionPath: string,
-  hint?: SessionMetadataHint
+  hint?: SessionMetadataHint,
 ): { agent: string; workspace?: string } {
   const hinted = canonicalAgentName(hint?.agent);
   const agent = hinted && hinted !== "unknown" ? hinted : extractAgentFromPath(sessionPath);
@@ -216,42 +208,42 @@ function extractSessionMetadata(
   return workspace ? { agent, workspace } : { agent };
 }
 
-async function enrichWithRelatedSessions(
-  diary: DiaryEntry, 
-  config: Config
-): Promise<DiaryEntry> {
+async function enrichWithRelatedSessions(diary: DiaryEntry, config: Config): Promise<DiaryEntry> {
   const cross = config.crossAgent;
   if (!cross?.enabled || !cross.consentGiven) return diary;
 
   // 1. Build keyword set from diary content
-  const textContent = [
-    ...diary.keyLearnings,
-    ...diary.challenges,
-    ...diary.accomplishments
-  ].join(" ");
-  
+  const textContent = [...diary.keyLearnings, ...diary.challenges, ...diary.accomplishments].join(
+    " ",
+  );
+
   const keywords = extractKeywords(textContent);
   if (keywords.length === 0) return diary;
 
   // 2. Query cass
   const query = keywords.slice(0, 5).join(" "); // Top 5 keywords
-  const hits = await safeCassSearch(query, {
-    limit: 5,
-    days: config.sessionLookbackDays,
-  }, config.cassPath, config);
+  const hits = await safeCassSearch(
+    query,
+    {
+      limit: 5,
+      days: config.sessionLookbackDays,
+    },
+    config.cassPath,
+    config,
+  );
 
   const allowlist = (cross.agents || []).map(normalizeAgentName).filter(Boolean);
   const diaryAgent = normalizeAgentName(diary.agent);
 
   // 3. Filter and Format
   const related: RelatedSession[] = hits
-    .filter(h => normalizeAgentName(h.agent) !== diaryAgent) // Cross-agent only
-    .filter(h => allowlist.length === 0 || allowlist.includes(normalizeAgentName(h.agent)))
-    .map(h => ({
+    .filter((h) => normalizeAgentName(h.agent) !== diaryAgent) // Cross-agent only
+    .filter((h) => allowlist.length === 0 || allowlist.includes(normalizeAgentName(h.agent)))
+    .map((h) => ({
       sessionPath: h.source_path,
       agent: h.agent,
-      relevanceScore: h.score || 0, 
-      snippet: h.snippet
+      relevanceScore: h.score || 0,
+      snippet: h.snippet,
     }));
 
   // 4. Attach to diary
@@ -272,19 +264,34 @@ async function enrichWithRelatedSessions(
  */
 export function inferOutcome(content: string): "success" | "failure" | "mixed" {
   const errorPatterns = [
-    /\berror[s]?\b/i, /\bfailed\b/i, /\bexception\b/i, /\btraceback\b/i,
-    /cannot\s+find/i, /not\s+found/i, /\bundefined\b/i, /null\s+reference/i,
-    /syntax\s*error/i, /type\s*error/i, /runtime\s*error/i, /\bcrash/i
+    /\berror[s]?\b/i,
+    /\bfailed\b/i,
+    /\bexception\b/i,
+    /\btraceback\b/i,
+    /cannot\s+find/i,
+    /not\s+found/i,
+    /\bundefined\b/i,
+    /null\s+reference/i,
+    /syntax\s*error/i,
+    /type\s*error/i,
+    /runtime\s*error/i,
+    /\bcrash/i,
   ];
 
   const successPatterns = [
-    /successfully/i, /completed/i, /done/i, /fixed/i,
-    /works\s+(now|correctly)/i, /resolved/i, /passed/i,
-    /all\s+tests\s+pass/i, /build\s+successful/i
+    /successfully/i,
+    /completed/i,
+    /done/i,
+    /fixed/i,
+    /works\s+(now|correctly)/i,
+    /resolved/i,
+    /passed/i,
+    /all\s+tests\s+pass/i,
+    /build\s+successful/i,
   ];
 
-  const hasErrors = errorPatterns.some(p => p.test(content));
-  const hasSuccess = successPatterns.some(p => p.test(content));
+  const hasErrors = errorPatterns.some((p) => p.test(content));
+  const hasSuccess = successPatterns.some((p) => p.test(content));
 
   if (hasErrors && hasSuccess) return "mixed";
   if (hasErrors) return "failure";
@@ -302,7 +309,7 @@ function extractFilePaths(content: string): string[] {
     /[\w./\\-]+\.(ts|tsx|js|jsx|py|go|rs|java|c|cpp|h|hpp|md|json|yaml|yml|toml|txt|css|scss|html)/gi,
     // src/ or test/ paths - generalized to be less opinionated but still useful
     // Matches path-like strings containing a slash
-    /[\w.-]+[\/\\][\w./\\-]+\.\w+/gi
+    /[\w.-]+[/\\][\w./\\-]+\.\w+/gi,
   ];
 
   const matches = new Set<string>();
@@ -328,7 +335,7 @@ function extractFirstUserMessage(content: string): string | undefined {
   const patterns = [
     /\*\*user\*\*:\s*(.+?)(?=\n\n|\n\*\*|$)/is,
     /\*\*human\*\*:\s*(.+?)(?=\n\n|\n\*\*|$)/is,
-    /user:\s*(.+?)(?=\n\n|assistant:|$)/is
+    /user:\s*(.+?)(?=\n\n|assistant:|$)/is,
   ];
 
   for (const pattern of patterns) {
@@ -352,7 +359,7 @@ function generateQuickSummary(content: string, task?: string): string {
   }
 
   // Extract first meaningful line
-  const lines = content.split("\n").filter(l => l.trim().length > 20);
+  const lines = content.split("\n").filter((l) => l.trim().length > 20);
   if (lines.length > 0) {
     return lines[0].slice(0, 200);
   }
@@ -373,7 +380,7 @@ function generateQuickSummary(content: string, task?: string): string {
 export async function generateDiaryFast(
   sessionPath: string,
   config: Config,
-  hint?: SessionMetadataHint
+  hint?: SessionMetadataHint,
 ): Promise<DiaryEntry> {
   // 1. Export Session (Sanitized via cassExport)
   const sanitizedContent = await cassExport(sessionPath, "markdown", config.cassPath, config);
@@ -390,7 +397,7 @@ async function generateDiaryFastFromContent(
   sessionPath: string,
   sanitizedContent: string,
   config: Config,
-  hint?: SessionMetadataHint
+  hint?: SessionMetadataHint,
 ): Promise<DiaryEntry> {
   log(`Generating diary (fast mode) for ${sessionPath}...`);
 
@@ -416,9 +423,9 @@ async function generateDiaryFastFromContent(
     challenges: [],
     preferences: [],
     keyLearnings: summary ? [summary] : [],
-    tags: filesChanged.slice(0, 5).map(f => path.basename(f)),
+    tags: filesChanged.slice(0, 5).map((f) => path.basename(f)),
     searchAnchors: extractKeywords(summary + " " + (task || "")),
-    relatedSessions: []
+    relatedSessions: [],
   };
 
   // 4. Save
@@ -432,7 +439,7 @@ export async function generateDiaryFromContent(
   sessionPath: string,
   sanitizedContent: string,
   config: Config,
-  hint?: SessionMetadataHint
+  hint?: SessionMetadataHint,
 ): Promise<DiaryEntry> {
   if (!sanitizedContent || sanitizedContent.trim().length === 0) {
     throw new Error(`Session content is empty after sanitization: ${sessionPath}`);
@@ -447,7 +454,9 @@ export async function generateDiaryFromContent(
 
   const verification = verifySanitization(sanitizedContent);
   if (verification.containsPotentialSecrets) {
-    warn(`[Diary] Potential secrets detected after sanitization in ${sessionPath}: ${verification.warnings.join(", ")}`);
+    warn(
+      `[Diary] Potential secrets detected after sanitization in ${sessionPath}: ${verification.warnings.join(", ")}`,
+    );
   }
 
   // 1. Extract Metadata
@@ -468,14 +477,14 @@ export async function generateDiaryFromContent(
     timestamp: true,
     agent: true,
     relatedSessions: true,
-    searchAnchors: true
+    searchAnchors: true,
   });
 
   const extracted = await extractDiary(
     ExtractionSchema,
     sanitizedContent,
     { ...metadata, sessionPath },
-    config
+    config,
   );
 
   // 3. Assemble Entry
@@ -495,14 +504,11 @@ export async function generateDiaryFromContent(
     preferences: extracted.preferences || [],
     keyLearnings: extracted.keyLearnings || [],
     tags: extracted.tags || [],
-    searchAnchors: [], 
-    relatedSessions: []
+    searchAnchors: [],
+    relatedSessions: [],
   };
 
-  const anchorText = [
-    ...diary.keyLearnings, 
-    ...diary.challenges
-  ].join(" ");
+  const anchorText = [...diary.keyLearnings, ...diary.challenges].join(" ");
   diary.searchAnchors = extractKeywords(anchorText);
 
   // 4. Enrich (Cross-Agent)
@@ -517,7 +523,7 @@ export async function generateDiaryFromContent(
 export async function generateDiary(
   sessionPath: string,
   config: Config,
-  hint?: SessionMetadataHint
+  hint?: SessionMetadataHint,
 ): Promise<DiaryEntry> {
   // Fast path when LLMs are disabled or unavailable
   if (process.env.CASS_MEMORY_LLM === "none") {
@@ -529,7 +535,7 @@ export async function generateDiary(
   if (!sanitizedContent) {
     throw new Error(`Failed to export session: ${sessionPath}`);
   }
-  
+
   return generateDiaryFromContent(sessionPath, sanitizedContent, config, hint);
 }
 
@@ -550,7 +556,7 @@ export async function saveDiary(diary: DiaryEntry, config: Config): Promise<void
  */
 export async function findDiaryBySession(
   sessionPath: string,
-  diaryDir: string
+  diaryDir: string,
 ): Promise<DiaryEntry | null> {
   try {
     const base = path.resolve(expandPath(diaryDir));
@@ -561,7 +567,7 @@ export async function findDiaryBySession(
     // Optimization: Check processed logs (global AND workspaces) to avoid scanning thousands of files
     try {
       const { getProcessedLogPath, ProcessedLog } = await import("./tracking.js");
-      const globalLogPath = getProcessedLogPath(); 
+      const globalLogPath = getProcessedLogPath();
       const reflectionsDir = path.dirname(globalLogPath);
 
       // 1. Check global log first
@@ -570,10 +576,18 @@ export async function findDiaryBySession(
       let entry = globalLog.get(target);
 
       // 2. If not found, check workspace logs
-      if (!entry && await fs.access(reflectionsDir).then(() => true).catch(() => false)) {
+      if (
+        !entry &&
+        (await fs
+          .access(reflectionsDir)
+          .then(() => true)
+          .catch(() => false))
+      ) {
         const files = await fs.readdir(reflectionsDir);
-        const workspaceLogs = files.filter(f => f.endsWith(".processed.log") && f !== "global.processed.log");
-        
+        const workspaceLogs = files.filter(
+          (f) => f.endsWith(".processed.log") && f !== "global.processed.log",
+        );
+
         for (const logFile of workspaceLogs) {
           const pLog = new ProcessedLog(path.join(reflectionsDir, logFile));
           await pLog.load();
@@ -581,7 +595,7 @@ export async function findDiaryBySession(
           if (entry) break;
         }
       }
-      
+
       if (entry && entry.diaryId) {
         // Found indexed diary ID, load directly
         // We mock the config object since loadDiary only needs diaryDir
@@ -595,7 +609,9 @@ export async function findDiaryBySession(
     // Load all diaries to find the match (limit set high to ensure we search history)
     // In a future optimization, we should maintain a sessionPath -> diaryId index
     const diaries = await loadAllDiaries(diaryDir, 10000);
-    const match = diaries.find((d) => d.sessionPath && path.resolve(expandPath(d.sessionPath)) === target);
+    const match = diaries.find(
+      (d) => d.sessionPath && path.resolve(expandPath(d.sessionPath)) === target,
+    );
     return match || null;
   } catch (err: any) {
     warn(`Failed to find diary for ${sessionPath}: ${err.message}`);
@@ -641,25 +657,25 @@ export async function loadAllDiaries(diaryDir: string, limit = 100): Promise<Dia
 
   try {
     const files = await fs.readdir(expanded);
-    
+
     // Sort files by mtime to get most recent first
     const fileStats = await Promise.all(
       files
-        .filter(f => f.endsWith(".json"))
-        .map(async f => {
+        .filter((f) => f.endsWith(".json"))
+        .map(async (f) => {
           try {
             const stats = await fs.stat(path.join(expanded, f));
             return { name: f, mtime: stats.mtimeMs };
           } catch {
             return null;
           }
-        })
+        }),
     );
 
     const sortedFiles = fileStats
       .filter((f): f is { name: string; mtime: number } => f !== null)
       .sort((a, b) => b.mtime - a.mtime)
-      .map(f => f.name);
+      .map((f) => f.name);
 
     for (const file of sortedFiles) {
       if (entries.length >= limit) break;
@@ -676,9 +692,7 @@ export async function loadAllDiaries(diaryDir: string, limit = 100): Promise<Dia
     }
 
     // Double-check sort by internal timestamp in case mtime was touched
-    entries.sort((a, b) =>
-      new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
-    );
+    entries.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 
     return entries;
   } catch (err: any) {

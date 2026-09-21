@@ -1,13 +1,18 @@
 /**
  * E2E Tests for CLI top command - Most effective bullets
  */
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { readFile, writeFile } from "node:fs/promises";
 import yaml from "yaml";
 import { topCommand } from "../src/commands/top.js";
-import { withTempCassHome, type TestEnv } from "./helpers/temp.js";
 import { createE2ELogger } from "./helpers/e2e-logger.js";
-import { createTestConfig, createTestPlaybook, createBullet, createFeedbackEvent } from "./helpers/factories.js";
+import {
+  createBullet,
+  createFeedbackEvent,
+  createTestConfig,
+  createTestPlaybook,
+} from "./helpers/factories.js";
+import { type TestEnv, withTempCassHome } from "./helpers/temp.js";
 
 function captureConsole() {
   const logs: string[] = [];
@@ -43,7 +48,11 @@ async function writeTestConfig(env: TestEnv): Promise<void> {
   await writeFile(env.configPath, JSON.stringify(config, null, 2), "utf-8");
 }
 
-async function snapshotFile(log: ReturnType<typeof createE2ELogger>, name: string, filePath: string): Promise<void> {
+async function snapshotFile(
+  log: ReturnType<typeof createE2ELogger>,
+  name: string,
+  filePath: string,
+): Promise<void> {
   const contents = await readFile(filePath, "utf-8").catch(() => "");
   log.snapshot(name, contents);
 }
@@ -156,7 +165,10 @@ describe("E2E: CLI top command", () => {
         });
 
         const playbook = createTestPlaybook([bulletLow, bulletMid, bulletHigh]);
-        log.step("Write playbook", { playbookPath: env.playbookPath, bulletIds: [bulletHigh.id, bulletMid.id, bulletLow.id] });
+        log.step("Write playbook", {
+          playbookPath: env.playbookPath,
+          bulletIds: [bulletHigh.id, bulletMid.id, bulletLow.id],
+        });
         await writeFile(env.playbookPath, yaml.stringify(playbook));
         await snapshotFile(log, "config.json", env.configPath);
         await snapshotFile(log, "playbook.before", env.playbookPath);
@@ -220,7 +232,10 @@ describe("E2E: CLI top command", () => {
         });
 
         const playbook = createTestPlaybook([bulletGlobal, bulletWorkspace]);
-        log.step("Write playbook", { playbookPath: env.playbookPath, bulletIds: [bulletGlobal.id, bulletWorkspace.id] });
+        log.step("Write playbook", {
+          playbookPath: env.playbookPath,
+          bulletIds: [bulletGlobal.id, bulletWorkspace.id],
+        });
         await writeFile(env.playbookPath, yaml.stringify(playbook));
         await snapshotFile(log, "config.json", env.configPath);
         await snapshotFile(log, "playbook.before", env.playbookPath);

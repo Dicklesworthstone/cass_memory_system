@@ -2,7 +2,7 @@
  * Lightweight docs tests to prevent README drift.
  * These tests verify that README.md stays in sync with the codebase.
  */
-import { describe, test, expect } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -15,7 +15,7 @@ describe("README Docs Sync", () => {
   describe("CLI commands are documented", () => {
     // Extract all program.command() and subcommand.command() calls from cm.ts
     const commandMatches = CM_TS.matchAll(/\.command\("([^"]+)"\)/g);
-    const cliCommands = Array.from(commandMatches, m => m[1]);
+    const cliCommands = Array.from(commandMatches, (m) => m[1]);
 
     // Core commands that must be documented (not subcommands like playbook.list)
     const coreCommands = [
@@ -111,8 +111,12 @@ describe("README Docs Sync", () => {
       const defaults = getDefaultConfig();
 
       // Check budget defaults are documented (handle formatting variations like 0.1 vs 0.10)
-      const dailyPattern = new RegExp(`"dailyLimit":\\s*${defaults.budget.dailyLimit.toFixed(2)}|${defaults.budget.dailyLimit}`);
-      const monthlyPattern = new RegExp(`"monthlyLimit":\\s*${defaults.budget.monthlyLimit.toFixed(2)}|${defaults.budget.monthlyLimit}`);
+      const dailyPattern = new RegExp(
+        `"dailyLimit":\\s*${defaults.budget.dailyLimit.toFixed(2)}|${defaults.budget.dailyLimit}`,
+      );
+      const monthlyPattern = new RegExp(
+        `"monthlyLimit":\\s*${defaults.budget.monthlyLimit.toFixed(2)}|${defaults.budget.monthlyLimit}`,
+      );
 
       expect(README).toMatch(dailyPattern);
       expect(README).toMatch(monthlyPattern);

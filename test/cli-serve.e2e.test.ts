@@ -5,11 +5,11 @@
  * - tools/list response without auth token
  * - auth required when MCP_HTTP_TOKEN is set
  */
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { spawn } from "node:child_process";
 import net from "node:net";
-import { withTempCassHome } from "./helpers/temp.js";
 import { createE2ELogger } from "./helpers/e2e-logger.js";
+import { withTempCassHome } from "./helpers/temp.js";
 
 type ServeProcess = {
   proc: ReturnType<typeof spawn>;
@@ -40,10 +40,10 @@ async function sleep(ms: number): Promise<void> {
 async function postJson(
   baseUrl: string,
   body: unknown,
-  token?: string
+  token?: string,
 ): Promise<{ status: number; payload: any }> {
   const headers: Record<string, string> = {
-    "content-type": "application/json"
+    "content-type": "application/json",
   };
   if (token) headers.authorization = `Bearer ${token}`;
 
@@ -57,18 +57,14 @@ async function postJson(
   return { status: res.status, payload };
 }
 
-async function waitForServer(
-  baseUrl: string,
-  token?: string,
-  timeoutMs = 4000
-): Promise<void> {
+async function waitForServer(baseUrl: string, token?: string, timeoutMs = 4000): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {
       const result = await postJson(
         baseUrl,
         { jsonrpc: "2.0", id: 1, method: "tools/list" },
-        token
+        token,
       );
       if (result.status === 200) return;
     } catch {
@@ -81,7 +77,7 @@ async function waitForServer(
 
 async function startServeProcess(
   home: string,
-  extraEnv: Record<string, string> = {}
+  extraEnv: Record<string, string> = {},
 ): Promise<ServeProcess> {
   const port = await getFreePort();
   const baseUrl = `http://127.0.0.1:${port}`;
@@ -96,10 +92,14 @@ async function startServeProcess(
     ...extraEnv,
   };
 
-  const proc = spawn("bun", ["run", "src/cm.ts", "serve", "--host", "127.0.0.1", "--port", String(port)], {
-    env,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  const proc = spawn(
+    "bun",
+    ["run", "src/cm.ts", "serve", "--host", "127.0.0.1", "--port", String(port)],
+    {
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
 
   return { proc, baseUrl };
 }
@@ -155,7 +155,11 @@ describe("E2E: CLI serve command", () => {
         try {
           await waitForServer(baseUrl, token);
 
-          const unauthorized = await postJson(baseUrl, { jsonrpc: "2.0", id: 1, method: "tools/list" });
+          const unauthorized = await postJson(baseUrl, {
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/list",
+          });
           log.snapshot("unauthorized", unauthorized);
           expect(unauthorized.status).toBe(401);
           expect(unauthorized.payload?.error?.message).toBe("Unauthorized");
@@ -163,7 +167,7 @@ describe("E2E: CLI serve command", () => {
           const authorized = await postJson(
             baseUrl,
             { jsonrpc: "2.0", id: 2, method: "resources/list" },
-            token
+            token,
           );
           log.snapshot("authorized", authorized);
           expect(authorized.status).toBe(200);

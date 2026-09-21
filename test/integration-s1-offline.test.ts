@@ -1,7 +1,7 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import path from "node:path";
 import os from "node:os";
-import { describe, expect, test, beforeAll, afterAll } from "bun:test";
+import path from "node:path";
 
 /**
  * Scenario S1: Offline Smoke (no cass/LLM)
@@ -29,11 +29,11 @@ describe("S1 Offline Smoke (no cass, no LLM)", () => {
     const proc = Bun.spawn(["bun", "run", "src/cm.ts", ...args], {
       env,
       stdout: "pipe",
-      stderr: "pipe"
+      stderr: "pipe",
     });
     const [stdout, stderr] = await Promise.all([
       new Response(proc.stdout).text(),
-      new Response(proc.stderr).text()
+      new Response(proc.stderr).text(),
     ]);
     const exitCode = await proc.exited;
     return { exitCode, stdout, stderr };
@@ -71,7 +71,14 @@ describe("S1 Offline Smoke (no cass, no LLM)", () => {
     expect(parsed.data.historySnippets.length).toBe(0);
 
     // 3) add rule
-    const add = await runCm(["playbook", "add", "Always write atomically", "--category", "io", "--json"]);
+    const add = await runCm([
+      "playbook",
+      "add",
+      "Always write atomically",
+      "--category",
+      "io",
+      "--json",
+    ]);
     expect(add.exitCode).toBe(0);
     const addOut = JSON.parse(add.stdout.toString()) as any;
     const bulletId =

@@ -10,8 +10,8 @@ describe("extractBulletReasoning", () => {
   it("returns key evidence when reasoning not set", () => {
     const bullet = {
       derivedFrom: {
-        keyEvidence: ["Token refresh interval was too short"]
-      }
+        keyEvidence: ["Token refresh interval was too short"],
+      },
     };
     expect(extractBulletReasoning(bullet)).toBe("Token refresh interval was too short");
   });
@@ -19,8 +19,8 @@ describe("extractBulletReasoning", () => {
   it("joins multiple key evidence items", () => {
     const bullet = {
       derivedFrom: {
-        keyEvidence: ["First issue", "Second issue"]
-      }
+        keyEvidence: ["First issue", "Second issue"],
+      },
     };
     expect(extractBulletReasoning(bullet)).toBe("First issue; Second issue");
   });
@@ -28,7 +28,7 @@ describe("extractBulletReasoning", () => {
   it("falls back to session metadata", () => {
     const bullet = {
       sourceAgents: ["claude"],
-      createdAt: "2025-11-15T10:00:00Z"
+      createdAt: "2025-11-15T10:00:00Z",
     };
     expect(extractBulletReasoning(bullet)).toBe("From claude session on 11/15/2025");
   });
@@ -37,8 +37,8 @@ describe("extractBulletReasoning", () => {
     const bullet = {
       derivedFrom: {
         extractedBy: "cursor",
-        timestamp: "2025-12-01T14:30:00Z"
-      }
+        timestamp: "2025-12-01T14:30:00Z",
+      },
     };
     expect(extractBulletReasoning(bullet)).toBe("From cursor session on 12/1/2025");
   });
@@ -58,7 +58,8 @@ describe("extractBulletReasoning", () => {
   it("preserves first sentence when truncating", () => {
     // First sentence is ~30 chars, total is > 200 chars
     const bullet = {
-      reasoning: "This is the first sentence. This is a much longer second sentence that goes on and on and on and continues for quite a while to exceed the maximum length limit of two hundred characters which is quite long indeed."
+      reasoning:
+        "This is the first sentence. This is a much longer second sentence that goes on and on and on and continues for quite a while to exceed the maximum length limit of two hundred characters which is quite long indeed.",
     };
     const result = extractBulletReasoning(bullet);
     expect(result).toBe("This is the first sentence.");
@@ -71,7 +72,7 @@ describe("extractBulletReasoning", () => {
 
   it("handles empty key evidence array", () => {
     const bullet = {
-      derivedFrom: { keyEvidence: [] }
+      derivedFrom: { keyEvidence: [] },
     };
     expect(extractBulletReasoning(bullet)).toBe("No reasoning available");
   });
@@ -79,8 +80,8 @@ describe("extractBulletReasoning", () => {
   it("filters empty strings from key evidence", () => {
     const bullet = {
       derivedFrom: {
-        keyEvidence: ["", "Valid evidence", "  "]
-      }
+        keyEvidence: ["", "Valid evidence", "  "],
+      },
     };
     expect(extractBulletReasoning(bullet)).toBe("Valid evidence");
   });
@@ -88,7 +89,7 @@ describe("extractBulletReasoning", () => {
   it("handles invalid timestamp gracefully", () => {
     const bullet = {
       sourceAgents: ["claude"],
-      createdAt: "not-a-date"
+      createdAt: "not-a-date",
     };
     expect(extractBulletReasoning(bullet)).toBe("From claude session on unknown date");
   });
@@ -97,8 +98,8 @@ describe("extractBulletReasoning", () => {
     const bullet = {
       reasoning: "Explicit reasoning",
       derivedFrom: {
-        keyEvidence: ["Key evidence that should not appear"]
-      }
+        keyEvidence: ["Key evidence that should not appear"],
+      },
     };
     expect(extractBulletReasoning(bullet)).toBe("Explicit reasoning");
   });
@@ -106,10 +107,10 @@ describe("extractBulletReasoning", () => {
   it("prefers derivedFrom over session metadata", () => {
     const bullet = {
       derivedFrom: {
-        keyEvidence: ["Key evidence"]
+        keyEvidence: ["Key evidence"],
       },
       sourceAgents: ["claude"],
-      createdAt: "2025-11-15T10:00:00Z"
+      createdAt: "2025-11-15T10:00:00Z",
     };
     expect(extractBulletReasoning(bullet)).toBe("Key evidence");
   });

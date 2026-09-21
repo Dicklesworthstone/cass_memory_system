@@ -1,40 +1,50 @@
-import { loadConfig, DEFAULT_CONFIG, patchGlobalConfig } from "../config.js";
-import { cassAvailable, cassNeedsIndex, cassStats, cassSearch, safeCassSearch } from "../cass.js";
-import {
-  error as logError,
-  fileExists,
-  resolveRepoDir,
-  resolveGlobalDir,
-  resolveGlobalConfigFile,
-  type ResolvedConfigFile,
-  expandPath,
-  getCliName,
-  getVersion,
-  checkAbort,
-  isPermissionError,
-  handlePermissionError,
-  printStructuredResult,
-  reportError,
-  atomicWrite,
-  ensureRepoStructure,
-  isJsonOutput,
-  isToonOutput,
-  validateOneOf
-} from "../utils.js";
-import { isLLMAvailable, getAvailableProviders, validateApiKey, resolveOllamaBaseUrl, resolveCliCommand } from "../llm.js";
-import { SECRET_PATTERNS, compileExtraPatterns } from "../sanitize.js";
-import { loadPlaybook, savePlaybook, createEmptyPlaybook } from "../playbook.js";
-import { withLock } from "../lock.js";
-import { Config, Playbook, ErrorCode } from "../types.js";
-import { loadTraumas } from "../trauma.js";
-import { resetSemanticResolutionCache, resolveSemanticEnabled, warmupEmbeddings } from "../semantic.js";
+import fs from "node:fs/promises";
+import path from "node:path";
+import readline from "node:readline";
 import chalk from "chalk";
 import yaml from "yaml";
-import path from "node:path";
-import fs from "node:fs/promises";
-import readline from "node:readline";
+import { cassAvailable, cassNeedsIndex, cassSearch, cassStats, safeCassSearch } from "../cass.js";
+import { DEFAULT_CONFIG, loadConfig, patchGlobalConfig } from "../config.js";
+import {
+  getAvailableProviders,
+  isLLMAvailable,
+  resolveCliCommand,
+  resolveOllamaBaseUrl,
+  validateApiKey,
+} from "../llm.js";
+import { withLock } from "../lock.js";
 import { formatCheckStatusBadge, formatSafetyBadge, icon, iconPrefix } from "../output.js";
+import { createEmptyPlaybook, loadPlaybook, savePlaybook } from "../playbook.js";
 import { createProgress, type ProgressReporter } from "../progress.js";
+import { compileExtraPatterns, SECRET_PATTERNS } from "../sanitize.js";
+import {
+  resetSemanticResolutionCache,
+  resolveSemanticEnabled,
+  warmupEmbeddings,
+} from "../semantic.js";
+import { loadTraumas } from "../trauma.js";
+import { type Config, ErrorCode, type Playbook } from "../types.js";
+import {
+  atomicWrite,
+  checkAbort,
+  ensureRepoStructure,
+  expandPath,
+  fileExists,
+  getCliName,
+  getVersion,
+  handlePermissionError,
+  isJsonOutput,
+  isPermissionError,
+  isToonOutput,
+  error as logError,
+  printStructuredResult,
+  type ResolvedConfigFile,
+  reportError,
+  resolveGlobalConfigFile,
+  resolveGlobalDir,
+  resolveRepoDir,
+  validateOneOf,
+} from "../utils.js";
 
 type CheckStatus = "pass" | "warn" | "fail";
 type OverallStatus = "healthy" | "degraded" | "unhealthy";
@@ -136,7 +146,7 @@ async function validateConfigFile(file: ResolvedConfigFile): Promise<ConfigFileV
 }
 
 async function validateGuardParseable(
-  guardPath: string
+  guardPath: string,
 ): Promise<{ ok: boolean; reason?: string }> {
   // Prefer python3 (installer uses #!/usr/bin/env python3), fall back to python.
   const { spawnSync } = await import("node:child_process");
@@ -144,7 +154,7 @@ async function validateGuardParseable(
     const r = spawnSync(
       interp,
       ["-c", `import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read())`, guardPath],
-      { encoding: "utf-8", timeout: 5000 }
+      { encoding: "utf-8", timeout: 5000 },
     );
     if (r.error && (r.error as NodeJS.ErrnoException).code === "ENOENT") {
       continue; // Try next interpreter.
@@ -162,7 +172,7 @@ async function validateGuardParseable(
 }
 
 async function getPlaybookSchemaVersion(
-  playbookPath: string
+  playbookPath: string,
 ): Promise<{ version: number | null; error?: string }> {
   try {
     const playbook = await loadPlaybook(playbookPath);
@@ -201,7 +211,7 @@ function summarizeFixableIssue(issue: FixableIssue): FixableIssueSummary {
 
 function buildFixPlan(
   issues: FixableIssueSummary[],
-  options: { fix: boolean; dryRun: boolean; interactive: boolean; force: boolean }
+  options: { fix: boolean; dryRun: boolean; interactive: boolean; force: boolean },
 ): FixPlan {
   if (!options.fix && !options.dryRun) {
     return {
@@ -272,7 +282,8 @@ function buildRecommendedActions(params: {
     actions.push({
       label: "Rebuild the cass lexical index",
       command: "cass index --full",
-      reason: "cass binary is present but its lexical index is unavailable, so history search is degraded.",
+      reason:
+        "cass binary is present but its lexical index is unavailable, so history search is degraded.",
       urgency: "medium",
     });
     actions.push({
@@ -285,7 +296,7 @@ function buildRecommendedActions(params: {
   }
 
   const globalStorage = params.checks.find(
-    (c) => c.category === "Global Storage (~/.cass-memory)" && c.item === "Structure"
+    (c) => c.category === "Global Storage (~/.cass-memory)" && c.item === "Structure",
   );
   if (globalStorage?.status === "warn") {
     actions.push({
@@ -300,14 +311,16 @@ function buildRecommendedActions(params: {
   if (llmCheck?.status === "warn") {
     actions.push({
       label: "Configure an LLM API key (optional)",
-      command: "export ANTHROPIC_API_KEY=\"...\"  # or OPENAI_API_KEY / GOOGLE_GENERATIVE_AI_API_KEY / OLLAMA_BASE_URL / install claude CLI",
-      reason: "Enables AI-powered reflection. The CLI works fully without it. For local LLMs, use Ollama. If you have Claude Code or similar installed, set provider to 'cli'.",
+      command:
+        'export ANTHROPIC_API_KEY="..."  # or OPENAI_API_KEY / GOOGLE_GENERATIVE_AI_API_KEY / OLLAMA_BASE_URL / install claude CLI',
+      reason:
+        "Enables AI-powered reflection. The CLI works fully without it. For local LLMs, use Ollama. If you have Claude Code or similar installed, set provider to 'cli'.",
       urgency: "low",
     });
   }
 
   const semanticCheck = params.checks.find(
-    (c) => c.category === "Semantic Search" && c.item === "Status"
+    (c) => c.category === "Semantic Search" && c.item === "Status",
   );
   if (semanticCheck?.status === "warn") {
     const semanticDetails = semanticCheck.details as
@@ -331,7 +344,7 @@ function buildRecommendedActions(params: {
   }
 
   const repoCheck = params.checks.find(
-    (c) => c.category === "Repo .cass/ Structure" && c.item === "Structure"
+    (c) => c.category === "Repo .cass/ Structure" && c.item === "Structure",
   );
   if (repoCheck?.status === "warn") {
     actions.push({
@@ -363,12 +376,14 @@ function buildRecommendedActions(params: {
   }
 
   const byUrgency: Record<ActionUrgency, number> = { high: 0, medium: 1, low: 2 };
-  return uniqRecommendedActions(actions).sort((a, b) => byUrgency[a.urgency] - byUrgency[b.urgency]);
+  return uniqRecommendedActions(actions).sort(
+    (a, b) => byUrgency[a.urgency] - byUrgency[b.urgency],
+  );
 }
 
 async function computeDoctorChecks(
   config: Config,
-  options: { configLoadError?: unknown } = {}
+  options: { configLoadError?: unknown } = {},
 ): Promise<HealthCheck[]> {
   const checks: HealthCheck[] = [];
 
@@ -415,7 +430,10 @@ async function computeDoctorChecks(
     category: "Global Storage (~/.cass-memory)",
     item: "Structure",
     status: missingGlobal.length === 0 ? "pass" : "warn",
-    message: missingGlobal.length === 0 ? "All global files found" : `Missing: ${missingGlobal.join(", ")}`,
+    message:
+      missingGlobal.length === 0
+        ? "All global files found"
+        : `Missing: ${missingGlobal.join(", ")}`,
   });
 
   // 2.5) Global config validity
@@ -443,7 +461,9 @@ async function computeDoctorChecks(
         message: validation.valid
           ? `Global ${globalConfigName} is valid ${globalConfigFormat}`
           : `Global ${globalConfigName} is invalid ${globalConfigFormat}: ${validation.error}`,
-        details: validation.valid ? { path: globalConfigPath } : { path: globalConfigPath, error: validation.error },
+        details: validation.valid
+          ? { path: globalConfigPath }
+          : { path: globalConfigPath, error: validation.error },
       });
     }
 
@@ -495,9 +515,11 @@ async function computeDoctorChecks(
   const availableProviders = getAvailableProviders();
   // Ollama and Bedrock are available when explicitly configured even without
   // standard env vars — Ollama defaults to localhost, Bedrock uses IAM roles.
-  const usesImplicitAuth = config.provider === "ollama" || config.provider === "bedrock" || config.provider === "cli";
+  const usesImplicitAuth =
+    config.provider === "ollama" || config.provider === "bedrock" || config.provider === "cli";
   const hasAnyApiKey = availableProviders.length > 0 || !!config.apiKey || usesImplicitAuth;
-  const configuredProviderAvailable = isLLMAvailable(config.provider) || !!config.apiKey || usesImplicitAuth;
+  const configuredProviderAvailable =
+    isLLMAvailable(config.provider) || !!config.apiKey || usesImplicitAuth;
 
   let llmMessage: string;
   let llmStatus: CheckStatus = "warn";
@@ -684,7 +706,7 @@ async function computeDoctorChecks(
     const extraPatterns = compileExtraPatterns(config.sanitization.extraPatterns);
     const extraResult = testPatternBreadth(
       extraPatterns.map((p) => ({ pattern: p, replacement: "[REDACTED_CUSTOM]" })),
-      benignSamples
+      benignSamples,
     );
 
     const totalMatches = builtInResult.matches.length + extraResult.matches.length;
@@ -771,7 +793,7 @@ function nextOverallStatus(current: OverallStatus, status: CheckStatus): Overall
 
 function testPatternBreadth(
   patterns: Array<{ pattern: RegExp; replacement: string }>,
-  samples: string[]
+  samples: string[],
 ): { matches: PatternMatch[]; tested: number } {
   const matches: PatternMatch[] = [];
   const tested = patterns.length * samples.length;
@@ -782,7 +804,7 @@ function testPatternBreadth(
       if (pattern.test(sample)) {
         const patternStr = pattern.toString();
         const suggestion = patternStr.includes("token")
-          ? "Consider anchoring token with delimiters, e.g. /token[\"\\s:=]+/i"
+          ? 'Consider anchoring token with delimiters, e.g. /token["\\s:=]+/i'
           : "Consider tightening with explicit delimiters around secrets";
         matches.push({ pattern: patternStr, sample, replacement, suggestion });
       }
@@ -798,7 +820,9 @@ function testPatternBreadth(
  */
 export async function runSelfTest(
   config: Config,
-  options: { onProgress?: (event: { current: number; total: number; message: string }) => void } = {}
+  options: {
+    onProgress?: (event: { current: number; total: number; message: string }) => void;
+  } = {},
 ): Promise<HealthCheck[]> {
   const checks: HealthCheck[] = [];
   const totalSteps = 5;
@@ -856,7 +880,12 @@ export async function runSelfTest(
     const start = Date.now();
     try {
       // Use safeCassSearch which handles errors gracefully
-      const results = await safeCassSearch("self test query", { limit: 5 }, config.cassPath, config);
+      const results = await safeCassSearch(
+        "self test query",
+        { limit: 5 },
+        config.cassPath,
+        config,
+      );
       const searchTime = Date.now() - start;
 
       if (searchTime > 5000) {
@@ -992,7 +1021,8 @@ export async function runSelfTest(
   const currentProvider = config.provider;
   const hasCurrentProvider = availableProviders.includes(currentProvider);
   const hasConfigApiKey = !!config.apiKey;
-  const providerUsesImplicitAuth = currentProvider === "ollama" || currentProvider === "bedrock" || currentProvider === "cli";
+  const providerUsesImplicitAuth =
+    currentProvider === "ollama" || currentProvider === "bedrock" || currentProvider === "cli";
   const hasAnyApiKey = availableProviders.length > 0 || hasConfigApiKey || providerUsesImplicitAuth;
 
   if (!hasAnyApiKey) {
@@ -1019,7 +1049,7 @@ export async function runSelfTest(
         ollamaBaseUrl: baseUrl,
         semanticSearchEnabled: config.semanticSearchEnabled,
         embeddingModel: config.embeddingModel,
-        keySource: "ollama"
+        keySource: "ollama",
       },
     });
   } else if (currentProvider === "bedrock") {
@@ -1037,7 +1067,7 @@ export async function runSelfTest(
         region,
         semanticSearchEnabled: config.semanticSearchEnabled,
         embeddingModel: config.embeddingModel,
-        keySource: "aws-credentials"
+        keySource: "aws-credentials",
       },
     });
   } else if (currentProvider === "cli") {
@@ -1047,7 +1077,10 @@ export async function runSelfTest(
       category: "Self-Test",
       item: "LLM System",
       status: cliTool !== "not found" ? "pass" : "warn",
-      message: cliTool !== "not found" ? `cli (${cliTool})` : "cli provider configured but no CLI tool found on PATH",
+      message:
+        cliTool !== "not found"
+          ? `cli (${cliTool})`
+          : "cli provider configured but no CLI tool found on PATH",
       details: {
         availableProviders,
         currentProvider,
@@ -1055,7 +1088,7 @@ export async function runSelfTest(
         cliCommand: config.cliCommand,
         semanticSearchEnabled: config.semanticSearchEnabled,
         embeddingModel: config.embeddingModel,
-        keySource: "cli"
+        keySource: "cli",
       },
     });
   } else if (hasConfigApiKey) {
@@ -1071,7 +1104,7 @@ export async function runSelfTest(
         model: config.model,
         semanticSearchEnabled: config.semanticSearchEnabled,
         embeddingModel: config.embeddingModel,
-        keySource: "config"
+        keySource: "config",
       },
     });
   } else if (!hasCurrentProvider) {
@@ -1098,7 +1131,7 @@ export async function runSelfTest(
           model: config.model,
           semanticSearchEnabled: config.semanticSearchEnabled,
           embeddingModel: config.embeddingModel,
-          keySource: "env"
+          keySource: "env",
         },
       });
     } catch (err: any) {
@@ -1169,7 +1202,10 @@ function createMissingPlaybookFix(playbookPath: string): FixableIssue {
   };
 }
 
-function createPlaybookSchemaMigrationFix(playbookPath: string, scope: "global" | "repo"): FixableIssue {
+function createPlaybookSchemaMigrationFix(
+  playbookPath: string,
+  scope: "global" | "repo",
+): FixableIssue {
   return {
     id: `migrate-playbook-schema-${scope}`,
     description: `Migrate ${scope} playbook schema to v2: ${playbookPath}`,
@@ -1295,7 +1331,7 @@ function createEnableSemanticSearchFix(config: Config, configPath: string): Fixa
       const warmup = await warmupEmbeddings({ model: config.embeddingModel });
       if (!warmup.success) {
         throw new Error(
-          `Embedding backend check failed (${backendLabel}); config left unchanged: ${warmup.error ?? "unknown error"}`
+          `Embedding backend check failed (${backendLabel}); config left unchanged: ${warmup.error ?? "unknown error"}`,
         );
       }
       const written = await patchGlobalConfig({ semanticSearchEnabled: true });
@@ -1329,7 +1365,7 @@ function createMissingBlockedLogFix(blockedPath: string): FixableIssue {
  * Detect fixable issues from health checks.
  */
 export async function detectFixableIssues(
-  options: { configLoadError?: unknown; config?: Config } = {}
+  options: { configLoadError?: unknown; config?: Config } = {},
 ): Promise<FixableIssue[]> {
   const issues: FixableIssue[] = [];
 
@@ -1428,7 +1464,7 @@ export async function detectFixableIssues(
  */
 export async function applyFixes(
   issues: FixableIssue[],
-  options: ApplyFixesOptions = {}
+  options: ApplyFixesOptions = {},
 ): Promise<FixResult[]> {
   const { interactive = false, dryRun = false, force = false, quiet = false } = options;
   const results: FixResult[] = [];
@@ -1451,7 +1487,7 @@ export async function applyFixes(
       const safetyIcon = formatSafetyBadge(issue.safety);
       const severityColor = issue.severity === "fail" ? chalk.red : chalk.yellow;
       console.log(
-        `${i + 1}. ${safetyIcon} ${severityColor(`[${issue.severity}]`)} ${issue.description}`
+        `${i + 1}. ${safetyIcon} ${severityColor(`[${issue.severity}]`)} ${issue.description}`,
       );
     });
   }
@@ -1480,7 +1516,10 @@ export async function applyFixes(
   // Safe issues: apply unless interactive mode asks not to
   if (safeIssues.length > 0) {
     if (interactive) {
-      if (!quiet) console.log(chalk.green(`\n${iconPrefix("check")}${safeIssues.length} safe fix(es) available`));
+      if (!quiet)
+        console.log(
+          chalk.green(`\n${iconPrefix("check")}${safeIssues.length} safe fix(es) available`),
+        );
       const confirm = await promptConfirm("Apply safe fixes?");
       if (confirm) {
         toFix.push(...safeIssues);
@@ -1494,7 +1533,9 @@ export async function applyFixes(
   if (cautiousIssues.length > 0) {
     if (!quiet) {
       console.log(
-        chalk.yellow(`\n${iconPrefix("warning")}${cautiousIssues.length} cautious fix(es) available (may modify data)`)
+        chalk.yellow(
+          `\n${iconPrefix("warning")}${cautiousIssues.length} cautious fix(es) available (may modify data)`,
+        ),
       );
     }
     if (force) {
@@ -1728,7 +1769,11 @@ export async function doctorCommand(options: {
         if (allMatches.length > 0) {
           console.log(chalk.yellow("  Potentially broad patterns:"));
           for (const m of allMatches) {
-            console.log(chalk.yellow(`  - ${m.pattern} matched "${m.sample}" (replacement: ${m.replacement})`));
+            console.log(
+              chalk.yellow(
+                `  - ${m.pattern} matched "${m.sample}" (replacement: ${m.replacement})`,
+              ),
+            );
             if (m.suggestion) {
               console.log(chalk.yellow(`    Suggestion: ${m.suggestion}`));
             }

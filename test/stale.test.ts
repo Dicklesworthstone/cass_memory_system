@@ -1,4 +1,4 @@
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import fs from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
@@ -104,7 +104,7 @@ describe("staleCommand", () => {
           await writePlaybookFile(env.playbookPath, playbook);
 
           const stdout = await captureStdout(() =>
-            staleCommand({ days: 90, scope: "all", json: true })
+            staleCommand({ days: 90, scope: "all", json: true }),
           );
 
           const parsed = JSON.parse(stdout) as any;
@@ -156,16 +156,19 @@ describe("staleCommand", () => {
             scope: "workspace",
           });
 
-          await writePlaybookFile(env.playbookPath, createTestPlaybook([globalStale, workspaceStale]));
+          await writePlaybookFile(
+            env.playbookPath,
+            createTestPlaybook([globalStale, workspaceStale]),
+          );
 
           const globalOut = JSON.parse(
-            await captureStdout(() => staleCommand({ days: 90, scope: "global", json: true }))
+            await captureStdout(() => staleCommand({ days: 90, scope: "global", json: true })),
           ) as any;
           expect(globalOut.data.count).toBe(1);
           expect(globalOut.data.bullets[0].id).toBe("b-global");
 
           const workspaceOut = JSON.parse(
-            await captureStdout(() => staleCommand({ days: 90, scope: "workspace", json: true }))
+            await captureStdout(() => staleCommand({ days: 90, scope: "workspace", json: true })),
           ) as any;
           expect(workspaceOut.data.count).toBe(1);
           expect(workspaceOut.data.bullets[0].id).toBe("b-workspace");
@@ -205,17 +208,17 @@ describe("staleCommand", () => {
 
           await writePlaybookFile(
             env.playbookPath,
-            createTestPlaybook([negativeScore, veryStaleCandidate])
+            createTestPlaybook([negativeScore, veryStaleCandidate]),
           );
 
           const parsed = JSON.parse(
-            await captureStdout(() => staleCommand({ days: 1, scope: "all", json: true }))
+            await captureStdout(() => staleCommand({ days: 1, scope: "all", json: true })),
           ) as any;
 
           const byId = new Map<string, any>(parsed.data.bullets.map((b: any) => [b.id, b]));
           expect(byId.get("b-negative")?.recommendation).toContain("cm forget b-negative");
           expect(byId.get("b-stale-candidate")?.recommendation).toContain(
-            "playbook remove b-stale-candidate"
+            "playbook remove b-stale-candidate",
           );
         } finally {
           process.chdir(originalCwd);

@@ -4,23 +4,23 @@
  * Tests real integration between config.ts and scoring.ts without mocks.
  * Verifies that scoring functions properly respect config-driven parameters.
  */
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { loadConfig, DEFAULT_CONFIG, getDefaultConfig } from "../src/config.js";
+import { DEFAULT_CONFIG, getDefaultConfig, loadConfig } from "../src/config.js";
 import {
+  analyzeScoreDistribution,
   calculateDecayedValue,
+  calculateMaturityState,
+  checkForDemotion,
+  checkForPromotion,
   getDecayedCounts,
   getEffectiveScore,
-  calculateMaturityState,
-  checkForPromotion,
-  checkForDemotion,
   isStale,
-  analyzeScoreDistribution
 } from "../src/scoring.js";
-import { withTempCassHome, TestEnv } from "./helpers/temp.js";
 import { createTestBullet, createTestFeedbackEvent, daysAgo } from "./helpers/factories.js";
+import { type TestEnv, withTempCassHome } from "./helpers/temp.js";
 
 describe("Integration: Config + Scoring", () => {
   describe("Decay calculation with configurable half-life", () => {
@@ -30,8 +30,8 @@ describe("Integration: Config + Scoring", () => {
         const configContent = JSON.stringify({
           scoring: {
             decayHalfLifeDays: 45,
-            harmfulMultiplier: 4
-          }
+            harmfulMultiplier: 4,
+          },
         });
         await writeFile(env.configPath, configContent);
 
@@ -39,9 +39,7 @@ describe("Integration: Config + Scoring", () => {
 
         // Create bullet with event 45 days ago
         const bullet = createTestBullet({
-          feedbackEvents: [
-            createTestFeedbackEvent("helpful", 45)
-          ]
+          feedbackEvents: [createTestFeedbackEvent("helpful", 45)],
         });
 
         const { decayedHelpful } = getDecayedCounts(bullet, config);
@@ -60,8 +58,8 @@ describe("Integration: Config + Scoring", () => {
 
         const bullet = createTestBullet({
           feedbackEvents: [
-            createTestFeedbackEvent("helpful", 90) // 90 days ago
-          ]
+            createTestFeedbackEvent("helpful", 90), // 90 days ago
+          ],
         });
 
         const { decayedHelpful } = getDecayedCounts(bullet, config);
@@ -73,14 +71,18 @@ describe("Integration: Config + Scoring", () => {
 
     it("applies different half-lives to same events correctly", async () => {
       // 30-day half-life: event at 30 days = 0.5, at 60 days = 0.25
-      const config30 = { ...getDefaultConfig(), scoring: { ...DEFAULT_CONFIG.scoring, decayHalfLifeDays: 30 } };
+      const config30 = {
+        ...getDefaultConfig(),
+        scoring: { ...DEFAULT_CONFIG.scoring, decayHalfLifeDays: 30 },
+      };
       // 90-day half-life: event at 30 days = 0.79, at 60 days = 0.63
-      const config90 = { ...getDefaultConfig(), scoring: { ...DEFAULT_CONFIG.scoring, decayHalfLifeDays: 90 } };
+      const config90 = {
+        ...getDefaultConfig(),
+        scoring: { ...DEFAULT_CONFIG.scoring, decayHalfLifeDays: 90 },
+      };
 
       const bullet = createTestBullet({
-        feedbackEvents: [
-          createTestFeedbackEvent("helpful", 30)
-        ]
+        feedbackEvents: [createTestFeedbackEvent("helpful", 30)],
       });
 
       const result30 = getDecayedCounts(bullet, config30);
@@ -100,8 +102,8 @@ describe("Integration: Config + Scoring", () => {
         const configContent = JSON.stringify({
           scoring: {
             decayHalfLifeDays: 90,
-            harmfulMultiplier: 8
-          }
+            harmfulMultiplier: 8,
+          },
         });
         await writeFile(env.configPath, configContent);
 
@@ -114,8 +116,8 @@ describe("Integration: Config + Scoring", () => {
           feedbackEvents: [
             createTestFeedbackEvent("helpful", 0),
             createTestFeedbackEvent("helpful", 0),
-            createTestFeedbackEvent("harmful", 0)
-          ]
+            createTestFeedbackEvent("harmful", 0),
+          ],
         });
 
         const score = getEffectiveScore(bullet, config);
@@ -134,8 +136,8 @@ describe("Integration: Config + Scoring", () => {
           feedbackEvents: [
             createTestFeedbackEvent("helpful", 0),
             createTestFeedbackEvent("helpful", 0),
-            createTestFeedbackEvent("harmful", 0)
-          ]
+            createTestFeedbackEvent("harmful", 0),
+          ],
         });
 
         const score = getEffectiveScore(bullet, config);
@@ -154,8 +156,8 @@ describe("Integration: Config + Scoring", () => {
           pruneHarmfulThreshold: 2,
           scoring: {
             decayHalfLifeDays: 90,
-            harmfulMultiplier: 4
-          }
+            harmfulMultiplier: 4,
+          },
         });
         await writeFile(env.configPath, configContent);
 
@@ -169,8 +171,8 @@ describe("Integration: Config + Scoring", () => {
         const bullet = createTestBullet({
           feedbackEvents: [
             createTestFeedbackEvent("harmful", 0),
-            createTestFeedbackEvent("harmful", 0)
-          ]
+            createTestFeedbackEvent("harmful", 0),
+          ],
         });
 
         const result = checkForDemotion(bullet, config);
@@ -188,9 +190,7 @@ describe("Integration: Config + Scoring", () => {
         // Need score between -3 and 0
         // 1 harmful = -4 * 0.5 = -2 (candidate multiplier)
         const bullet = createTestBullet({
-          feedbackEvents: [
-            createTestFeedbackEvent("harmful", 0)
-          ]
+          feedbackEvents: [createTestFeedbackEvent("harmful", 0)],
         });
 
         const result = checkForDemotion(bullet, config);
@@ -207,8 +207,8 @@ describe("Integration: Config + Scoring", () => {
         // Only override half-life, keep other defaults
         const configContent = JSON.stringify({
           scoring: {
-            decayHalfLifeDays: 180
-          }
+            decayHalfLifeDays: 180,
+          },
         });
         await writeFile(env.configPath, configContent);
 
@@ -230,8 +230,8 @@ describe("Integration: Config + Scoring", () => {
             harmfulMultiplier: 6,
             minFeedbackForActive: 5,
             minHelpfulForProven: 15,
-            maxHarmfulRatioForProven: 0.05
-          }
+            maxHarmfulRatioForProven: 0.05,
+          },
         });
         await writeFile(env.configPath, configContent);
 
@@ -257,8 +257,8 @@ describe("Integration: Config + Scoring", () => {
           feedbackEvents: [
             createTestFeedbackEvent("helpful", 0),
             createTestFeedbackEvent("helpful", 0),
-            createTestFeedbackEvent("helpful", 0)
-          ]
+            createTestFeedbackEvent("helpful", 0),
+          ],
         });
 
         const maturity = calculateMaturityState(bullet, config);
@@ -271,8 +271,8 @@ describe("Integration: Config + Scoring", () => {
         // Short half-life so old events decay significantly
         const configContent = JSON.stringify({
           scoring: {
-            decayHalfLifeDays: 30
-          }
+            decayHalfLifeDays: 30,
+          },
         });
         await writeFile(env.configPath, configContent);
 
@@ -283,8 +283,8 @@ describe("Integration: Config + Scoring", () => {
           feedbackEvents: [
             createTestFeedbackEvent("helpful", 90),
             createTestFeedbackEvent("helpful", 90),
-            createTestFeedbackEvent("helpful", 90)
-          ]
+            createTestFeedbackEvent("helpful", 90),
+          ],
         });
 
         const maturity = calculateMaturityState(bullet, config);
@@ -305,29 +305,33 @@ describe("Integration: Config + Scoring", () => {
           // Excellent: 12 helpful = 12 * 0.5 (candidate) = 6... need established for 1.0 multiplier
           createTestBullet({
             maturity: "established",
-            feedbackEvents: Array(12).fill(null).map(() => createTestFeedbackEvent("helpful", 0))
+            feedbackEvents: Array(12)
+              .fill(null)
+              .map(() => createTestFeedbackEvent("helpful", 0)),
           }),
           // Good: 6 helpful * 1.0 = 6
           createTestBullet({
             maturity: "established",
-            feedbackEvents: Array(6).fill(null).map(() => createTestFeedbackEvent("helpful", 0))
+            feedbackEvents: Array(6)
+              .fill(null)
+              .map(() => createTestFeedbackEvent("helpful", 0)),
           }),
           // Neutral: 2 helpful * 1.0 = 2
           createTestBullet({
             maturity: "established",
             feedbackEvents: [
               createTestFeedbackEvent("helpful", 0),
-              createTestFeedbackEvent("helpful", 0)
-            ]
+              createTestFeedbackEvent("helpful", 0),
+            ],
           }),
           // At-risk: 2 harmful * 4 = -8 * 1.0 = -8
           createTestBullet({
             maturity: "established",
             feedbackEvents: [
               createTestFeedbackEvent("harmful", 0),
-              createTestFeedbackEvent("harmful", 0)
-            ]
-          })
+              createTestFeedbackEvent("harmful", 0),
+            ],
+          }),
         ];
 
         const distribution = analyzeScoreDistribution(bullets, config);
@@ -346,15 +350,15 @@ describe("Integration: Config + Scoring", () => {
       const staleBullet = createTestBullet({
         createdAt: daysAgo(100),
         feedbackEvents: [
-          createTestFeedbackEvent("helpful", 100) // Last feedback 100 days ago
-        ]
+          createTestFeedbackEvent("helpful", 100), // Last feedback 100 days ago
+        ],
       });
 
       const freshBullet = createTestBullet({
         createdAt: daysAgo(100),
         feedbackEvents: [
-          createTestFeedbackEvent("helpful", 10) // Recent feedback
-        ]
+          createTestFeedbackEvent("helpful", 10), // Recent feedback
+        ],
       });
 
       expect(isStale(staleBullet, 90)).toBe(true);
@@ -370,8 +374,8 @@ describe("Integration: Config + Scoring", () => {
           pruneHarmfulThreshold: 5,
           scoring: {
             decayHalfLifeDays: 60,
-            harmfulMultiplier: 3
-          }
+            harmfulMultiplier: 3,
+          },
         });
         await writeFile(env.configPath, configContent);
 
@@ -388,8 +392,8 @@ describe("Integration: Config + Scoring", () => {
           feedbackEvents: [
             createTestFeedbackEvent("helpful", 0),
             createTestFeedbackEvent("helpful", 30), // Half-decayed
-            createTestFeedbackEvent("harmful", 0)
-          ]
+            createTestFeedbackEvent("harmful", 0),
+          ],
         });
 
         // Calculate scores using loaded config

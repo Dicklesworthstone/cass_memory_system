@@ -1,5 +1,5 @@
-import { describe, expect, it, beforeEach, afterEach, spyOn } from "bun:test";
-import { llmWithRetry, LLM_RETRY_CONFIG } from "../src/llm.js";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import { LLM_RETRY_CONFIG, llmWithRetry } from "../src/llm.js";
 
 describe("LLM_RETRY_CONFIG", () => {
   it("has expected configuration values", () => {
@@ -280,7 +280,7 @@ describe("llmWithRetry", () => {
     const complexResult = {
       data: [1, 2, 3],
       nested: { value: "test" },
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     };
 
     const operation = () => Promise.resolve(complexResult);
@@ -355,11 +355,11 @@ describe("llmWithRetry exponential backoff", () => {
     const base = LLM_RETRY_CONFIG.baseDelayMs;
     const max = LLM_RETRY_CONFIG.maxDelayMs;
 
-    expect(Math.min(base * Math.pow(2, 1), max)).toBe(2000);
-    expect(Math.min(base * Math.pow(2, 2), max)).toBe(4000);
-    expect(Math.min(base * Math.pow(2, 3), max)).toBe(8000);
-    expect(Math.min(base * Math.pow(2, 4), max)).toBe(16000);
-    expect(Math.min(base * Math.pow(2, 5), max)).toBe(30000); // capped
-    expect(Math.min(base * Math.pow(2, 6), max)).toBe(30000); // capped
+    expect(Math.min(base * 2 ** 1, max)).toBe(2000);
+    expect(Math.min(base * 2 ** 2, max)).toBe(4000);
+    expect(Math.min(base * 2 ** 3, max)).toBe(8000);
+    expect(Math.min(base * 2 ** 4, max)).toBe(16000);
+    expect(Math.min(base * 2 ** 5, max)).toBe(30000); // capped
+    expect(Math.min(base * 2 ** 6, max)).toBe(30000); // capped
   });
 });

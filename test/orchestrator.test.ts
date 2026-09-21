@@ -7,22 +7,22 @@
  * - Setting `config.validationEnabled=false` to bypass validator/evidence calls
  * - Pointing `config.cassPath` at a non-existent binary so `cassExport` uses fallback parsing
  */
-import { describe, test, expect } from "bun:test";
-import { readFileSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
+import { describe, expect, test } from "bun:test";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import yaml from "yaml";
 
 import { orchestrateReflection } from "../src/orchestrator.js";
+import { tagCmSubprocessPrompt } from "../src/subprocess-tag.js";
 import { getProcessedLogPath, ProcessedLog } from "../src/tracking.js";
 import { expandPath, now } from "../src/utils.js";
-import { cleanupEnvironment, createIsolatedEnvironment, TestEnv } from "./helpers/temp.js";
-import { createTestConfig, createTestPlaybook, createBullet } from "./helpers/factories.js";
-import { withLlmShim, type LlmShimConfig } from "./helpers/llm-shim.js";
-import { tagCmSubprocessPrompt } from "../src/subprocess-tag.js";
+import { createBullet, createTestConfig, createTestPlaybook } from "./helpers/factories.js";
+import { type LlmShimConfig, withLlmShim } from "./helpers/llm-shim.js";
+import { cleanupEnvironment, createIsolatedEnvironment, type TestEnv } from "./helpers/temp.js";
 
 async function withEnv<T>(
   overrides: Record<string, string | undefined>,
-  fn: () => Promise<T> | T
+  fn: () => Promise<T> | T,
 ): Promise<T> {
   const previous: Record<string, string | undefined> = {};
   for (const [key, value] of Object.entries(overrides)) {
@@ -60,7 +60,10 @@ async function withIsolatedHome<T>(fn: (env: TestEnv) => Promise<T>): Promise<T>
   }
 }
 
-function writeJsonlSession(sessionPath: string, lines: Array<{ role: string; content: string }>): void {
+function writeJsonlSession(
+  sessionPath: string,
+  lines: Array<{ role: string; content: string }>,
+): void {
   mkdirSync(path.dirname(sessionPath), { recursive: true });
   const body = lines.map((l) => JSON.stringify(l)).join("\n") + "\n";
   writeFileSync(sessionPath, body, "utf-8");
@@ -78,7 +81,10 @@ describe("orchestrateReflection (unit)", () => {
       const sessionPath = path.join(env.home, "sessions", "s1.jsonl");
       writeJsonlSession(sessionPath, [
         { role: "user", content: "I need help writing reliable unit tests for my CLI tool." },
-        { role: "assistant", content: "Sure. Let's start by identifying seams and adding deterministic fixtures." },
+        {
+          role: "assistant",
+          content: "Sure. Let's start by identifying seams and adding deterministic fixtures.",
+        },
       ]);
 
       const config = createTestConfig({
@@ -89,26 +95,35 @@ describe("orchestrateReflection (unit)", () => {
       });
 
       await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
-        await withLlmShim({
-          reflector: {
-            deltas: [{
-              type: "add",
-              bullet: { content: "Always add an in-process unit test before refactors.", category: "testing", tags: [] },
-              reason: "Ensures coverage and prevents regressions",
-              sourceSession: "stub",
-            }]
-          }
-        }, async (io) => {
-          const outcome = await orchestrateReflection(config, { session: sessionPath, io });
+        await withLlmShim(
+          {
+            reflector: {
+              deltas: [
+                {
+                  type: "add",
+                  bullet: {
+                    content: "Always add an in-process unit test before refactors.",
+                    category: "testing",
+                    tags: [],
+                  },
+                  reason: "Ensures coverage and prevents regressions",
+                  sourceSession: "stub",
+                },
+              ],
+            },
+          },
+          async (io) => {
+            const outcome = await orchestrateReflection(config, { session: sessionPath, io });
 
-          expect(outcome.errors).toEqual([]);
-          expect(outcome.sessionsProcessed).toBe(1);
-          expect(outcome.deltasGenerated).toBe(1);
+            expect(outcome.errors).toEqual([]);
+            expect(outcome.sessionsProcessed).toBe(1);
+            expect(outcome.deltasGenerated).toBe(1);
 
-          const saved = readPlaybook(env.playbookPath);
-          const contents = (saved?.bullets || []).map((b: any) => b.content);
-          expect(contents).toContain("Always add an in-process unit test before refactors.");
-        });
+            const saved = readPlaybook(env.playbookPath);
+            const contents = (saved?.bullets || []).map((b: any) => b.content);
+            expect(contents).toContain("Always add an in-process unit test before refactors.");
+          },
+        );
       });
     });
   });
@@ -119,8 +134,14 @@ describe("orchestrateReflection (unit)", () => {
 
       const sessionPath = path.join(env.home, "sessions", "s1.jsonl");
       writeJsonlSession(sessionPath, [
-        { role: "user", content: "This session has enough content to exceed the short-session threshold." },
-        { role: "assistant", content: "Adding more content so the text export is long enough for processing." },
+        {
+          role: "user",
+          content: "This session has enough content to exceed the short-session threshold.",
+        },
+        {
+          role: "assistant",
+          content: "Adding more content so the text export is long enough for processing.",
+        },
       ]);
 
       const config = createTestConfig({
@@ -131,25 +152,38 @@ describe("orchestrateReflection (unit)", () => {
       });
 
       await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
-        await withLlmShim({
-          reflector: {
-            deltas: [{
-              type: "add",
-              bullet: { content: "Dry-run delta should be returned, not persisted.", category: "testing", tags: [] },
-              reason: "Dry-run behavior",
-              sourceSession: "stub",
-            }]
-          }
-        }, async (io) => {
-          const outcome = await orchestrateReflection(config, { session: sessionPath, dryRun: true, io });
+        await withLlmShim(
+          {
+            reflector: {
+              deltas: [
+                {
+                  type: "add",
+                  bullet: {
+                    content: "Dry-run delta should be returned, not persisted.",
+                    category: "testing",
+                    tags: [],
+                  },
+                  reason: "Dry-run behavior",
+                  sourceSession: "stub",
+                },
+              ],
+            },
+          },
+          async (io) => {
+            const outcome = await orchestrateReflection(config, {
+              session: sessionPath,
+              dryRun: true,
+              io,
+            });
 
-          expect(outcome.sessionsProcessed).toBe(1);
-          expect(outcome.deltasGenerated).toBe(1);
-          expect(outcome.dryRunDeltas?.length).toBe(1);
+            expect(outcome.sessionsProcessed).toBe(1);
+            expect(outcome.deltasGenerated).toBe(1);
+            expect(outcome.dryRunDeltas?.length).toBe(1);
 
-          const saved = readPlaybook(env.playbookPath);
-          expect((saved?.bullets || []).length).toBe(0);
-        });
+            const saved = readPlaybook(env.playbookPath);
+            expect((saved?.bullets || []).length).toBe(0);
+          },
+        );
       });
     });
   });
@@ -194,7 +228,7 @@ describe("orchestrateReflection (unit)", () => {
           role: "user",
           content: tagCmSubprocessPrompt(
             "You are a reflector. Existing playbook:\n- b-aaa111 always run the linter\n" +
-              "- b-bbb222 prefer explicit imports\nEmit deltas as JSON."
+              "- b-bbb222 prefer explicit imports\nEmit deltas as JSON.",
           ),
         },
         { role: "assistant", content: '{"deltas":[]}' },
@@ -245,8 +279,7 @@ describe("orchestrateReflection (unit)", () => {
         },
         {
           role: "assistant",
-          content:
-            "Applied the rule, the refactor is done and the whole suite is green now.",
+          content: "Applied the rule, the refactor is done and the whole suite is green now.",
         },
       ]);
 
@@ -267,7 +300,7 @@ describe("orchestrateReflection (unit)", () => {
 
           const outcomeLog = readFileSync(
             path.join(env.home, ".cass-memory", "outcomes.jsonl"),
-            "utf-8"
+            "utf-8",
           );
           expect(outcomeLog).toContain("b-ccc333");
         });
@@ -281,7 +314,10 @@ describe("orchestrateReflection (unit)", () => {
 
       const sessionPath = path.join(env.home, "sessions", "s1.jsonl");
       writeJsonlSession(sessionPath, [
-        { role: "user", content: "Long enough content to pass the short-session threshold (already processed)." },
+        {
+          role: "user",
+          content: "Long enough content to pass the short-session threshold (already processed).",
+        },
         { role: "assistant", content: "More content." },
       ]);
 
@@ -310,10 +346,22 @@ describe("orchestrateReflection (unit)", () => {
 
   test("merge deltas deprecate into an existing active replacement (no new bullet)", async () => {
     await withIsolatedHome(async (env) => {
-      const replacement = createBullet({ content: "Merged rule content", category: "merged", state: "active" });
-      const other = createBullet({ content: "Older duplicate content", category: "general", state: "active" });
+      const replacement = createBullet({
+        content: "Merged rule content",
+        category: "merged",
+        state: "active",
+      });
+      const other = createBullet({
+        content: "Older duplicate content",
+        category: "general",
+        state: "active",
+      });
 
-      writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([replacement, other])), "utf-8");
+      writeFileSync(
+        env.playbookPath,
+        yaml.stringify(createTestPlaybook([replacement, other])),
+        "utf-8",
+      );
 
       const sessionPath = path.join(env.home, "sessions", "s1.jsonl");
       writeJsonlSession(sessionPath, [
@@ -330,32 +378,37 @@ describe("orchestrateReflection (unit)", () => {
       });
 
       await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
-        await withLlmShim({
-          reflector: {
-            deltas: [{
-              type: "merge",
-              bulletIds: [replacement.id, other.id],
-              mergedContent: replacement.content,
-              reason: "Duplicates",
-            }]
-          }
-        }, async (io) => {
-          const outcome = await orchestrateReflection(config, { session: sessionPath, io });
-          expect(outcome.errors).toEqual([]);
+        await withLlmShim(
+          {
+            reflector: {
+              deltas: [
+                {
+                  type: "merge",
+                  bulletIds: [replacement.id, other.id],
+                  mergedContent: replacement.content,
+                  reason: "Duplicates",
+                },
+              ],
+            },
+          },
+          async (io) => {
+            const outcome = await orchestrateReflection(config, { session: sessionPath, io });
+            expect(outcome.errors).toEqual([]);
 
-          const saved = readPlaybook(env.playbookPath);
-          const bullets = saved?.bullets || [];
-          expect(bullets.length).toBe(2);
+            const saved = readPlaybook(env.playbookPath);
+            const bullets = saved?.bullets || [];
+            expect(bullets.length).toBe(2);
 
-          const savedOther = bullets.find((b: any) => b.id === other.id);
-          expect(savedOther).toBeTruthy();
-          expect(savedOther.deprecated).toBe(true);
-          expect(savedOther.replacedBy).toBe(replacement.id);
+            const savedOther = bullets.find((b: any) => b.id === other.id);
+            expect(savedOther).toBeTruthy();
+            expect(savedOther.deprecated).toBe(true);
+            expect(savedOther.replacedBy).toBe(replacement.id);
 
-          const savedReplacement = bullets.find((b: any) => b.id === replacement.id);
-          expect(savedReplacement).toBeTruthy();
-          expect(savedReplacement.deprecated).toBe(false);
-        });
+            const savedReplacement = bullets.find((b: any) => b.id === replacement.id);
+            expect(savedReplacement).toBeTruthy();
+            expect(savedReplacement.deprecated).toBe(false);
+          },
+        );
       });
     });
   });
@@ -366,7 +419,10 @@ describe("orchestrateReflection (unit)", () => {
 
       const sessionPath = path.join(env.home, "sessions", "s1.jsonl");
       writeJsonlSession(sessionPath, [
-        { role: "user", content: "Concurrent run test: this content should be long enough to avoid skipping." },
+        {
+          role: "user",
+          content: "Concurrent run test: this content should be long enough to avoid skipping.",
+        },
         { role: "assistant", content: "More content to ensure length threshold is passed." },
       ]);
 
@@ -378,27 +434,40 @@ describe("orchestrateReflection (unit)", () => {
       });
 
       await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
-        await withLlmShim({
-          reflector: {
-            deltas: [{
-              type: "add",
-              bullet: { content: "Only one concurrent run should apply this rule.", category: "testing", tags: [] },
-              reason: "Concurrency",
-              sourceSession: "stub",
-            }]
-          }
-        }, async (io) => {
-          const [a, b] = await Promise.all([
-            orchestrateReflection(config, { session: sessionPath, io }),
-            orchestrateReflection(config, { session: sessionPath, io }),
-          ]);
+        await withLlmShim(
+          {
+            reflector: {
+              deltas: [
+                {
+                  type: "add",
+                  bullet: {
+                    content: "Only one concurrent run should apply this rule.",
+                    category: "testing",
+                    tags: [],
+                  },
+                  reason: "Concurrency",
+                  sourceSession: "stub",
+                },
+              ],
+            },
+          },
+          async (io) => {
+            const [a, b] = await Promise.all([
+              orchestrateReflection(config, { session: sessionPath, io }),
+              orchestrateReflection(config, { session: sessionPath, io }),
+            ]);
 
-          expect(a.sessionsProcessed + b.sessionsProcessed).toBe(1);
+            expect(a.sessionsProcessed + b.sessionsProcessed).toBe(1);
 
-          const saved = readPlaybook(env.playbookPath);
-          const contents = (saved?.bullets || []).map((bullet: any) => bullet.content);
-          expect(contents.filter((c: string) => c === "Only one concurrent run should apply this rule.").length).toBe(1);
-        });
+            const saved = readPlaybook(env.playbookPath);
+            const contents = (saved?.bullets || []).map((bullet: any) => bullet.content);
+            expect(
+              contents.filter(
+                (c: string) => c === "Only one concurrent run should apply this rule.",
+              ).length,
+            ).toBe(1);
+          },
+        );
       });
     });
   });
@@ -417,8 +486,15 @@ describe("orchestrateReflection (unit)", () => {
       // The orchestrator should create it automatically before lock acquisition
       const sessionPath = path.join(env.home, "sessions", "fresh-install.jsonl");
       writeJsonlSession(sessionPath, [
-        { role: "user", content: "Fresh install test: verifying lock acquisition works without pre-existing reflections dir." },
-        { role: "assistant", content: "The ensureDir call should create the directory before withLock is called." },
+        {
+          role: "user",
+          content:
+            "Fresh install test: verifying lock acquisition works without pre-existing reflections dir.",
+        },
+        {
+          role: "assistant",
+          content: "The ensureDir call should create the directory before withLock is called.",
+        },
       ]);
 
       // Verify reflections directory does NOT exist (simulate fresh install)
@@ -434,25 +510,34 @@ describe("orchestrateReflection (unit)", () => {
       });
 
       await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
-        await withLlmShim({
-          reflector: {
-            deltas: [{
-              type: "add",
-              bullet: { content: "Rule from fresh install test.", category: "testing", tags: [] },
-              reason: "Fresh install",
-              sourceSession: "stub",
-            }]
-          }
-        }, async (io) => {
-          // This should NOT throw "Could not acquire lock" error
-          const outcome = await orchestrateReflection(config, { session: sessionPath, io });
+        await withLlmShim(
+          {
+            reflector: {
+              deltas: [
+                {
+                  type: "add",
+                  bullet: {
+                    content: "Rule from fresh install test.",
+                    category: "testing",
+                    tags: [],
+                  },
+                  reason: "Fresh install",
+                  sourceSession: "stub",
+                },
+              ],
+            },
+          },
+          async (io) => {
+            // This should NOT throw "Could not acquire lock" error
+            const outcome = await orchestrateReflection(config, { session: sessionPath, io });
 
-          expect(outcome.errors).toEqual([]);
-          expect(outcome.sessionsProcessed).toBe(1);
+            expect(outcome.errors).toEqual([]);
+            expect(outcome.sessionsProcessed).toBe(1);
 
-          // Verify the reflections directory was created
-          expect(existsSync(reflectionsDir)).toBe(true);
-        });
+            // Verify the reflections directory was created
+            expect(existsSync(reflectionsDir)).toBe(true);
+          },
+        );
       });
     });
   });
@@ -460,19 +545,27 @@ describe("orchestrateReflection (unit)", () => {
 
 describe("orchestrateReflection playbook metadata counters (#72)", () => {
   const longSession = [
-    { role: "user", content: "I need help writing reliable unit tests for my CLI tool, with fixtures." },
-    { role: "assistant", content: "Sure. Let's start by identifying seams and adding deterministic fixtures." },
+    {
+      role: "user",
+      content: "I need help writing reliable unit tests for my CLI tool, with fixtures.",
+    },
+    {
+      role: "assistant",
+      content: "Sure. Let's start by identifying seams and adding deterministic fixtures.",
+    },
   ];
 
   const addDelta = (content: string) => ({
     reflector: {
-      deltas: [{
-        type: "add" as const,
-        bullet: { content, category: "testing", tags: [] },
-        reason: "Counter test",
-        sourceSession: "stub",
-      }]
-    }
+      deltas: [
+        {
+          type: "add" as const,
+          bullet: { content, category: "testing", tags: [] },
+          reason: "Counter test",
+          sourceSession: "stub",
+        },
+      ],
+    },
   });
 
   test("advance per committed run and never for an already-processed session", async () => {
@@ -577,7 +670,14 @@ describe("orchestrateReflection diary agent provenance (#73)", () => {
     await withIsolatedHome(async (env) => {
       writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])), "utf-8");
 
-      const sessionPath = path.join(env.home, ".omp", "agent", "sessions", "--repo--", "2026-09-01T10-00-00.jsonl");
+      const sessionPath = path.join(
+        env.home,
+        ".omp",
+        "agent",
+        "sessions",
+        "--repo--",
+        "2026-09-01T10-00-00.jsonl",
+      );
       writeJsonlSession(sessionPath, [
         { role: "user", content: "Please fix the failing build in this repository for me today." },
         { role: "assistant", content: "Done. The build passes now and all tests are green." },

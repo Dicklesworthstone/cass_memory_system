@@ -1,13 +1,13 @@
-import { 
-  Playbook, 
-  PlaybookBullet, 
-  DiaryEntry, 
-  Config, 
-  FeedbackEvent,
-  PlaybookBulletSchema
+import { DEFAULT_CLI_SUBPROCESS_CWD } from "../../src/subprocess-tag.js";
+import {
+  type Config,
+  type DiaryEntry,
+  type FeedbackEvent,
+  type Playbook,
+  type PlaybookBullet,
+  PlaybookBulletSchema,
 } from "../../src/types.js";
 import { generateBulletId, generateDiaryId, now } from "../../src/utils.js";
-import { DEFAULT_CLI_SUBPROCESS_CWD } from "../../src/subprocess-tag.js";
 
 /**
  * Helper to create an ISO timestamp for N days ago.
@@ -26,7 +26,7 @@ export function createTestConfig(overrides: Partial<Config> = {}): Config {
     cassPath: "cass",
     remoteCass: {
       enabled: false,
-      hosts: []
+      hosts: [],
     },
     playbookPath: "/tmp/playbook.yaml",
     diaryDir: "/tmp/diary",
@@ -59,7 +59,7 @@ export function createTestConfig(overrides: Partial<Config> = {}): Config {
       consentGiven: false,
       consentDate: null,
       agents: [],
-      auditLog: true
+      auditLog: true,
     },
     semanticSearchEnabled: false,
     semanticWeight: 0.6,
@@ -74,26 +74,26 @@ export function createTestConfig(overrides: Partial<Config> = {}): Config {
       enabled: true,
       extraPatterns: [],
       auditLog: false,
-      auditLevel: "info"
+      auditLevel: "info",
     },
     budget: {
       dailyLimit: 1.0,
       monthlyLimit: 10.0,
       warningThreshold: 80,
-      currency: "USD"
+      currency: "USD",
     },
     scoring: {
       decayHalfLifeDays: 90,
       harmfulMultiplier: 4,
       minFeedbackForActive: 3,
       minHelpfulForProven: 10,
-      maxHarmfulRatioForProven: 0.1
+      maxHarmfulRatioForProven: 0.1,
     },
     serve: {
       maxConcurrentCassCalls: 2,
       maxQueuedCassCalls: 32,
-      cassQueueTimeoutMs: 20000
-    }
+      cassQueueTimeoutMs: 20000,
+    },
   };
 
   return {
@@ -101,20 +101,20 @@ export function createTestConfig(overrides: Partial<Config> = {}): Config {
     ...overrides,
     crossAgent: {
       ...defaults.crossAgent,
-      ...(overrides.crossAgent || {})
+      ...(overrides.crossAgent || {}),
     },
     sanitization: {
       ...defaults.sanitization,
-      ...(overrides.sanitization || {})
+      ...(overrides.sanitization || {}),
     },
     budget: {
       ...defaults.budget,
-      ...(overrides.budget || {})
+      ...(overrides.budget || {}),
     },
     scoring: {
       ...defaults.scoring,
-      ...(overrides.scoring || {})
-    }
+      ...(overrides.scoring || {}),
+    },
   };
 }
 
@@ -141,7 +141,7 @@ export function createTestBullet(overrides: Partial<PlaybookBullet> = {}): Playb
     pinned: false,
     confidenceDecayHalfLifeDays: 90,
     ...overrides,
-    source: overrides.source ?? "learned"
+    source: overrides.source ?? "learned",
   };
 }
 
@@ -168,7 +168,7 @@ export const createBullet = (overrides: Partial<PlaybookBullet> = {}): PlaybookB
     sourceSessions: [],
     sourceAgents: [],
     ...overrides,
-    source: overrides.source ?? "learned"
+    source: overrides.source ?? "learned",
   };
 };
 
@@ -188,7 +188,7 @@ export function createTestDiary(overrides: Partial<DiaryEntry> = {}): DiaryEntry
     tags: [],
     searchAnchors: [],
     relatedSessions: [],
-    ...overrides
+    ...overrides,
   };
 }
 
@@ -200,16 +200,16 @@ export function createTestPlaybook(bullets: PlaybookBullet[] = []): Playbook {
     metadata: {
       createdAt: now(),
       totalReflections: 0,
-      totalSessionsProcessed: 0
+      totalSessionsProcessed: 0,
     },
     deprecatedPatterns: [],
-    bullets
+    bullets,
   };
 }
 
 export function createTestFeedbackEvent(
   type: "helpful" | "harmful",
-  overrides: Partial<Omit<FeedbackEvent, "type">> | number = {}
+  overrides: Partial<Omit<FeedbackEvent, "type">> | number = {},
 ): FeedbackEvent {
   // Handle legacy daysAgo signature if number passed
   if (typeof overrides === "number") {
@@ -218,7 +218,7 @@ export function createTestFeedbackEvent(
     return {
       type,
       timestamp: date.toISOString(),
-      sessionPath: "/tmp/session.jsonl"
+      sessionPath: "/tmp/session.jsonl",
     };
   }
 
@@ -230,18 +230,18 @@ export function createTestFeedbackEvent(
     context: overrides.context,
     reason: overrides.reason,
     decayedValue: overrides.decayedValue,
-    ...overrides
+    ...overrides,
   };
 }
 
 export function createFeedbackEvent(
   type: "helpful" | "harmful",
-  overrides: Partial<FeedbackEvent> = {}
+  overrides: Partial<FeedbackEvent> = {},
 ): FeedbackEvent {
   return {
     type,
     timestamp: overrides.timestamp ?? now(),
     sessionPath: overrides.sessionPath ?? "/tmp/session.jsonl",
-    ...overrides
+    ...overrides,
   };
 }

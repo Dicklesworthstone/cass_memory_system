@@ -1,17 +1,18 @@
 #!/usr/bin/env bun
+
 /**
  * cass-reflect: Agent-Agnostic Reflection & Memory System
- * 
+ *
  * A CLI tool that implements the ACE (Agentic Context Engineering) pattern
  * for any coding agent. Uses cass for episodic memory retrieval and any
  * LLM provider via Vercel AI SDK for reflection.
- * 
+ *
  * Usage:
  *   bun run cass-reflect.ts <command> [options]
- * 
+ *
  * Or compile to standalone:
  *   bun build --compile --minify cass-reflect.ts --outfile cass-reflect
- * 
+ *
  * Commands:
  *   context     - Retrieve relevant context from cass for current task
  *   diary       - Generate diary entry from a session
@@ -23,17 +24,16 @@
  *   init        - Initialize configuration and playbook
  */
 
-import { execSync, spawn } from "child_process";
-import { createHash } from "crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from "fs";
-import { homedir } from "os";
-import { join, dirname, basename } from "path";
-
-// Vercel AI SDK imports - these are the only external dependencies
-import { generateText, generateObject } from "ai";
-import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
+import { createOpenAI } from "@ai-sdk/openai";
+// Vercel AI SDK imports - these are the only external dependencies
+import { generateObject, generateText } from "ai";
+import { execSync, spawn } from "child_process";
+import { createHash } from "crypto";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { homedir } from "os";
+import { basename, dirname, join } from "path";
 import { z } from "zod";
 
 // ============================================================================
@@ -234,7 +234,7 @@ function serializePlaybookYaml(playbook: Playbook): string {
     lines.push(`    updated_at: "${b.updatedAt}"`);
     lines.push(`    helpful_count: ${b.helpfulCount}`);
     lines.push(`    harmful_count: ${b.harmfulCount}`);
-    lines.push(`    tags: [${b.tags.map(t => `"${t}"`).join(", ")}]`);
+    lines.push(`    tags: [${b.tags.map((t) => `"${t}"`).join(", ")}]`);
     lines.push(`    source_sessions:`);
     for (const s of b.sourceSessions) {
       lines.push(`      - "${s}"`);
@@ -274,8 +274,8 @@ function parsePlaybookYaml(yaml: string): Playbook {
   };
 
   // Basic YAML parsing - extract bullet blocks
-  const bulletMatches = yaml.matchAll(/- id: "([^"]+)"([\s\S]*?)(?=\n  - id:|$)/g);
-  
+  const bulletMatches = yaml.matchAll(/- id: "([^"]+)"([\s\S]*?)(?=\n {2}- id:|$)/g);
+
   for (const match of bulletMatches) {
     const block = match[0];
     const bullet: Bullet = {
@@ -302,9 +302,14 @@ function parsePlaybookYaml(yaml: string): Playbook {
   const metadataMatch = yaml.match(/metadata:([\s\S]*?)(?=\nbullets:|$)/);
   if (metadataMatch) {
     const meta = metadataMatch[1];
-    playbook.metadata.lastReflection = extractYamlField(meta, "last_reflection") || playbook.metadata.lastReflection;
-    playbook.metadata.totalReflections = parseInt(extractYamlField(meta, "total_reflections") || "0", 10);
-    playbook.metadata.createdAt = extractYamlField(meta, "created_at") || playbook.metadata.createdAt;
+    playbook.metadata.lastReflection =
+      extractYamlField(meta, "last_reflection") || playbook.metadata.lastReflection;
+    playbook.metadata.totalReflections = parseInt(
+      extractYamlField(meta, "total_reflections") || "0",
+      10,
+    );
+    playbook.metadata.createdAt =
+      extractYamlField(meta, "created_at") || playbook.metadata.createdAt;
   }
 
   return playbook;
@@ -318,7 +323,11 @@ function extractYamlField(block: string, field: string): string | undefined {
 function extractYamlMultiline(block: string, field: string): string | undefined {
   const match = block.match(new RegExp(`${field}:\\s*\\|([\\s\\S]*?)(?=\\n\\s+\\w+:|$)`));
   if (match) {
-    return match[1].split("\n").map(l => l.trim()).filter(Boolean).join("\n");
+    return match[1]
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .join("\n");
   }
   return extractYamlField(block, field);
 }
@@ -327,20 +336,35 @@ function extractYamlArray(block: string, field: string): string[] {
   // Handle inline array: tags: ["a", "b"]
   const inlineMatch = block.match(new RegExp(`${field}:\\s*\\[([^\\]]+)\\]`));
   if (inlineMatch) {
-    return inlineMatch[1].split(",").map(s => s.trim().replace(/"/g, "")).filter(Boolean);
+    return inlineMatch[1]
+      .split(",")
+      .map((s) => s.trim().replace(/"/g, ""))
+      .filter(Boolean);
   }
-  
+
   // Handle block array
   const blockMatch = block.match(new RegExp(`${field}:([\\s\\S]*?)(?=\\n\\s+\\w+:|$)`));
   if (blockMatch) {
     const items = blockMatch[1].match(/-\s*"?([^"\\n]+)"?/g);
-    return items?.map(i => i.replace(/^-\s*"?/, "").replace(/"?$/, "").trim()) || [];
+    return (
+      items?.map((i) =>
+        i
+          .replace(/^-\s*"?/, "")
+          .replace(/"?$/, "")
+          .trim(),
+      ) || []
+    );
   }
-  
+
   return [];
 }
 
-function logUsage(entry: { bulletId: string; helpful: boolean; sessionPath?: string; timestamp: string }): void {
+function logUsage(entry: {
+  bulletId: string;
+  helpful: boolean;
+  sessionPath?: string;
+  timestamp: string;
+}): void {
   ensureConfigDir();
   appendFileSync(USAGE_LOG, JSON.stringify(entry) + "\n");
 }
@@ -358,14 +382,18 @@ function cassAvailable(config: Config): boolean {
   }
 }
 
-function cassSearch(config: Config, query: string, options: {
-  limit?: number;
-  days?: number;
-  agent?: string;
-  workspace?: string;
-}): CassSearchResult {
+function cassSearch(
+  config: Config,
+  query: string,
+  options: {
+    limit?: number;
+    days?: number;
+    agent?: string;
+    workspace?: string;
+  },
+): CassSearchResult {
   const args = ["search", `"${query}"`, "--robot"];
-  
+
   if (options.limit) args.push("--limit", String(options.limit));
   if (options.days) args.push("--days", String(options.days));
   if (options.agent) args.push("--agent", options.agent);
@@ -428,7 +456,7 @@ function cassView(config: Config, sessionPath: string, lineNumber?: number): any
 
 function getModel(config: Config) {
   const apiKey = config.apiKey || getApiKeyFromEnv(config.provider);
-  
+
   switch (config.provider) {
     case "openai":
       return createOpenAI({ apiKey })(config.model);
@@ -462,20 +490,27 @@ const DiarySchema = z.object({
   accomplishments: z.array(z.string()).describe("What was accomplished in this session"),
   decisions: z.array(z.string()).describe("Key design/architecture decisions made"),
   challenges: z.array(z.string()).describe("Problems encountered and how they were addressed"),
-  preferences: z.array(z.string()).describe("User preferences revealed (coding style, tools, patterns)"),
+  preferences: z
+    .array(z.string())
+    .describe("User preferences revealed (coding style, tools, patterns)"),
   keyLearnings: z.array(z.string()).describe("Important insights that could help future sessions"),
   suggestedTags: z.array(z.string()).describe("Tags for categorizing this session"),
 });
 
 const DeltaSchema = z.object({
-  deltas: z.array(z.object({
-    type: z.enum(["new", "helpful", "harmful", "replace", "deprecate"]),
-    bulletId: z.string().optional().describe("ID of existing bullet (for helpful/harmful/replace/deprecate)"),
-    category: z.string().optional().describe("Category for new bullets"),
-    content: z.string().optional().describe("Content for new bullets or replacement content"),
-    tags: z.array(z.string()).optional().describe("Tags for new bullets"),
-    reason: z.string().describe("Why this delta is proposed"),
-  })),
+  deltas: z.array(
+    z.object({
+      type: z.enum(["new", "helpful", "harmful", "replace", "deprecate"]),
+      bulletId: z
+        .string()
+        .optional()
+        .describe("ID of existing bullet (for helpful/harmful/replace/deprecate)"),
+      category: z.string().optional().describe("Category for new bullets"),
+      content: z.string().optional().describe("Content for new bullets or replacement content"),
+      tags: z.array(z.string()).optional().describe("Tags for new bullets"),
+      reason: z.string().describe("Why this delta is proposed"),
+    }),
+  ),
 });
 
 async function generateDiary(
@@ -534,9 +569,12 @@ async function generateDeltas(
   const model = getModel(config);
 
   const bulletsContext = existingBullets
-    .filter(b => !b.deprecated)
+    .filter((b) => !b.deprecated)
     .slice(0, config.maxBulletsInContext)
-    .map(b => `[${b.id}] (${b.category}) ${b.content} [helpful:${b.helpfulCount}, harmful:${b.harmfulCount}]`)
+    .map(
+      (b) =>
+        `[${b.id}] (${b.category}) ${b.content} [helpful:${b.helpfulCount}, harmful:${b.harmfulCount}]`,
+    )
     .join("\n");
 
   const prompt = `You are analyzing a coding session to extract reusable lessons for a playbook.
@@ -575,15 +613,18 @@ Guidelines:
     prompt,
   });
 
-  return object.deltas.map(d => ({
+  return object.deltas.map((d) => ({
     type: d.type,
     bulletId: d.bulletId,
-    newBullet: d.type === "new" ? {
-      category: d.category || "general",
-      content: d.content || "",
-      tags: d.tags || [],
-      sourceSessions: [diary.sessionPath],
-    } : undefined,
+    newBullet:
+      d.type === "new"
+        ? {
+            category: d.category || "general",
+            content: d.content || "",
+            tags: d.tags || [],
+            sourceSessions: [diary.sessionPath],
+          }
+        : undefined,
     newContent: d.type === "replace" ? d.content : undefined,
     reason: d.reason,
     sourceSession: diary.sessionPath,
@@ -602,12 +643,12 @@ async function runReflection(
   const diary = await generateDiary(config, sessionContent, sessionPath, agent, workspace);
 
   // Iterative delta generation (ACE pattern)
-  let allDeltas: BulletDelta[] = [];
+  const allDeltas: BulletDelta[] = [];
   const seenContentHashes = new Set<string>();
 
   for (let i = 1; i <= config.maxReflectorIterations; i++) {
     const deltas = await generateDeltas(config, diary, sessionContent, playbook.bullets, i);
-    
+
     // Deduplicate within this reflection
     for (const delta of deltas) {
       if (delta.type === "new" && delta.newBullet) {
@@ -647,16 +688,14 @@ function curatePlaybook(
   let skipped = 0;
 
   // Track content hashes of existing bullets for dedup
-  const existingHashes = new Set(
-    updated.bullets.map(b => hashContent(b.content))
-  );
+  const existingHashes = new Set(updated.bullets.map((b) => hashContent(b.content)));
 
   for (const delta of deltas) {
     switch (delta.type) {
       case "new":
         if (delta.newBullet) {
           const hash = hashContent(delta.newBullet.content);
-          
+
           // Check for semantic duplicates (simple hash-based for now)
           if (existingHashes.has(hash)) {
             skipped++;
@@ -664,7 +703,7 @@ function curatePlaybook(
           }
 
           // Check similarity with existing bullets (basic substring check)
-          const isDuplicate = updated.bullets.some(b => {
+          const isDuplicate = updated.bullets.some((b) => {
             const similarity = computeSimpleSimilarity(b.content, delta.newBullet!.content);
             return similarity > config.dedupSimilarityThreshold;
           });
@@ -694,7 +733,7 @@ function curatePlaybook(
 
       case "helpful":
         if (delta.bulletId) {
-          const bullet = updated.bullets.find(b => b.id === delta.bulletId);
+          const bullet = updated.bullets.find((b) => b.id === delta.bulletId);
           if (bullet) {
             bullet.helpfulCount++;
             bullet.updatedAt = new Date().toISOString();
@@ -708,7 +747,7 @@ function curatePlaybook(
 
       case "harmful":
         if (delta.bulletId) {
-          const bullet = updated.bullets.find(b => b.id === delta.bulletId);
+          const bullet = updated.bullets.find((b) => b.id === delta.bulletId);
           if (bullet) {
             bullet.harmfulCount++;
             bullet.updatedAt = new Date().toISOString();
@@ -719,7 +758,7 @@ function curatePlaybook(
 
       case "replace":
         if (delta.bulletId && delta.newContent) {
-          const bullet = updated.bullets.find(b => b.id === delta.bulletId);
+          const bullet = updated.bullets.find((b) => b.id === delta.bulletId);
           if (bullet) {
             bullet.content = delta.newContent;
             bullet.updatedAt = new Date().toISOString();
@@ -730,7 +769,7 @@ function curatePlaybook(
 
       case "deprecate":
         if (delta.bulletId) {
-          const bullet = updated.bullets.find(b => b.id === delta.bulletId);
+          const bullet = updated.bullets.find((b) => b.id === delta.bulletId);
           if (bullet) {
             bullet.deprecated = true;
             bullet.updatedAt = new Date().toISOString();
@@ -743,7 +782,7 @@ function curatePlaybook(
 
   // Prune bullets where harmful exceeds helpful by threshold
   const beforePrune = updated.bullets.length;
-  updated.bullets = updated.bullets.filter(b => {
+  updated.bullets = updated.bullets.filter((b) => {
     if (b.deprecated) return true; // Keep deprecated for history
     const score = b.helpfulCount - b.harmfulCount;
     return score > -config.pruneHarmfulThreshold;
@@ -762,14 +801,24 @@ function curatePlaybook(
 
 function computeSimpleSimilarity(a: string, b: string): number {
   // Simple Jaccard similarity on words
-  const wordsA = new Set(a.toLowerCase().split(/\s+/).filter(w => w.length > 3));
-  const wordsB = new Set(b.toLowerCase().split(/\s+/).filter(w => w.length > 3));
-  
+  const wordsA = new Set(
+    a
+      .toLowerCase()
+      .split(/\s+/)
+      .filter((w) => w.length > 3),
+  );
+  const wordsB = new Set(
+    b
+      .toLowerCase()
+      .split(/\s+/)
+      .filter((w) => w.length > 3),
+  );
+
   if (wordsA.size === 0 || wordsB.size === 0) return 0;
 
-  const intersection = [...wordsA].filter(w => wordsB.has(w)).length;
+  const intersection = [...wordsA].filter((w) => wordsB.has(w)).length;
   const union = new Set([...wordsA, ...wordsB]).size;
-  
+
   return intersection / union;
 }
 
@@ -810,28 +859,28 @@ async function getContextForTask(
 
   // Score bullets by relevance to task
   const scoredBullets = playbook.bullets
-    .filter(b => !b.deprecated)
-    .map(b => ({
+    .filter((b) => !b.deprecated)
+    .map((b) => ({
       bullet: b,
       score: scoreBulletRelevance(b, task, searchTerms),
     }))
     .sort((a, b) => b.score - a.score)
     .slice(0, maxBullets);
 
-  const relevantBullets = scoredBullets.map(s => s.bullet);
+  const relevantBullets = scoredBullets.map((s) => s.bullet);
 
   // Generate context prompt
-  const bulletsSection = relevantBullets.length > 0
-    ? relevantBullets.map(b => 
-        `[${b.id}] (${b.category}) ${b.content}`
-      ).join("\n")
-    : "(No relevant playbook entries)";
+  const bulletsSection =
+    relevantBullets.length > 0
+      ? relevantBullets.map((b) => `[${b.id}] (${b.category}) ${b.content}`).join("\n")
+      : "(No relevant playbook entries)";
 
-  const historySection = historicalContext.length > 0
-    ? historicalContext.map(h =>
-        `[${h.agent}] ${h.title || h.source_path}\n${h.snippet}`
-      ).join("\n\n")
-    : "(No relevant history found)";
+  const historySection =
+    historicalContext.length > 0
+      ? historicalContext
+          .map((h) => `[${h.agent}] ${h.title || h.source_path}\n${h.snippet}`)
+          .join("\n\n")
+      : "(No relevant history found)";
 
   const prompt = `PLAYBOOK ENTRIES (mark helpful/harmful as you use them):
 ${bulletsSection}
@@ -852,25 +901,121 @@ As you work, note which playbook entries were helpful or harmful using:
 function extractSearchTerms(text: string): string[] {
   // Extract meaningful terms for search
   const stopWords = new Set([
-    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-    "have", "has", "had", "do", "does", "did", "will", "would", "could",
-    "should", "may", "might", "must", "can", "to", "of", "in", "for",
-    "on", "with", "at", "by", "from", "as", "into", "through", "during",
-    "before", "after", "above", "below", "between", "under", "again",
-    "further", "then", "once", "here", "there", "when", "where", "why",
-    "how", "all", "each", "few", "more", "most", "other", "some", "such",
-    "no", "nor", "not", "only", "own", "same", "so", "than", "too", "very",
-    "just", "and", "but", "if", "or", "because", "as", "until", "while",
-    "this", "that", "these", "those", "i", "me", "my", "we", "our", "you",
-    "your", "he", "him", "his", "she", "her", "it", "its", "they", "them",
-    "what", "which", "who", "whom", "please", "help", "want", "need",
+    "the",
+    "a",
+    "an",
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+    "been",
+    "being",
+    "have",
+    "has",
+    "had",
+    "do",
+    "does",
+    "did",
+    "will",
+    "would",
+    "could",
+    "should",
+    "may",
+    "might",
+    "must",
+    "can",
+    "to",
+    "of",
+    "in",
+    "for",
+    "on",
+    "with",
+    "at",
+    "by",
+    "from",
+    "as",
+    "into",
+    "through",
+    "during",
+    "before",
+    "after",
+    "above",
+    "below",
+    "between",
+    "under",
+    "again",
+    "further",
+    "then",
+    "once",
+    "here",
+    "there",
+    "when",
+    "where",
+    "why",
+    "how",
+    "all",
+    "each",
+    "few",
+    "more",
+    "most",
+    "other",
+    "some",
+    "such",
+    "no",
+    "nor",
+    "not",
+    "only",
+    "own",
+    "same",
+    "so",
+    "than",
+    "too",
+    "very",
+    "just",
+    "and",
+    "but",
+    "if",
+    "or",
+    "because",
+    "as",
+    "until",
+    "while",
+    "this",
+    "that",
+    "these",
+    "those",
+    "i",
+    "me",
+    "my",
+    "we",
+    "our",
+    "you",
+    "your",
+    "he",
+    "him",
+    "his",
+    "she",
+    "her",
+    "it",
+    "its",
+    "they",
+    "them",
+    "what",
+    "which",
+    "who",
+    "whom",
+    "please",
+    "help",
+    "want",
+    "need",
   ]);
 
   return text
     .toLowerCase()
     .replace(/[^\w\s-]/g, " ")
     .split(/\s+/)
-    .filter(w => w.length > 2 && !stopWords.has(w))
+    .filter((w) => w.length > 2 && !stopWords.has(w))
     .slice(0, 10);
 }
 
@@ -878,11 +1023,11 @@ function scoreBulletRelevance(bullet: Bullet, task: string, searchTerms: string[
   const bulletWords = new Set(
     (bullet.content + " " + bullet.tags.join(" ") + " " + bullet.category)
       .toLowerCase()
-      .split(/\s+/)
+      .split(/\s+/),
   );
 
   let score = 0;
-  
+
   // Term overlap
   for (const term of searchTerms) {
     if (bulletWords.has(term)) score += 2;
@@ -896,7 +1041,7 @@ function scoreBulletRelevance(bullet: Bullet, task: string, searchTerms: string[
   const totalUsage = bullet.helpfulCount + bullet.harmfulCount;
   if (totalUsage > 0) {
     const helpfulRatio = bullet.helpfulCount / totalUsage;
-    score *= (0.5 + helpfulRatio); // 0.5x to 1.5x multiplier
+    score *= 0.5 + helpfulRatio; // 0.5x to 1.5x multiplier
   }
 
   return score;
@@ -908,10 +1053,10 @@ function scoreBulletRelevance(bullet: Bullet, task: string, searchTerms: string[
 
 async function cmdInit(args: string[]): Promise<void> {
   ensureConfigDir();
-  
+
   const config = loadConfig();
   saveConfig(config);
-  
+
   if (!existsSync(config.playbookPath)) {
     const playbook = loadPlaybook(config.playbookPath);
     savePlaybook(config.playbookPath, playbook);
@@ -921,7 +1066,7 @@ async function cmdInit(args: string[]): Promise<void> {
   console.log(`Configuration initialized at: ${CONFIG_DIR}`);
   console.log(`Config file: ${CONFIG_FILE}`);
   console.log(`Playbook: ${config.playbookPath}`);
-  
+
   if (!cassAvailable(config)) {
     console.warn("\nWarning: cass not found in PATH. Install from:");
     console.warn("https://github.com/Dicklesworthstone/coding_agent_session_search");
@@ -976,11 +1121,17 @@ async function cmdContext(args: string[]): Promise<void> {
   });
 
   if (outputFormat === "json") {
-    console.log(JSON.stringify({
-      bullets: result.relevantBullets,
-      history: result.historicalContext,
-      prompt: result.prompt,
-    }, null, 2));
+    console.log(
+      JSON.stringify(
+        {
+          bullets: result.relevantBullets,
+          history: result.historicalContext,
+          prompt: result.prompt,
+        },
+        null,
+        2,
+      ),
+    );
   } else {
     console.log(result.prompt);
   }
@@ -1034,15 +1185,15 @@ async function cmdDiary(args: string[]): Promise<void> {
     console.log(`agent: "${diary.agent}"`);
     console.log(`workspace: "${diary.workspace}"`);
     console.log("accomplishments:");
-    diary.accomplishments.forEach(a => console.log(`  - "${a}"`));
+    diary.accomplishments.forEach((a) => console.log(`  - "${a}"`));
     console.log("decisions:");
-    diary.decisions.forEach(d => console.log(`  - "${d}"`));
+    diary.decisions.forEach((d) => console.log(`  - "${d}"`));
     console.log("challenges:");
-    diary.challenges.forEach(c => console.log(`  - "${c}"`));
+    diary.challenges.forEach((c) => console.log(`  - "${c}"`));
     console.log("preferences:");
-    diary.preferences.forEach(p => console.log(`  - "${p}"`));
+    diary.preferences.forEach((p) => console.log(`  - "${p}"`));
     console.log("key_learnings:");
-    diary.keyLearnings.forEach(k => console.log(`  - "${k}"`));
+    diary.keyLearnings.forEach((k) => console.log(`  - "${k}"`));
   }
 }
 
@@ -1078,13 +1229,13 @@ async function cmdReflect(args: string[]): Promise<void> {
 
   // Get recent sessions from cass
   console.error(`[cass-reflect] Searching for sessions from last ${days} days...`);
-  
+
   const timeline = cassTimeline(config, { days, groupBy: "day" });
   const sessionPaths = new Set<string>();
 
   // Also search for recent activity
   const searchResults = cassSearch(config, "*", { limit: maxSessions * 2, days, agent, workspace });
-  
+
   for (const hit of searchResults.hits || []) {
     sessionPaths.add(hit.source_path);
     if (sessionPaths.size >= maxSessions) break;
@@ -1102,7 +1253,7 @@ async function cmdReflect(args: string[]): Promise<void> {
 
   for (const sessionPath of sessionPaths) {
     console.error(`[cass-reflect] Reflecting on: ${basename(sessionPath)}`);
-    
+
     try {
       const exported = cassExport(config, sessionPath);
       if (!exported) continue;
@@ -1119,7 +1270,7 @@ async function cmdReflect(args: string[]): Promise<void> {
 
       diaries.push(result.diary);
       allDeltas.push(...result.deltas);
-      
+
       console.error(`[cass-reflect]   Generated ${result.deltas.length} deltas`);
     } catch (e: any) {
       console.error(`[cass-reflect]   Error: ${e.message}`);
@@ -1135,27 +1286,35 @@ async function cmdReflect(args: string[]): Promise<void> {
 
   // Apply deltas
   const { playbook: updated, applied, skipped } = curatePlaybook(playbook, allDeltas, config);
-  
-  console.error(`[cass-reflect] Applied ${applied} deltas, skipped ${skipped} (duplicates/low-quality)`);
+
+  console.error(
+    `[cass-reflect] Applied ${applied} deltas, skipped ${skipped} (duplicates/low-quality)`,
+  );
   console.error(`[cass-reflect] Playbook now has ${updated.bullets.length} bullets`);
 
   savePlaybook(config.playbookPath, updated);
   console.error(`[cass-reflect] Saved to: ${config.playbookPath}`);
 
   // Output summary
-  console.log(JSON.stringify({
-    sessionsProcessed: sessionPaths.size,
-    deltasGenerated: allDeltas.length,
-    deltasApplied: applied,
-    deltasSkipped: skipped,
-    totalBullets: updated.bullets.length,
-    playbookPath: config.playbookPath,
-  }, null, 2));
+  console.log(
+    JSON.stringify(
+      {
+        sessionsProcessed: sessionPaths.size,
+        deltasGenerated: allDeltas.length,
+        deltasApplied: applied,
+        deltasSkipped: skipped,
+        totalBullets: updated.bullets.length,
+        playbookPath: config.playbookPath,
+      },
+      null,
+      2,
+    ),
+  );
 }
 
 async function cmdCurate(args: string[]): Promise<void> {
   const config = loadConfig();
-  
+
   let deltasFile = "";
   let playbookPath = config.playbookPath;
   let outputPath: string | undefined;
@@ -1197,13 +1356,19 @@ async function cmdCurate(args: string[]): Promise<void> {
   const savePath = outputPath || playbookPath;
   savePlaybook(savePath, updated);
 
-  console.log(JSON.stringify({
-    deltasProvided: deltas.length,
-    deltasApplied: applied,
-    deltasSkipped: skipped,
-    totalBullets: updated.bullets.length,
-    savedTo: savePath,
-  }, null, 2));
+  console.log(
+    JSON.stringify(
+      {
+        deltasProvided: deltas.length,
+        deltasApplied: applied,
+        deltasSkipped: skipped,
+        totalBullets: updated.bullets.length,
+        savedTo: savePath,
+      },
+      null,
+      2,
+    ),
+  );
 }
 
 async function cmdMark(args: string[]): Promise<void> {
@@ -1231,7 +1396,7 @@ async function cmdMark(args: string[]): Promise<void> {
     process.exit(1);
   }
 
-  const bullet = playbook.bullets.find(b => b.id === bulletId);
+  const bullet = playbook.bullets.find((b) => b.id === bulletId);
   if (!bullet) {
     console.error(`Bullet not found: ${bulletId}`);
     process.exit(1);
@@ -1258,12 +1423,18 @@ async function cmdMark(args: string[]): Promise<void> {
     timestamp: new Date().toISOString(),
   });
 
-  console.log(JSON.stringify({
-    bulletId,
-    marked: helpful ? "helpful" : "harmful",
-    helpfulCount: bullet.helpfulCount,
-    harmfulCount: bullet.harmfulCount,
-  }, null, 2));
+  console.log(
+    JSON.stringify(
+      {
+        bulletId,
+        marked: helpful ? "helpful" : "harmful",
+        helpfulCount: bullet.helpfulCount,
+        harmfulCount: bullet.harmfulCount,
+      },
+      null,
+      2,
+    ),
+  );
 }
 
 async function cmdAudit(args: string[]): Promise<void> {
@@ -1287,9 +1458,11 @@ async function cmdAudit(args: string[]): Promise<void> {
   }
 
   const model = getModel(config);
-  const activeBullets = playbook.bullets.filter(b => !b.deprecated);
+  const activeBullets = playbook.bullets.filter((b) => !b.deprecated);
 
-  console.error(`[cass-reflect] Auditing ${activeBullets.length} bullets against recent sessions...`);
+  console.error(
+    `[cass-reflect] Auditing ${activeBullets.length} bullets against recent sessions...`,
+  );
 
   const violations: Array<{
     bulletId: string;
@@ -1300,7 +1473,8 @@ async function cmdAudit(args: string[]): Promise<void> {
   }> = [];
 
   // Search for potential violations of each bullet
-  for (const bullet of activeBullets.slice(0, 20)) { // Limit to avoid too many API calls
+  for (const bullet of activeBullets.slice(0, 20)) {
+    // Limit to avoid too many API calls
     const searchTerms = extractSearchTerms(bullet.content);
     if (searchTerms.length === 0) continue;
 
@@ -1319,7 +1493,10 @@ async function cmdAudit(args: string[]): Promise<void> {
 RULE: ${bullet.content}
 
 SESSION SNIPPET:
-${results.hits.map(h => h.snippet).join("\n\n").slice(0, 5000)}
+${results.hits
+  .map((h) => h.snippet)
+  .join("\n\n")
+  .slice(0, 5000)}
 
 If there's a clear violation, respond with JSON: {"violated": true, "evidence": "brief explanation"}
 If no violation, respond with: {"violated": false}`,
@@ -1340,12 +1517,18 @@ If no violation, respond with: {"violated": false}`,
     }
   }
 
-  console.log(JSON.stringify({
-    bulletsAudited: Math.min(activeBullets.length, 20),
-    daysSearched: days,
-    violationsFound: violations.length,
-    violations,
-  }, null, 2));
+  console.log(
+    JSON.stringify(
+      {
+        bulletsAudited: Math.min(activeBullets.length, 20),
+        daysSearched: days,
+        violationsFound: violations.length,
+        violations,
+      },
+      null,
+      2,
+    ),
+  );
 }
 
 async function cmdPlaybook(args: string[]): Promise<void> {
@@ -1358,14 +1541,14 @@ async function cmdPlaybook(args: string[]): Promise<void> {
     case "ls": {
       const playbook = loadPlaybook(config.playbookPath);
       const showDeprecated = subArgs.includes("--all");
-      const category = subArgs.find(a => !a.startsWith("-"));
+      const category = subArgs.find((a) => !a.startsWith("-"));
 
       let bullets = playbook.bullets;
       if (!showDeprecated) {
-        bullets = bullets.filter(b => !b.deprecated);
+        bullets = bullets.filter((b) => !b.deprecated);
       }
       if (category) {
-        bullets = bullets.filter(b => b.category === category);
+        bullets = bullets.filter((b) => b.category === category);
       }
 
       // Sort by helpful ratio
@@ -1375,39 +1558,45 @@ async function cmdPlaybook(args: string[]): Promise<void> {
         return scoreB - scoreA;
       });
 
-      console.log(JSON.stringify({
-        total: bullets.length,
-        bullets: bullets.map(b => ({
-          id: b.id,
-          category: b.category,
-          content: b.content.slice(0, 200) + (b.content.length > 200 ? "..." : ""),
-          score: b.helpfulCount - b.harmfulCount,
-          helpful: b.helpfulCount,
-          harmful: b.harmfulCount,
-          tags: b.tags,
-          deprecated: b.deprecated,
-        })),
-      }, null, 2));
+      console.log(
+        JSON.stringify(
+          {
+            total: bullets.length,
+            bullets: bullets.map((b) => ({
+              id: b.id,
+              category: b.category,
+              content: b.content.slice(0, 200) + (b.content.length > 200 ? "..." : ""),
+              score: b.helpfulCount - b.harmfulCount,
+              helpful: b.helpfulCount,
+              harmful: b.harmfulCount,
+              tags: b.tags,
+              deprecated: b.deprecated,
+            })),
+          },
+          null,
+          2,
+        ),
+      );
       break;
     }
 
     case "get": {
       const playbook = loadPlaybook(config.playbookPath);
       const bulletId = subArgs[0];
-      const bullet = playbook.bullets.find(b => b.id === bulletId);
-      
+      const bullet = playbook.bullets.find((b) => b.id === bulletId);
+
       if (!bullet) {
         console.error(`Bullet not found: ${bulletId}`);
         process.exit(1);
       }
-      
+
       console.log(JSON.stringify(bullet, null, 2));
       break;
     }
 
     case "add": {
       const playbook = loadPlaybook(config.playbookPath);
-      
+
       let category = "general";
       let content = "";
       let tags: string[] = [];
@@ -1416,7 +1605,7 @@ async function cmdPlaybook(args: string[]): Promise<void> {
         if (subArgs[i] === "--category" || subArgs[i] === "-c") {
           category = subArgs[++i];
         } else if (subArgs[i] === "--tags" || subArgs[i] === "-t") {
-          tags = subArgs[++i].split(",").map(t => t.trim());
+          tags = subArgs[++i].split(",").map((t) => t.trim());
         } else if (!subArgs[i].startsWith("-")) {
           content = subArgs.slice(i).join(" ");
           break;
@@ -1424,7 +1613,9 @@ async function cmdPlaybook(args: string[]): Promise<void> {
       }
 
       if (!content) {
-        console.error("Usage: cass-reflect playbook add [--category <cat>] [--tags <t1,t2>] <content>");
+        console.error(
+          "Usage: cass-reflect playbook add [--category <cat>] [--tags <t1,t2>] <content>",
+        );
         process.exit(1);
       }
 
@@ -1453,7 +1644,7 @@ async function cmdPlaybook(args: string[]): Promise<void> {
       const bulletId = subArgs[0];
       const hard = subArgs.includes("--hard");
 
-      const idx = playbook.bullets.findIndex(b => b.id === bulletId);
+      const idx = playbook.bullets.findIndex((b) => b.id === bulletId);
       if (idx === -1) {
         console.error(`Bullet not found: ${bulletId}`);
         process.exit(1);
@@ -1474,11 +1665,10 @@ async function cmdPlaybook(args: string[]): Promise<void> {
     case "export": {
       const playbook = loadPlaybook(config.playbookPath);
       const format = subArgs.includes("--yaml") ? "yaml" : "json";
-      const output = subArgs.find(a => !a.startsWith("-"));
+      const output = subArgs.find((a) => !a.startsWith("-"));
 
-      const content = format === "yaml"
-        ? serializePlaybookYaml(playbook)
-        : JSON.stringify(playbook, null, 2);
+      const content =
+        format === "yaml" ? serializePlaybookYaml(playbook) : JSON.stringify(playbook, null, 2);
 
       if (output) {
         writeFileSync(output, content);
@@ -1510,17 +1700,23 @@ async function cmdPlaybook(args: string[]): Promise<void> {
       }
 
       savePlaybook(config.playbookPath, imported);
-      console.log(JSON.stringify({
-        imported: imported.bullets.length,
-        path: config.playbookPath,
-      }, null, 2));
+      console.log(
+        JSON.stringify(
+          {
+            imported: imported.bullets.length,
+            path: config.playbookPath,
+          },
+          null,
+          2,
+        ),
+      );
       break;
     }
 
     case "stats": {
       const playbook = loadPlaybook(config.playbookPath);
-      const active = playbook.bullets.filter(b => !b.deprecated);
-      const deprecated = playbook.bullets.filter(b => b.deprecated);
+      const active = playbook.bullets.filter((b) => !b.deprecated);
+      const deprecated = playbook.bullets.filter((b) => b.deprecated);
 
       const categories = new Map<string, number>();
       for (const b of active) {
@@ -1530,16 +1726,22 @@ async function cmdPlaybook(args: string[]): Promise<void> {
       const totalHelpful = active.reduce((sum, b) => sum + b.helpfulCount, 0);
       const totalHarmful = active.reduce((sum, b) => sum + b.harmfulCount, 0);
 
-      console.log(JSON.stringify({
-        total: playbook.bullets.length,
-        active: active.length,
-        deprecated: deprecated.length,
-        categories: Object.fromEntries(categories),
-        totalHelpful,
-        totalHarmful,
-        helpfulRatio: totalHelpful / (totalHelpful + totalHarmful || 1),
-        metadata: playbook.metadata,
-      }, null, 2));
+      console.log(
+        JSON.stringify(
+          {
+            total: playbook.bullets.length,
+            active: active.length,
+            deprecated: deprecated.length,
+            categories: Object.fromEntries(categories),
+            totalHelpful,
+            totalHarmful,
+            helpfulRatio: totalHelpful / (totalHelpful + totalHarmful || 1),
+            metadata: playbook.metadata,
+          },
+          null,
+          2,
+        ),
+      );
       break;
     }
 
@@ -1562,7 +1764,7 @@ async function cmdConfig(args: string[]): Promise<void> {
     case "set": {
       const key = args[1];
       const value = args[2];
-      
+
       if (!key || value === undefined) {
         console.error("Usage: cass-reflect config set <key> <value>");
         process.exit(1);

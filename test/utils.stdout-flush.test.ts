@@ -1,4 +1,4 @@
-import { describe, test, expect } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import path from "node:path";
 
 // Regression test for #50: `cm context --json` truncated its stdout mid-JSON

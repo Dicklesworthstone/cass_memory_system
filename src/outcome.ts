@@ -1,12 +1,19 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { Config, DiaryEntry, FeedbackEvent } from "./types.js";
-import { expandPath, ensureDir, fileExists, now, resolveRepoDir, resolveGlobalDir } from "./utils.js";
-import { sanitize } from "./sanitize.js";
 import { getSanitizeConfig } from "./config.js";
-import { loadPlaybook, savePlaybook, findBullet } from "./playbook.js";
-import { calculateMaturityState } from "./scoring.js";
 import { withLock } from "./lock.js";
+import { findBullet, loadPlaybook, savePlaybook } from "./playbook.js";
+import { sanitize } from "./sanitize.js";
+import { calculateMaturityState } from "./scoring.js";
+import type { Config, DiaryEntry, FeedbackEvent } from "./types.js";
+import {
+  ensureDir,
+  expandPath,
+  fileExists,
+  now,
+  resolveGlobalDir,
+  resolveRepoDir,
+} from "./utils.js";
 
 // --- Types ---
 
@@ -146,7 +153,11 @@ export function scoreImplicitFeedback(signals: OutcomeInput): {
   }
 
   if (typeof signals.durationSec === "number") {
-    if (signals.durationSec > 0 && signals.durationSec < FAST_THRESHOLD_SECONDS && signals.outcome !== "failure") {
+    if (
+      signals.durationSec > 0 &&
+      signals.durationSec < FAST_THRESHOLD_SECONDS &&
+      signals.outcome !== "failure"
+    ) {
       helpfulScore += 0.5;
       reasons.push("fast");
     } else if (signals.durationSec > SLOW_THRESHOLD_SECONDS) {
@@ -189,8 +200,7 @@ export function scoreImplicitFeedback(signals: OutcomeInput): {
   // be deliberate citations) must never produce harm: we cannot attribute a
   // failure to any specific *shown* rule, so blanket-blaming them is pure noise.
   const isBroadAutoGraded =
-    signals.autoGraded === true &&
-    (signals.rulesUsed?.length ?? 0) > AUTO_GRADE_BLAST_RADIUS;
+    signals.autoGraded === true && (signals.rulesUsed?.length ?? 0) > AUTO_GRADE_BLAST_RADIUS;
 
   // Harm is only warranted when EITHER the primary outcome is an explicit
   // `failure`, OR the negative evidence dominates the positive evidence by a
@@ -244,20 +254,13 @@ async function resolveContextLogPath(): Promise<string> {
   return path.join(resolveGlobalDir(), "context-log.jsonl");
 }
 
-export async function recordOutcome(
-  input: OutcomeInput,
-  config: Config
-): Promise<OutcomeRecord> {
+export async function recordOutcome(input: OutcomeInput, config: Config): Promise<OutcomeRecord> {
   const targetPath = await resolveOutcomeLogPath();
   const sanitizeConfig = getSanitizeConfig(config);
-  
+
   // Sanitize user input fields
-  const cleanedNotes = input.notes
-    ? sanitize(input.notes, sanitizeConfig)
-    : undefined;
-  const cleanedTask = input.task
-    ? sanitize(input.task, sanitizeConfig)
-    : undefined;
+  const cleanedNotes = input.notes ? sanitize(input.notes, sanitizeConfig) : undefined;
+  const cleanedTask = input.task ? sanitize(input.task, sanitizeConfig) : undefined;
 
   const record: OutcomeRecord = {
     ...input,
@@ -265,11 +268,11 @@ export async function recordOutcome(
     task: cleanedTask,
     rulesUsed: input.rulesUsed || [],
     recordedAt: new Date().toISOString(),
-    path: targetPath
+    path: targetPath,
   };
 
   await ensureDir(path.dirname(targetPath));
-  
+
   // Use withLock for consistent concurrent access safety
   await withLock(targetPath, async () => {
     await fs.appendFile(targetPath, JSON.stringify(record) + "\n", "utf-8");
@@ -278,10 +281,7 @@ export async function recordOutcome(
   return record;
 }
 
-export async function loadOutcomes(
-  config: Config,
-  limit = 100
-): Promise<OutcomeRecord[]> {
+export async function loadOutcomes(config: Config, limit = 100): Promise<OutcomeRecord[]> {
   const targetPath = await resolveOutcomeLogPath();
   if (!(await fileExists(targetPath))) return [];
 
@@ -304,7 +304,7 @@ export async function loadOutcomes(
   return parsed.map((o) => ({
     ...o,
     notes: o.notes ? sanitize(o.notes, sanitizeConfig) : o.notes,
-    task: o.task ? sanitize(o.task, sanitizeConfig) : o.task
+    task: o.task ? sanitize(o.task, sanitizeConfig) : o.task,
   }));
 }
 
@@ -327,12 +327,17 @@ async function loadContextLog(limit = 200): Promise<ContextLogEntry[]> {
     .filter((x): x is ContextLogEntry => Boolean(x));
 }
 
-function enrichOutcomeWithContext(outcome: OutcomeRecord, contextLog: ContextLogEntry[]): OutcomeRecord {
+function enrichOutcomeWithContext(
+  outcome: OutcomeRecord,
+  contextLog: ContextLogEntry[],
+): OutcomeRecord {
   if (outcome.rulesUsed && outcome.rulesUsed.length > 0) return outcome;
   if (!outcome.sessionId) return outcome;
 
   const match = contextLog
-    .filter((e) => e.session === outcome.sessionId && Array.isArray(e.ruleIds) && e.ruleIds.length > 0)
+    .filter(
+      (e) => e.session === outcome.sessionId && Array.isArray(e.ruleIds) && e.ruleIds.length > 0,
+    )
     .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0];
 
   if (!match) return outcome;
@@ -345,7 +350,7 @@ function enrichOutcomeWithContext(outcome: OutcomeRecord, contextLog: ContextLog
 async function resolveTargetPath(
   bulletId: string,
   globalPath: string,
-  repoPath: string | null
+  repoPath: string | null,
 ): Promise<string | null> {
   // Prefer repo
   if (repoPath && (await fileExists(repoPath))) {
@@ -361,10 +366,10 @@ async function resolveTargetPath(
   // Fallback to global
   if (await fileExists(globalPath)) {
     try {
-        const globalPlaybook = await loadPlaybook(globalPath);
-        if (findBullet(globalPlaybook, bulletId)) return globalPath;
+      const globalPlaybook = await loadPlaybook(globalPath);
+      if (findBullet(globalPlaybook, bulletId)) return globalPath;
     } catch {
-        // Ignore
+      // Ignore
     }
   }
   return null;
@@ -372,10 +377,10 @@ async function resolveTargetPath(
 
 export async function applyOutcomeFeedback(
   outcomes: OutcomeRecord | OutcomeRecord[],
-  config: Config
+  config: Config,
 ): Promise<{ applied: number; missing: string[] }> {
   const list = Array.isArray(outcomes) ? outcomes : [outcomes];
-  
+
   const globalPath = expandPath(config.playbookPath);
   const repoDir = await resolveRepoDir();
   const repoPath = repoDir ? path.join(repoDir, "playbook.yaml") : null;
@@ -390,13 +395,13 @@ export async function applyOutcomeFeedback(
   for (const outcome of list) {
     const enriched = enrichOutcomeWithContext(outcome, contextLog);
     if (!enriched.rulesUsed || enriched.rulesUsed.length === 0) continue;
-    
+
     const scored = scoreImplicitFeedback(enriched);
     if (!scored) continue;
 
     for (const ruleId of enriched.rulesUsed) {
       const targetPath = await resolveTargetPath(ruleId, globalPath, repoPath);
-      
+
       if (!targetPath) {
         missing.push(ruleId);
         continue;
@@ -441,19 +446,19 @@ export async function applyOutcomeFeedback(
           (e) =>
             e.type === item.feedback.type &&
             e.sessionPath === item.feedback.sessionPath &&
-            e.timestamp === item.feedback.timestamp
+            e.timestamp === item.feedback.timestamp,
         );
         if (alreadyRecorded) {
           continue;
         }
 
         bullet.feedbackEvents.push(item.feedback);
-        
+
         // Update counters
         if (item.feedback.type === "helpful") {
-            bullet.helpfulCount = (bullet.helpfulCount || 0) + 1;
+          bullet.helpfulCount = (bullet.helpfulCount || 0) + 1;
         } else {
-            bullet.harmfulCount = (bullet.harmfulCount || 0) + 1;
+          bullet.harmfulCount = (bullet.harmfulCount || 0) + 1;
         }
 
         bullet.updatedAt = now();
@@ -506,7 +511,7 @@ export function extractRuleIdsFromTranscript(content: string): string[] {
   if (!matches) return [];
   // Real bullet IDs always contain digits (from base36-encoded timestamps).
   // Pure-alpha matches are common English words, not IDs.
-  return [...new Set(matches.filter(m => /\d/.test(m)).map(m => m.toLowerCase()))];
+  return [...new Set(matches.filter((m) => /\d/.test(m)).map((m) => m.toLowerCase()))];
 }
 
 /**
@@ -522,12 +527,7 @@ const ERROR_SIGNAL_PATTERNS = [
   /\bpanic\b/gi,
 ];
 
-const RETRY_SIGNAL_PATTERNS = [
-  /try again/i,
-  /retrying/i,
-  /let me try/i,
-  /attempt.*again/i,
-];
+const RETRY_SIGNAL_PATTERNS = [/try again/i, /retrying/i, /let me try/i, /attempt.*again/i];
 
 const REJECTION_SIGNAL_PATTERNS = [
   /user denied/i,
@@ -550,7 +550,7 @@ const REJECTION_SIGNAL_PATTERNS = [
 export function classifySessionOutcome(
   content: string,
   diary: DiaryEntry,
-  ruleIds: string[]
+  ruleIds: string[],
 ): OutcomeInput | null {
   if (ruleIds.length === 0) return null;
 
@@ -568,17 +568,21 @@ export function classifySessionOutcome(
   }
 
   // Tool rejection signals add to error count
-  const rejectionCount = REJECTION_SIGNAL_PATTERNS.filter(p => p.test(content)).length;
+  const rejectionCount = REJECTION_SIGNAL_PATTERNS.filter((p) => p.test(content)).length;
   errorCount += rejectionCount;
 
   // Retry signals
-  const hadRetries = RETRY_SIGNAL_PATTERNS.some(p => p.test(content));
+  const hadRetries = RETRY_SIGNAL_PATTERNS.some((p) => p.test(content));
 
   // Map diary status to outcome
   const outcome: OutcomeStatus =
-    diary.status === "success" ? "success" :
-    diary.status === "failure" ? "failure" :
-    diary.status === "mixed" ? "mixed" : "partial";
+    diary.status === "success"
+      ? "success"
+      : diary.status === "failure"
+        ? "failure"
+        : diary.status === "mixed"
+          ? "mixed"
+          : "partial";
 
   // Use first accomplishment or key learning as task context
   const task = diary.accomplishments?.[0] || diary.keyLearnings?.[0];

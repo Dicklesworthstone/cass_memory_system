@@ -1,20 +1,20 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
-import { Config, ConfigSchema, SanitizationConfig, BudgetConfig } from "./types.js";
+import { configureEmbeddingBackend } from "./semantic.js";
+import { type BudgetConfig, type Config, ConfigSchema, type SanitizationConfig } from "./types.js";
 import {
-  fileExists,
-  warn,
   atomicWrite,
   expandPath,
+  fileExists,
   normalizeYamlKeys,
-  resolveRepoDir,
-  resolveGlobalDir,
+  type ResolvedConfigFile,
   resolveConfigFileInDir,
   resolveGlobalConfigFile,
-  type ResolvedConfigFile,
+  resolveGlobalDir,
+  resolveRepoDir,
+  warn,
 } from "./utils.js";
-import { configureEmbeddingBackend } from "./semantic.js";
 
 // --- Defaults ---
 
@@ -109,8 +109,8 @@ function migrateLlmConfig(config: Partial<any>): Partial<any> {
     _llmMigrationWarned = true;
     warn(
       `Config uses deprecated 'llm.provider/llm.model' shape. ` +
-      `Please migrate to top-level 'provider' and 'model' fields. ` +
-      `Run 'cm doctor' for details.`
+        `Please migrate to top-level 'provider' and 'model' fields. ` +
+        `Run 'cm doctor' for details.`,
     );
   }
 
@@ -169,7 +169,7 @@ async function loadConfigFromDir(dir: string): Promise<{
     _shadowWarned.add(ignored);
     warn(
       `Ignoring ${ignored}: ${path.basename(file.path)} in the same directory takes precedence ` +
-      `(remove one of them to avoid confusion)`
+        `(remove one of them to avoid confusion)`,
     );
   }
 
@@ -205,7 +205,9 @@ export async function loadConfig(cliOverrides: Partial<Config> = {}): Promise<Co
         .map((p) => p.trim())
         .filter(Boolean);
     } else if (maybeExtra !== undefined) {
-      warn(`Ignoring repo sanitization.extraPatterns: expected string[] (repo config cannot override sanitization settings)`);
+      warn(
+        `Ignoring repo sanitization.extraPatterns: expected string[] (repo config cannot override sanitization settings)`,
+      );
     }
 
     // Security: Prevent repo from overriding sensitive user-level settings
@@ -262,11 +264,13 @@ export async function loadConfig(cliOverrides: Partial<Config> = {}): Promise<Co
   // Base URL env var fallback: provider-specific env vars override config.
   // Checked in order: OPENAI_BASE_URL, ANTHROPIC_BASE_URL, GOOGLE_BASE_URL.
   // Only applied when no config-level baseUrl is already set from any source.
-  if (!(globalConfig as any).baseUrl && !(migratedOverrides as any).baseUrl && !(repoConfig as any).baseUrl) {
+  if (
+    !(globalConfig as any).baseUrl &&
+    !(migratedOverrides as any).baseUrl &&
+    !(repoConfig as any).baseUrl
+  ) {
     const baseUrlFromEnv =
-      process.env.OPENAI_BASE_URL ||
-      process.env.ANTHROPIC_BASE_URL ||
-      process.env.GOOGLE_BASE_URL;
+      process.env.OPENAI_BASE_URL || process.env.ANTHROPIC_BASE_URL || process.env.GOOGLE_BASE_URL;
     if (baseUrlFromEnv) {
       envOverrides.baseUrl = baseUrlFromEnv;
     }
@@ -312,7 +316,9 @@ export async function loadConfig(cliOverrides: Partial<Config> = {}): Promise<Co
       ...defaults.sanitization,
       ...(globalConfig.sanitization || {}),
       ...(cliOverrides.sanitization || {}),
-      ...(mergedSanitizationExtraPatterns ? { extraPatterns: mergedSanitizationExtraPatterns } : {}),
+      ...(mergedSanitizationExtraPatterns
+        ? { extraPatterns: mergedSanitizationExtraPatterns }
+        : {}),
     },
     crossAgent: {
       ...defaults.crossAgent,
@@ -359,8 +365,7 @@ export async function loadConfig(cliOverrides: Partial<Config> = {}): Promise<Co
   //   - saveConfig/loadConfig round-trips remain stable.
   // Downstream callers all run the value through expandPath(), which handles
   // the "~" expansion at use-time.
-  const hasExplicitGlobalDir =
-    !!process.env.CASS_MEMORY_HOME || !!process.env.XDG_DATA_HOME;
+  const hasExplicitGlobalDir = !!process.env.CASS_MEMORY_HOME || !!process.env.XDG_DATA_HOME;
   if (hasExplicitGlobalDir) {
     const globalDir = resolveGlobalDir();
     const legacyDefaults: Record<string, string> = {
@@ -370,7 +375,10 @@ export async function loadConfig(cliOverrides: Partial<Config> = {}): Promise<Co
     for (const [key, legacyDefault] of Object.entries(legacyDefaults)) {
       const val = (result.data as any)[key];
       if (val === legacyDefault) {
-        (result.data as any)[key] = path.join(globalDir, key === "playbookPath" ? "playbook.yaml" : "diary");
+        (result.data as any)[key] = path.join(
+          globalDir,
+          key === "playbookPath" ? "playbook.yaml" : "diary",
+        );
       }
     }
   }
@@ -424,7 +432,7 @@ function camelToSnake(key: string): string {
 async function writeGlobalConfigKeys(
   file: ResolvedConfigFile,
   data: Record<string, unknown>,
-  changedKeys: string[] = Object.keys(data)
+  changedKeys: string[] = Object.keys(data),
 ): Promise<void> {
   if (file.format === "json") {
     await atomicWrite(file.path, JSON.stringify(data, null, 2));
@@ -466,7 +474,7 @@ async function writeGlobalConfigKeys(
 export async function patchGlobalConfig(
   values:
     | Record<string, unknown>
-    | ((existing: Record<string, unknown>) => Record<string, unknown>)
+    | ((existing: Record<string, unknown>) => Record<string, unknown>),
 ): Promise<boolean> {
   const { file, data } = await readGlobalConfigRaw();
   if (data === null) return false;

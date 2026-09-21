@@ -1,13 +1,13 @@
-import { describe, test, expect } from "bun:test";
+import { describe, expect, test } from "bun:test";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import {
-  PermissionError,
-  isPermissionError,
   handlePermissionError,
   handlePermissionErrorSync,
+  isPermissionError,
+  PermissionError,
 } from "../src/utils.js";
-import fs from "node:fs/promises";
-import path from "node:path";
-import os from "node:os";
 
 describe("Permission Error Handling", () => {
   describe("isPermissionError", () => {
@@ -50,7 +50,7 @@ describe("Permission Error Handling", () => {
         "644",
         "chmod 644 '/path/to/file'",
         "EACCES",
-        "permission denied"
+        "permission denied",
       );
 
       expect(err.name).toBe("PermissionError");
@@ -68,7 +68,7 @@ describe("Permission Error Handling", () => {
         "600 (owner: uid:0)",
         "chmod 644 '/secret/file.txt'",
         "EACCES",
-        "EACCES: permission denied, open '/secret/file.txt'"
+        "EACCES: permission denied, open '/secret/file.txt'",
       );
 
       expect(err.message).toContain("Permission denied");
@@ -86,7 +86,7 @@ describe("Permission Error Handling", () => {
         undefined,
         "chmod 644 '/unknown/path'",
         "EACCES",
-        "permission denied"
+        "permission denied",
       );
 
       expect(err.message).toContain("Cannot write");
@@ -94,14 +94,7 @@ describe("Permission Error Handling", () => {
     });
 
     test("is instanceof Error", () => {
-      const err = new PermissionError(
-        "/path",
-        "read",
-        "644",
-        "chmod 644",
-        "EACCES",
-        "error"
-      );
+      const err = new PermissionError("/path", "read", "644", "chmod 644", "EACCES", "error");
       expect(err instanceof Error).toBe(true);
       expect(err instanceof PermissionError).toBe(true);
     });
@@ -110,13 +103,13 @@ describe("Permission Error Handling", () => {
   describe("handlePermissionError (async)", () => {
     test("throws PermissionError for EACCES", async () => {
       const originalError = new Error(
-        "EACCES: permission denied, open '/test/file.txt'"
+        "EACCES: permission denied, open '/test/file.txt'",
       ) as NodeJS.ErrnoException;
       originalError.code = "EACCES";
 
-      await expect(
-        handlePermissionError(originalError, "/test/file.txt")
-      ).rejects.toThrow(PermissionError);
+      await expect(handlePermissionError(originalError, "/test/file.txt")).rejects.toThrow(
+        PermissionError,
+      );
     });
 
     test("includes path in thrown error", async () => {
@@ -134,7 +127,7 @@ describe("Permission Error Handling", () => {
 
     test("detects write operation from mkdir error", async () => {
       const originalError = new Error(
-        "EACCES: permission denied, mkdir '/protected/dir'"
+        "EACCES: permission denied, mkdir '/protected/dir'",
       ) as NodeJS.ErrnoException;
       originalError.code = "EACCES";
 
@@ -149,7 +142,7 @@ describe("Permission Error Handling", () => {
 
     test("detects delete operation from unlink error", async () => {
       const originalError = new Error(
-        "EPERM: operation not permitted, unlink '/system/file'"
+        "EPERM: operation not permitted, unlink '/system/file'",
       ) as NodeJS.ErrnoException;
       originalError.code = "EPERM";
 
@@ -198,9 +191,7 @@ describe("Permission Error Handling", () => {
       const tmpFile = path.join(tmpDir, "test.txt");
       await fs.writeFile(tmpFile, "test content");
 
-      const originalError = new Error(
-        "EACCES: permission denied"
-      ) as NodeJS.ErrnoException;
+      const originalError = new Error("EACCES: permission denied") as NodeJS.ErrnoException;
       originalError.code = "EACCES";
 
       try {
@@ -224,9 +215,9 @@ describe("Permission Error Handling", () => {
       const originalError = new Error("permission denied") as NodeJS.ErrnoException;
       originalError.code = "EACCES";
 
-      expect(() =>
-        handlePermissionErrorSync(originalError, "/test/file.txt")
-      ).toThrow(PermissionError);
+      expect(() => handlePermissionErrorSync(originalError, "/test/file.txt")).toThrow(
+        PermissionError,
+      );
     });
 
     test("includes path in thrown error", () => {
@@ -270,9 +261,7 @@ describe("Permission Error Handling", () => {
     });
 
     test("treats paths ending with / as directories", () => {
-      const originalError = new Error(
-        "EACCES: mkdir failed"
-      ) as NodeJS.ErrnoException;
+      const originalError = new Error("EACCES: mkdir failed") as NodeJS.ErrnoException;
       originalError.code = "EACCES";
 
       try {

@@ -1,13 +1,18 @@
 /**
  * E2E Tests for CLI project command - Playbook export formats
  */
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { readFile, writeFile } from "node:fs/promises";
 import yaml from "yaml";
 import { projectCommand } from "../src/commands/project.js";
-import { withTempCassHome, type TestEnv } from "./helpers/temp.js";
 import { createE2ELogger } from "./helpers/e2e-logger.js";
-import { createTestConfig, createTestPlaybook, createBullet, createFeedbackEvent } from "./helpers/factories.js";
+import {
+  createBullet,
+  createFeedbackEvent,
+  createTestConfig,
+  createTestPlaybook,
+} from "./helpers/factories.js";
+import { type TestEnv, withTempCassHome } from "./helpers/temp.js";
 
 function captureConsole() {
   const logs: string[] = [];
@@ -43,7 +48,11 @@ async function writeTestConfig(env: TestEnv): Promise<void> {
   await writeFile(env.configPath, JSON.stringify(config, null, 2), "utf-8");
 }
 
-async function snapshotFile(log: ReturnType<typeof createE2ELogger>, name: string, filePath: string): Promise<void> {
+async function snapshotFile(
+  log: ReturnType<typeof createE2ELogger>,
+  name: string,
+  filePath: string,
+): Promise<void> {
   const contents = await readFile(filePath, "utf-8").catch(() => "");
   log.snapshot(name, contents);
 }
@@ -86,7 +95,10 @@ describe("E2E: CLI project command", () => {
           category: "security",
           content: "Use prepared statements for SQL queries.",
           maturity: "established",
-          feedbackEvents: [createFeedbackEvent("helpful", { timestamp: nowTs }), createFeedbackEvent("helpful", { timestamp: nowTs })],
+          feedbackEvents: [
+            createFeedbackEvent("helpful", { timestamp: nowTs }),
+            createFeedbackEvent("helpful", { timestamp: nowTs }),
+          ],
           helpfulCount: 2,
         });
         const bulletSecurityLow = createBullet({
@@ -112,7 +124,12 @@ describe("E2E: CLI project command", () => {
           feedbackEvents: [],
         });
 
-        const playbook = createTestPlaybook([bulletSecurityLow, bulletTestingLow, bulletSecurityHigh, bulletTestingHigh]);
+        const playbook = createTestPlaybook([
+          bulletSecurityLow,
+          bulletTestingLow,
+          bulletSecurityHigh,
+          bulletTestingHigh,
+        ]);
         log.step("Write playbook", { playbookPath: env.playbookPath });
         await writeFile(env.playbookPath, yaml.stringify(playbook));
         await snapshotFile(log, "config.json", env.configPath);
@@ -122,7 +139,9 @@ describe("E2E: CLI project command", () => {
         try {
           await withNoColor(async () => {
             await withCwd(env.home, async () => {
-              log.step("Run command", { command: "cm project --format agents.md --per-category 1 --json" });
+              log.step("Run command", {
+                command: "cm project --format agents.md --per-category 1 --json",
+              });
               await projectCommand({ format: "agents.md", perCategory: 1, json: true });
             });
           });
@@ -148,9 +167,13 @@ describe("E2E: CLI project command", () => {
         expect(content).toContain("### testing");
 
         expect(content).toContain("Use prepared statements for SQL queries.");
-        expect(content).not.toContain("Low-score security rule (should be excluded by --per-category 1).");
+        expect(content).not.toContain(
+          "Low-score security rule (should be excluded by --per-category 1).",
+        );
         expect(content).toContain("Keep tests deterministic and offline.");
-        expect(content).not.toContain("Low-score testing rule (should be excluded by --per-category 1).");
+        expect(content).not.toContain(
+          "Low-score testing rule (should be excluded by --per-category 1).",
+        );
       });
     });
   });
@@ -169,7 +192,10 @@ describe("E2E: CLI project command", () => {
           category: "security",
           content: "Validate JWTs before trusting claims.",
           maturity: "established",
-          feedbackEvents: [createFeedbackEvent("helpful", { timestamp: nowTs }), createFeedbackEvent("helpful", { timestamp: nowTs })],
+          feedbackEvents: [
+            createFeedbackEvent("helpful", { timestamp: nowTs }),
+            createFeedbackEvent("helpful", { timestamp: nowTs }),
+          ],
           helpfulCount: 2,
         });
         const bulletB = createBullet({
@@ -190,7 +216,9 @@ describe("E2E: CLI project command", () => {
         try {
           await withNoColor(async () => {
             await withCwd(env.home, async () => {
-              log.step("Run command", { command: "cm project --format claude.md --per-category 1 --json" });
+              log.step("Run command", {
+                command: "cm project --format claude.md --per-category 1 --json",
+              });
               await projectCommand({ format: "claude.md", perCategory: 1, json: true });
             });
           });

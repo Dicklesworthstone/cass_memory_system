@@ -1,13 +1,9 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import {
-  setupGracefulShutdown,
-  isShutdownInProgress,
-  onShutdown,
-} from "../src/utils.js";
-import { withLock, getActiveLocks, releaseAllLocks } from "../src/lock.js";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs/promises";
-import path from "node:path";
 import os from "node:os";
+import path from "node:path";
+import { getActiveLocks, releaseAllLocks, withLock } from "../src/lock.js";
+import { isShutdownInProgress, onShutdown, setupGracefulShutdown } from "../src/utils.js";
 
 describe("Graceful Shutdown", () => {
   describe("isShutdownInProgress", () => {

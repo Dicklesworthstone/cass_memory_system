@@ -7,13 +7,17 @@
  * - scope/category filters
  * - JSON output contract
  */
-import { describe, test, expect } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import yaml from "yaml";
 
 import { topCommand } from "../src/commands/top.js";
+import {
+  createTestBullet,
+  createTestFeedbackEvent,
+  createTestPlaybook,
+} from "./helpers/factories.js";
 import { withTempCassHome } from "./helpers/temp.js";
-import { createTestBullet, createTestFeedbackEvent, createTestPlaybook } from "./helpers/factories.js";
 
 async function withCwd<T>(cwd: string, fn: () => Promise<T>): Promise<T> {
   const previous = process.cwd();
@@ -25,17 +29,15 @@ async function withCwd<T>(cwd: string, fn: () => Promise<T>): Promise<T> {
   }
 }
 
-async function captureConsoleLog<T>(fn: () => Promise<T> | T): Promise<{ result: T; output: string }> {
+async function captureConsoleLog<T>(
+  fn: () => Promise<T> | T,
+): Promise<{ result: T; output: string }> {
   const original = console.log;
   const lines: string[] = [];
 
   // eslint-disable-next-line no-console
   console.log = (...args: unknown[]) => {
-    lines.push(
-      args
-        .map((arg) => (typeof arg === "string" ? arg : JSON.stringify(arg)))
-        .join(" ")
-    );
+    lines.push(args.map((arg) => (typeof arg === "string" ? arg : JSON.stringify(arg))).join(" "));
   };
 
   try {
@@ -149,7 +151,7 @@ describe("top command - Unit Tests", () => {
 
         process.exitCode = 0;
         const { output } = await captureConsoleLog(() =>
-          topCommand(10, { json: true, scope: "workspace", category: "quality" })
+          topCommand(10, { json: true, scope: "workspace", category: "quality" }),
         );
 
         const payload = JSON.parse(output) as JsonEnvelope<TopJson>;
@@ -174,7 +176,9 @@ describe("top command - Unit Tests", () => {
     expect(process.exitCode).toBe(2);
 
     process.exitCode = 0;
-    const badScope = await captureConsoleLog(() => topCommand(10, { json: true, scope: "nope" as any }));
+    const badScope = await captureConsoleLog(() =>
+      topCommand(10, { json: true, scope: "nope" as any }),
+    );
     const badScopePayload = JSON.parse(badScope.output) as any;
     expect(badScopePayload.success).toBe(false);
     expect(badScopePayload.command).toBe("top");
@@ -287,9 +291,7 @@ describe("top command - Human Output", () => {
         writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([bullet])));
 
         // Filter by category that doesn't exist
-        const { output } = await captureConsoleLog(() =>
-          topCommand(10, { category: "security" })
-        );
+        const { output } = await captureConsoleLog(() => topCommand(10, { category: "security" }));
 
         expect(output).toContain("No bullets found matching the criteria");
         expect(output).toContain("category=security");
@@ -315,7 +317,7 @@ describe("top command - Human Output", () => {
         writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([bullet])));
 
         const { output } = await captureConsoleLog(() =>
-          topCommand(10, { scope: "global", category: "security" })
+          topCommand(10, { scope: "global", category: "security" }),
         );
 
         expect(output).toContain("scope: global");
@@ -365,7 +367,7 @@ describe("top command - Human Output", () => {
           helpfulCount: 15,
           harmfulCount: 0,
           feedbackEvents: Array.from({ length: 15 }, () =>
-            createTestFeedbackEvent("helpful", { timestamp: t })
+            createTestFeedbackEvent("helpful", { timestamp: t }),
           ),
         });
 

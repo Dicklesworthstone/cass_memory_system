@@ -4,11 +4,11 @@
  * Goal: cover command registration, help/version wiring, and error formatting
  * in-process (so Bun coverage can include `src/cm.ts`).
  */
-import { describe, test, expect } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { createProgram, hasJsonFlag, handleCliError } from "../src/cm.js";
+import { createProgram, handleCliError, hasJsonFlag } from "../src/cm.js";
 
 const ROOT = join(import.meta.dir, "..");
 const PACKAGE_JSON = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf-8"));
@@ -98,32 +98,34 @@ describe("cm.ts CLI router (unit)", () => {
     const program = createProgram(["bun", "src/cm.ts"]);
     const commandNames = program.commands.map((cmd) => cmd.name());
 
-    expect(commandNames).toEqual(expect.arrayContaining([
-      "init",
-      "context",
-      "similar",
-      "mark",
-      "playbook",
-      "stats",
-      "top",
-      "stale",
-      "why",
-      "undo",
-      "usage",
-      "validate",
-      "doctor",
-      "reflect",
-      "forget",
-      "audit",
-      "project",
-      "starters",
-      "quickstart",
-      "privacy",
-      "serve",
-      "outcome",
-      "outcome-apply",
-      "onboard",
-    ]));
+    expect(commandNames).toEqual(
+      expect.arrayContaining([
+        "init",
+        "context",
+        "similar",
+        "mark",
+        "playbook",
+        "stats",
+        "top",
+        "stale",
+        "why",
+        "undo",
+        "usage",
+        "validate",
+        "doctor",
+        "reflect",
+        "forget",
+        "audit",
+        "project",
+        "starters",
+        "quickstart",
+        "privacy",
+        "serve",
+        "outcome",
+        "outcome-apply",
+        "onboard",
+      ]),
+    );
   });
 
   test("registers playbook subcommands", () => {
@@ -132,7 +134,9 @@ describe("cm.ts CLI router (unit)", () => {
     expect(playbook).toBeTruthy();
 
     const subNames = playbook!.commands.map((cmd) => cmd.name());
-    expect(subNames).toEqual(expect.arrayContaining(["list", "add", "remove", "get", "export", "import"]));
+    expect(subNames).toEqual(
+      expect.arrayContaining(["list", "add", "remove", "get", "export", "import"]),
+    );
   });
 
   test("registers onboarding subcommands", () => {
@@ -141,16 +145,18 @@ describe("cm.ts CLI router (unit)", () => {
     expect(onboard).toBeTruthy();
 
     const subNames = onboard!.commands.map((cmd) => cmd.name());
-    expect(subNames).toEqual(expect.arrayContaining([
-      "status",
-      "gaps",
-      "sample",
-      "read",
-      "prompt",
-      "guided",
-      "mark-done",
-      "reset",
-    ]));
+    expect(subNames).toEqual(
+      expect.arrayContaining([
+        "status",
+        "gaps",
+        "sample",
+        "read",
+        "prompt",
+        "guided",
+        "mark-done",
+        "reset",
+      ]),
+    );
   });
 
   test("adds global flags and -j alias to help", () => {
@@ -194,7 +200,7 @@ describe("cm.ts argv detection helpers (unit)", () => {
         "--format",
         "markdown",
         "--json",
-      ])
+      ]),
     ).toBe(false);
   });
 });
@@ -203,7 +209,7 @@ describe("cm.ts error formatting helper (unit)", () => {
   test("handleCliError emits JSON to stdout in JSON mode", () => {
     const { logs, errors } = withEnv(
       { NO_COLOR: "1", FORCE_COLOR: "0", CASS_MEMORY_CLI_NAME: "cm-test" },
-      () => captureConsole(() => handleCliError(new Error("boom"), ["bun", "src/cm.ts", "--json"]))
+      () => captureConsole(() => handleCliError(new Error("boom"), ["bun", "src/cm.ts", "--json"])),
     );
 
     expect(errors.length).toBe(0);
@@ -218,7 +224,7 @@ describe("cm.ts error formatting helper (unit)", () => {
   test("handleCliError emits human error to stderr in human mode", () => {
     const { logs, errors } = withEnv(
       { NO_COLOR: "1", FORCE_COLOR: "0", CASS_MEMORY_CLI_NAME: "cm-test" },
-      () => captureConsole(() => handleCliError(new Error("boom"), ["bun", "src/cm.ts"]))
+      () => captureConsole(() => handleCliError(new Error("boom"), ["bun", "src/cm.ts"])),
     );
 
     expect(logs.length).toBe(0);

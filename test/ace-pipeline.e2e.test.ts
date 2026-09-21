@@ -6,25 +6,32 @@
  *
  * Uses stubbed LLM via CM_REFLECTOR_STUBS to avoid external dependencies.
  */
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdir, writeFile, rm } from "node:fs/promises";
-import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
-
-import { reflectOnSession } from "../src/reflect.js";
+import path from "node:path";
 import { curatePlaybook } from "../src/curate.js";
-import { validateDelta } from "../src/validate.js";
-import { createEmptyPlaybook, savePlaybook, loadPlaybook } from "../src/playbook.js";
-import { createTestConfig, createTestBullet, createTestPlaybook, createTestFeedbackEvent } from "./helpers/index.js";
 import { __resetReflectorStubsForTest } from "../src/llm.js";
-import { DiaryEntry, PlaybookDelta } from "../src/types.js";
+import { createEmptyPlaybook, loadPlaybook, savePlaybook } from "../src/playbook.js";
+import { reflectOnSession } from "../src/reflect.js";
+import type { DiaryEntry, PlaybookDelta } from "../src/types.js";
+import { validateDelta } from "../src/validate.js";
+import {
+  createTestBullet,
+  createTestConfig,
+  createTestFeedbackEvent,
+  createTestPlaybook,
+} from "./helpers/index.js";
 
 // --- Helper Functions ---
 
 let tempDirs: string[] = [];
 
 async function createTempDir(): Promise<string> {
-  const dirPath = path.join(os.tmpdir(), `ace-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const dirPath = path.join(
+    os.tmpdir(),
+    `ace-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  );
   await mkdir(dirPath, { recursive: true });
   tempDirs.push(dirPath);
   return dirPath;
@@ -60,7 +67,7 @@ function createTestDiary(overrides: Partial<DiaryEntry> = {}): DiaryEntry {
     relatedSessions: [],
     tags: ["testing", "architecture"],
     searchAnchors: [],
-    ...overrides
+    ...overrides,
   };
 }
 
@@ -98,13 +105,13 @@ describe("E2E: ACE Pipeline - Full Flow", () => {
               type: "add",
               bullet: {
                 content: "Always use atomic writes for configuration files",
-                category: "best-practices"
+                category: "best-practices",
               },
               reason: "Prevents data corruption on crash",
-              sourceSession: diary.sessionPath
-            }
-          ]
-        }
+              sourceSession: diary.sessionPath,
+            },
+          ],
+        },
       ]);
 
       const reflectResult = await reflectOnSession(diary, playbook, config);
@@ -122,8 +129,8 @@ describe("E2E: ACE Pipeline - Full Flow", () => {
       expect(curationResult.applied).toBeGreaterThan(0);
       expect(curationResult.playbook.bullets.length).toBeGreaterThan(0);
 
-      const addedBullet = curationResult.playbook.bullets.find(
-        b => b.content.includes("atomic writes")
+      const addedBullet = curationResult.playbook.bullets.find((b) =>
+        b.content.includes("atomic writes"),
       );
       expect(addedBullet).toBeDefined();
       expect(addedBullet?.category).toBe("best-practices");
@@ -136,9 +143,33 @@ describe("E2E: ACE Pipeline - Full Flow", () => {
       const config = createTestConfig({ maxReflectorIterations: 3 });
 
       process.env.CM_REFLECTOR_STUBS = JSON.stringify([
-        { deltas: [{ type: "add", bullet: { content: "Rule from iteration 1", category: "testing" }, reason: "iter1" }] },
-        { deltas: [{ type: "add", bullet: { content: "Rule from iteration 2", category: "testing" }, reason: "iter2" }] },
-        { deltas: [{ type: "add", bullet: { content: "Rule from iteration 3", category: "testing" }, reason: "iter3" }] }
+        {
+          deltas: [
+            {
+              type: "add",
+              bullet: { content: "Rule from iteration 1", category: "testing" },
+              reason: "iter1",
+            },
+          ],
+        },
+        {
+          deltas: [
+            {
+              type: "add",
+              bullet: { content: "Rule from iteration 2", category: "testing" },
+              reason: "iter2",
+            },
+          ],
+        },
+        {
+          deltas: [
+            {
+              type: "add",
+              bullet: { content: "Rule from iteration 3", category: "testing" },
+              reason: "iter3",
+            },
+          ],
+        },
       ]);
 
       const reflectResult = await reflectOnSession(diary, playbook, config);
@@ -157,8 +188,24 @@ describe("E2E: ACE Pipeline - Full Flow", () => {
       const config = createTestConfig({ maxReflectorIterations: 3 });
 
       process.env.CM_REFLECTOR_STUBS = JSON.stringify([
-        { deltas: [{ type: "add", bullet: { content: "Unique rule", category: "testing" }, reason: "first" }] },
-        { deltas: [{ type: "add", bullet: { content: "Unique rule", category: "testing" }, reason: "duplicate" }] }
+        {
+          deltas: [
+            {
+              type: "add",
+              bullet: { content: "Unique rule", category: "testing" },
+              reason: "first",
+            },
+          ],
+        },
+        {
+          deltas: [
+            {
+              type: "add",
+              bullet: { content: "Unique rule", category: "testing" },
+              reason: "duplicate",
+            },
+          ],
+        },
       ]);
 
       const reflectResult = await reflectOnSession(diary, playbook, config);
@@ -171,20 +218,20 @@ describe("E2E: ACE Pipeline - Full Flow", () => {
       const existingBullet = createTestBullet({
         id: "existing-rule",
         content: "Existing rule for testing",
-        helpfulCount: 2
+        helpfulCount: 2,
       });
       const playbook = createTestPlaybook([existingBullet]);
       const diary = createTestDiary();
       const config = createTestConfig();
 
       process.env.CM_REFLECTOR_STUBS = JSON.stringify([
-        { deltas: [{ type: "helpful", bulletId: "existing-rule" }] }
+        { deltas: [{ type: "helpful", bulletId: "existing-rule" }] },
       ]);
 
       const reflectResult = await reflectOnSession(diary, playbook, config);
       const curationResult = curatePlaybook(playbook, reflectResult.deltas, config);
 
-      const updatedBullet = curationResult.playbook.bullets.find(b => b.id === "existing-rule");
+      const updatedBullet = curationResult.playbook.bullets.find((b) => b.id === "existing-rule");
       expect(updatedBullet?.helpfulCount).toBe(3);
     });
 
@@ -192,20 +239,20 @@ describe("E2E: ACE Pipeline - Full Flow", () => {
       const existingBullet = createTestBullet({
         id: "bad-rule",
         content: "Rule that is sometimes harmful",
-        harmfulCount: 0
+        harmfulCount: 0,
       });
       const playbook = createTestPlaybook([existingBullet]);
       const diary = createTestDiary();
       const config = createTestConfig();
 
       process.env.CM_REFLECTOR_STUBS = JSON.stringify([
-        { deltas: [{ type: "harmful", bulletId: "bad-rule", reason: "outdated" }] }
+        { deltas: [{ type: "harmful", bulletId: "bad-rule", reason: "outdated" }] },
       ]);
 
       const reflectResult = await reflectOnSession(diary, playbook, config);
       const curationResult = curatePlaybook(playbook, reflectResult.deltas, config);
 
-      const updatedBullet = curationResult.playbook.bullets.find(b => b.id === "bad-rule");
+      const updatedBullet = curationResult.playbook.bullets.find((b) => b.id === "bad-rule");
       expect(updatedBullet?.harmfulCount).toBe(1);
     });
   });
@@ -222,15 +269,15 @@ describe("E2E: ACE Pipeline - Full Flow", () => {
           createTestFeedbackEvent("harmful", { timestamp: new Date().toISOString() }),
           createTestFeedbackEvent("harmful", { timestamp: new Date().toISOString() }),
           createTestFeedbackEvent("harmful", { timestamp: new Date().toISOString() }),
-          createTestFeedbackEvent("harmful", { timestamp: new Date().toISOString() })
-        ]
+          createTestFeedbackEvent("harmful", { timestamp: new Date().toISOString() }),
+        ],
       });
       const playbook = createTestPlaybook([harmfulBullet]);
       const diary = createTestDiary();
       const config = createTestConfig();
 
       process.env.CM_REFLECTOR_STUBS = JSON.stringify([
-        { deltas: [{ type: "harmful", bulletId: "invert-me", reason: "dangerous" }] }
+        { deltas: [{ type: "harmful", bulletId: "invert-me", reason: "dangerous" }] },
       ]);
 
       const reflectResult = await reflectOnSession(diary, playbook, config);
@@ -238,11 +285,11 @@ describe("E2E: ACE Pipeline - Full Flow", () => {
 
       expect(curationResult.inversions.length).toBeGreaterThanOrEqual(0);
 
-      const original = curationResult.playbook.bullets.find(b => b.id === "invert-me");
+      const original = curationResult.playbook.bullets.find((b) => b.id === "invert-me");
       expect(original?.deprecated).toBe(true);
 
       const antiPattern = curationResult.playbook.bullets.find(
-        b => b.kind === "anti_pattern" || b.isNegative
+        (b) => b.kind === "anti_pattern" || b.isNegative,
       );
       expect(antiPattern).toBeDefined();
       expect(antiPattern?.content).toContain("AVOID");
@@ -254,9 +301,9 @@ describe("E2E: ACE Pipeline - Full Flow", () => {
         content: "Important rule that should never be inverted",
         pinned: true,
         harmfulCount: 10,
-        feedbackEvents: Array(10).fill(null).map(() =>
-          createTestFeedbackEvent("harmful", { timestamp: new Date().toISOString() })
-        )
+        feedbackEvents: Array(10)
+          .fill(null)
+          .map(() => createTestFeedbackEvent("harmful", { timestamp: new Date().toISOString() })),
       });
       const playbook = createTestPlaybook([pinnedBullet]);
       const diary = createTestDiary();
@@ -269,7 +316,7 @@ describe("E2E: ACE Pipeline - Full Flow", () => {
 
       expect(curationResult.inversions.length).toBe(0);
 
-      const bullet = curationResult.playbook.bullets.find(b => b.id === "pinned-rule");
+      const bullet = curationResult.playbook.bullets.find((b) => b.id === "pinned-rule");
       expect(bullet?.deprecated).toBeFalsy();
     });
   });
@@ -281,22 +328,22 @@ describe("E2E: ACE Pipeline - Full Flow", () => {
         content: "Good coding practice",
         maturity: "candidate",
         helpfulCount: 4,
-        feedbackEvents: Array(4).fill(null).map(() =>
-          createTestFeedbackEvent("helpful", { timestamp: new Date().toISOString() })
-        )
+        feedbackEvents: Array(4)
+          .fill(null)
+          .map(() => createTestFeedbackEvent("helpful", { timestamp: new Date().toISOString() })),
       });
       const playbook = createTestPlaybook([candidateBullet]);
       const diary = createTestDiary();
       const config = createTestConfig();
 
       process.env.CM_REFLECTOR_STUBS = JSON.stringify([
-        { deltas: [{ type: "helpful", bulletId: "promotable" }] }
+        { deltas: [{ type: "helpful", bulletId: "promotable" }] },
       ]);
 
       const reflectResult = await reflectOnSession(diary, playbook, config);
       const curationResult = curatePlaybook(playbook, reflectResult.deltas, config);
 
-      const bullet = curationResult.playbook.bullets.find(b => b.id === "promotable");
+      const bullet = curationResult.playbook.bullets.find((b) => b.id === "promotable");
       expect(["established", "proven"]).toContain(bullet?.maturity ?? "");
     });
   });
@@ -311,10 +358,10 @@ describe("E2E: ACE Pipeline - Full Flow", () => {
           content: "Always validate input data before processing to prevent security issues",
           category: "security",
           scope: "global",
-          kind: "workflow_rule"
+          kind: "workflow_rule",
         },
         sourceSession: "/sessions/test.jsonl",
-        reason: "Security best practice"
+        reason: "Security best practice",
       };
 
       const validationResult = await validateDelta(addDelta, config);
@@ -327,14 +374,14 @@ describe("E2E: ACE Pipeline - Full Flow", () => {
       const helpfulDelta: PlaybookDelta = {
         type: "helpful",
         bulletId: "any-bullet",
-        sourceSession: "/sessions/test.jsonl"
+        sourceSession: "/sessions/test.jsonl",
       };
 
       const harmfulDelta: PlaybookDelta = {
         type: "harmful",
         bulletId: "any-bullet",
         sourceSession: "/sessions/test.jsonl",
-        reason: "outdated"
+        reason: "outdated",
       };
 
       const helpfulResult = await validateDelta(helpfulDelta, config);
@@ -349,7 +396,7 @@ describe("E2E: ACE Pipeline - Full Flow", () => {
     it("detects potential conflicts between new and existing rules", async () => {
       const existingBullet = createTestBullet({
         id: "always-x",
-        content: "Always use strict mode in TypeScript"
+        content: "Always use strict mode in TypeScript",
       });
       const playbook = createTestPlaybook([existingBullet]);
       const diary = createTestDiary();
@@ -360,11 +407,14 @@ describe("E2E: ACE Pipeline - Full Flow", () => {
           deltas: [
             {
               type: "add",
-              bullet: { content: "Avoid using strict mode for legacy code", category: "typescript" },
-              reason: "Legacy compatibility"
-            }
-          ]
-        }
+              bullet: {
+                content: "Avoid using strict mode for legacy code",
+                category: "typescript",
+              },
+              reason: "Legacy compatibility",
+            },
+          ],
+        },
       ]);
 
       const reflectResult = await reflectOnSession(diary, playbook, config);
@@ -386,9 +436,13 @@ describe("E2E: ACE Pipeline - Full Flow", () => {
       process.env.CM_REFLECTOR_STUBS = JSON.stringify([
         {
           deltas: [
-            { type: "add", bullet: { content: "Persisted rule", category: "testing" }, reason: "test" }
-          ]
-        }
+            {
+              type: "add",
+              bullet: { content: "Persisted rule", category: "testing" },
+              reason: "test",
+            },
+          ],
+        },
       ]);
 
       const reflectResult = await reflectOnSession(diary, playbook, config);
@@ -397,7 +451,7 @@ describe("E2E: ACE Pipeline - Full Flow", () => {
       await savePlaybook(curationResult.playbook, playbookPath);
 
       const reloaded = await loadPlaybook(playbookPath);
-      const persistedBullet = reloaded.bullets.find(b => b.content === "Persisted rule");
+      const persistedBullet = reloaded.bullets.find((b) => b.content === "Persisted rule");
       expect(persistedBullet).toBeDefined();
     });
   });
@@ -409,11 +463,15 @@ describe("E2E: ACE Pipeline - Full Flow", () => {
       const config = createTestConfig({ maxReflectorIterations: 5 });
 
       process.env.CM_REFLECTOR_STUBS = JSON.stringify([
-        { deltas: [{ type: "add", bullet: { content: "Only rule", category: "testing" }, reason: "iter1" }] },
+        {
+          deltas: [
+            { type: "add", bullet: { content: "Only rule", category: "testing" }, reason: "iter1" },
+          ],
+        },
         { deltas: [] },
         { deltas: [] },
         { deltas: [] },
-        { deltas: [] }
+        { deltas: [] },
       ]);
 
       const reflectResult = await reflectOnSession(diary, playbook, config);
@@ -425,11 +483,13 @@ describe("E2E: ACE Pipeline - Full Flow", () => {
       const playbook = createTestPlaybook();
       const config = createTestConfig({ maxReflectorIterations: 10 });
 
-      const manyDeltas = Array(25).fill(null).map((_, i) => ({
-        type: "add",
-        bullet: { content: `Rule ${i}`, category: "testing" },
-        reason: `gen-${i}`
-      }));
+      const manyDeltas = Array(25)
+        .fill(null)
+        .map((_, i) => ({
+          type: "add",
+          bullet: { content: `Rule ${i}`, category: "testing" },
+          reason: `gen-${i}`,
+        }));
 
       process.env.CM_REFLECTOR_STUBS = JSON.stringify([{ deltas: manyDeltas }]);
 
@@ -445,7 +505,15 @@ describe("E2E: ACE Pipeline - Full Flow", () => {
       const config = createTestConfig({ maxReflectorIterations: 2 });
 
       process.env.CM_REFLECTOR_STUBS = JSON.stringify([
-        { deltas: [{ type: "add", bullet: { content: "Logged rule", category: "testing" }, reason: "iter1" }] }
+        {
+          deltas: [
+            {
+              type: "add",
+              bullet: { content: "Logged rule", category: "testing" },
+              reason: "iter1",
+            },
+          ],
+        },
       ]);
 
       const reflectResult = await reflectOnSession(diary, playbook, config);
@@ -463,7 +531,11 @@ describe("E2E: ACE Pipeline - Full Flow", () => {
       const config = createTestConfig();
 
       process.env.CM_REFLECTOR_STUBS = JSON.stringify([
-        { deltas: [{ type: "add", bullet: { content: "New rule", category: "testing" }, reason: "new" }] }
+        {
+          deltas: [
+            { type: "add", bullet: { content: "New rule", category: "testing" }, reason: "new" },
+          ],
+        },
       ]);
 
       const reflectResult = await reflectOnSession(diary, playbook, config);
@@ -490,7 +562,15 @@ describe("E2E: ACE Pipeline - Full Flow", () => {
       const config = createTestConfig();
 
       process.env.CM_REFLECTOR_STUBS = JSON.stringify([
-        { deltas: [{ type: "add", bullet: { content: "Tracked rule", category: "testing" }, reason: "test" }] }
+        {
+          deltas: [
+            {
+              type: "add",
+              bullet: { content: "Tracked rule", category: "testing" },
+              reason: "test",
+            },
+          ],
+        },
       ]);
 
       const reflectResult = await reflectOnSession(diary, playbook, config);
@@ -508,12 +588,14 @@ describe("E2E: ACE Pipeline - Full Flow", () => {
       const config = createTestConfig();
 
       process.env.CM_REFLECTOR_STUBS = JSON.stringify([
-        { deltas: [{ type: "helpful", bulletId: "feedback-target" }] }
+        { deltas: [{ type: "helpful", bulletId: "feedback-target" }] },
       ]);
 
       const reflectResult = await reflectOnSession(diary, playbook, config);
       const delta = reflectResult.deltas[0];
-      expect("sourceSession" in delta ? delta.sourceSession : undefined).toBe("/feedback/session.jsonl");
+      expect("sourceSession" in delta ? delta.sourceSession : undefined).toBe(
+        "/feedback/session.jsonl",
+      );
     });
   });
 });

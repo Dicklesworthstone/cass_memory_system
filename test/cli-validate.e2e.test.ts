@@ -7,15 +7,14 @@
  * - Falls back to LLM validation for ambiguous cases
  * - Supports JSON output format
  */
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { writeFile } from "node:fs/promises";
-
-import { validateCommand } from "../src/commands/validate.js";
-import { withTempCassHome } from "./helpers/temp.js";
-import { createTestConfig } from "./helpers/factories.js";
-import { createE2ELogger } from "./helpers/e2e-logger.js";
 import type { CassRunner } from "../src/cass.js";
+import { validateCommand } from "../src/commands/validate.js";
 import type { LLMIO } from "../src/llm.js";
+import { createE2ELogger } from "./helpers/e2e-logger.js";
+import { createTestConfig } from "./helpers/factories.js";
+import { withTempCassHome } from "./helpers/temp.js";
 
 // --- Helper Functions ---
 
@@ -42,23 +41,25 @@ function captureConsole() {
     restore: () => {
       console.log = originalLog;
       console.error = originalError;
-    }
+    },
   };
 }
 
 /**
  * Creates a mock CassRunner that returns specified search results.
  */
-function createMockCassRunner(searchResults: Array<{
-  source_path: string;
-  snippet: string;
-  score?: number;
-  line_number?: number;
-  agent?: string;
-  workspace?: string;
-  title?: string;
-  created_at?: string | number | null;
-}> = []): CassRunner {
+function createMockCassRunner(
+  searchResults: Array<{
+    source_path: string;
+    snippet: string;
+    score?: number;
+    line_number?: number;
+    agent?: string;
+    workspace?: string;
+    title?: string;
+    created_at?: string | number | null;
+  }> = [],
+): CassRunner {
   const normalizedResults = searchResults.map((hit, index) => ({
     source_path: hit.source_path,
     line_number: hit.line_number ?? index + 1,
@@ -67,7 +68,7 @@ function createMockCassRunner(searchResults: Array<{
     title: hit.title,
     snippet: hit.snippet,
     score: hit.score,
-    created_at: hit.created_at
+    created_at: hit.created_at,
   }));
 
   return {
@@ -81,7 +82,7 @@ function createMockCassRunner(searchResults: Array<{
       return { stdout: "[]", stderr: "" };
     },
     spawnSync: () => ({ status: 0, stdout: "[]", stderr: "" }),
-    spawn: (() => {}) as any
+    spawn: (() => {}) as any,
   };
 }
 
@@ -103,10 +104,10 @@ function createMockLLMIO(result: {
         confidence: result.confidence,
         reason: result.reason,
         suggestedRefinement: result.suggestedRefinement,
-        evidence: result.evidence ?? [] // LLM validator returns evidence array
+        evidence: result.evidence ?? [], // LLM validator returns evidence array
       } as unknown as T,
-      usage: { promptTokens: 100, completionTokens: 50 }
-    })
+      usage: { promptTokens: 100, completionTokens: 50 },
+    }),
   };
 }
 
@@ -122,21 +123,25 @@ describe("E2E: CLI validate command", () => {
 
           const config = createTestConfig({
             validationLookbackDays: 90,
-            apiKey: "test-api-key"
+            apiKey: "test-api-key",
           });
           await writeFile(env.configPath, JSON.stringify(config));
 
           // Mock cass with success indicators
           const cassRunner = createMockCassRunner([
-            { source_path: "/sessions/s1.jsonl", snippet: "fixed the bug successfully", score: 0.9 },
-            { source_path: "/sessions/s2.jsonl", snippet: "resolved the issue", score: 0.85 }
+            {
+              source_path: "/sessions/s1.jsonl",
+              snippet: "fixed the bug successfully",
+              score: 0.9,
+            },
+            { source_path: "/sessions/s2.jsonl", snippet: "resolved the issue", score: 0.85 },
           ]);
 
           // Mock LLM to return ACCEPT
           const io = createMockLLMIO({
             verdict: "ACCEPT",
             confidence: 0.9,
-            reason: "Rule aligns with successful patterns"
+            reason: "Rule aligns with successful patterns",
           });
 
           log.step("Execute: Run validate with rule");
@@ -145,7 +150,7 @@ describe("E2E: CLI validate command", () => {
             await validateCommand(
               "Always run tests before committing",
               { json: false },
-              { cassRunner, io }
+              { cassRunner, io },
             );
           } finally {
             capture.restore();
@@ -169,24 +174,36 @@ describe("E2E: CLI validate command", () => {
 
           const config = createTestConfig({
             validationLookbackDays: 90,
-            apiKey: "test-api-key"
+            apiKey: "test-api-key",
           });
           await writeFile(env.configPath, JSON.stringify(config));
 
           // Mock cass with many failure indicators
           const cassRunner = createMockCassRunner([
-            { source_path: "/sessions/s1.jsonl", snippet: "failed to compile with error", score: 0.9 },
+            {
+              source_path: "/sessions/s1.jsonl",
+              snippet: "failed to compile with error",
+              score: 0.9,
+            },
             { source_path: "/sessions/s2.jsonl", snippet: "error: broken build", score: 0.85 },
-            { source_path: "/sessions/s3.jsonl", snippet: "crashed after applying the change", score: 0.8 },
+            {
+              source_path: "/sessions/s3.jsonl",
+              snippet: "crashed after applying the change",
+              score: 0.8,
+            },
             { source_path: "/sessions/s4.jsonl", snippet: "doesn't work anymore", score: 0.75 },
-            { source_path: "/sessions/s5.jsonl", snippet: "bug found in the implementation", score: 0.7 }
+            {
+              source_path: "/sessions/s5.jsonl",
+              snippet: "bug found in the implementation",
+              score: 0.7,
+            },
           ]);
 
           // Mock LLM fallback to REJECT
           const io = createMockLLMIO({
             verdict: "REJECT",
             confidence: 0.9,
-            reason: "Evidence shows consistent failures"
+            reason: "Evidence shows consistent failures",
           });
 
           log.step("Execute: Run validate with rule");
@@ -195,7 +212,7 @@ describe("E2E: CLI validate command", () => {
             await validateCommand(
               "Always skip tests for quick commits",
               { json: false },
-              { cassRunner, io }
+              { cassRunner, io },
             );
           } finally {
             capture.restore();
@@ -217,7 +234,7 @@ describe("E2E: CLI validate command", () => {
           log.step("Setup: Create config");
 
           const config = createTestConfig({
-            apiKey: "test-api-key"
+            apiKey: "test-api-key",
           });
           await writeFile(env.configPath, JSON.stringify(config));
 
@@ -227,7 +244,7 @@ describe("E2E: CLI validate command", () => {
           const io = createMockLLMIO({
             verdict: "ACCEPT",
             confidence: 0.6,
-            reason: "Accepted as draft"
+            reason: "Accepted as draft",
           });
 
           log.step("Execute: Run validate with rule lacking keywords");
@@ -236,7 +253,7 @@ describe("E2E: CLI validate command", () => {
             await validateCommand(
               "a the an", // Common words only, no meaningful keywords
               { json: true },
-              { cassRunner, io }
+              { cassRunner, io },
             );
           } finally {
             capture.restore();
@@ -260,7 +277,7 @@ describe("E2E: CLI validate command", () => {
 
           const config = createTestConfig({
             validationLookbackDays: 90,
-            apiKey: "test-api-key"
+            apiKey: "test-api-key",
           });
           await writeFile(env.configPath, JSON.stringify(config));
 
@@ -269,7 +286,7 @@ describe("E2E: CLI validate command", () => {
           const io: LLMIO = {
             generateObject: async () => {
               throw new Error("LLM should not be called when no evidence exists");
-            }
+            },
           };
 
           log.step("Execute: Run validate with meaningful keywords");
@@ -278,7 +295,7 @@ describe("E2E: CLI validate command", () => {
             await validateCommand(
               "Always annotate TODOs with ticket IDs",
               { json: true },
-              { cassRunner, io }
+              { cassRunner, io },
             );
           } finally {
             capture.restore();
@@ -305,21 +322,21 @@ describe("E2E: CLI validate command", () => {
 
           const config = createTestConfig({
             validationLookbackDays: 90,
-            apiKey: "test-api-key"
+            apiKey: "test-api-key",
           });
           await writeFile(env.configPath, JSON.stringify(config));
 
           // Mock cass with mixed/neutral evidence
           const cassRunner = createMockCassRunner([
             { source_path: "/sessions/s1.jsonl", snippet: "applied the change", score: 0.9 },
-            { source_path: "/sessions/s2.jsonl", snippet: "updated the config", score: 0.85 }
+            { source_path: "/sessions/s2.jsonl", snippet: "updated the config", score: 0.85 },
           ]);
 
           // Mock LLM to return ACCEPT
           const io = createMockLLMIO({
             verdict: "ACCEPT",
             confidence: 0.85,
-            reason: "The rule aligns with best practices observed in sessions"
+            reason: "The rule aligns with best practices observed in sessions",
           });
 
           log.step("Execute: Run validate");
@@ -328,7 +345,7 @@ describe("E2E: CLI validate command", () => {
             await validateCommand(
               "Always use strict TypeScript mode",
               { json: false },
-              { cassRunner, io }
+              { cassRunner, io },
             );
           } finally {
             capture.restore();
@@ -352,29 +369,25 @@ describe("E2E: CLI validate command", () => {
 
           const config = createTestConfig({
             validationLookbackDays: 90,
-            apiKey: "test-api-key"
+            apiKey: "test-api-key",
           });
           await writeFile(env.configPath, JSON.stringify(config));
 
           const cassRunner = createMockCassRunner([
-            { source_path: "/sessions/s1.jsonl", snippet: "mixed results", score: 0.8 }
+            { source_path: "/sessions/s1.jsonl", snippet: "mixed results", score: 0.8 },
           ]);
 
           const io = createMockLLMIO({
             verdict: "REFINE",
             confidence: 0.7,
             reason: "Rule needs refinement",
-            suggestedRefinement: "Consider adding exception for legacy code"
+            suggestedRefinement: "Consider adding exception for legacy code",
           });
 
           log.step("Execute: Run validate");
           const capture = captureConsole();
           try {
-            await validateCommand(
-              "Never use var keyword",
-              { json: false },
-              { cassRunner, io }
-            );
+            await validateCommand("Never use var keyword", { json: false }, { cassRunner, io });
           } finally {
             capture.restore();
           }
@@ -397,18 +410,18 @@ describe("E2E: CLI validate command", () => {
 
           const config = createTestConfig({
             validationLookbackDays: 90,
-            apiKey: "test-api-key"
+            apiKey: "test-api-key",
           });
           await writeFile(env.configPath, JSON.stringify(config));
 
           const cassRunner = createMockCassRunner([
-            { source_path: "/sessions/s1.jsonl", snippet: "some context", score: 0.8 }
+            { source_path: "/sessions/s1.jsonl", snippet: "some context", score: 0.8 },
           ]);
 
           const io = createMockLLMIO({
             verdict: "REJECT",
             confidence: 0.9,
-            reason: "This rule contradicts established patterns"
+            reason: "This rule contradicts established patterns",
           });
 
           log.step("Execute: Run validate");
@@ -417,7 +430,7 @@ describe("E2E: CLI validate command", () => {
             await validateCommand(
               "Always commit without testing",
               { json: false },
-              { cassRunner, io }
+              { cassRunner, io },
             );
           } finally {
             capture.restore();
@@ -443,29 +456,29 @@ describe("E2E: CLI validate command", () => {
 
           const config = createTestConfig({
             validationLookbackDays: 90,
-            apiKey: "test-api-key"
+            apiKey: "test-api-key",
           });
           await writeFile(env.configPath, JSON.stringify(config));
 
           const cassRunner = createMockCassRunner([
-            { source_path: "/sessions/s1.jsonl", snippet: "fixed the issue successfully", score: 0.9 }
+            {
+              source_path: "/sessions/s1.jsonl",
+              snippet: "fixed the issue successfully",
+              score: 0.9,
+            },
           ]);
 
           // Mock LLM for fallback
           const io = createMockLLMIO({
             verdict: "ACCEPT",
             confidence: 0.9,
-            reason: "Rule aligns with successful patterns"
+            reason: "Rule aligns with successful patterns",
           });
 
           log.step("Execute: Run validate --json");
           const capture = captureConsole();
           try {
-            await validateCommand(
-              "Always write unit tests",
-              { json: true },
-              { cassRunner, io }
-            );
+            await validateCommand("Always write unit tests", { json: true }, { cassRunner, io });
           } finally {
             capture.restore();
           }
@@ -493,18 +506,18 @@ describe("E2E: CLI validate command", () => {
 
           const config = createTestConfig({
             validationLookbackDays: 90,
-            apiKey: "test-api-key"
+            apiKey: "test-api-key",
           });
           await writeFile(env.configPath, JSON.stringify(config));
 
           const cassRunner = createMockCassRunner([
-            { source_path: "/sessions/test.jsonl", snippet: "context for the rule", score: 0.8 }
+            { source_path: "/sessions/test.jsonl", snippet: "context for the rule", score: 0.8 },
           ]);
 
           const io = createMockLLMIO({
             verdict: "ACCEPT",
             confidence: 0.85,
-            reason: "Good rule"
+            reason: "Good rule",
           });
 
           log.step("Execute: Run validate --json");
@@ -513,7 +526,7 @@ describe("E2E: CLI validate command", () => {
             await validateCommand(
               "Use descriptive variable names",
               { json: true },
-              { cassRunner, io }
+              { cassRunner, io },
             );
           } finally {
             capture.restore();
@@ -591,30 +604,26 @@ describe("E2E: CLI validate command", () => {
 
           const config = createTestConfig({
             validationLookbackDays: 90,
-            apiKey: "test-api-key"
+            apiKey: "test-api-key",
           });
           await writeFile(env.configPath, JSON.stringify(config));
 
           const cassRunner = createMockCassRunner([
             { source_path: "/sessions/s1.jsonl", snippet: "fixed the bug", score: 0.9 },
             { source_path: "/sessions/s2.jsonl", snippet: "resolved successfully", score: 0.85 },
-            { source_path: "/sessions/s3.jsonl", snippet: "completed the task", score: 0.8 }
+            { source_path: "/sessions/s3.jsonl", snippet: "completed the task", score: 0.8 },
           ]);
 
           const io = createMockLLMIO({
             verdict: "ACCEPT",
             confidence: 0.9,
-            reason: "Strong evidence"
+            reason: "Strong evidence",
           });
 
           log.step("Execute: Run validate --json");
           const capture = captureConsole();
           try {
-            await validateCommand(
-              "Run linter before commit",
-              { json: true },
-              { cassRunner, io }
-            );
+            await validateCommand("Run linter before commit", { json: true }, { cassRunner, io });
           } finally {
             capture.restore();
           }
@@ -644,30 +653,30 @@ describe("E2E: CLI validate command", () => {
 
           const config = createTestConfig({
             validationLookbackDays: 90,
-            apiKey: "test-api-key"
+            apiKey: "test-api-key",
           });
           await writeFile(env.configPath, JSON.stringify(config));
 
           const cassRunner = createMockCassRunner([
             { source_path: "/sessions/s1.jsonl", snippet: "failed to deploy", score: 0.9 },
-            { source_path: "/sessions/s2.jsonl", snippet: "error: compilation failed", score: 0.85 },
-            { source_path: "/sessions/s3.jsonl", snippet: "broken after update", score: 0.8 }
+            {
+              source_path: "/sessions/s2.jsonl",
+              snippet: "error: compilation failed",
+              score: 0.85,
+            },
+            { source_path: "/sessions/s3.jsonl", snippet: "broken after update", score: 0.8 },
           ]);
 
           const io = createMockLLMIO({
             verdict: "REJECT",
             confidence: 0.9,
-            reason: "Evidence shows failures"
+            reason: "Evidence shows failures",
           });
 
           log.step("Execute: Run validate --json");
           const capture = captureConsole();
           try {
-            await validateCommand(
-              "Skip error handling",
-              { json: true },
-              { cassRunner, io }
-            );
+            await validateCommand("Skip error handling", { json: true }, { cassRunner, io });
           } finally {
             capture.restore();
           }
@@ -698,29 +707,29 @@ describe("E2E: CLI validate command", () => {
           log.step("Setup: Create config");
 
           const config = createTestConfig({
-            apiKey: "test-api-key"
+            apiKey: "test-api-key",
           });
           await writeFile(env.configPath, JSON.stringify(config));
 
           const cassRunner = createMockCassRunner([
-            { source_path: "/sessions/s1.jsonl", snippet: "successfully fixed the issue", score: 0.9 }
+            {
+              source_path: "/sessions/s1.jsonl",
+              snippet: "successfully fixed the issue",
+              score: 0.9,
+            },
           ]);
 
           // Mock LLM for fallback
           const io = createMockLLMIO({
             verdict: "ACCEPT",
             confidence: 0.85,
-            reason: "Rule is consistent with success patterns"
+            reason: "Rule is consistent with success patterns",
           });
 
           log.step("Execute: Run validate (human output)");
           const capture = captureConsole();
           try {
-            await validateCommand(
-              "Always test edge cases",
-              { json: false },
-              { cassRunner, io }
-            );
+            await validateCommand("Always test edge cases", { json: false }, { cassRunner, io });
           } finally {
             capture.restore();
           }
@@ -745,31 +754,39 @@ describe("E2E: CLI validate command", () => {
 
           const config = createTestConfig({
             apiKey: "test-api-key",
-            validationLookbackDays: 90
+            validationLookbackDays: 90,
           });
           await writeFile(env.configPath, JSON.stringify(config));
 
           // Provide multiple evidence entries to ensure they appear
           const cassRunner = createMockCassRunner([
-            { source_path: "/sessions/evidence1.jsonl", snippet: "successfully completed the task", score: 0.9 },
-            { source_path: "/sessions/evidence2.jsonl", snippet: "API documentation added", score: 0.85 },
-            { source_path: "/sessions/evidence3.jsonl", snippet: "relevant context for the rule validation", score: 0.8 }
+            {
+              source_path: "/sessions/evidence1.jsonl",
+              snippet: "successfully completed the task",
+              score: 0.9,
+            },
+            {
+              source_path: "/sessions/evidence2.jsonl",
+              snippet: "API documentation added",
+              score: 0.85,
+            },
+            {
+              source_path: "/sessions/evidence3.jsonl",
+              snippet: "relevant context for the rule validation",
+              score: 0.8,
+            },
           ]);
 
           const io = createMockLLMIO({
             verdict: "ACCEPT",
             confidence: 0.85,
-            reason: "Valid rule with good evidence"
+            reason: "Valid rule with good evidence",
           });
 
           log.step("Execute: Run validate (human output)");
           const capture = captureConsole();
           try {
-            await validateCommand(
-              "Document public APIs",
-              { json: false },
-              { cassRunner, io }
-            );
+            await validateCommand("Document public APIs", { json: false }, { cassRunner, io });
           } finally {
             capture.restore();
           }

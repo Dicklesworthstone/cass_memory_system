@@ -1,14 +1,14 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import {
-  detectFixableIssues,
+  type ApplyFixesOptions,
   applyFixes,
+  detectFixableIssues,
   type FixableIssue,
   type FixResult,
-  type ApplyFixesOptions,
 } from "../src/commands/doctor.js";
-import fs from "node:fs/promises";
-import path from "node:path";
-import os from "node:os";
 
 describe("Doctor Fixes", () => {
   let tmpDir: string;

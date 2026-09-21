@@ -1,4 +1,4 @@
-import { describe, test, expect } from "bun:test";
+import { describe, expect, test } from "bun:test";
 
 import {
   agentIcon,
@@ -54,14 +54,14 @@ describe("output.ts", () => {
   test("getOutputStyle respects NO_COLOR + CASS_MEMORY_NO_EMOJI", () => {
     const styleDefault = withEnv(
       { NO_COLOR: undefined, CASS_MEMORY_NO_EMOJI: undefined, CASS_MEMORY_WIDTH: undefined },
-      () => getOutputStyle()
+      () => getOutputStyle(),
     );
     expect(styleDefault.color).toBe(true);
     expect(styleDefault.emoji).toBe(true);
 
     const style = withEnv(
       { NO_COLOR: "1", CASS_MEMORY_NO_EMOJI: "1", CASS_MEMORY_WIDTH: undefined },
-      () => getOutputStyle()
+      () => getOutputStyle(),
     );
     expect(style.color).toBe(false);
     expect(style.emoji).toBe(false);
@@ -70,25 +70,25 @@ describe("output.ts", () => {
   test("getOutputStyle width: env override wins, otherwise uses stdout.columns, else 80", () => {
     const fromColumns = withEnv(
       { CASS_MEMORY_WIDTH: undefined, NO_COLOR: undefined, CASS_MEMORY_NO_EMOJI: undefined },
-      () => withStdoutColumns(101, () => getOutputStyle().width)
+      () => withStdoutColumns(101, () => getOutputStyle().width),
     );
     expect(fromColumns).toBe(101);
 
     const fromEnv = withEnv(
       { CASS_MEMORY_WIDTH: " 42 ", NO_COLOR: undefined, CASS_MEMORY_NO_EMOJI: undefined },
-      () => withStdoutColumns(101, () => getOutputStyle().width)
+      () => withStdoutColumns(101, () => getOutputStyle().width),
     );
     expect(fromEnv).toBe(42);
 
     const invalidEnvFallsBack = withEnv(
       { CASS_MEMORY_WIDTH: "nope", NO_COLOR: undefined, CASS_MEMORY_NO_EMOJI: undefined },
-      () => withStdoutColumns(77, () => getOutputStyle().width)
+      () => withStdoutColumns(77, () => getOutputStyle().width),
     );
     expect(invalidEnvFallsBack).toBe(77);
 
     const fallback80 = withEnv(
       { CASS_MEMORY_WIDTH: "nope", NO_COLOR: undefined, CASS_MEMORY_NO_EMOJI: undefined },
-      () => withStdoutColumns(undefined, () => getOutputStyle().width)
+      () => withStdoutColumns(undefined, () => getOutputStyle().width),
     );
     expect(fallback80).toBe(80);
   });
@@ -100,7 +100,9 @@ describe("output.ts", () => {
 
     const warningEmoji = withEnv({ CASS_MEMORY_NO_EMOJI: undefined }, () => icon("warning"));
     expect(warningEmoji).toContain("⚠");
-    expect(withEnv({ CASS_MEMORY_NO_EMOJI: undefined }, () => iconPrefix("warning"))).toContain("⚠");
+    expect(withEnv({ CASS_MEMORY_NO_EMOJI: undefined }, () => iconPrefix("warning"))).toContain(
+      "⚠",
+    );
   });
 
   test("agentIcon matches known agents and is disabled when emoji is off", () => {
@@ -110,7 +112,9 @@ describe("output.ts", () => {
     expect(withEnv({ CASS_MEMORY_NO_EMOJI: undefined }, () => agentIcon("cursor"))).toBe("🔵");
     expect(withEnv({ CASS_MEMORY_NO_EMOJI: undefined }, () => agentIcon("aider"))).toBe("🟡");
     expect(withEnv({ CASS_MEMORY_NO_EMOJI: undefined }, () => agentIcon("pi_agent"))).toBe("🟠");
-    expect(withEnv({ CASS_MEMORY_NO_EMOJI: undefined }, () => agentIconPrefix("cursor"))).toBe("🔵 ");
+    expect(withEnv({ CASS_MEMORY_NO_EMOJI: undefined }, () => agentIconPrefix("cursor"))).toBe(
+      "🔵 ",
+    );
   });
 
   test("formatTipPrefix switches between emoji and text prefix", () => {
@@ -120,27 +124,51 @@ describe("output.ts", () => {
 
   test("formatCheckStatusBadge + formatSafetyBadge switch between emoji and text", () => {
     // pass status
-    expect(withEnv({ CASS_MEMORY_NO_EMOJI: "1" }, () => formatCheckStatusBadge("pass"))).toBe("PASS");
-    expect(withEnv({ CASS_MEMORY_NO_EMOJI: undefined }, () => formatCheckStatusBadge("pass"))).toBe("✅");
+    expect(withEnv({ CASS_MEMORY_NO_EMOJI: "1" }, () => formatCheckStatusBadge("pass"))).toBe(
+      "PASS",
+    );
+    expect(withEnv({ CASS_MEMORY_NO_EMOJI: undefined }, () => formatCheckStatusBadge("pass"))).toBe(
+      "✅",
+    );
 
     // warn status
-    expect(withEnv({ CASS_MEMORY_NO_EMOJI: "1" }, () => formatCheckStatusBadge("warn"))).toBe("WARN");
-    expect(withEnv({ CASS_MEMORY_NO_EMOJI: undefined }, () => formatCheckStatusBadge("warn"))).toBe("⚠️");
+    expect(withEnv({ CASS_MEMORY_NO_EMOJI: "1" }, () => formatCheckStatusBadge("warn"))).toBe(
+      "WARN",
+    );
+    expect(withEnv({ CASS_MEMORY_NO_EMOJI: undefined }, () => formatCheckStatusBadge("warn"))).toBe(
+      "⚠️",
+    );
 
     // fail status
-    expect(withEnv({ CASS_MEMORY_NO_EMOJI: "1" }, () => formatCheckStatusBadge("fail"))).toBe("FAIL");
-    expect(withEnv({ CASS_MEMORY_NO_EMOJI: undefined }, () => formatCheckStatusBadge("fail"))).toBe("❌");
+    expect(withEnv({ CASS_MEMORY_NO_EMOJI: "1" }, () => formatCheckStatusBadge("fail"))).toBe(
+      "FAIL",
+    );
+    expect(withEnv({ CASS_MEMORY_NO_EMOJI: undefined }, () => formatCheckStatusBadge("fail"))).toBe(
+      "❌",
+    );
 
-    expect(withEnv({ CASS_MEMORY_NO_EMOJI: "1" }, () => formatSafetyBadge("manual"))).toBe("MANUAL");
-    expect(withEnv({ CASS_MEMORY_NO_EMOJI: undefined }, () => formatSafetyBadge("manual"))).toBe("📝");
+    expect(withEnv({ CASS_MEMORY_NO_EMOJI: "1" }, () => formatSafetyBadge("manual"))).toBe(
+      "MANUAL",
+    );
+    expect(withEnv({ CASS_MEMORY_NO_EMOJI: undefined }, () => formatSafetyBadge("manual"))).toBe(
+      "📝",
+    );
   });
 
   test("formatMaturityIcon is empty when emoji off, otherwise matches expected mapping", () => {
     expect(withEnv({ CASS_MEMORY_NO_EMOJI: "1" }, () => formatMaturityIcon("proven"))).toBe("");
-    expect(withEnv({ CASS_MEMORY_NO_EMOJI: undefined }, () => formatMaturityIcon("proven"))).toBe("✅");
-    expect(withEnv({ CASS_MEMORY_NO_EMOJI: undefined }, () => formatMaturityIcon("established"))).toBe("🔵");
-    expect(withEnv({ CASS_MEMORY_NO_EMOJI: undefined }, () => formatMaturityIcon("candidate"))).toBe("🟡");
-    expect(withEnv({ CASS_MEMORY_NO_EMOJI: undefined }, () => formatMaturityIcon("unknown"))).toBe("⚪");
+    expect(withEnv({ CASS_MEMORY_NO_EMOJI: undefined }, () => formatMaturityIcon("proven"))).toBe(
+      "✅",
+    );
+    expect(
+      withEnv({ CASS_MEMORY_NO_EMOJI: undefined }, () => formatMaturityIcon("established")),
+    ).toBe("🔵");
+    expect(
+      withEnv({ CASS_MEMORY_NO_EMOJI: undefined }, () => formatMaturityIcon("candidate")),
+    ).toBe("🟡");
+    expect(withEnv({ CASS_MEMORY_NO_EMOJI: undefined }, () => formatMaturityIcon("unknown"))).toBe(
+      "⚪",
+    );
   });
 
   test("formatRule clamps width with minWidth/maxWidth", () => {
@@ -155,10 +183,11 @@ describe("output.ts", () => {
   });
 
   test("formatKv wraps values and aligns continuation lines", () => {
-    const output = formatKv(
-      [{ key: "Key", value: "one two three four five" }],
-      { width: 16, indent: "", separator: ": " }
-    );
+    const output = formatKv([{ key: "Key", value: "one two three four five" }], {
+      width: 16,
+      indent: "",
+      separator: ": ",
+    });
     const lines = output.split("\n");
     expect(lines[0]).toStartWith("Key: ");
     expect(lines.length).toBeGreaterThan(1);
@@ -166,4 +195,3 @@ describe("output.ts", () => {
     expect(lines[1]).toStartWith("   : ");
   });
 });
-

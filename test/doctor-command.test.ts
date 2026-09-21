@@ -2,19 +2,19 @@
  * Unit tests for doctorCommand function in doctor.ts.
  * Tests JSON output, fix modes, and various health check scenarios.
  */
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { doctorCommand } from "../src/commands/doctor.js";
-import { withTempCassHome, type TestEnv } from "./helpers/temp.js";
-import { createTestConfig } from "./helpers/factories.js";
-import { writeFile, mkdir, rm } from "node:fs/promises";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
+import { doctorCommand } from "../src/commands/doctor.js";
+import { createTestConfig } from "./helpers/factories.js";
+import { type TestEnv, withTempCassHome } from "./helpers/temp.js";
 
 // --- Test Helpers ---
 
 async function withEnvAsync<T>(
   overrides: Record<string, string | undefined>,
-  fn: () => Promise<T>
+  fn: () => Promise<T>,
 ): Promise<T> {
   const previous: Record<string, string | undefined> = {};
   for (const [key, value] of Object.entries(overrides)) {
@@ -43,7 +43,9 @@ async function withCwd<T>(cwd: string, fn: () => Promise<T>): Promise<T> {
   }
 }
 
-async function captureConsoleLog<T>(fn: () => Promise<T> | T): Promise<{ result: T; output: string }> {
+async function captureConsoleLog<T>(
+  fn: () => Promise<T> | T,
+): Promise<{ result: T; output: string }> {
   const original = console.log;
   const lines: string[] = [];
 
@@ -125,14 +127,18 @@ describe("doctorCommand", () => {
   describe("JSON mode output", () => {
     test("returns valid JSON with expected structure", async () => {
       await withEnvAsync(
-        { ANTHROPIC_API_KEY: undefined, OPENAI_API_KEY: undefined, GOOGLE_GENERATIVE_AI_API_KEY: undefined },
+        {
+          ANTHROPIC_API_KEY: undefined,
+          OPENAI_API_KEY: undefined,
+          GOOGLE_GENERATIVE_AI_API_KEY: undefined,
+        },
         async () => {
           await withTempCassHome(async (env) => {
             await withCwd(env.home, async () => {
               // Create valid config and playbook
               await writeFile(
                 env.configPath,
-                JSON.stringify({ cassPath: "cass", apiKey: "sk-ant-test-key" }, null, 2)
+                JSON.stringify({ cassPath: "cass", apiKey: "sk-ant-test-key" }, null, 2),
               );
               await writeFile(env.playbookPath, createValidPlaybookYaml());
 
@@ -152,26 +158,27 @@ describe("doctorCommand", () => {
               expect(Array.isArray(payload.checks)).toBe(true);
             });
           });
-        }
+        },
       );
     });
 
     test("includes fixPlan in dry-run mode", async () => {
       await withEnvAsync(
-        { ANTHROPIC_API_KEY: undefined, OPENAI_API_KEY: undefined, GOOGLE_GENERATIVE_AI_API_KEY: undefined },
+        {
+          ANTHROPIC_API_KEY: undefined,
+          OPENAI_API_KEY: undefined,
+          GOOGLE_GENERATIVE_AI_API_KEY: undefined,
+        },
         async () => {
           await withTempCassHome(async (env) => {
             await withCwd(env.home, async () => {
               // Create valid config and playbook
-              await writeFile(
-                env.configPath,
-                JSON.stringify({ cassPath: "cass" }, null, 2)
-              );
+              await writeFile(env.configPath, JSON.stringify({ cassPath: "cass" }, null, 2));
               await writeFile(env.playbookPath, createValidPlaybookYaml());
 
               process.exitCode = 0;
               const { output } = await captureConsoleLog(() =>
-                doctorCommand({ json: true, fix: true, dryRun: true })
+                doctorCommand({ json: true, fix: true, dryRun: true }),
               );
 
               const envelope = JSON.parse(output);
@@ -184,26 +191,34 @@ describe("doctorCommand", () => {
               expect(payload.fixPlan).toHaveProperty("wouldSkip");
             });
           });
-        }
+        },
       );
     });
 
     test("includes selfTest results when requested", async () => {
       await withEnvAsync(
-        { ANTHROPIC_API_KEY: "sk-ant-test-key", OPENAI_API_KEY: undefined, GOOGLE_GENERATIVE_AI_API_KEY: undefined },
+        {
+          ANTHROPIC_API_KEY: "sk-ant-test-key",
+          OPENAI_API_KEY: undefined,
+          GOOGLE_GENERATIVE_AI_API_KEY: undefined,
+        },
         async () => {
           await withTempCassHome(async (env) => {
             await withCwd(env.home, async () => {
               // Create valid config and playbook
               await writeFile(
                 env.configPath,
-                JSON.stringify({ cassPath: "/nonexistent/cass", apiKey: "sk-ant-test-key" }, null, 2)
+                JSON.stringify(
+                  { cassPath: "/nonexistent/cass", apiKey: "sk-ant-test-key" },
+                  null,
+                  2,
+                ),
               );
               await writeFile(env.playbookPath, createValidPlaybookYaml());
 
               process.exitCode = 0;
               const { output } = await captureConsoleLog(() =>
-                doctorCommand({ json: true, selfTest: true })
+                doctorCommand({ json: true, selfTest: true }),
               );
 
               const envelope = JSON.parse(output);
@@ -218,7 +233,7 @@ describe("doctorCommand", () => {
               expect(items).toContain("Playbook Load");
             });
           });
-        }
+        },
       );
     });
   });
@@ -226,7 +241,11 @@ describe("doctorCommand", () => {
   describe("config load error handling", () => {
     test("handles invalid JSON config gracefully", async () => {
       await withEnvAsync(
-        { ANTHROPIC_API_KEY: undefined, OPENAI_API_KEY: undefined, GOOGLE_GENERATIVE_AI_API_KEY: undefined },
+        {
+          ANTHROPIC_API_KEY: undefined,
+          OPENAI_API_KEY: undefined,
+          GOOGLE_GENERATIVE_AI_API_KEY: undefined,
+        },
         async () => {
           await withTempCassHome(async (env) => {
             await withCwd(env.home, async () => {
@@ -244,13 +263,13 @@ describe("doctorCommand", () => {
 
               // Should have a config-related check with fail status
               const configCheck = payload.checks.find(
-                (c: any) => c.category === "Configuration" && c.item === "config.json"
+                (c: any) => c.category === "Configuration" && c.item === "config.json",
               );
               expect(configCheck).toBeDefined();
               expect(configCheck.status).toBe("fail");
             });
           });
-        }
+        },
       );
     });
   });
@@ -258,7 +277,11 @@ describe("doctorCommand", () => {
   describe("fix mode with issues", () => {
     test("detects fixable issues when config is missing", async () => {
       await withEnvAsync(
-        { ANTHROPIC_API_KEY: undefined, OPENAI_API_KEY: undefined, GOOGLE_GENERATIVE_AI_API_KEY: undefined },
+        {
+          ANTHROPIC_API_KEY: undefined,
+          OPENAI_API_KEY: undefined,
+          GOOGLE_GENERATIVE_AI_API_KEY: undefined,
+        },
         async () => {
           await withTempCassHome(async (env) => {
             await withCwd(env.home, async () => {
@@ -272,7 +295,7 @@ describe("doctorCommand", () => {
 
               process.exitCode = 0;
               const { output } = await captureConsoleLog(() =>
-                doctorCommand({ json: true, fix: true, dryRun: true })
+                doctorCommand({ json: true, fix: true, dryRun: true }),
               );
 
               const envelope = JSON.parse(output);
@@ -282,7 +305,7 @@ describe("doctorCommand", () => {
               expect(payload).toHaveProperty("fixableIssues");
             });
           });
-        }
+        },
       );
     });
   });
@@ -290,7 +313,11 @@ describe("doctorCommand", () => {
   describe("recommended actions", () => {
     test("suggests initializing global storage when not present", async () => {
       await withEnvAsync(
-        { ANTHROPIC_API_KEY: undefined, OPENAI_API_KEY: undefined, GOOGLE_GENERATIVE_AI_API_KEY: undefined },
+        {
+          ANTHROPIC_API_KEY: undefined,
+          OPENAI_API_KEY: undefined,
+          GOOGLE_GENERATIVE_AI_API_KEY: undefined,
+        },
         async () => {
           await withTempCassHome(async (env) => {
             await withCwd(env.home, async () => {
@@ -306,32 +333,33 @@ describe("doctorCommand", () => {
               expect(payload.overallStatus).not.toBe("healthy");
 
               // Should recommend initializing
-              const initAction = payload.recommendedActions.find(
-                (a: any) => a.label.includes("Initialize")
+              const initAction = payload.recommendedActions.find((a: any) =>
+                a.label.includes("Initialize"),
               );
               expect(initAction).toBeDefined();
             });
           });
-        }
+        },
       );
     });
 
     test("includes apply-fixes recommendation after dry-run", async () => {
       await withEnvAsync(
-        { ANTHROPIC_API_KEY: undefined, OPENAI_API_KEY: undefined, GOOGLE_GENERATIVE_AI_API_KEY: undefined },
+        {
+          ANTHROPIC_API_KEY: undefined,
+          OPENAI_API_KEY: undefined,
+          GOOGLE_GENERATIVE_AI_API_KEY: undefined,
+        },
         async () => {
           await withTempCassHome(async (env) => {
             await withCwd(env.home, async () => {
               // Remove playbook to create a fixable issue
               await rm(env.playbookPath, { force: true });
-              await writeFile(
-                env.configPath,
-                JSON.stringify({ cassPath: "cass" }, null, 2)
-              );
+              await writeFile(env.configPath, JSON.stringify({ cassPath: "cass" }, null, 2));
 
               process.exitCode = 0;
               const { output } = await captureConsoleLog(() =>
-                doctorCommand({ json: true, fix: true, dryRun: true })
+                doctorCommand({ json: true, fix: true, dryRun: true }),
               );
 
               const envelope = JSON.parse(output);
@@ -339,14 +367,14 @@ describe("doctorCommand", () => {
               const payload = envelope.data;
 
               // Should recommend applying fixes for real
-              const applyAction = payload.recommendedActions.find(
-                (a: any) => a.label.includes("Apply fixes for real")
+              const applyAction = payload.recommendedActions.find((a: any) =>
+                a.label.includes("Apply fixes for real"),
               );
               expect(applyAction).toBeDefined();
               expect(applyAction.command).toContain("doctor --fix");
             });
           });
-        }
+        },
       );
     });
   });
@@ -354,13 +382,17 @@ describe("doctorCommand", () => {
   describe("LLM configuration checks", () => {
     test("reports pass when API key is available", async () => {
       await withEnvAsync(
-        { ANTHROPIC_API_KEY: "sk-ant-test-key", OPENAI_API_KEY: undefined, GOOGLE_GENERATIVE_AI_API_KEY: undefined },
+        {
+          ANTHROPIC_API_KEY: "sk-ant-test-key",
+          OPENAI_API_KEY: undefined,
+          GOOGLE_GENERATIVE_AI_API_KEY: undefined,
+        },
         async () => {
           await withTempCassHome(async (env) => {
             await withCwd(env.home, async () => {
               await writeFile(
                 env.configPath,
-                JSON.stringify({ cassPath: "cass", provider: "anthropic" }, null, 2)
+                JSON.stringify({ cassPath: "cass", provider: "anthropic" }, null, 2),
               );
               await writeFile(env.playbookPath, createValidPlaybookYaml());
 
@@ -375,7 +407,7 @@ describe("doctorCommand", () => {
               expect(llmCheck.status).toBe("pass");
             });
           });
-        }
+        },
       );
     });
 
@@ -390,10 +422,7 @@ describe("doctorCommand", () => {
         async () => {
           await withTempCassHome(async (env) => {
             await withCwd(env.home, async () => {
-              await writeFile(
-                env.configPath,
-                JSON.stringify({ cassPath: "cass" }, null, 2)
-              );
+              await writeFile(env.configPath, JSON.stringify({ cassPath: "cass" }, null, 2));
               await writeFile(env.playbookPath, createValidPlaybookYaml());
 
               process.exitCode = 0;
@@ -407,20 +436,24 @@ describe("doctorCommand", () => {
               expect(llmCheck.status).toBe("warn");
             });
           });
-        }
+        },
       );
     });
 
     test("reports fallback when configured provider unavailable but others are", async () => {
       await withEnvAsync(
-        { ANTHROPIC_API_KEY: undefined, OPENAI_API_KEY: "sk-openai-test-key", GOOGLE_GENERATIVE_AI_API_KEY: undefined },
+        {
+          ANTHROPIC_API_KEY: undefined,
+          OPENAI_API_KEY: "sk-openai-test-key",
+          GOOGLE_GENERATIVE_AI_API_KEY: undefined,
+        },
         async () => {
           await withTempCassHome(async (env) => {
             await withCwd(env.home, async () => {
               // Configure anthropic but only openai key is available
               await writeFile(
                 env.configPath,
-                JSON.stringify({ cassPath: "cass", provider: "anthropic" }, null, 2)
+                JSON.stringify({ cassPath: "cass", provider: "anthropic" }, null, 2),
               );
               await writeFile(env.playbookPath, createValidPlaybookYaml());
 
@@ -436,7 +469,7 @@ describe("doctorCommand", () => {
               expect(llmCheck.message).toContain("auto-fallback");
             });
           });
-        }
+        },
       );
     });
   });
@@ -444,14 +477,15 @@ describe("doctorCommand", () => {
   describe("playbook schema version checks", () => {
     test("reports warn for outdated playbook schema", async () => {
       await withEnvAsync(
-        { ANTHROPIC_API_KEY: undefined, OPENAI_API_KEY: undefined, GOOGLE_GENERATIVE_AI_API_KEY: undefined },
+        {
+          ANTHROPIC_API_KEY: undefined,
+          OPENAI_API_KEY: undefined,
+          GOOGLE_GENERATIVE_AI_API_KEY: undefined,
+        },
         async () => {
           await withTempCassHome(async (env) => {
             await withCwd(env.home, async () => {
-              await writeFile(
-                env.configPath,
-                JSON.stringify({ cassPath: "cass" }, null, 2)
-              );
+              await writeFile(env.configPath, JSON.stringify({ cassPath: "cass" }, null, 2));
 
               // Create playbook with old schema version
               const now = new Date().toISOString();
@@ -476,27 +510,28 @@ describe("doctorCommand", () => {
               expect(envelope.success).toBe(true);
               const payload = envelope.data;
               const playbookCheck = payload.checks.find(
-                (c: any) => c.category === "Playbook" && c.item === "Global playbook.yaml"
+                (c: any) => c.category === "Playbook" && c.item === "Global playbook.yaml",
               );
               expect(playbookCheck).toBeDefined();
               expect(playbookCheck.status).toBe("warn");
               expect(playbookCheck.message).toContain("Outdated");
             });
           });
-        }
+        },
       );
     });
 
     test("reports fail for invalid playbook YAML", async () => {
       await withEnvAsync(
-        { ANTHROPIC_API_KEY: undefined, OPENAI_API_KEY: undefined, GOOGLE_GENERATIVE_AI_API_KEY: undefined },
+        {
+          ANTHROPIC_API_KEY: undefined,
+          OPENAI_API_KEY: undefined,
+          GOOGLE_GENERATIVE_AI_API_KEY: undefined,
+        },
         async () => {
           await withTempCassHome(async (env) => {
             await withCwd(env.home, async () => {
-              await writeFile(
-                env.configPath,
-                JSON.stringify({ cassPath: "cass" }, null, 2)
-              );
+              await writeFile(env.configPath, JSON.stringify({ cassPath: "cass" }, null, 2));
 
               // Write invalid YAML
               await writeFile(env.playbookPath, "{{{{invalid yaml that wont parse");
@@ -508,14 +543,14 @@ describe("doctorCommand", () => {
               expect(envelope.success).toBe(true);
               const payload = envelope.data;
               const playbookCheck = payload.checks.find(
-                (c: any) => c.category === "Playbook" && c.item === "Global playbook.yaml"
+                (c: any) => c.category === "Playbook" && c.item === "Global playbook.yaml",
               );
               expect(playbookCheck).toBeDefined();
               expect(playbookCheck.status).toBe("fail");
               expect(playbookCheck.message).toContain("invalid");
             });
           });
-        }
+        },
       );
     });
   });
@@ -523,13 +558,17 @@ describe("doctorCommand", () => {
   describe("cass binary check", () => {
     test("reports fail when cass is not available", async () => {
       await withEnvAsync(
-        { ANTHROPIC_API_KEY: undefined, OPENAI_API_KEY: undefined, GOOGLE_GENERATIVE_AI_API_KEY: undefined },
+        {
+          ANTHROPIC_API_KEY: undefined,
+          OPENAI_API_KEY: undefined,
+          GOOGLE_GENERATIVE_AI_API_KEY: undefined,
+        },
         async () => {
           await withTempCassHome(async (env) => {
             await withCwd(env.home, async () => {
               await writeFile(
                 env.configPath,
-                JSON.stringify({ cassPath: "/nonexistent/cass-binary" }, null, 2)
+                JSON.stringify({ cassPath: "/nonexistent/cass-binary" }, null, 2),
               );
               await writeFile(env.playbookPath, createValidPlaybookYaml());
 
@@ -544,7 +583,7 @@ describe("doctorCommand", () => {
               expect(cassCheck.status).toBe("fail");
             });
           });
-        }
+        },
       );
     });
   });
@@ -552,19 +591,20 @@ describe("doctorCommand", () => {
   describe("buildFixPlan coverage", () => {
     test("skips manual fixes in plan", async () => {
       await withEnvAsync(
-        { ANTHROPIC_API_KEY: undefined, OPENAI_API_KEY: undefined, GOOGLE_GENERATIVE_AI_API_KEY: undefined },
+        {
+          ANTHROPIC_API_KEY: undefined,
+          OPENAI_API_KEY: undefined,
+          GOOGLE_GENERATIVE_AI_API_KEY: undefined,
+        },
         async () => {
           await withTempCassHome(async (env) => {
             await withCwd(env.home, async () => {
-              await writeFile(
-                env.configPath,
-                JSON.stringify({ cassPath: "cass" }, null, 2)
-              );
+              await writeFile(env.configPath, JSON.stringify({ cassPath: "cass" }, null, 2));
               await writeFile(env.playbookPath, createValidPlaybookYaml());
 
               process.exitCode = 0;
               const { output } = await captureConsoleLog(() =>
-                doctorCommand({ json: true, fix: true, dryRun: true })
+                doctorCommand({ json: true, fix: true, dryRun: true }),
               );
 
               const envelope = JSON.parse(output);
@@ -574,7 +614,7 @@ describe("doctorCommand", () => {
               // Manual fixes should appear in wouldSkip
               if (payload.fixPlan.wouldSkip.length > 0) {
                 const manualSkipped = payload.fixPlan.wouldSkip.find(
-                  (s: any) => s.reason === "manual fix required"
+                  (s: any) => s.reason === "manual fix required",
                 );
                 // Only check if there are manual issues detected
                 if (manualSkipped) {
@@ -583,13 +623,17 @@ describe("doctorCommand", () => {
               }
             });
           });
-        }
+        },
       );
     });
 
     test("skips cautious fixes without --force", async () => {
       await withEnvAsync(
-        { ANTHROPIC_API_KEY: undefined, OPENAI_API_KEY: undefined, GOOGLE_GENERATIVE_AI_API_KEY: undefined },
+        {
+          ANTHROPIC_API_KEY: undefined,
+          OPENAI_API_KEY: undefined,
+          GOOGLE_GENERATIVE_AI_API_KEY: undefined,
+        },
         async () => {
           await withTempCassHome(async (env) => {
             await withCwd(env.home, async () => {
@@ -599,7 +643,7 @@ describe("doctorCommand", () => {
 
               process.exitCode = 0;
               const { output } = await captureConsoleLog(() =>
-                doctorCommand({ json: true, fix: true, dryRun: true, force: false })
+                doctorCommand({ json: true, fix: true, dryRun: true, force: false }),
               );
 
               const envelope = JSON.parse(output);
@@ -608,18 +652,22 @@ describe("doctorCommand", () => {
 
               // Cautious fixes should be in wouldSkip when force=false
               const cautiousSkipped = payload.fixPlan.wouldSkip.find(
-                (s: any) => s.reason === "requires --force"
+                (s: any) => s.reason === "requires --force",
               );
               expect(cautiousSkipped).toBeDefined();
             });
           });
-        }
+        },
       );
     });
 
     test("includes cautious fixes with --force", async () => {
       await withEnvAsync(
-        { ANTHROPIC_API_KEY: undefined, OPENAI_API_KEY: undefined, GOOGLE_GENERATIVE_AI_API_KEY: undefined },
+        {
+          ANTHROPIC_API_KEY: undefined,
+          OPENAI_API_KEY: undefined,
+          GOOGLE_GENERATIVE_AI_API_KEY: undefined,
+        },
         async () => {
           await withTempCassHome(async (env) => {
             await withCwd(env.home, async () => {
@@ -629,7 +677,7 @@ describe("doctorCommand", () => {
 
               process.exitCode = 0;
               const { output } = await captureConsoleLog(() =>
-                doctorCommand({ json: true, fix: true, dryRun: true, force: true })
+                doctorCommand({ json: true, fix: true, dryRun: true, force: true }),
               );
 
               const envelope = JSON.parse(output);
@@ -640,7 +688,7 @@ describe("doctorCommand", () => {
               expect(payload.fixPlan.wouldApply).toContain("reset-config");
             });
           });
-        }
+        },
       );
     });
   });
@@ -648,7 +696,11 @@ describe("doctorCommand", () => {
   describe("repo-level checks", () => {
     test("reports partial repo .cass structure", async () => {
       await withEnvAsync(
-        { ANTHROPIC_API_KEY: undefined, OPENAI_API_KEY: undefined, GOOGLE_GENERATIVE_AI_API_KEY: undefined },
+        {
+          ANTHROPIC_API_KEY: undefined,
+          OPENAI_API_KEY: undefined,
+          GOOGLE_GENERATIVE_AI_API_KEY: undefined,
+        },
         async () => {
           await withTempCassHome(async (env) => {
             await withCwd(env.home, async () => {
@@ -656,10 +708,7 @@ describe("doctorCommand", () => {
               await Bun.spawn(["git", "init"], { cwd: env.home }).exited;
 
               // Create valid config and playbook
-              await writeFile(
-                env.configPath,
-                JSON.stringify({ cassPath: "cass" }, null, 2)
-              );
+              await writeFile(env.configPath, JSON.stringify({ cassPath: "cass" }, null, 2));
               await writeFile(env.playbookPath, createValidPlaybookYaml());
 
               // Create partial .cass structure (only playbook, no blocked.log)
@@ -676,20 +725,24 @@ describe("doctorCommand", () => {
 
               // Should have a repo structure check with partial status
               const repoCheck = payload.checks.find(
-                (c: any) => c.category === "Repo .cass/ Structure" && c.item === "Structure"
+                (c: any) => c.category === "Repo .cass/ Structure" && c.item === "Structure",
               );
               expect(repoCheck).toBeDefined();
               expect(repoCheck.status).toBe("warn");
               expect(repoCheck.message).toContain("Partial setup");
             });
           });
-        }
+        },
       );
     });
 
     test("reports complete repo .cass structure", async () => {
       await withEnvAsync(
-        { ANTHROPIC_API_KEY: undefined, OPENAI_API_KEY: undefined, GOOGLE_GENERATIVE_AI_API_KEY: undefined },
+        {
+          ANTHROPIC_API_KEY: undefined,
+          OPENAI_API_KEY: undefined,
+          GOOGLE_GENERATIVE_AI_API_KEY: undefined,
+        },
         async () => {
           await withTempCassHome(async (env) => {
             await withCwd(env.home, async () => {
@@ -697,10 +750,7 @@ describe("doctorCommand", () => {
               await Bun.spawn(["git", "init"], { cwd: env.home }).exited;
 
               // Create valid config and playbook
-              await writeFile(
-                env.configPath,
-                JSON.stringify({ cassPath: "cass" }, null, 2)
-              );
+              await writeFile(env.configPath, JSON.stringify({ cassPath: "cass" }, null, 2));
               await writeFile(env.playbookPath, createValidPlaybookYaml());
 
               // Create complete .cass structure
@@ -718,14 +768,14 @@ describe("doctorCommand", () => {
 
               // Should have a repo structure check with pass status
               const repoCheck = payload.checks.find(
-                (c: any) => c.category === "Repo .cass/ Structure" && c.item === "Structure"
+                (c: any) => c.category === "Repo .cass/ Structure" && c.item === "Structure",
               );
               expect(repoCheck).toBeDefined();
               expect(repoCheck.status).toBe("pass");
               expect(repoCheck.message).toContain("Complete");
             });
           });
-        }
+        },
       );
     });
   });
@@ -733,14 +783,15 @@ describe("doctorCommand", () => {
   describe("trauma system checks", () => {
     test("reports trauma database loaded", async () => {
       await withEnvAsync(
-        { ANTHROPIC_API_KEY: undefined, OPENAI_API_KEY: undefined, GOOGLE_GENERATIVE_AI_API_KEY: undefined },
+        {
+          ANTHROPIC_API_KEY: undefined,
+          OPENAI_API_KEY: undefined,
+          GOOGLE_GENERATIVE_AI_API_KEY: undefined,
+        },
         async () => {
           await withTempCassHome(async (env) => {
             await withCwd(env.home, async () => {
-              await writeFile(
-                env.configPath,
-                JSON.stringify({ cassPath: "cass" }, null, 2)
-              );
+              await writeFile(env.configPath, JSON.stringify({ cassPath: "cass" }, null, 2));
               await writeFile(env.playbookPath, createValidPlaybookYaml());
 
               process.exitCode = 0;
@@ -752,14 +803,14 @@ describe("doctorCommand", () => {
 
               // Should have a trauma system check
               const traumaCheck = payload.checks.find(
-                (c: any) => c.category === "Trauma System" && c.item === "Database"
+                (c: any) => c.category === "Trauma System" && c.item === "Database",
               );
               expect(traumaCheck).toBeDefined();
               // Either pass (loaded) or warn (failed to load) are valid outcomes
               expect(["pass", "warn"]).toContain(traumaCheck.status);
             });
           });
-        }
+        },
       );
     });
   });
@@ -767,14 +818,18 @@ describe("doctorCommand", () => {
   describe("sanitization pattern checks", () => {
     test("reports sanitization disabled when not configured", async () => {
       await withEnvAsync(
-        { ANTHROPIC_API_KEY: undefined, OPENAI_API_KEY: undefined, GOOGLE_GENERATIVE_AI_API_KEY: undefined },
+        {
+          ANTHROPIC_API_KEY: undefined,
+          OPENAI_API_KEY: undefined,
+          GOOGLE_GENERATIVE_AI_API_KEY: undefined,
+        },
         async () => {
           await withTempCassHome(async (env) => {
             await withCwd(env.home, async () => {
               // Create config with sanitization disabled
               await writeFile(
                 env.configPath,
-                JSON.stringify({ cassPath: "cass", sanitization: { enabled: false } }, null, 2)
+                JSON.stringify({ cassPath: "cass", sanitization: { enabled: false } }, null, 2),
               );
               await writeFile(env.playbookPath, createValidPlaybookYaml());
 
@@ -787,14 +842,14 @@ describe("doctorCommand", () => {
 
               // Should have a sanitization check
               const sanitizationCheck = payload.checks.find(
-                (c: any) => c.category === "Sanitization Pattern Health"
+                (c: any) => c.category === "Sanitization Pattern Health",
               );
               expect(sanitizationCheck).toBeDefined();
               expect(sanitizationCheck.status).toBe("warn");
               expect(sanitizationCheck.message).toContain("disabled");
             });
           });
-        }
+        },
       );
     });
   });
@@ -804,7 +859,11 @@ describe("doctorCommand", () => {
 // Semantic search posture + global config format parity (#75)
 // =============================================================================
 describe("doctorCommand - semantic search posture (#75)", () => {
-  const noKeys = { ANTHROPIC_API_KEY: undefined, OPENAI_API_KEY: undefined, GOOGLE_GENERATIVE_AI_API_KEY: undefined };
+  const noKeys = {
+    ANTHROPIC_API_KEY: undefined,
+    OPENAI_API_KEY: undefined,
+    GOOGLE_GENERATIVE_AI_API_KEY: undefined,
+  };
 
   async function runDoctorJson(opts: Parameters<typeof doctorCommand>[0] = { json: true }) {
     process.exitCode = 0;
@@ -824,7 +883,7 @@ describe("doctorCommand - semantic search posture (#75)", () => {
           const payload = await runDoctorJson();
 
           const semantic = payload.checks.find(
-            (c: any) => c.category === "Semantic Search" && c.item === "Status"
+            (c: any) => c.category === "Semantic Search" && c.item === "Status",
           );
           expect(semantic).toBeDefined();
           expect(semantic.status).toBe("warn");
@@ -837,7 +896,9 @@ describe("doctorCommand - semantic search posture (#75)", () => {
           expect(fix.safety).toBe("cautious");
           expect(fix.description).toContain(env.configPath);
 
-          const action = payload.recommendedActions.find((a: any) => a.label.includes("Enable semantic search"));
+          const action = payload.recommendedActions.find((a: any) =>
+            a.label.includes("Enable semantic search"),
+          );
           expect(action).toBeDefined();
           expect(action.reason).toContain(env.configPath);
         });
@@ -856,7 +917,9 @@ describe("doctorCommand - semantic search posture (#75)", () => {
           const semantic = payload.checks.find((c: any) => c.category === "Semantic Search");
           expect(semantic.status).toBe("pass");
           expect(semantic.message).toContain("xenova");
-          expect(payload.fixableIssues.some((f: any) => f.id === "enable-semantic-search")).toBe(false);
+          expect(payload.fixableIssues.some((f: any) => f.id === "enable-semantic-search")).toBe(
+            false,
+          );
         });
       });
     });
@@ -866,14 +929,21 @@ describe("doctorCommand - semantic search posture (#75)", () => {
     await withEnvAsync(noKeys, async () => {
       await withTempCassHome(async (env) => {
         await withCwd(env.home, async () => {
-          await writeFile(env.configPath, JSON.stringify({ semanticSearchEnabled: false, embeddingModel: "none" }));
+          await writeFile(
+            env.configPath,
+            JSON.stringify({ semanticSearchEnabled: false, embeddingModel: "none" }),
+          );
           await writeFile(env.playbookPath, createValidPlaybookYaml());
 
           const payload = await runDoctorJson();
           const semantic = payload.checks.find((c: any) => c.category === "Semantic Search");
           expect(semantic.status).toBe("pass");
-          expect(payload.fixableIssues.some((f: any) => f.id === "enable-semantic-search")).toBe(false);
-          expect(payload.recommendedActions.some((a: any) => a.label.includes("Enable semantic search"))).toBe(false);
+          expect(payload.fixableIssues.some((f: any) => f.id === "enable-semantic-search")).toBe(
+            false,
+          );
+          expect(
+            payload.recommendedActions.some((a: any) => a.label.includes("Enable semantic search")),
+          ).toBe(false);
         });
       });
     });
@@ -888,7 +958,9 @@ describe("doctorCommand - semantic search posture (#75)", () => {
 
           const payload = await runDoctorJson();
           expect(payload.fixableIssues.some((f: any) => f.id === "reset-config")).toBe(true);
-          expect(payload.fixableIssues.some((f: any) => f.id === "enable-semantic-search")).toBe(false);
+          expect(payload.fixableIssues.some((f: any) => f.id === "enable-semantic-search")).toBe(
+            false,
+          );
         });
       });
     });
@@ -905,12 +977,12 @@ describe("doctorCommand - semantic search posture (#75)", () => {
           const payload = await runDoctorJson();
 
           const structure = payload.checks.find(
-            (c: any) => c.category === "Global Storage (~/.cass-memory)" && c.item === "Structure"
+            (c: any) => c.category === "Global Storage (~/.cass-memory)" && c.item === "Structure",
           );
           expect(structure.status).toBe("pass");
 
           const configCheck = payload.checks.find(
-            (c: any) => c.category === "Configuration" && c.item === "config.yaml"
+            (c: any) => c.category === "Configuration" && c.item === "config.yaml",
           );
           expect(configCheck).toBeDefined();
           expect(configCheck.status).toBe("pass");
@@ -936,7 +1008,7 @@ describe("doctorCommand - semantic search posture (#75)", () => {
           const payload = await runDoctorJson();
 
           const shadowed = payload.checks.find(
-            (c: any) => c.category === "Configuration" && c.item === "config.yaml"
+            (c: any) => c.category === "Configuration" && c.item === "config.yaml",
           );
           expect(shadowed).toBeDefined();
           expect(shadowed.status).toBe("warn");
@@ -957,12 +1029,17 @@ describe("doctorCommand - semantic search posture (#75)", () => {
 
           const before = await runDoctorJson();
           const configCheck = before.checks.find(
-            (c: any) => c.category === "Configuration" && c.item === "config.yaml"
+            (c: any) => c.category === "Configuration" && c.item === "config.yaml",
           );
           expect(configCheck.status).toBe("fail");
           expect(configCheck.message).toContain("invalid YAML");
 
-          const after = await runDoctorJson({ json: true, fix: true, force: true, interactive: false });
+          const after = await runDoctorJson({
+            json: true,
+            fix: true,
+            force: true,
+            interactive: false,
+          });
           const reset = after.fixResults.find((r: any) => r.id === "reset-config");
           expect(reset.success).toBe(true);
 
@@ -989,7 +1066,12 @@ describe("doctorCommand - semantic search posture (#75)", () => {
           await writeFile(env.configPath, JSON.stringify(original));
           await writeFile(env.playbookPath, createValidPlaybookYaml());
 
-          const payload = await runDoctorJson({ json: true, fix: true, force: true, interactive: false });
+          const payload = await runDoctorJson({
+            json: true,
+            fix: true,
+            force: true,
+            interactive: false,
+          });
 
           const result = payload.fixResults.find((r: any) => r.id === "enable-semantic-search");
           expect(result).toBeDefined();
@@ -1031,16 +1113,25 @@ describe("doctorCommand - semantic search posture (#75)", () => {
           await withCwd(env.home, async () => {
             await writeFile(
               env.configPath,
-              JSON.stringify({
-                provider: "anthropic",
-                embeddingBackend: "ollama",
-                ollamaBaseUrl: `http://127.0.0.1:${server.port}`,
-                customUnknownKey: "keep-me",
-              }, null, 2)
+              JSON.stringify(
+                {
+                  provider: "anthropic",
+                  embeddingBackend: "ollama",
+                  ollamaBaseUrl: `http://127.0.0.1:${server.port}`,
+                  customUnknownKey: "keep-me",
+                },
+                null,
+                2,
+              ),
             );
             await writeFile(env.playbookPath, createValidPlaybookYaml());
 
-            const payload = await runDoctorJson({ json: true, fix: true, force: true, interactive: false });
+            const payload = await runDoctorJson({
+              json: true,
+              fix: true,
+              force: true,
+              interactive: false,
+            });
 
             const result = payload.fixResults.find((r: any) => r.id === "enable-semantic-search");
             expect(result).toBeDefined();
@@ -1059,7 +1150,9 @@ describe("doctorCommand - semantic search posture (#75)", () => {
             const semantic = payload.checks.find((c: any) => c.category === "Semantic Search");
             expect(semantic.status).toBe("pass");
             expect(semantic.message).toContain("ollama");
-            expect(payload.fixableIssues.some((f: any) => f.id === "enable-semantic-search")).toBe(false);
+            expect(payload.fixableIssues.some((f: any) => f.id === "enable-semantic-search")).toBe(
+              false,
+            );
           });
         });
       });

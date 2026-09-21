@@ -4,15 +4,15 @@
  * Tests the `cm doctor` command for system health checks and auto-fix capabilities.
  * Uses isolated temp directories to avoid affecting the real system.
  */
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { stat, mkdir, writeFile, rm } from "node:fs/promises";
-import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
+import path from "node:path";
 
 import {
-  doctorCommand,
-  detectFixableIssues,
   applyFixes,
+  detectFixableIssues,
+  doctorCommand,
   runSelfTest,
 } from "../src/commands/doctor.js";
 import { createEmptyPlaybook, savePlaybook } from "../src/playbook.js";
@@ -26,7 +26,10 @@ let originalCassPath: string | undefined;
 let currentTestDir = "";
 
 async function createTempDir(): Promise<string> {
-  const dirPath = path.join(os.tmpdir(), `doctor-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const dirPath = path.join(
+    os.tmpdir(),
+    `doctor-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  );
   await mkdir(dirPath, { recursive: true });
   tempDirs.push(dirPath);
   return dirPath;
@@ -91,7 +94,7 @@ function captureConsole() {
     restore: () => {
       console.log = originalLog;
       console.error = originalError;
-    }
+    },
   };
 }
 
@@ -224,7 +227,7 @@ describe("E2E: CLI doctor command", () => {
         const issues = await detectFixableIssues();
 
         // Should detect missing global directory
-        const globalDirIssue = issues.find(i => i.id === "missing-global-dir");
+        const globalDirIssue = issues.find((i) => i.id === "missing-global-dir");
         expect(globalDirIssue).toBeDefined();
         expect(globalDirIssue?.severity).toBe("fail");
         expect(globalDirIssue?.safety).toBe("safe");
@@ -247,7 +250,7 @@ describe("E2E: CLI doctor command", () => {
 
         const issues = await detectFixableIssues();
 
-        const playbookIssue = issues.find(i => i.id === "missing-playbook");
+        const playbookIssue = issues.find((i) => i.id === "missing-playbook");
         expect(playbookIssue).toBeDefined();
         expect(playbookIssue?.safety).toBe("safe");
       } finally {
@@ -271,7 +274,7 @@ describe("E2E: CLI doctor command", () => {
 
         const issues = await detectFixableIssues();
 
-        const diaryIssue = issues.find(i => i.id === "missing-diary-dir");
+        const diaryIssue = issues.find((i) => i.id === "missing-diary-dir");
         expect(diaryIssue).toBeDefined();
         expect(diaryIssue?.safety).toBe("safe");
       } finally {
@@ -323,14 +326,14 @@ describe("E2E: CLI doctor command", () => {
         await mkdir(home, { recursive: true });
 
         const issues = await detectFixableIssues();
-        const safeIssues = issues.filter(i => i.safety === "safe");
+        const safeIssues = issues.filter((i) => i.safety === "safe");
 
         const capture = captureConsole();
         try {
           const results = await applyFixes(safeIssues, { interactive: false });
 
           // Should have applied some fixes
-          const succeeded = results.filter(r => r.success);
+          const succeeded = results.filter((r) => r.success);
           expect(succeeded.length).toBeGreaterThan(0);
         } finally {
           capture.restore();
@@ -357,7 +360,10 @@ describe("E2E: CLI doctor command", () => {
 
         const capture = captureConsole();
         try {
-          const results = await applyFixes(issues.filter(i => i.safety === "safe"), { interactive: false });
+          const results = await applyFixes(
+            issues.filter((i) => i.safety === "safe"),
+            { interactive: false },
+          );
 
           // Each result should have required fields
           for (const result of results) {
@@ -396,7 +402,7 @@ describe("E2E: CLI doctor command", () => {
       const config = createDoctorTestConfig();
       const checks = await runSelfTest(config);
 
-      const playbookCheck = checks.find(c => c.item === "Playbook Load");
+      const playbookCheck = checks.find((c) => c.item === "Playbook Load");
       expect(playbookCheck).toBeDefined();
       expect(playbookCheck?.category).toBe("Self-Test");
     });
@@ -405,7 +411,7 @@ describe("E2E: CLI doctor command", () => {
       const config = createDoctorTestConfig();
       const checks = await runSelfTest(config);
 
-      const sanitizationCheck = checks.find(c => c.item === "Sanitization");
+      const sanitizationCheck = checks.find((c) => c.item === "Sanitization");
       expect(sanitizationCheck).toBeDefined();
     });
 
@@ -413,7 +419,7 @@ describe("E2E: CLI doctor command", () => {
       const config = createDoctorTestConfig();
       const checks = await runSelfTest(config);
 
-      const configCheck = checks.find(c => c.item === "Config Validation");
+      const configCheck = checks.find((c) => c.item === "Config Validation");
       expect(configCheck).toBeDefined();
     });
 
@@ -421,7 +427,7 @@ describe("E2E: CLI doctor command", () => {
       const config = createDoctorTestConfig();
       const checks = await runSelfTest(config);
 
-      const llmCheck = checks.find(c => c.item === "LLM System");
+      const llmCheck = checks.find((c) => c.item === "LLM System");
       expect(llmCheck).toBeDefined();
     });
   });
@@ -536,8 +542,8 @@ describe("E2E: CLI doctor command", () => {
       const payload = JSON.parse(output);
       const result = payload.data;
 
-      const sanitizationCheck = result.checks.find((c: any) =>
-        c.category.includes("Sanitization") && c.category.includes("Pattern")
+      const sanitizationCheck = result.checks.find(
+        (c: any) => c.category.includes("Sanitization") && c.category.includes("Pattern"),
       );
       expect(sanitizationCheck).toBeDefined();
       expect(["pass", "warn"]).toContain(sanitizationCheck.status);
@@ -556,7 +562,7 @@ describe("E2E: CLI doctor command", () => {
         // Create config with sanitization disabled
         const config = {
           schema_version: 1,
-          sanitization: { enabled: false }
+          sanitization: { enabled: false },
         };
         await writeFile(path.join(cassMemoryDir, "config.json"), JSON.stringify(config));
         await writeFile(path.join(cassMemoryDir, "playbook.yaml"), "bullets: []");
@@ -574,7 +580,7 @@ describe("E2E: CLI doctor command", () => {
         const result = payload.data;
 
         const sanitizationCheck = result.checks.find((c: any) =>
-          c.category.includes("Sanitization")
+          c.category.includes("Sanitization"),
         );
         expect(sanitizationCheck).toBeDefined();
         expect(sanitizationCheck.status).toBe("warn");
@@ -619,9 +625,8 @@ describe("E2E: CLI doctor command", () => {
       const output = capture.logs.join("\n");
 
       // Should contain one of the status messages
-      const hasStatus = output.includes("healthy") ||
-                       output.includes("degraded") ||
-                       output.includes("critical");
+      const hasStatus =
+        output.includes("healthy") || output.includes("degraded") || output.includes("critical");
       expect(hasStatus).toBe(true);
     });
 
@@ -645,7 +650,11 @@ describe("E2E: CLI doctor command", () => {
         const output = capture.logs.join("\n");
 
         // Should report degraded or unhealthy due to missing structure
-        expect(output.includes("degraded") || output.includes("unhealthy") || output.includes("critical")).toBe(true);
+        expect(
+          output.includes("degraded") ||
+            output.includes("unhealthy") ||
+            output.includes("critical"),
+        ).toBe(true);
       } finally {
         process.env.HOME = originalHome;
       }
@@ -700,8 +709,8 @@ describe("E2E: CLI doctor command", () => {
         // Should indicate no fixes needed or system is healthy
         expect(
           output.includes("no fixes needed") ||
-          output.includes("healthy") ||
-          output.includes("No auto-fixable")
+            output.includes("healthy") ||
+            output.includes("No auto-fixable"),
         ).toBe(true);
       } finally {
         process.env.HOME = originalHome;

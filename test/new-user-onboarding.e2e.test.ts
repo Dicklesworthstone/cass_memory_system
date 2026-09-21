@@ -13,11 +13,11 @@
  * 6. Mark bullet as helpful
  * 7. Run doctor to verify system health
  */
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import yaml from "yaml";
 import { createTestLogger } from "./helpers/logger.js";
 import { makeCassStub } from "./helpers/temp.js";
@@ -99,7 +99,7 @@ describe("E2E: New User Onboarding", () => {
         // Step 3: Get context with empty playbook
         const contextResult1 = runCm(
           ["context", "implement user authentication", "--json"],
-          testDir
+          testDir,
         );
         expect(contextResult1.exitCode).toBe(0);
 
@@ -120,7 +120,7 @@ describe("E2E: New User Onboarding", () => {
             "security",
             "--json",
           ],
-          testDir
+          testDir,
         );
         expect(addResult.exitCode).toBe(0);
 
@@ -133,10 +133,7 @@ describe("E2E: New User Onboarding", () => {
         logger.info("Step 4: Added first bullet", { bulletId });
 
         // Verify playbook now has the bullet
-        const playbookContent = readFileSync(
-          join(cassMemoryDir, "playbook.yaml"),
-          "utf-8"
-        );
+        const playbookContent = readFileSync(join(cassMemoryDir, "playbook.yaml"), "utf-8");
         const playbook = yaml.parse(playbookContent);
         expect(playbook.bullets).toHaveLength(1);
         expect(playbook.bullets[0].id).toBe(bulletId);
@@ -144,7 +141,7 @@ describe("E2E: New User Onboarding", () => {
         // Step 5: Get context again - should find the bullet
         const contextResult2 = runCm(
           ["context", "validate user input for login", "--json"],
-          testDir
+          testDir,
         );
         expect(contextResult2.exitCode).toBe(0);
 
@@ -199,7 +196,7 @@ describe("E2E: New User Onboarding", () => {
 
         logger.info("Complete onboarding flow test PASSED");
       },
-      { timeout: 60000 }
+      { timeout: 60000 },
     );
   });
 
@@ -230,7 +227,7 @@ describe("E2E: New User Onboarding", () => {
 
       const result = runCm(
         ["playbook", "add", "Write tests before implementing features"],
-        testDir
+        testDir,
       );
       expect(result.exitCode).toBe(0);
 
@@ -240,10 +237,7 @@ describe("E2E: New User Onboarding", () => {
 
     test("mark provides feedback confirmation", () => {
       runCm(["init", "--json"], testDir);
-      const addResult = runCm(
-        ["playbook", "add", "Test bullet", "--json"],
-        testDir
-      );
+      const addResult = runCm(["playbook", "add", "Test bullet", "--json"], testDir);
       const bulletId = (JSON.parse(addResult.stdout) as any).data.bullet.id;
 
       const result = runCm(["mark", bulletId, "--helpful"], testDir);
@@ -343,7 +337,9 @@ describe("E2E: New User Onboarding", () => {
       const cassStubPath = await makeCassStub(testDir, { search: searchOut }, "", "cass-stub");
 
       // Pass stub path via CASS_PATH env var (overrides the default __nonexistent__ in runCm)
-      const sample = runCm(["onboard", "sample", "--limit", "1", "--json"], testDir, { CASS_PATH: cassStubPath });
+      const sample = runCm(["onboard", "sample", "--limit", "1", "--json"], testDir, {
+        CASS_PATH: cassStubPath,
+      });
       expect(sample.exitCode).toBe(0);
 
       const sampleJson = JSON.parse(sample.stdout) as any;
@@ -358,40 +354,44 @@ describe("E2E: New User Onboarding", () => {
   });
 
   describe("Progressive Learning Flow", () => {
-    test("maturity progresses with repeated helpful marks", () => {
-      runCm(["init", "--json"], testDir);
+    test(
+      "maturity progresses with repeated helpful marks",
+      () => {
+        runCm(["init", "--json"], testDir);
 
-      // Add a bullet
-      const addResult = runCm(
-        [
-          "playbook",
-          "add",
-          "Document all public API functions with JSDoc",
-          "--category",
-          "documentation",
-          "--json",
-        ],
-        testDir
-      );
-      const bulletId = (JSON.parse(addResult.stdout) as any).data.bullet.id;
+        // Add a bullet
+        const addResult = runCm(
+          [
+            "playbook",
+            "add",
+            "Document all public API functions with JSDoc",
+            "--category",
+            "documentation",
+            "--json",
+          ],
+          testDir,
+        );
+        const bulletId = (JSON.parse(addResult.stdout) as any).data.bullet.id;
 
-      // Get initial maturity
-      const getResult1 = runCm(["playbook", "get", bulletId, "--json"], testDir);
-      const bullet1 = (JSON.parse(getResult1.stdout) as any).data.bullet;
-      expect(bullet1.maturity).toBe("candidate");
-      expect(bullet1.helpfulCount).toBe(0);
+        // Get initial maturity
+        const getResult1 = runCm(["playbook", "get", bulletId, "--json"], testDir);
+        const bullet1 = (JSON.parse(getResult1.stdout) as any).data.bullet;
+        expect(bullet1.maturity).toBe("candidate");
+        expect(bullet1.helpfulCount).toBe(0);
 
-      // Mark helpful 3 times (threshold for established)
-      for (let i = 0; i < 3; i++) {
-        runCm(["mark", bulletId, "--helpful", "--json"], testDir);
-      }
+        // Mark helpful 3 times (threshold for established)
+        for (let i = 0; i < 3; i++) {
+          runCm(["mark", bulletId, "--helpful", "--json"], testDir);
+        }
 
-      // Check maturity progressed
-      const getResult2 = runCm(["playbook", "get", bulletId, "--json"], testDir);
-      const bullet2 = (JSON.parse(getResult2.stdout) as any).data.bullet;
-      expect(bullet2.helpfulCount).toBe(3);
-      expect(bullet2.maturity).toBe("established");
-    }, { timeout: 15000 });
+        // Check maturity progressed
+        const getResult2 = runCm(["playbook", "get", bulletId, "--json"], testDir);
+        const bullet2 = (JSON.parse(getResult2.stdout) as any).data.bullet;
+        expect(bullet2.helpfulCount).toBe(3);
+        expect(bullet2.maturity).toBe("established");
+      },
+      { timeout: 15000 },
+    );
 
     test("harmful marks reduce effective score", () => {
       runCm(["init", "--json"], testDir);
@@ -399,7 +399,7 @@ describe("E2E: New User Onboarding", () => {
       // Add a bullet
       const addResult = runCm(
         ["playbook", "add", "Never use var, always use const or let", "--json"],
-        testDir
+        testDir,
       );
       const bulletId = (JSON.parse(addResult.stdout) as any).data.bullet.id;
 

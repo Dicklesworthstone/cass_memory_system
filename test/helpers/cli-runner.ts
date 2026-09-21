@@ -85,7 +85,7 @@ export function parseJSONOutput<T = unknown>(result: CLIResult): T {
     return JSON.parse(result.stdout) as T;
   } catch {
     throw new Error(
-      `Failed to parse CLI JSON output.\nstdout: ${result.stdout}\nstderr: ${result.stderr}`
+      `Failed to parse CLI JSON output.\nstdout: ${result.stdout}\nstderr: ${result.stderr}`,
     );
   }
 }
@@ -97,7 +97,7 @@ export function assertCLISuccess(result: CLIResult, context?: string): void {
   if (result.exitCode !== 0) {
     const msg = context ? `CLI failed: ${context}` : "CLI command failed";
     throw new Error(
-      `${msg}\nExit code: ${result.exitCode}\nstdout: ${result.stdout}\nstderr: ${result.stderr}`
+      `${msg}\nExit code: ${result.exitCode}\nstdout: ${result.stdout}\nstderr: ${result.stderr}`,
     );
   }
 }

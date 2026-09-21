@@ -1,42 +1,61 @@
-import fs from "node:fs/promises";
 import fsSync from "node:fs";
+import fs from "node:fs/promises";
 import path from "node:path";
-import { loadConfig, getSanitizeConfig } from "../config.js";
-import { sanitize } from "../sanitize.js";
-import { loadMergedPlaybook, getActiveBullets } from "../playbook.js";
+import chalk from "chalk";
 import { safeCassSearchWithDegraded } from "../cass.js";
-import { loadTraumas, findMatchingTrauma } from "../trauma.js";
+import { getSanitizeConfig, loadConfig } from "../config.js";
+import { withLock } from "../lock.js";
 import {
-  extractKeywords,
-  scoreBulletRelevance,
+  agentIconPrefix,
+  formatRule,
+  formatTipPrefix,
+  getOutputStyle,
+  iconPrefix,
+  wrapText,
+} from "../output.js";
+import { getActiveBullets, loadMergedPlaybook } from "../playbook.js";
+import { createProgress, type ProgressReporter } from "../progress.js";
+import { sanitize } from "../sanitize.js";
+import { getEffectiveScore } from "../scoring.js";
+import {
+  cosineSimilarity,
+  embedText,
+  loadOrComputeEmbeddingsForBullets,
+  resolveSemanticEnabled,
+} from "../semantic.js";
+import { findMatchingTrauma, loadTraumas } from "../trauma.js";
+import {
+  type CassSearchHit,
+  type Config,
+  type ContextResult,
+  ErrorCode,
+  type PlaybookBullet,
+  type ScoredBullet,
+} from "../types.js";
+import {
+  atomicWrite,
   checkDeprecatedPatterns,
+  ensureDir,
+  expandPath,
+  extractBulletReasoning,
+  extractKeywords,
+  fileExists,
+  formatLastHelpful,
   generateSuggestedQueries,
-  warn,
+  getCliName,
   isJsonOutput,
   isToonOutput,
-  reportError,
   printStructuredResult,
+  reportError,
+  resolveGlobalDir,
+  resolveRepoDir,
+  scoreBulletRelevance,
   truncateWithIndicator,
-  formatLastHelpful,
-  extractBulletReasoning,
-  getCliName,
   validateNonEmptyString,
   validateOneOf,
   validatePositiveInt,
-  ensureDir,
-  expandPath,
-  resolveRepoDir,
-  resolveGlobalDir,
-  fileExists,
-  atomicWrite
+  warn,
 } from "../utils.js";
-import { withLock } from "../lock.js";
-import { getEffectiveScore } from "../scoring.js";
-import { ContextResult, ScoredBullet, Config, CassSearchHit, PlaybookBullet, ErrorCode } from "../types.js";
-import { cosineSimilarity, embedText, loadOrComputeEmbeddingsForBullets, resolveSemanticEnabled } from "../semantic.js";
-import chalk from "chalk";
-import { agentIconPrefix, formatRule, formatTipPrefix, getOutputStyle, iconPrefix, wrapText } from "../output.js";
-import { createProgress, type ProgressReporter } from "../progress.js";
 
 const MAX_CASS_HISTORY_QUERY_TERMS = 8;
 const CASS_HISTORY_TIMEOUT_SECONDS = 8;
@@ -56,7 +75,8 @@ const PATHOLOGICAL_CASS_QUERY_TOKEN = /^(?:bd|br)-[a-z0-9]+(?:[.-][a-z0-9]+)+$/i
  * cannot be resolved (which should never happen in practice).
  */
 export function resolveWorkspaceFilter(workspace?: string): string | undefined {
-  const raw = typeof workspace === "string" && workspace.trim() !== "" ? workspace.trim() : process.cwd();
+  const raw =
+    typeof workspace === "string" && workspace.trim() !== "" ? workspace.trim() : process.cwd();
   // Expand ~ first, then resolve relative segments against cwd.
   const expanded = expandPath(raw);
   let resolved: string;
@@ -110,9 +130,9 @@ function safeDeprecatedPatternMatcher(pattern: string): (text: string) => boolea
   }
 }
 
-// ============================================================================ 
+// ============================================================================
 // buildContextResult - Assemble final ContextResult output
-// ============================================================================ 
+// ============================================================================
 
 /**
  * Build the final ContextResult from gathered components.
@@ -124,38 +144,40 @@ export function buildContextResult(
   history: CassSearchHit[],
   warnings: string[],
   suggestedQueries: string[],
-  limits: { maxBullets: number; maxHistory: number }
+  limits: { maxBullets: number; maxHistory: number },
 ): ContextResult {
   // Apply size limits
-  const maxBullets = Number.isFinite(limits.maxBullets) && limits.maxBullets > 0 ? limits.maxBullets : 10;
-  const maxHistory = Number.isFinite(limits.maxHistory) && limits.maxHistory > 0 ? limits.maxHistory : 10;
+  const maxBullets =
+    Number.isFinite(limits.maxBullets) && limits.maxBullets > 0 ? limits.maxBullets : 10;
+  const maxHistory =
+    Number.isFinite(limits.maxHistory) && limits.maxHistory > 0 ? limits.maxHistory : 10;
 
   // Transform rules with additional metadata for LLM consumption
   // Exclude embedding vectors from output - they bloat JSON and are internal implementation detail
-  const relevantBullets = rules.slice(0, maxBullets).map(b => {
+  const relevantBullets = rules.slice(0, maxBullets).map((b) => {
     const { embedding: _embedding, ...withoutEmbedding } = b;
     return {
       ...withoutEmbedding,
       lastHelpful: formatLastHelpful(b),
-      reasoning: extractBulletReasoning(b)
+      reasoning: extractBulletReasoning(b),
     };
   });
 
   // Transform anti-patterns with additional metadata
   // Exclude embedding vectors from output
-  const transformedAntiPatterns = antiPatterns.slice(0, maxBullets).map(b => {
+  const transformedAntiPatterns = antiPatterns.slice(0, maxBullets).map((b) => {
     const { embedding: _embedding, ...withoutEmbedding } = b;
     return {
       ...withoutEmbedding,
       lastHelpful: formatLastHelpful(b),
-      reasoning: extractBulletReasoning(b)
+      reasoning: extractBulletReasoning(b),
     };
   });
 
   // Transform history snippets - simplify structure, truncate long snippets
-  const historySnippets = history.slice(0, maxHistory).map(h => ({
+  const historySnippets = history.slice(0, maxHistory).map((h) => ({
     ...h,
-    snippet: truncateWithIndicator(h.snippet.trim().replace(/\n/g, " "), 300)
+    snippet: truncateWithIndicator(h.snippet.trim().replace(/\n/g, " "), 300),
   }));
 
   return {
@@ -164,7 +186,7 @@ export function buildContextResult(
     antiPatterns: transformedAntiPatterns,
     historySnippets,
     deprecatedWarnings: warnings,
-    suggestedCassQueries: suggestedQueries
+    suggestedCassQueries: suggestedQueries,
   };
 }
 
@@ -185,7 +207,10 @@ function isSafeCassHistoryKeyword(token: string): boolean {
   return true;
 }
 
-export function buildCassHistoryQuery(task: string, maxTerms = MAX_CASS_HISTORY_QUERY_TERMS): string {
+export function buildCassHistoryQuery(
+  task: string,
+  maxTerms = MAX_CASS_HISTORY_QUERY_TERMS,
+): string {
   const keywords = extractKeywords(task)
     .filter(isSafeCassHistoryKeyword)
     .slice(0, Math.max(1, maxTerms));
@@ -225,15 +250,15 @@ export interface ContextComputation {
 
 export type ContextProgressEvent =
   | {
-    phase: "semantic_embeddings";
-    kind: "start" | "progress" | "done";
-    current: number;
-    total: number;
-    reused: number;
-    computed: number;
-    skipped: number;
-    message: string;
-  }
+      phase: "semantic_embeddings";
+      kind: "start" | "progress" | "done";
+      current: number;
+      total: number;
+      reused: number;
+      computed: number;
+      skipped: number;
+      message: string;
+    }
   | { phase: "cass_search"; kind: "start" | "done"; message: string };
 
 function clamp01(value: number): number {
@@ -276,7 +301,7 @@ export async function scoreBulletsEnhanced(
     }) => void;
     /** Optional out-param: receives which scoring mode ran + why it degraded. */
     meta?: ScoreBulletsMeta;
-  } = {}
+  } = {},
 ): Promise<ScoredBullet[]> {
   if (bullets.length === 0) {
     if (options.meta) {
@@ -295,7 +320,7 @@ export async function scoreBulletsEnhanced(
   const semanticEnabled = semanticStatus.enabled;
 
   const semanticWeight = clamp01(
-    typeof config.semanticWeight === "number" ? config.semanticWeight : 0.6
+    typeof config.semanticWeight === "number" ? config.semanticWeight : 0.6,
   );
 
   let queryEmbedding: number[] | null = null;
@@ -334,16 +359,17 @@ export async function scoreBulletsEnhanced(
       // major runtime regression in v0.2.5 (standalone binary WASM init
       // failures). Stderr warnings don't pollute JSON stdout.
       warn(
-        `[context] Semantic search unavailable; using keyword-only scoring. ${semanticError || ""}`.trim()
+        `[context] Semantic search unavailable; using keyword-only scoring. ${semanticError || ""}`.trim(),
       );
     }
   }
 
   // Record which mode we actually ran.
   if (options.meta) {
-    const ran = semanticEnabled && queryEmbedding && queryEmbedding.length > 0
-      ? "semantic" as const
-      : "keyword" as const;
+    const ran =
+      semanticEnabled && queryEmbedding && queryEmbedding.length > 0
+        ? ("semantic" as const)
+        : ("keyword" as const);
     options.meta.semanticMode = ran;
     if (semanticEnabled && ran === "keyword") {
       options.meta.semanticError =
@@ -401,7 +427,7 @@ export async function scoreBulletsEnhanced(
 export async function generateContextResult(
   task: string,
   flags: ContextFlags,
-  options: { onProgress?: (event: ContextProgressEvent) => void } = {}
+  options: { onProgress?: (event: ContextProgressEvent) => void } = {},
 ): Promise<ContextComputation> {
   const config = await loadConfig();
 
@@ -432,16 +458,16 @@ export async function generateContextResult(
     meta: scoringMeta,
     onSemanticProgress: options.onProgress
       ? (event) =>
-        options.onProgress?.({
-          phase: "semantic_embeddings",
-          kind: event.phase,
-          current: event.current,
-          total: event.total,
-          reused: event.reused,
-          computed: event.computed,
-          skipped: event.skipped,
-          message: event.message,
-        })
+          options.onProgress?.({
+            phase: "semantic_embeddings",
+            kind: event.phase,
+            current: event.current,
+            total: event.total,
+            reused: event.reused,
+            computed: event.computed,
+            skipped: event.skipped,
+            message: event.message,
+          })
       : undefined,
   });
 
@@ -451,28 +477,33 @@ export async function generateContextResult(
   // Filter by relevanceScore against config.minRelevanceScore (not finalScore > 0)
   // so that the configured threshold is actually respected
   const topBullets = scoredBullets
-    .filter(b => (b.relevanceScore ?? 0) >= minRelevance)
+    .filter((b) => (b.relevanceScore ?? 0) >= minRelevance)
     .slice(0, maxBullets);
 
-  const rules = topBullets.filter(b => !b.isNegative && b.kind !== "anti_pattern");
-  const antiPatterns = topBullets.filter(b => b.isNegative || b.kind === "anti_pattern");
+  const rules = topBullets.filter((b) => !b.isNegative && b.kind !== "anti_pattern");
+  const antiPatterns = topBullets.filter((b) => b.isNegative || b.kind === "anti_pattern");
 
   let cassHits: CassSearchHit[] = [];
   let degraded: ContextResult["degraded"] | undefined;
 
   options.onProgress?.({ phase: "cass_search", kind: "start", message: "Searching history..." });
-  const cassResult = await safeCassSearchWithDegraded(cassQuery, {
-    limit: flags.history ?? config.maxHistoryInContext,
-    days: flags.days ?? config.sessionLookbackDays,
-    workspace: flags.workspace,
-    timeout: CASS_HISTORY_TIMEOUT_SECONDS,
-  }, config.cassPath, config);
+  const cassResult = await safeCassSearchWithDegraded(
+    cassQuery,
+    {
+      limit: flags.history ?? config.maxHistoryInContext,
+      days: flags.days ?? config.sessionLookbackDays,
+      workspace: flags.workspace,
+      timeout: CASS_HISTORY_TIMEOUT_SECONDS,
+    },
+    config.cassPath,
+    config,
+  );
   options.onProgress?.({ phase: "cass_search", kind: "done", message: "History search complete" });
   cassHits = cassResult.hits;
   if (cassResult.degraded || cassResult.remoteDegraded) {
     degraded = {
       cass: cassResult.degraded,
-      remoteCass: cassResult.remoteDegraded
+      remoteCass: cassResult.remoteDegraded,
     };
   }
 
@@ -493,7 +524,7 @@ export async function generateContextResult(
   // Keep suggestedCassQueries semantically pure: only search queries, no remediation
   // Remediation commands (cm doctor, cass health, etc.) are in degraded.cass.suggestedFix
   const suggestedQueries = generateSuggestedQueries(task, keywords, {
-    maxSuggestions: 5
+    maxSuggestions: 5,
   });
 
   const result = buildContextResult(
@@ -506,7 +537,7 @@ export async function generateContextResult(
     {
       maxBullets: flags.limit ?? flags.top ?? config.maxBulletsInContext,
       maxHistory: flags.history ?? config.maxHistoryInContext,
-    }
+    },
   );
   if (degraded) {
     result.degraded = degraded;
@@ -553,9 +584,7 @@ async function appendContextLog(entry: {
     const useRepoLog = repoDir ? await fileExists(repoDir) : false;
     const repoLog = useRepoLog ? path.join(repoDir!, "context-log.jsonl") : null;
 
-    const logPath = repoLog
-      ? repoLog
-      : path.join(resolveGlobalDir(), "context-log.jsonl");
+    const logPath = repoLog ? repoLog : path.join(resolveGlobalDir(), "context-log.jsonl");
 
     await ensureDir(path.dirname(logPath));
 
@@ -570,7 +599,7 @@ async function appendContextLog(entry: {
       timestamp: new Date().toISOString(),
       source: "context",
     };
-    
+
     // Use withLock to prevent race conditions during concurrent appends
     await withLock(logPath, async () => {
       await fs.appendFile(logPath, JSON.stringify(payload) + "\n", "utf-8");
@@ -586,7 +615,7 @@ async function appendContextLog(entry: {
 export async function contextWithoutCass(
   task: string,
   config: Config,
-  options: { workspace?: string; maxBullets?: number; reason?: string } = {}
+  options: { workspace?: string; maxBullets?: number; reason?: string } = {},
 ): Promise<ContextResult> {
   const { workspace, maxBullets, reason } = options;
 
@@ -606,7 +635,7 @@ export async function contextWithoutCass(
       return resolveWorkspaceFilter(b.workspace) === effectiveWorkspace;
     });
 
-    const scoredBullets: ScoredBullet[] = activeBullets.map(b => {
+    const scoredBullets: ScoredBullet[] = activeBullets.map((b) => {
       const relevance = scoreBulletRelevance(b.content, b.tags, keywords);
       const effective = getEffectiveScore(b, config);
       const final = relevance * Math.max(0.1, effective);
@@ -615,18 +644,18 @@ export async function contextWithoutCass(
         ...b,
         relevanceScore: relevance,
         effectiveScore: effective,
-        finalScore: final
+        finalScore: final,
       };
     });
 
     scoredBullets.sort((a, b) => (b.finalScore || 0) - (a.finalScore || 0));
 
     const topBullets = scoredBullets
-      .filter(b => (b.relevanceScore ?? 0) >= config.minRelevanceScore)
+      .filter((b) => (b.relevanceScore ?? 0) >= config.minRelevanceScore)
       .slice(0, maxBullets ?? config.maxBulletsInContext);
 
-    const rules = topBullets.filter(b => !b.isNegative && b.kind !== "anti_pattern");
-    const antiPatterns = topBullets.filter(b => b.isNegative || b.kind === "anti_pattern");
+    const rules = topBullets.filter((b) => !b.isNegative && b.kind !== "anti_pattern");
+    const antiPatterns = topBullets.filter((b) => b.isNegative || b.kind === "anti_pattern");
 
     const warnings: string[] = ["Context generated without historical data (cass unavailable)"];
     for (const pattern of playbook.deprecatedPatterns) {
@@ -635,7 +664,9 @@ export async function contextWithoutCass(
       if (matches(task)) {
         const reasonSuffix = pattern.reason ? ` (Reason: ${pattern.reason})` : "";
         const replacement = pattern.replacement ? ` - use ${pattern.replacement} instead` : "";
-        warnings.push(`Task matches deprecated pattern "${pattern.pattern}"${replacement}${reasonSuffix}`);
+        warnings.push(
+          `Task matches deprecated pattern "${pattern.pattern}"${replacement}${reasonSuffix}`,
+        );
       }
     }
 
@@ -645,7 +676,7 @@ export async function contextWithoutCass(
       antiPatterns,
       historySnippets: [],
       deprecatedWarnings: warnings,
-      suggestedCassQueries: []
+      suggestedCassQueries: [],
     };
   } catch (err) {
     warn(`Playbook also unavailable: ${err}`);
@@ -655,24 +686,19 @@ export async function contextWithoutCass(
       antiPatterns: [],
       historySnippets: [],
       deprecatedWarnings: ["Context unavailable - both cass and playbook failed to load"],
-      suggestedCassQueries: []
+      suggestedCassQueries: [],
     };
   }
 }
 
 // Legacy export wrapper
-export async function getContext(
-  task: string, 
-  flags: ContextFlags = {}
-) {
-  const { result, rules, antiPatterns, cassHits, warnings, suggestedQueries } = await generateContextResult(task, flags);
+export async function getContext(task: string, flags: ContextFlags = {}) {
+  const { result, rules, antiPatterns, cassHits, warnings, suggestedQueries } =
+    await generateContextResult(task, flags);
   return { result, rules, antiPatterns, cassHits, warnings, suggestedQueries };
 }
 
-export async function contextCommand(
-  task: string, 
-  flags: ContextFlags
-) {
+export async function contextCommand(task: string, flags: ContextFlags) {
   const startedAtMs = Date.now();
   const command = "context";
   const cli = getCliName();
@@ -683,7 +709,7 @@ export async function contextCommand(
     reportError(taskCheck.message, {
       code: ErrorCode.INVALID_INPUT,
       details: taskCheck.details,
-      hint: `Example: ${cli} context \"fix the login bug\" --json`,
+      hint: `Example: ${cli} context "fix the login bug" --json`,
       json: wantsJsonForErrors,
       format: flags.format,
       command,
@@ -698,11 +724,13 @@ export async function contextCommand(
   try {
     const traumas = await loadTraumas();
     const traumaMatch = findMatchingTrauma(normalizedTask, traumas);
-    
+
     if (traumaMatch) {
-      const msg = traumaMatch.trigger_event.human_message || "You previously caused a catastrophe with this pattern.";
+      const msg =
+        traumaMatch.trigger_event.human_message ||
+        "You previously caused a catastrophe with this pattern.";
       const ref = traumaMatch.trigger_event.session_path;
-      
+
       // VISCERAL SCREAM TO STDERR (Always visible)
       const mark = iconPrefix("warning").trim();
       const marks = mark ? mark.repeat(3) : "";
@@ -710,16 +738,18 @@ export async function contextCommand(
         ? `${marks} CRITICAL WARNING: VISCERAL SAFETY INTERVENTION ${marks}`
         : "CRITICAL WARNING: VISCERAL SAFETY INTERVENTION";
       console.error(chalk.bgRed.white.bold(`\n${banner}`));
-      console.error(chalk.red.bold(`You are inquiring about a pattern that has previously caused TRAUMA.`));
+      console.error(
+        chalk.red.bold(`You are inquiring about a pattern that has previously caused TRAUMA.`),
+      );
       console.error(chalk.red(`Pattern: ${traumaMatch.pattern}`));
       console.error(chalk.red(`Reason:  ${msg}`));
       console.error(chalk.red(`Ref:     ${ref}`));
       console.error(chalk.bgRed.white.bold("DO NOT PROCEED WITHOUT EXTREME CAUTION.\n"));
-      
+
       traumaWarning = {
         pattern: traumaMatch.pattern,
         reason: msg,
-        reference: ref
+        reference: ref,
       };
     }
   } catch (e) {
@@ -731,7 +761,7 @@ export async function contextCommand(
     reportError(limitCheck.message, {
       code: ErrorCode.INVALID_INPUT,
       details: limitCheck.details,
-      hint: `Example: ${cli} context \"<task>\" --limit 10 --json`,
+      hint: `Example: ${cli} context "<task>" --limit 10 --json`,
       json: wantsJsonForErrors,
       format: flags.format,
       command,
@@ -745,7 +775,7 @@ export async function contextCommand(
     reportError(topCheck.message, {
       code: ErrorCode.INVALID_INPUT,
       details: topCheck.details,
-      hint: `Example: ${cli} context \"<task>\" --limit 10 --json`,
+      hint: `Example: ${cli} context "<task>" --limit 10 --json`,
       json: wantsJsonForErrors,
       format: flags.format,
       command,
@@ -762,12 +792,15 @@ export async function contextCommand(
     }
   }
 
-  const historyCheck = validatePositiveInt(flags.history, "history", { min: 1, allowUndefined: true });
+  const historyCheck = validatePositiveInt(flags.history, "history", {
+    min: 1,
+    allowUndefined: true,
+  });
   if (!historyCheck.ok) {
     reportError(historyCheck.message, {
       code: ErrorCode.INVALID_INPUT,
       details: historyCheck.details,
-      hint: `Example: ${cli} context \"<task>\" --history 3 --json`,
+      hint: `Example: ${cli} context "<task>" --history 3 --json`,
       json: wantsJsonForErrors,
       format: flags.format,
       command,
@@ -781,7 +814,7 @@ export async function contextCommand(
     reportError(daysCheck.message, {
       code: ErrorCode.INVALID_INPUT,
       details: daysCheck.details,
-      hint: `Example: ${cli} context \"<task>\" --days 30 --json`,
+      hint: `Example: ${cli} context "<task>" --days 30 --json`,
       json: wantsJsonForErrors,
       format: flags.format,
       command,
@@ -807,12 +840,14 @@ export async function contextCommand(
     return;
   }
 
-  const workspaceCheck = validateNonEmptyString(flags.workspace, "workspace", { allowUndefined: true });
+  const workspaceCheck = validateNonEmptyString(flags.workspace, "workspace", {
+    allowUndefined: true,
+  });
   if (!workspaceCheck.ok) {
     reportError(workspaceCheck.message, {
       code: ErrorCode.INVALID_INPUT,
       details: workspaceCheck.details,
-      hint: `Example: ${cli} context \"<task>\" --workspace . --json`,
+      hint: `Example: ${cli} context "<task>" --workspace . --json`,
       json: wantsJsonForErrors,
       format: flags.format,
       command,
@@ -826,7 +861,7 @@ export async function contextCommand(
     reportError(sessionCheck.message, {
       code: ErrorCode.INVALID_INPUT,
       details: sessionCheck.details,
-      hint: `Example: ${cli} context \"<task>\" --session <id> --log-context --json`,
+      hint: `Example: ${cli} context "<task>" --session <id> --log-context --json`,
       json: wantsJsonForErrors,
       format: flags.format,
       command,
@@ -837,7 +872,9 @@ export async function contextCommand(
 
   const normalizedFlags: ContextFlags = {
     ...flags,
-    ...((limitCheck.value ?? topCheck.value) !== undefined ? { limit: limitCheck.value ?? topCheck.value } : {}),
+    ...((limitCheck.value ?? topCheck.value) !== undefined
+      ? { limit: limitCheck.value ?? topCheck.value }
+      : {}),
     ...(historyCheck.value !== undefined ? { history: historyCheck.value } : {}),
     ...(daysCheck.value !== undefined ? { days: daysCheck.value } : {}),
     ...(formatCheck.value !== undefined ? { format: formatCheck.value } : {}),
@@ -848,249 +885,278 @@ export async function contextCommand(
   const wantsJson = isJsonOutput(normalizedFlags);
   const wantsToon = isToonOutput(normalizedFlags);
   const wantsMarkdown = normalizedFlags.format === "markdown";
-  const progressFormat = (wantsJson || wantsToon) ? "json" : "text";
+  const progressFormat = wantsJson || wantsToon ? "json" : "text";
   const embeddingsProgressRef: { current: ProgressReporter | null } = { current: null };
   const cassProgressRef: { current: ProgressReporter | null } = { current: null };
 
   try {
-    const { result, rules, antiPatterns, cassHits, warnings, suggestedQueries } = await generateContextResult(normalizedTask, normalizedFlags, {
-      onProgress: (event) => {
-        if (event.phase === "semantic_embeddings") {
-          if (event.total <= 0) return;
+    const { result, rules, antiPatterns, cassHits, warnings, suggestedQueries } =
+      await generateContextResult(normalizedTask, normalizedFlags, {
+        onProgress: (event) => {
+          if (event.phase === "semantic_embeddings") {
+            if (event.total <= 0) return;
 
-          if (!embeddingsProgressRef.current && event.kind === "start") {
-            embeddingsProgressRef.current = createProgress({
-              message: event.message,
-              total: event.total,
-              showEta: true,
-              format: progressFormat,
-              stream: process.stderr,
-            });
-          }
+            if (!embeddingsProgressRef.current && event.kind === "start") {
+              embeddingsProgressRef.current = createProgress({
+                message: event.message,
+                total: event.total,
+                showEta: true,
+                format: progressFormat,
+                stream: process.stderr,
+              });
+            }
 
-          embeddingsProgressRef.current?.update(event.current, event.message);
+            embeddingsProgressRef.current?.update(event.current, event.message);
 
-          if (event.kind === "done") {
-            const counts = `(${event.computed} computed, ${event.reused} cached, ${event.skipped} skipped)`;
-            embeddingsProgressRef.current?.complete(event.message ? `${event.message} ${counts}` : counts);
-            embeddingsProgressRef.current = null;
-          }
-          return;
-        }
-
-        if (event.phase === "cass_search") {
-          if (event.kind === "start") {
-            cassProgressRef.current = createProgress({
-              message: event.message,
-              format: progressFormat,
-              stream: process.stderr,
-            });
-            cassProgressRef.current.update(0, event.message);
+            if (event.kind === "done") {
+              const counts = `(${event.computed} computed, ${event.reused} cached, ${event.skipped} skipped)`;
+              embeddingsProgressRef.current?.complete(
+                event.message ? `${event.message} ${counts}` : counts,
+              );
+              embeddingsProgressRef.current = null;
+            }
             return;
           }
-          cassProgressRef.current?.complete(event.message);
-          cassProgressRef.current = null;
-        }
-      },
-    });
+
+          if (event.phase === "cass_search") {
+            if (event.kind === "start") {
+              cassProgressRef.current = createProgress({
+                message: event.message,
+                format: progressFormat,
+                stream: process.stderr,
+              });
+              cassProgressRef.current.update(0, event.message);
+              return;
+            }
+            cassProgressRef.current?.complete(event.message);
+            cassProgressRef.current = null;
+          }
+        },
+      });
 
     // Merge trauma warning
     if (traumaWarning) {
       result.traumaWarning = traumaWarning;
     }
 
-  if (wantsJson || wantsToon) {
-    printStructuredResult(command, result, normalizedFlags, { startedAtMs });
-    return;
-  }
+    if (wantsJson || wantsToon) {
+      printStructuredResult(command, result, normalizedFlags, { startedAtMs });
+      return;
+    }
 
-  const maxWidth = Math.min(getOutputStyle().width, 84);
-  const divider = chalk.dim(formatRule("─", { maxWidth }));
+    const maxWidth = Math.min(getOutputStyle().width, 84);
+    const divider = chalk.dim(formatRule("─", { maxWidth }));
 
-  if (wantsMarkdown) {
-    const snippetWidth = 300;
-    console.log(`# Context for: ${normalizedTask}\n`);
+    if (wantsMarkdown) {
+      const snippetWidth = 300;
+      console.log(`# Context for: ${normalizedTask}\n`);
 
-    console.log(`## Playbook rules (${rules.length})\n`);
-    if (rules.length === 0) {
-      console.log(`(No relevant playbook rules found)\n`);
-    } else {
+      console.log(`## Playbook rules (${rules.length})\n`);
+      if (rules.length === 0) {
+        console.log(`(No relevant playbook rules found)\n`);
+      } else {
+        for (const b of rules) {
+          const relevance = Number.isFinite(b.relevanceScore) ? b.relevanceScore.toFixed(1) : "n/a";
+          const confidence = Number.isFinite(b.effectiveScore)
+            ? b.effectiveScore.toFixed(1)
+            : "n/a";
+          console.log(
+            `- **${b.id}** (${b.category}/${b.kind}, relevance ${relevance}, confidence ${confidence}): ${b.content.trim()}`,
+          );
+        }
+        console.log("");
+      }
+
+      console.log(`## Pitfalls (${antiPatterns.length})\n`);
+      if (antiPatterns.length === 0) {
+        console.log(`(No pitfalls detected)\n`);
+      } else {
+        for (const b of antiPatterns) {
+          console.log(`- **${b.id}** (${b.category}/${b.kind}): ${b.content.trim()}`);
+        }
+        console.log("");
+      }
+
+      console.log(`## History (${cassHits.length})\n`);
+      if (cassHits.length === 0) {
+        console.log(`(No relevant history found)\n`);
+      } else {
+        const shown = Math.min(cassHits.length, 3);
+        for (const h of cassHits.slice(0, shown)) {
+          const agent = h.agent || "unknown";
+          const host = h.origin?.kind === "remote" && h.origin.host ? ` (${h.origin.host})` : "";
+          const snippet = truncateWithIndicator(
+            h.snippet.trim().replace(/\s+/g, " "),
+            snippetWidth,
+          );
+          console.log(`- **${agent}${host}** \`${h.source_path}\`: "${snippet}"`);
+        }
+        if (cassHits.length > shown) {
+          console.log(`- … and ${cassHits.length - shown} more`);
+        }
+        console.log("");
+      }
+
+      if (warnings.length > 0) {
+        console.log(`## Warnings (${warnings.length})\n`);
+        for (const w of warnings) console.log(`- ${w}`);
+        console.log("");
+      }
+
+      if (suggestedQueries.length > 0) {
+        console.log(`## Suggested searches\n`);
+        for (const q of suggestedQueries) console.log(`- ${q}`);
+        console.log("");
+      }
+      return;
+    }
+
+    // Human Output (premium, width-aware)
+    console.log(chalk.bold(`CONTEXT FOR: ${normalizedTask}`));
+    console.log(divider);
+
+    // Loud, one-line banner when semantic search was requested but we fell
+    // back to keyword-only. Silent fallback hid a binary-build regression
+    // for an entire release cycle — never again.
+    if (result.semanticError) {
+      console.log(
+        chalk.yellow(
+          `${iconPrefix("warning")}Semantic search unavailable; using keyword-only scoring.`,
+        ),
+      );
+      console.log(chalk.yellow(`  Reason: ${result.semanticError}`));
+      console.log(
+        chalk.yellow(
+          `  Fix:    set "embeddingBackend": "ollama" in ~/.cass-memory/config.json, ` +
+            `or build from source (install.sh --from-source), ` +
+            `or disable: semanticSearchEnabled: false`,
+        ),
+      );
+      console.log("");
+    } else if (result.semanticNotice) {
+      // Automatic mode, backend not ready: informational, not a failure.
+      console.log(chalk.dim(`${iconPrefix("tip")}Keyword-only search. ${result.semanticNotice}`));
+      console.log("");
+    }
+
+    if (result.degraded?.cass && !result.degraded.cass.available) {
+      const cass = result.degraded.cass;
+      const suggested = Array.isArray(cass.suggestedFix) ? cass.suggestedFix.filter(Boolean) : [];
+      const primaryHint = suggested[0] || `${cli} doctor`;
+      const remoteOnlyNote = cassHits.length > 0 ? " (showing remote history only)" : "";
+      console.log(
+        chalk.yellow(
+          `${iconPrefix("warning")}Local history unavailable (cass: ${cass.reason})${remoteOnlyNote}.`,
+        ),
+      );
+      console.log(chalk.yellow(`  Next: ${primaryHint}`));
+      console.log("");
+    }
+
+    // Playbook rules
+    if (rules.length > 0) {
+      console.log(chalk.bold(`PLAYBOOK RULES (${rules.length})`));
+      console.log(divider);
+      const contentWidth = Math.max(24, maxWidth - 2);
+
       for (const b of rules) {
         const relevance = Number.isFinite(b.relevanceScore) ? b.relevanceScore.toFixed(1) : "n/a";
         const confidence = Number.isFinite(b.effectiveScore) ? b.effectiveScore.toFixed(1) : "n/a";
-        console.log(`- **${b.id}** (${b.category}/${b.kind}, relevance ${relevance}, confidence ${confidence}): ${b.content.trim()}`);
+        const maturity = b.maturity ? ` • ${b.maturity}` : "";
+        console.log(
+          chalk.bold(`[${b.id}]`) +
+            chalk.dim(
+              ` ${b.category}/${b.kind} • relevance ${relevance} • confidence ${confidence}${maturity}`,
+            ),
+        );
+        for (const line of wrapText(b.content, contentWidth)) {
+          console.log(`  ${line}`);
+        }
+        console.log("");
       }
+    } else {
+      console.log(chalk.bold("PLAYBOOK RULES (0)"));
+      console.log(divider);
+      console.log(chalk.gray("(No relevant playbook rules found)"));
+      console.log(
+        chalk.gray(
+          `  ${formatTipPrefix()}Run '${cli} reflect' to start learning from your agent sessions.`,
+        ),
+      );
       console.log("");
     }
 
-    console.log(`## Pitfalls (${antiPatterns.length})\n`);
-    if (antiPatterns.length === 0) {
-      console.log(`(No pitfalls detected)\n`);
-    } else {
+    // Pitfalls
+    if (antiPatterns.length > 0) {
+      console.log(
+        chalk.yellow.bold(`${iconPrefix("warning")}PITFALLS TO AVOID (${antiPatterns.length})`),
+      );
+      console.log(divider);
+      const contentWidth = Math.max(24, maxWidth - 4);
       for (const b of antiPatterns) {
-        console.log(`- **${b.id}** (${b.category}/${b.kind}): ${b.content.trim()}`);
+        console.log(chalk.yellow(`- [${b.id}]`));
+        for (const line of wrapText(b.content, contentWidth)) {
+          console.log(chalk.yellow(`  ${line}`));
+        }
       }
       console.log("");
     }
 
-    console.log(`## History (${cassHits.length})\n`);
-    if (cassHits.length === 0) {
-      console.log(`(No relevant history found)\n`);
-    } else {
-      const shown = Math.min(cassHits.length, 3);
-      for (const h of cassHits.slice(0, shown)) {
+    // History (explicit truncation)
+    if (cassHits.length > 0) {
+      const total = cassHits.length;
+      const shown = Math.min(total, 3);
+      const showing = total > shown ? ` (showing ${shown} of ${total})` : "";
+      console.log(chalk.bold(`HISTORY${showing}`));
+      console.log(divider);
+
+      const snippetWidth = Math.max(24, maxWidth - 4);
+      cassHits.slice(0, shown).forEach((h, i) => {
         const agent = h.agent || "unknown";
-        const host = h.origin?.kind === "remote" && h.origin.host ? ` (${h.origin.host})` : "";
-        const snippet = truncateWithIndicator(h.snippet.trim().replace(/\s+/g, " "), snippetWidth);
-        console.log(`- **${agent}${host}** \`${h.source_path}\`: "${snippet}"`);
-      }
-      if (cassHits.length > shown) {
-        console.log(`- … and ${cassHits.length - shown} more`);
-      }
+        const agentLabel = `${agentIconPrefix(agent)}${agent}`;
+        const isRemote = h.origin?.kind === "remote";
+        const hostLabel = isRemote && h.origin?.host ? ` [${h.origin.host}]` : "";
+
+        // Remote hits get dimmer styling
+        const headerStyle = isRemote ? chalk.dim : chalk.bold;
+        const snippetStyle = isRemote ? chalk.dim : chalk.gray;
+        const pathStyle = isRemote ? chalk.dim : chalk.dim;
+
+        console.log(
+          headerStyle(`${i + 1}. ${agentLabel}${hostLabel}`) + pathStyle(` • ${h.source_path}`),
+        );
+        const snippet = h.snippet.trim().replace(/\s+/g, " ");
+        for (const line of wrapText(`"${snippet}"`, snippetWidth)) {
+          console.log(snippetStyle(`  ${line}`));
+        }
+        console.log("");
+      });
+    } else if (!result.degraded?.cass || result.degraded.cass.available) {
+      console.log(chalk.bold("HISTORY (0)"));
+      console.log(divider);
+      console.log(chalk.gray("(No relevant history found)"));
+      console.log(
+        chalk.gray(
+          `  ${formatTipPrefix()}Use Claude Code, Cursor, Codex, or PI to build session history.`,
+        ),
+      );
       console.log("");
     }
 
+    // Warnings
     if (warnings.length > 0) {
-      console.log(`## Warnings (${warnings.length})\n`);
-      for (const w of warnings) console.log(`- ${w}`);
+      console.log(chalk.yellow.bold(`${iconPrefix("warning")}WARNINGS (${warnings.length})`));
+      console.log(divider);
+      warnings.forEach((w) => console.log(chalk.yellow(`- ${w}`)));
       console.log("");
     }
 
+    // Suggested searches
     if (suggestedQueries.length > 0) {
-      console.log(`## Suggested searches\n`);
-      for (const q of suggestedQueries) console.log(`- ${q}`);
-      console.log("");
+      console.log(chalk.bold("SUGGESTED SEARCHES"));
+      console.log(divider);
+      suggestedQueries.forEach((q) => console.log(`- ${q}`));
     }
-    return;
-  }
-
-  // Human Output (premium, width-aware)
-  console.log(chalk.bold(`CONTEXT FOR: ${normalizedTask}`));
-  console.log(divider);
-
-  // Loud, one-line banner when semantic search was requested but we fell
-  // back to keyword-only. Silent fallback hid a binary-build regression
-  // for an entire release cycle — never again.
-  if (result.semanticError) {
-    console.log(
-      chalk.yellow(
-        `${iconPrefix("warning")}Semantic search unavailable; using keyword-only scoring.`
-      )
-    );
-    console.log(chalk.yellow(`  Reason: ${result.semanticError}`));
-    console.log(
-      chalk.yellow(
-        `  Fix:    set "embeddingBackend": "ollama" in ~/.cass-memory/config.json, ` +
-          `or build from source (install.sh --from-source), ` +
-          `or disable: semanticSearchEnabled: false`
-      )
-    );
-    console.log("");
-  } else if (result.semanticNotice) {
-    // Automatic mode, backend not ready: informational, not a failure.
-    console.log(
-      chalk.dim(`${iconPrefix("tip")}Keyword-only search. ${result.semanticNotice}`)
-    );
-    console.log("");
-  }
-
-  if (result.degraded?.cass && !result.degraded.cass.available) {
-    const cass = result.degraded.cass;
-    const suggested = Array.isArray(cass.suggestedFix) ? cass.suggestedFix.filter(Boolean) : [];
-    const primaryHint = suggested[0] || `${cli} doctor`;
-    const remoteOnlyNote = cassHits.length > 0 ? " (showing remote history only)" : "";
-    console.log(chalk.yellow(`${iconPrefix("warning")}Local history unavailable (cass: ${cass.reason})${remoteOnlyNote}.`));
-    console.log(chalk.yellow(`  Next: ${primaryHint}`));
-    console.log("");
-  }
-
-  // Playbook rules
-  if (rules.length > 0) {
-    console.log(chalk.bold(`PLAYBOOK RULES (${rules.length})`));
-    console.log(divider);
-    const contentWidth = Math.max(24, maxWidth - 2);
-
-    for (const b of rules) {
-      const relevance = Number.isFinite(b.relevanceScore) ? b.relevanceScore.toFixed(1) : "n/a";
-      const confidence = Number.isFinite(b.effectiveScore) ? b.effectiveScore.toFixed(1) : "n/a";
-      const maturity = b.maturity ? ` • ${b.maturity}` : "";
-      console.log(chalk.bold(`[${b.id}]`) + chalk.dim(` ${b.category}/${b.kind} • relevance ${relevance} • confidence ${confidence}${maturity}`));
-      for (const line of wrapText(b.content, contentWidth)) {
-        console.log(`  ${line}`);
-      }
-      console.log("");
-    }
-  } else {
-    console.log(chalk.bold("PLAYBOOK RULES (0)"));
-    console.log(divider);
-    console.log(chalk.gray("(No relevant playbook rules found)"));
-    console.log(chalk.gray(`  ${formatTipPrefix()}Run '${cli} reflect' to start learning from your agent sessions.`));
-    console.log("");
-  }
-
-  // Pitfalls
-  if (antiPatterns.length > 0) {
-    console.log(chalk.yellow.bold(`${iconPrefix("warning")}PITFALLS TO AVOID (${antiPatterns.length})`));
-    console.log(divider);
-    const contentWidth = Math.max(24, maxWidth - 4);
-    for (const b of antiPatterns) {
-      console.log(chalk.yellow(`- [${b.id}]`));
-      for (const line of wrapText(b.content, contentWidth)) {
-        console.log(chalk.yellow(`  ${line}`));
-      }
-    }
-    console.log("");
-  }
-
-  // History (explicit truncation)
-  if (cassHits.length > 0) {
-    const total = cassHits.length;
-    const shown = Math.min(total, 3);
-    const showing = total > shown ? ` (showing ${shown} of ${total})` : "";
-    console.log(chalk.bold(`HISTORY${showing}`));
-    console.log(divider);
-
-    const snippetWidth = Math.max(24, maxWidth - 4);
-    cassHits.slice(0, shown).forEach((h, i) => {
-      const agent = h.agent || "unknown";
-      const agentLabel = `${agentIconPrefix(agent)}${agent}`;
-      const isRemote = h.origin?.kind === "remote";
-      const hostLabel = isRemote && h.origin?.host ? ` [${h.origin.host}]` : "";
-
-      // Remote hits get dimmer styling
-      const headerStyle = isRemote ? chalk.dim : chalk.bold;
-      const snippetStyle = isRemote ? chalk.dim : chalk.gray;
-      const pathStyle = isRemote ? chalk.dim : chalk.dim;
-
-      console.log(headerStyle(`${i + 1}. ${agentLabel}${hostLabel}`) + pathStyle(` • ${h.source_path}`));
-      const snippet = h.snippet.trim().replace(/\s+/g, " ");
-      for (const line of wrapText(`"${snippet}"`, snippetWidth)) {
-        console.log(snippetStyle(`  ${line}`));
-      }
-      console.log("");
-    });
-  } else if (!result.degraded?.cass || result.degraded.cass.available) {
-    console.log(chalk.bold("HISTORY (0)"));
-    console.log(divider);
-    console.log(chalk.gray("(No relevant history found)"));
-    console.log(chalk.gray(`  ${formatTipPrefix()}Use Claude Code, Cursor, Codex, or PI to build session history.`));
-    console.log("");
-  }
-
-  // Warnings
-  if (warnings.length > 0) {
-    console.log(chalk.yellow.bold(`${iconPrefix("warning")}WARNINGS (${warnings.length})`));
-    console.log(divider);
-    warnings.forEach((w) => console.log(chalk.yellow(`- ${w}`)));
-    console.log("");
-  }
-
-  // Suggested searches
-  if (suggestedQueries.length > 0) {
-    console.log(chalk.bold("SUGGESTED SEARCHES"));
-    console.log(divider);
-    suggestedQueries.forEach((q) => console.log(`- ${q}`));
-  }
   } catch (err: any) {
     const message = err?.message || String(err);
     embeddingsProgressRef.current?.fail(message);

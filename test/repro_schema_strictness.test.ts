@@ -1,5 +1,4 @@
-
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { z } from "zod";
 import { PlaybookDeltaSchema } from "../src/types.js";
 
@@ -8,7 +7,7 @@ describe("PlaybookDeltaSchema", () => {
     const invalidDelta = {
       type: "add",
       bullet: { content: "foo", category: "bar" },
-      reason: "test"
+      reason: "test",
     };
     const result = PlaybookDeltaSchema.safeParse(invalidDelta);
     expect(result.success).toBe(false);

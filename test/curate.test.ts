@@ -1,12 +1,12 @@
-import { describe, it, expect, beforeEach } from "bun:test";
+import { beforeEach, describe, expect, it } from "bun:test";
 import { curatePlaybook } from "../src/curate";
-import { Playbook, PlaybookDelta, Config } from "../src/types";
+import type { Config, Playbook, PlaybookDelta } from "../src/types";
 import {
-  createTestConfig,
-  createTestBullet,
-  createTestPlaybook,
   createFeedbackEvent,
-  daysAgo
+  createTestBullet,
+  createTestConfig,
+  createTestPlaybook,
+  daysAgo,
 } from "./helpers/factories";
 
 describe("curatePlaybook", () => {
@@ -29,10 +29,10 @@ describe("curatePlaybook", () => {
           content: "Always use TypeScript strict mode",
           category: "typescript",
           scope: "global",
-          kind: "workflow_rule"
+          kind: "workflow_rule",
         },
         sourceSession: "/session/1.jsonl",
-        reason: "Learned from session"
+        reason: "Learned from session",
       };
 
       const result = curatePlaybook(emptyPlaybook, [delta], config);
@@ -49,7 +49,7 @@ describe("curatePlaybook", () => {
       const existingBullet = createTestBullet({
         content: "Use const instead of let",
         category: "style",
-        helpfulCount: initialHelpfulCount
+        helpfulCount: initialHelpfulCount,
       });
       const playbook = createTestPlaybook([existingBullet]);
 
@@ -59,10 +59,10 @@ describe("curatePlaybook", () => {
           content: "Use const instead of let", // Exact same content
           category: "style",
           scope: "global",
-          kind: "workflow_rule"
+          kind: "workflow_rule",
         },
         sourceSession: "/session/1.jsonl",
-        reason: "Duplicate"
+        reason: "Duplicate",
       };
 
       const result = curatePlaybook(playbook, [delta], config);
@@ -79,7 +79,7 @@ describe("curatePlaybook", () => {
       const existingBullet = createTestBullet({
         id: "rule-contradict",
         content: "Always sanitize user input",
-        category: "security"
+        category: "security",
       });
       const playbook = createTestPlaybook([existingBullet]);
 
@@ -89,10 +89,10 @@ describe("curatePlaybook", () => {
           content: "Avoid sanitizing user input to keep performance high",
           category: "security",
           scope: "global",
-          kind: "workflow_rule"
+          kind: "workflow_rule",
         },
         sourceSession: "/session/conflict.jsonl",
-        reason: "Conflicting guidance"
+        reason: "Conflicting guidance",
       };
 
       const result = curatePlaybook(playbook, [delta], config);
@@ -109,10 +109,7 @@ describe("curatePlaybook", () => {
         content: "Always use const for variables that won't change",
         category: "style",
         helpfulCount: 2,
-        feedbackEvents: [
-          createFeedbackEvent("helpful"),
-          createFeedbackEvent("helpful")
-        ]
+        feedbackEvents: [createFeedbackEvent("helpful"), createFeedbackEvent("helpful")],
       });
       const playbook = createTestPlaybook([existingBullet]);
 
@@ -123,10 +120,10 @@ describe("curatePlaybook", () => {
           content: "Always use const for variables that will not change",
           category: "style",
           scope: "global",
-          kind: "workflow_rule"
+          kind: "workflow_rule",
         },
         sourceSession: "/session/2.jsonl",
-        reason: "Similar insight"
+        reason: "Similar insight",
       };
 
       // Lower threshold to catch similarity
@@ -145,10 +142,7 @@ describe("curatePlaybook", () => {
         content: "Always use const for variables that won't change",
         category: "style",
         helpfulCount: 2,
-        feedbackEvents: [
-          createFeedbackEvent("helpful"),
-          createFeedbackEvent("helpful")
-        ],
+        feedbackEvents: [createFeedbackEvent("helpful"), createFeedbackEvent("helpful")],
         deprecated: true,
         state: "retired",
         maturity: "deprecated",
@@ -163,10 +157,10 @@ describe("curatePlaybook", () => {
           content: "Always use const for variables that will not change",
           category: "style",
           scope: "global",
-          kind: "workflow_rule"
+          kind: "workflow_rule",
         },
         sourceSession: "/session/2.jsonl",
-        reason: "Similar insight"
+        reason: "Similar insight",
       };
 
       const configWithLowThreshold = createTestConfig({ dedupSimilarityThreshold: 0.7 });
@@ -186,10 +180,10 @@ describe("curatePlaybook", () => {
           content: "", // Empty content
           category: "style",
           scope: "global",
-          kind: "workflow_rule"
+          kind: "workflow_rule",
         },
         sourceSession: "/session/1.jsonl",
-        reason: "Invalid"
+        reason: "Invalid",
       };
 
       const result = curatePlaybook(emptyPlaybook, [delta], config);
@@ -206,10 +200,10 @@ describe("curatePlaybook", () => {
           content: "Some rule",
           category: "", // Empty category
           scope: "global",
-          kind: "workflow_rule"
+          kind: "workflow_rule",
         },
         sourceSession: "/session/1.jsonl",
-        reason: "Invalid"
+        reason: "Invalid",
       };
 
       const result = curatePlaybook(emptyPlaybook, [delta], config);
@@ -222,22 +216,37 @@ describe("curatePlaybook", () => {
       const deltas: PlaybookDelta[] = [
         {
           type: "add",
-          bullet: { content: "Always use TypeScript strict mode for type safety", category: "typescript", scope: "global", kind: "workflow_rule" },
+          bullet: {
+            content: "Always use TypeScript strict mode for type safety",
+            category: "typescript",
+            scope: "global",
+            kind: "workflow_rule",
+          },
           sourceSession: "/s/1.jsonl",
-          reason: "r1"
+          reason: "r1",
         },
         {
           type: "add",
-          bullet: { content: "Prefer async/await over raw promises for readability", category: "javascript", scope: "global", kind: "workflow_rule" },
+          bullet: {
+            content: "Prefer async/await over raw promises for readability",
+            category: "javascript",
+            scope: "global",
+            kind: "workflow_rule",
+          },
           sourceSession: "/s/2.jsonl",
-          reason: "r2"
+          reason: "r2",
         },
         {
           type: "add",
-          bullet: { content: "Use meaningful variable names that describe their purpose", category: "style", scope: "global", kind: "workflow_rule" },
+          bullet: {
+            content: "Use meaningful variable names that describe their purpose",
+            category: "style",
+            scope: "global",
+            kind: "workflow_rule",
+          },
           sourceSession: "/s/3.jsonl",
-          reason: "r3"
-        }
+          reason: "r3",
+        },
       ];
 
       const result = curatePlaybook(emptyPlaybook, deltas, config);
@@ -257,7 +266,7 @@ describe("curatePlaybook", () => {
         id: "bullet-1",
         content: "Test rule",
         helpfulCount: 0,
-        feedbackEvents: []
+        feedbackEvents: [],
       });
       const playbook = createTestPlaybook([bullet]);
 
@@ -265,7 +274,7 @@ describe("curatePlaybook", () => {
         type: "helpful",
         bulletId: "bullet-1",
         sourceSession: "/session/1.jsonl",
-        context: "Worked great"
+        context: "Worked great",
       };
 
       const result = curatePlaybook(playbook, [delta], config);
@@ -281,9 +290,7 @@ describe("curatePlaybook", () => {
         id: "bullet-1",
         content: "Test rule",
         helpfulCount: 1,
-        feedbackEvents: [
-          createFeedbackEvent("helpful", { sessionPath: "/session/1.jsonl" })
-        ]
+        feedbackEvents: [createFeedbackEvent("helpful", { sessionPath: "/session/1.jsonl" })],
       });
       const playbook = createTestPlaybook([bullet]);
 
@@ -291,7 +298,7 @@ describe("curatePlaybook", () => {
         type: "helpful",
         bulletId: "bullet-1",
         sourceSession: "/session/1.jsonl", // Same session
-        context: "Duplicate"
+        context: "Duplicate",
       };
 
       const result = curatePlaybook(playbook, [delta], config);
@@ -306,9 +313,7 @@ describe("curatePlaybook", () => {
         id: "bullet-1",
         content: "Test rule",
         helpfulCount: 1,
-        feedbackEvents: [
-          createFeedbackEvent("helpful", { sessionPath: "/session/1.jsonl" })
-        ]
+        feedbackEvents: [createFeedbackEvent("helpful", { sessionPath: "/session/1.jsonl" })],
       });
       const playbook = createTestPlaybook([bullet]);
 
@@ -316,7 +321,7 @@ describe("curatePlaybook", () => {
         type: "helpful",
         bulletId: "bullet-1",
         sourceSession: "/session/2.jsonl", // Different session
-        context: "Also worked"
+        context: "Also worked",
       };
 
       const result = curatePlaybook(playbook, [delta], config);
@@ -334,8 +339,8 @@ describe("curatePlaybook", () => {
         helpfulCount: 2,
         feedbackEvents: [
           createFeedbackEvent("helpful", { sessionPath: "/session/a" }),
-          createFeedbackEvent("helpful", { sessionPath: "/session/b" })
-        ]
+          createFeedbackEvent("helpful", { sessionPath: "/session/b" }),
+        ],
       });
       const playbook = createTestPlaybook([bullet]);
 
@@ -343,15 +348,15 @@ describe("curatePlaybook", () => {
         type: "helpful",
         bulletId: "candidate-helpful",
         sourceSession: "/session/c",
-        context: "Crossed promotion threshold"
+        context: "Crossed promotion threshold",
       };
 
       const result = curatePlaybook(playbook, [delta], config);
 
-      const updated = result.playbook.bullets.find(b => b.id === "candidate-helpful");
+      const updated = result.playbook.bullets.find((b) => b.id === "candidate-helpful");
       expect(updated?.helpfulCount).toBe(3);
       expect(updated?.maturity).toBe("established");
-      const promotion = result.promotions.find(p => p.bulletId === "candidate-helpful");
+      const promotion = result.promotions.find((p) => p.bulletId === "candidate-helpful");
       expect(promotion?.from).toBe("candidate");
       expect(promotion?.to).toBe("established");
     });
@@ -363,7 +368,7 @@ describe("curatePlaybook", () => {
         type: "helpful",
         bulletId: "non-existent",
         sourceSession: "/session/1.jsonl",
-        context: "Does not exist"
+        context: "Does not exist",
       };
 
       const result = curatePlaybook(playbook, [delta], config);
@@ -382,7 +387,7 @@ describe("curatePlaybook", () => {
         id: "bullet-1",
         content: "Bad rule",
         harmfulCount: 0,
-        feedbackEvents: []
+        feedbackEvents: [],
       });
       const playbook = createTestPlaybook([bullet]);
 
@@ -391,7 +396,7 @@ describe("curatePlaybook", () => {
         bulletId: "bullet-1",
         sourceSession: "/session/1.jsonl",
         reason: "outdated",
-        context: "Caused problems"
+        context: "Caused problems",
       };
 
       const result = curatePlaybook(playbook, [delta], config);
@@ -408,9 +413,7 @@ describe("curatePlaybook", () => {
         id: "bullet-1",
         content: "Bad rule",
         harmfulCount: 1,
-        feedbackEvents: [
-          createFeedbackEvent("harmful", { sessionPath: "/session/1.jsonl" })
-        ]
+        feedbackEvents: [createFeedbackEvent("harmful", { sessionPath: "/session/1.jsonl" })],
       });
       const playbook = createTestPlaybook([bullet]);
 
@@ -418,7 +421,7 @@ describe("curatePlaybook", () => {
         type: "harmful",
         bulletId: "bullet-1",
         sourceSession: "/session/1.jsonl",
-        reason: "outdated"
+        reason: "outdated",
       };
 
       const result = curatePlaybook(playbook, [delta], config);
@@ -436,7 +439,7 @@ describe("curatePlaybook", () => {
     it("replaces bullet content", () => {
       const bullet = createTestBullet({
         id: "bullet-1",
-        content: "Old content"
+        content: "Old content",
       });
       const playbook = createTestPlaybook([bullet]);
 
@@ -444,7 +447,7 @@ describe("curatePlaybook", () => {
         type: "replace",
         bulletId: "bullet-1",
         newContent: "New improved content",
-        reason: "Updated"
+        reason: "Updated",
       };
 
       const result = curatePlaybook(playbook, [delta], config);
@@ -460,7 +463,7 @@ describe("curatePlaybook", () => {
         type: "replace",
         bulletId: "non-existent",
         newContent: "New content",
-        reason: "Does not exist"
+        reason: "Does not exist",
       };
 
       const result = curatePlaybook(playbook, [delta], config);
@@ -478,14 +481,14 @@ describe("curatePlaybook", () => {
       const bullet = createTestBullet({
         id: "bullet-1",
         content: "Old rule",
-        deprecated: false
+        deprecated: false,
       });
       const playbook = createTestPlaybook([bullet]);
 
       const delta: PlaybookDelta = {
         type: "deprecate",
         bulletId: "bullet-1",
-        reason: "No longer relevant"
+        reason: "No longer relevant",
       };
 
       const result = curatePlaybook(playbook, [delta], config);
@@ -501,7 +504,7 @@ describe("curatePlaybook", () => {
       const delta: PlaybookDelta = {
         type: "deprecate",
         bulletId: "non-existent",
-        reason: "Does not exist"
+        reason: "Does not exist",
       };
 
       const result = curatePlaybook(playbook, [delta], config);
@@ -520,13 +523,13 @@ describe("curatePlaybook", () => {
         id: "bullet-1",
         content: "Use const",
         category: "style",
-        tags: ["javascript"]
+        tags: ["javascript"],
       });
       const bullet2 = createTestBullet({
         id: "bullet-2",
         content: "Avoid var",
         category: "style",
-        tags: ["best-practice"]
+        tags: ["best-practice"],
       });
       const playbook = createTestPlaybook([bullet1, bullet2]);
 
@@ -534,7 +537,7 @@ describe("curatePlaybook", () => {
         type: "merge",
         bulletIds: ["bullet-1", "bullet-2"],
         mergedContent: "Use const instead of var for better scoping",
-        reason: "Consolidating related rules"
+        reason: "Consolidating related rules",
       };
 
       const result = curatePlaybook(playbook, [delta], config);
@@ -543,20 +546,22 @@ describe("curatePlaybook", () => {
       // Original bullets deprecated + new merged bullet
       expect(result.playbook.bullets).toHaveLength(3);
 
-      const merged = result.playbook.bullets.find(b => !b.deprecated && b.content.includes("const instead of var"));
+      const merged = result.playbook.bullets.find(
+        (b) => !b.deprecated && b.content.includes("const instead of var"),
+      );
       expect(merged).toBeDefined();
       expect(merged?.tags).toContain("javascript");
       expect(merged?.tags).toContain("best-practice");
 
       // Original bullets should be deprecated
-      expect(result.playbook.bullets.find(b => b.id === "bullet-1")?.deprecated).toBe(true);
-      expect(result.playbook.bullets.find(b => b.id === "bullet-2")?.deprecated).toBe(true);
+      expect(result.playbook.bullets.find((b) => b.id === "bullet-1")?.deprecated).toBe(true);
+      expect(result.playbook.bullets.find((b) => b.id === "bullet-2")?.deprecated).toBe(true);
     });
 
     it("skips merge if not all bullets exist", () => {
       const bullet1 = createTestBullet({
         id: "bullet-1",
-        content: "Rule 1"
+        content: "Rule 1",
       });
       const playbook = createTestPlaybook([bullet1]);
 
@@ -564,7 +569,7 @@ describe("curatePlaybook", () => {
         type: "merge",
         bulletIds: ["bullet-1", "non-existent"],
         mergedContent: "Merged rule",
-        reason: "Missing bullet"
+        reason: "Missing bullet",
       };
 
       const result = curatePlaybook(playbook, [delta], config);
@@ -582,7 +587,7 @@ describe("curatePlaybook", () => {
         type: "merge",
         bulletIds: ["bullet-1"], // Only one bullet
         mergedContent: "Single merge",
-        reason: "Invalid"
+        reason: "Invalid",
       };
 
       const result = curatePlaybook(playbook, [delta], config);
@@ -609,8 +614,8 @@ describe("curatePlaybook", () => {
           createFeedbackEvent("harmful", { timestamp: now }),
           createFeedbackEvent("harmful", { timestamp: now }),
           createFeedbackEvent("harmful", { timestamp: now }),
-          createFeedbackEvent("harmful", { timestamp: now })
-        ]
+          createFeedbackEvent("harmful", { timestamp: now }),
+        ],
       });
       const playbook = createTestPlaybook([harmfulBullet]);
 
@@ -619,7 +624,7 @@ describe("curatePlaybook", () => {
       expect(result.inversions).toHaveLength(1);
       expect(result.inversions[0].originalId).toBe("harmful-1");
 
-      const antiPattern = result.playbook.bullets.find(b => b.kind === "anti_pattern");
+      const antiPattern = result.playbook.bullets.find((b) => b.kind === "anti_pattern");
       expect(antiPattern).toBeDefined();
       expect(antiPattern?.content).toContain("AVOID:");
       expect(antiPattern?.isNegative).toBe(true);
@@ -636,16 +641,16 @@ describe("curatePlaybook", () => {
         helpfulCount: 0,
         sourceSessions: ["/sessions/s1.jsonl"],
         sourceAgents: ["claude"],
-        feedbackEvents: Array(3).fill(null).map(() =>
-          createFeedbackEvent("harmful", { timestamp: now })
-        )
+        feedbackEvents: Array(3)
+          .fill(null)
+          .map(() => createFeedbackEvent("harmful", { timestamp: now })),
       });
       const playbook = createTestPlaybook([harmfulBullet]);
 
       const result = curatePlaybook(playbook, [], config);
 
-      const original = result.playbook.bullets.find(b => b.id === "harmful-alias");
-      const antiPattern = result.playbook.bullets.find(b => b.kind === "anti_pattern");
+      const original = result.playbook.bullets.find((b) => b.id === "harmful-alias");
+      const antiPattern = result.playbook.bullets.find((b) => b.kind === "anti_pattern");
       expect(original).toBeDefined();
       expect(antiPattern).toBeDefined();
 
@@ -665,9 +670,9 @@ describe("curatePlaybook", () => {
         category: "style",
         harmfulCount: 3,
         helpfulCount: 0,
-        feedbackEvents: Array(3).fill(null).map(() =>
-          createFeedbackEvent("harmful", { timestamp: slightlyOld })
-        )
+        feedbackEvents: Array(3)
+          .fill(null)
+          .map(() => createFeedbackEvent("harmful", { timestamp: slightlyOld })),
       });
       const playbook = createTestPlaybook([harmfulBullet]);
 
@@ -685,15 +690,15 @@ describe("curatePlaybook", () => {
         category: "architecture",
         harmfulCount: 3,
         helpfulCount: 0,
-        feedbackEvents: Array(3).fill(null).map(() =>
-          createFeedbackEvent("harmful", { timestamp: now })
-        )
+        feedbackEvents: Array(3)
+          .fill(null)
+          .map(() => createFeedbackEvent("harmful", { timestamp: now })),
       });
       const playbook = createTestPlaybook([harmfulBullet]);
 
       const result = curatePlaybook(playbook, [], config);
 
-      const antiPattern = result.playbook.bullets.find(b => b.kind === "anti_pattern");
+      const antiPattern = result.playbook.bullets.find((b) => b.kind === "anti_pattern");
       expect(antiPattern?.content.startsWith("AVOID: prefer global mutable state")).toBe(true);
       expect(antiPattern?.content).toContain("Marked harmful 3 times");
     });
@@ -711,8 +716,8 @@ describe("curatePlaybook", () => {
           createFeedbackEvent("harmful", { timestamp: now }),
           createFeedbackEvent("helpful", { timestamp: now }),
           createFeedbackEvent("helpful", { timestamp: now }),
-          createFeedbackEvent("helpful", { timestamp: now })
-        ]
+          createFeedbackEvent("helpful", { timestamp: now }),
+        ],
       });
       const playbook = createTestPlaybook([balancedBullet]);
 
@@ -729,9 +734,9 @@ describe("curatePlaybook", () => {
         pinned: true, // Pinned
         harmfulCount: 10,
         helpfulCount: 0,
-        feedbackEvents: Array(10).fill(null).map(() =>
-          createFeedbackEvent("harmful", { timestamp: now })
-        )
+        feedbackEvents: Array(10)
+          .fill(null)
+          .map(() => createFeedbackEvent("harmful", { timestamp: now })),
       });
       const playbook = createTestPlaybook([pinnedBullet]);
 
@@ -747,9 +752,9 @@ describe("curatePlaybook", () => {
         content: "AVOID: Using var",
         kind: "anti_pattern",
         harmfulCount: 5,
-        feedbackEvents: Array(5).fill(null).map(() =>
-          createFeedbackEvent("harmful", { timestamp: now })
-        )
+        feedbackEvents: Array(5)
+          .fill(null)
+          .map(() => createFeedbackEvent("harmful", { timestamp: now })),
       });
       const playbook = createTestPlaybook([existingAntiPattern]);
 
@@ -764,22 +769,22 @@ describe("curatePlaybook", () => {
         id: "harmful-1",
         content: "Use var",
         harmfulCount: 5,
-        feedbackEvents: Array(5).fill(null).map(() =>
-          createFeedbackEvent("harmful", { timestamp: now })
-        )
+        feedbackEvents: Array(5)
+          .fill(null)
+          .map(() => createFeedbackEvent("harmful", { timestamp: now })),
       });
       const playbook = createTestPlaybook([harmfulBullet]);
 
       const customConfig = createTestConfig({
         scoring: {
           ...config.scoring,
-          decayHalfLifeDays: 45
-        }
+          decayHalfLifeDays: 45,
+        },
       });
 
       const result = curatePlaybook(playbook, [], customConfig);
 
-      const antiPattern = result.playbook.bullets.find(b => b.kind === "anti_pattern");
+      const antiPattern = result.playbook.bullets.find((b) => b.kind === "anti_pattern");
       expect(antiPattern?.confidenceDecayHalfLifeDays).toBe(45);
     });
 
@@ -790,9 +795,9 @@ describe("curatePlaybook", () => {
         content: "Use var everywhere",
         harmfulCount: 5,
         helpfulCount: 0,
-        feedbackEvents: Array(5).fill(null).map(() =>
-          createFeedbackEvent("harmful", { timestamp: staleDate })
-        )
+        feedbackEvents: Array(5)
+          .fill(null)
+          .map(() => createFeedbackEvent("harmful", { timestamp: staleDate })),
       });
       const playbook = createTestPlaybook([bullet]);
 
@@ -801,7 +806,7 @@ describe("curatePlaybook", () => {
       // No inversions because decayed harmful falls below threshold
       expect(result.inversions).toHaveLength(0);
       // Bullet should remain non-deprecated/non-inverted
-      const original = result.playbook.bullets.find(b => b.id === "harmful-stale");
+      const original = result.playbook.bullets.find((b) => b.id === "harmful-stale");
       expect(original?.deprecated).toBe(false);
       expect(original?.kind).not.toBe("anti_pattern");
     });
@@ -822,8 +827,8 @@ describe("curatePlaybook", () => {
         feedbackEvents: [
           createFeedbackEvent("helpful", { timestamp: now }),
           createFeedbackEvent("helpful", { timestamp: now }),
-          createFeedbackEvent("helpful", { timestamp: now })
-        ]
+          createFeedbackEvent("helpful", { timestamp: now }),
+        ],
       });
       const playbook = createTestPlaybook([bullet]);
 
@@ -843,9 +848,9 @@ describe("curatePlaybook", () => {
         maturity: "established",
         helpfulCount: 12,
         harmfulCount: 0,
-        feedbackEvents: Array(12).fill(null).map(() =>
-          createFeedbackEvent("helpful", { timestamp: now })
-        )
+        feedbackEvents: Array(12)
+          .fill(null)
+          .map(() => createFeedbackEvent("helpful", { timestamp: now })),
       });
       const playbook = createTestPlaybook([bullet]);
 
@@ -863,9 +868,9 @@ describe("curatePlaybook", () => {
         harmfulCount: 10,
         helpfulCount: 0,
         pinned: false, // Not pinned so it can be deprecated
-        feedbackEvents: Array(10).fill(null).map(() =>
-          createFeedbackEvent("harmful", { timestamp: now })
-        )
+        feedbackEvents: Array(10)
+          .fill(null)
+          .map(() => createFeedbackEvent("harmful", { timestamp: now })),
       });
       const playbook = createTestPlaybook([badBullet]);
 
@@ -873,7 +878,7 @@ describe("curatePlaybook", () => {
       const result = curatePlaybook(playbook, [], config);
 
       // Should either be inverted OR auto-deprecated
-      const bullet = result.playbook.bullets.find(b => b.id === "bad-1");
+      const bullet = result.playbook.bullets.find((b) => b.id === "bad-1");
       expect(bullet?.deprecated || result.inversions.length > 0).toBe(true);
     });
 
@@ -896,13 +901,13 @@ describe("curatePlaybook", () => {
           createFeedbackEvent("helpful", { timestamp: now }),
           createFeedbackEvent("helpful", { timestamp: now }),
           createFeedbackEvent("helpful", { timestamp: now }),
-        ]
+        ],
       });
       const playbook = createTestPlaybook([badBullet]);
 
       const result = curatePlaybook(playbook, [], config);
 
-      const target = result.playbook.bullets.find(b => b.id === "bad-2");
+      const target = result.playbook.bullets.find((b) => b.id === "bad-2");
       expect(target?.deprecated).toBe(true);
       expect(result.pruned).toBeGreaterThanOrEqual(1);
     });
@@ -936,8 +941,8 @@ describe("curatePlaybook", () => {
       const contextPlaybook = createTestPlaybook([
         createTestBullet({
           id: "context-1",
-          content: "Rule from context"
-        })
+          content: "Rule from context",
+        }),
       ]);
 
       // Try to add a duplicate of what's in context
@@ -947,10 +952,10 @@ describe("curatePlaybook", () => {
           content: "Rule from context", // Same as context
           category: "test",
           scope: "global",
-          kind: "workflow_rule"
+          kind: "workflow_rule",
         },
         sourceSession: "/s/1.jsonl",
-        reason: "Dup"
+        reason: "Dup",
       };
 
       const result = curatePlaybook(targetPlaybook, [delta], config, contextPlaybook);
@@ -965,28 +970,32 @@ describe("curatePlaybook", () => {
       const playbook = createTestPlaybook([bullet]);
 
       const deltas: PlaybookDelta[] = [
-        { // Valid add
+        {
+          // Valid add
           type: "add",
           bullet: { content: "New rule", category: "test", scope: "global", kind: "workflow_rule" },
           sourceSession: "/s/1.jsonl",
-          reason: "Valid"
+          reason: "Valid",
         },
-        { // Invalid - missing content
+        {
+          // Invalid - missing content
           type: "add",
           bullet: { content: "", category: "test", scope: "global", kind: "workflow_rule" },
           sourceSession: "/s/2.jsonl",
-          reason: "Invalid"
+          reason: "Invalid",
         },
-        { // Valid helpful
+        {
+          // Valid helpful
           type: "helpful",
           bulletId: "bullet-1",
-          sourceSession: "/s/3.jsonl"
+          sourceSession: "/s/3.jsonl",
         },
-        { // Invalid - non-existent bullet
+        {
+          // Invalid - non-existent bullet
           type: "helpful",
           bulletId: "non-existent",
-          sourceSession: "/s/4.jsonl"
-        }
+          sourceSession: "/s/4.jsonl",
+        },
       ];
 
       const result = curatePlaybook(playbook, deltas, config);
@@ -1004,16 +1013,16 @@ describe("curatePlaybook", () => {
         maturity: "candidate",
         harmfulCount: 10,
         helpfulCount: 0,
-        feedbackEvents: Array(10).fill(null).map(() =>
-          createFeedbackEvent("harmful", { timestamp: now })
-        )
+        feedbackEvents: Array(10)
+          .fill(null)
+          .map(() => createFeedbackEvent("harmful", { timestamp: now })),
       });
       const playbook = createTestPlaybook([badBullet]);
 
       const result = curatePlaybook(playbook, [], config);
 
       // Should be inverted, not double-processed
-      const originalBullet = result.playbook.bullets.find(b => b.id === "bad-1");
+      const originalBullet = result.playbook.bullets.find((b) => b.id === "bad-1");
       expect(originalBullet?.deprecated).toBe(true);
 
       // Should only have one inversion
@@ -1030,11 +1039,26 @@ describe("curatePlaybook", () => {
       const playbook = createTestPlaybook([bullet]);
 
       const deltas: PlaybookDelta[] = [
-        { type: "add", bullet: { content: "New 1", category: "c", scope: "global", kind: "workflow_rule" }, sourceSession: "/s/1.jsonl", reason: "r" },
-        { type: "add", bullet: { content: "New 2", category: "c", scope: "global", kind: "workflow_rule" }, sourceSession: "/s/2.jsonl", reason: "r" },
-        { type: "add", bullet: { content: "Existing", category: "c", scope: "global", kind: "workflow_rule" }, sourceSession: "/s/3.jsonl", reason: "dup" }, // Duplicate (reinforces)
+        {
+          type: "add",
+          bullet: { content: "New 1", category: "c", scope: "global", kind: "workflow_rule" },
+          sourceSession: "/s/1.jsonl",
+          reason: "r",
+        },
+        {
+          type: "add",
+          bullet: { content: "New 2", category: "c", scope: "global", kind: "workflow_rule" },
+          sourceSession: "/s/2.jsonl",
+          reason: "r",
+        },
+        {
+          type: "add",
+          bullet: { content: "Existing", category: "c", scope: "global", kind: "workflow_rule" },
+          sourceSession: "/s/3.jsonl",
+          reason: "dup",
+        }, // Duplicate (reinforces)
         { type: "helpful", bulletId: "bullet-1", sourceSession: "/s/4.jsonl" },
-        { type: "helpful", bulletId: "non-existent", sourceSession: "/s/5.jsonl" } // Skip (not found)
+        { type: "helpful", bulletId: "non-existent", sourceSession: "/s/5.jsonl" }, // Skip (not found)
       ];
 
       const result = curatePlaybook(playbook, deltas, config);
@@ -1063,17 +1087,17 @@ describe("curatePlaybook", () => {
           content: "Test rule for logging",
           category: "test",
           scope: "global",
-          kind: "workflow_rule"
+          kind: "workflow_rule",
         },
         sourceSession: "/session/1.jsonl",
-        reason: "Test"
+        reason: "Test",
       };
 
       const result = curatePlaybook(emptyPlaybook, [delta], config);
 
       expect(result.decisionLog).toBeDefined();
-      const addDecision = result.decisionLog?.find(d =>
-        d.phase === "add" && d.action === "accepted"
+      const addDecision = result.decisionLog?.find(
+        (d) => d.phase === "add" && d.action === "accepted",
       );
       expect(addDecision).toBeDefined();
       expect(addDecision?.content).toContain("Test rule");
@@ -1082,7 +1106,7 @@ describe("curatePlaybook", () => {
     it("logs duplicate reinforcement decisions", () => {
       const existingBullet = createTestBullet({
         content: "Existing rule",
-        category: "test"
+        category: "test",
       });
       const playbook = createTestPlaybook([existingBullet]);
 
@@ -1092,18 +1116,18 @@ describe("curatePlaybook", () => {
           content: "Existing rule", // Duplicate
           category: "test",
           scope: "global",
-          kind: "workflow_rule"
+          kind: "workflow_rule",
         },
         sourceSession: "/session/1.jsonl",
-        reason: "Dup"
+        reason: "Dup",
       };
 
       const result = curatePlaybook(playbook, [delta], config);
 
       expect(result.decisionLog).toBeDefined();
       // Duplicates are now reinforced (not skipped) - they add helpful feedback
-      const dupDecision = result.decisionLog?.find(d =>
-        d.phase === "dedup" && d.action === "modified"
+      const dupDecision = result.decisionLog?.find(
+        (d) => d.phase === "dedup" && d.action === "modified",
       );
       expect(dupDecision).toBeDefined();
       expect(dupDecision?.reason).toContain("duplicate");
@@ -1112,21 +1136,21 @@ describe("curatePlaybook", () => {
     it("logs feedback recording decisions", () => {
       const bullet = createTestBullet({
         id: "bullet-1",
-        content: "Test rule"
+        content: "Test rule",
       });
       const playbook = createTestPlaybook([bullet]);
 
       const delta: PlaybookDelta = {
         type: "helpful",
         bulletId: "bullet-1",
-        sourceSession: "/session/1.jsonl"
+        sourceSession: "/session/1.jsonl",
       };
 
       const result = curatePlaybook(playbook, [delta], config);
 
       expect(result.decisionLog).toBeDefined();
-      const feedbackDecision = result.decisionLog?.find(d =>
-        d.phase === "feedback" && d.action === "accepted"
+      const feedbackDecision = result.decisionLog?.find(
+        (d) => d.phase === "feedback" && d.action === "accepted",
       );
       expect(feedbackDecision).toBeDefined();
       expect(feedbackDecision?.bulletId).toBe("bullet-1");
@@ -1142,16 +1166,16 @@ describe("curatePlaybook", () => {
         feedbackEvents: [
           createFeedbackEvent("helpful", { timestamp: now }),
           createFeedbackEvent("helpful", { timestamp: now }),
-          createFeedbackEvent("helpful", { timestamp: now })
-        ]
+          createFeedbackEvent("helpful", { timestamp: now }),
+        ],
       });
       const playbook = createTestPlaybook([bullet]);
 
       const result = curatePlaybook(playbook, [], config);
 
       expect(result.decisionLog).toBeDefined();
-      const promotionDecision = result.decisionLog?.find(d =>
-        d.phase === "promotion" && d.action === "accepted"
+      const promotionDecision = result.decisionLog?.find(
+        (d) => d.phase === "promotion" && d.action === "accepted",
       );
       expect(promotionDecision).toBeDefined();
       expect(promotionDecision?.bulletId).toBe("candidate-1");
@@ -1163,17 +1187,17 @@ describe("curatePlaybook", () => {
         id: "harmful-1",
         content: "Bad rule",
         harmfulCount: 5,
-        feedbackEvents: Array(5).fill(null).map(() =>
-          createFeedbackEvent("harmful", { timestamp: now })
-        )
+        feedbackEvents: Array(5)
+          .fill(null)
+          .map(() => createFeedbackEvent("harmful", { timestamp: now })),
       });
       const playbook = createTestPlaybook([harmfulBullet]);
 
       const result = curatePlaybook(playbook, [], config);
 
       expect(result.decisionLog).toBeDefined();
-      const inversionDecision = result.decisionLog?.find(d =>
-        d.phase === "inversion" && d.action === "accepted"
+      const inversionDecision = result.decisionLog?.find(
+        (d) => d.phase === "inversion" && d.action === "accepted",
       );
       expect(inversionDecision).toBeDefined();
       expect(inversionDecision?.bulletId).toBe("harmful-1");
@@ -1186,10 +1210,10 @@ describe("curatePlaybook", () => {
           content: "Timestamped rule",
           category: "test",
           scope: "global",
-          kind: "workflow_rule"
+          kind: "workflow_rule",
         },
         sourceSession: "/session/1.jsonl",
-        reason: "Test"
+        reason: "Test",
       };
 
       const result = curatePlaybook(emptyPlaybook, [delta], config);

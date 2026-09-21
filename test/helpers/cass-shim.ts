@@ -15,7 +15,7 @@
  *   });
  */
 
-import { CassHit, CassTimelineResult, CassTimelineGroup } from "../../src/types.js";
+import type { CassHit, CassTimelineGroup, CassTimelineResult } from "../../src/types.js";
 
 // --- Types ---
 
@@ -76,8 +76,9 @@ export function createTestCassHit(overrides: Partial<CassHit> = {}): CassHit {
     snippet: overrides.snippet || "Test snippet content from session",
     score: overrides.score ?? 0.85,
     workspace: overrides.workspace,
-    sessionPath: overrides.sessionPath || overrides.source_path || "/test/sessions/session-001.jsonl",
-    ...overrides
+    sessionPath:
+      overrides.sessionPath || overrides.source_path || "/test/sessions/session-001.jsonl",
+    ...overrides,
   };
 }
 
@@ -93,19 +94,19 @@ export function createTestTimeline(groups: Partial<CassTimelineGroup>[] = []): C
               agent: "claude-code",
               messageCount: 50,
               startTime: new Date().toISOString(),
-              endTime: new Date().toISOString()
-            }
-          ]
-        }
-      ]
+              endTime: new Date().toISOString(),
+            },
+          ],
+        },
+      ],
     };
   }
 
   return {
-    groups: groups.map(g => ({
+    groups: groups.map((g) => ({
       date: g.date || new Date().toISOString().split("T")[0],
-      sessions: g.sessions || []
-    }))
+      sessions: g.sessions || [],
+    })),
   };
 }
 
@@ -144,13 +145,13 @@ export function shimCassNeedsIndex(): boolean {
  */
 export async function shimCassSearch(
   query: string,
-  options: CassSearchShimOptions = {}
+  options: CassSearchShimOptions = {},
 ): Promise<CassHit[]> {
   if (!currentShimConfig) return [];
 
   // Apply delay if configured
   if (currentShimConfig.delay) {
-    await new Promise(r => setTimeout(r, currentShimConfig!.delay));
+    await new Promise((r) => setTimeout(r, currentShimConfig!.delay));
   }
 
   // Check for errors
@@ -173,13 +174,13 @@ export async function shimCassSearch(
 
   // Filter by workspace if specified
   if (options.workspace) {
-    results = results.filter(r => r.workspace === options.workspace || !r.workspace);
+    results = results.filter((r) => r.workspace === options.workspace || !r.workspace);
   }
 
   // Filter by agent if specified
   if (options.agent) {
     const agents = Array.isArray(options.agent) ? options.agent : [options.agent];
-    results = results.filter(r => agents.includes(r.agent));
+    results = results.filter((r) => agents.includes(r.agent));
   }
 
   return results;
@@ -190,12 +191,12 @@ export async function shimCassSearch(
  */
 export async function shimCassExport(
   sessionPath: string,
-  format: "markdown" | "json" | "text" = "markdown"
+  format: "markdown" | "json" | "text" = "markdown",
 ): Promise<string | null> {
   if (!currentShimConfig) return null;
 
   if (currentShimConfig.delay) {
-    await new Promise(r => setTimeout(r, currentShimConfig!.delay));
+    await new Promise((r) => setTimeout(r, currentShimConfig!.delay));
   }
 
   if (currentShimConfig.errors?.export) {
@@ -212,12 +213,12 @@ export async function shimCassExport(
 export async function shimCassExpand(
   sessionPath: string,
   lineNumber: number,
-  contextLines = 3
+  contextLines = 3,
 ): Promise<string | null> {
   if (!currentShimConfig) return null;
 
   if (currentShimConfig.delay) {
-    await new Promise(r => setTimeout(r, currentShimConfig!.delay));
+    await new Promise((r) => setTimeout(r, currentShimConfig!.delay));
   }
 
   const sessionExpands = currentShimConfig.expandContent?.get(sessionPath);
@@ -233,7 +234,7 @@ export async function shimCassTimeline(days: number): Promise<CassTimelineResult
   if (!currentShimConfig) return { groups: [] };
 
   if (currentShimConfig.delay) {
-    await new Promise(r => setTimeout(r, currentShimConfig!.delay));
+    await new Promise((r) => setTimeout(r, currentShimConfig!.delay));
   }
 
   if (currentShimConfig.errors?.timeline) {
@@ -250,14 +251,16 @@ export async function shimCassStats(): Promise<Record<string, any> | null> {
   if (!currentShimConfig) return null;
 
   if (currentShimConfig.delay) {
-    await new Promise(r => setTimeout(r, currentShimConfig!.delay));
+    await new Promise((r) => setTimeout(r, currentShimConfig!.delay));
   }
 
-  return currentShimConfig.stats ?? {
-    total_sessions: 10,
-    total_messages: 500,
-    indexed_at: new Date().toISOString()
-  };
+  return (
+    currentShimConfig.stats ?? {
+      total_sessions: 10,
+      total_messages: 500,
+      indexed_at: new Date().toISOString(),
+    }
+  );
 }
 
 /**
@@ -267,7 +270,7 @@ export async function shimCassIndex(): Promise<void> {
   if (!currentShimConfig) return;
 
   if (currentShimConfig.delay) {
-    await new Promise(r => setTimeout(r, currentShimConfig!.delay));
+    await new Promise((r) => setTimeout(r, currentShimConfig!.delay));
   }
 
   if (currentShimConfig.errors?.index) {
@@ -289,10 +292,7 @@ export async function shimCassIndex(): Promise<void> {
  * @param fn - Callback to run with shim active
  * @returns Result of callback
  */
-export async function withCassShim<T>(
-  config: CassShimConfig,
-  fn: () => Promise<T>
-): Promise<T> {
+export async function withCassShim<T>(config: CassShimConfig, fn: () => Promise<T>): Promise<T> {
   const previousConfig = currentShimConfig;
   currentShimConfig = config;
 
@@ -327,7 +327,7 @@ export function unavailableCassConfig(): CassShimConfig {
     available: false,
     needsIndex: true,
     searchResults: [],
-    timeline: { groups: [] }
+    timeline: { groups: [] },
   };
 }
 
@@ -341,16 +341,16 @@ export function healthyCassConfig(overrides: Partial<CassShimConfig> = {}): Cass
     searchResults: [
       createTestCassHit({ snippet: "User asked about authentication flow" }),
       createTestCassHit({ snippet: "Implemented JWT token validation", line_number: 100 }),
-      createTestCassHit({ snippet: "Fixed bug in session handling", line_number: 200 })
+      createTestCassHit({ snippet: "Fixed bug in session handling", line_number: 200 }),
     ],
     timeline: createTestTimeline(),
     stats: {
       total_sessions: 25,
       total_messages: 1500,
       agents: ["claude-code", "cursor", "codex"],
-      indexed_at: new Date().toISOString()
+      indexed_at: new Date().toISOString(),
     },
-    ...overrides
+    ...overrides,
   };
 }
 
@@ -360,7 +360,7 @@ export function healthyCassConfig(overrides: Partial<CassShimConfig> = {}): Cass
 export function slowCassConfig(delayMs: number = 1000): CassShimConfig {
   return {
     ...healthyCassConfig(),
-    delay: delayMs
+    delay: delayMs,
   };
 }
 
@@ -372,6 +372,6 @@ export function needsIndexCassConfig(): CassShimConfig {
     available: true,
     needsIndex: true,
     searchResults: [],
-    timeline: { groups: [] }
+    timeline: { groups: [] },
   };
 }

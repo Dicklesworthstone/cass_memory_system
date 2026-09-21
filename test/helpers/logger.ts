@@ -1,4 +1,4 @@
-import { writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 type Level = "debug" | "info" | "warn" | "error";
@@ -39,7 +39,7 @@ export class TestLogger {
   constructor(
     private testName: string,
     private minLevel: Level = "info",
-    private logDir: string = path.join(process.cwd(), "test/logs")
+    private logDir: string = path.join(process.cwd(), "test/logs"),
   ) {
     this.startTime = Date.now();
   }
@@ -81,7 +81,7 @@ export class TestLogger {
       step,
       message,
       context,
-      durationMs
+      durationMs,
     };
     this.entries.push(entry);
 
@@ -96,10 +96,18 @@ export class TestLogger {
     }
   }
 
-  debug(msg: string, ctx?: Record<string, unknown>): void { this.log("debug", "main", msg, ctx); }
-  info(msg: string, ctx?: Record<string, unknown>): void { this.log("info", "main", msg, ctx); }
-  warn(msg: string, ctx?: Record<string, unknown>): void { this.log("warn", "main", msg, ctx); }
-  error(msg: string, ctx?: Record<string, unknown>): void { this.log("error", "main", msg, ctx); }
+  debug(msg: string, ctx?: Record<string, unknown>): void {
+    this.log("debug", "main", msg, ctx);
+  }
+  info(msg: string, ctx?: Record<string, unknown>): void {
+    this.log("info", "main", msg, ctx);
+  }
+  warn(msg: string, ctx?: Record<string, unknown>): void {
+    this.log("warn", "main", msg, ctx);
+  }
+  error(msg: string, ctx?: Record<string, unknown>): void {
+    this.log("error", "main", msg, ctx);
+  }
 
   /** Log with explicit step name */
   step(step: string, level: Level, msg: string, ctx?: Record<string, unknown>): void {
@@ -123,7 +131,7 @@ export class TestLogger {
     const safeName = this.testName.replace(/[^a-zA-Z0-9-_]/g, "-");
     const filePath = path.join(this.logDir, `${safeName}-${timestamp}.log`);
 
-    const content = this.entries.map(e => this.formatEntry(e)).join("\n");
+    const content = this.entries.map((e) => this.formatEntry(e)).join("\n");
     writeFileSync(filePath, content, "utf-8");
 
     return filePath;
@@ -136,7 +144,7 @@ export class TestLogger {
       status,
       durationMs: Date.now() - this.startTime,
       entryCount: this.entries.length,
-      errors: this.errors
+      errors: this.errors,
     };
   }
 
@@ -163,11 +171,11 @@ export class TestSummaryAggregator {
     const aggregate = {
       timestamp: new Date().toISOString(),
       total: this.summaries.length,
-      passed: this.summaries.filter(s => s.status === "pass").length,
-      failed: this.summaries.filter(s => s.status === "fail").length,
-      skipped: this.summaries.filter(s => s.status === "skip").length,
+      passed: this.summaries.filter((s) => s.status === "pass").length,
+      failed: this.summaries.filter((s) => s.status === "fail").length,
+      skipped: this.summaries.filter((s) => s.status === "skip").length,
       totalDurationMs: this.summaries.reduce((sum, s) => sum + s.durationMs, 0),
-      tests: this.summaries
+      tests: this.summaries,
     };
 
     writeFileSync(filePath, JSON.stringify(aggregate, null, 2), "utf-8");
@@ -175,7 +183,10 @@ export class TestSummaryAggregator {
   }
 }
 
-export function createTestLogger(testNameOrLevel: string | Level = "info", minLevel: Level = "info"): TestLogger {
+export function createTestLogger(
+  testNameOrLevel: string | Level = "info",
+  minLevel: Level = "info",
+): TestLogger {
   const envLevel = process.env.TEST_LOG_LEVEL?.trim().toLowerCase();
   const hasEnvOverride = envLevel && ["debug", "info", "warn", "error"].includes(envLevel);
   const effectiveMinLevel: Level = hasEnvOverride

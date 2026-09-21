@@ -4,16 +4,16 @@
  * Tests that bullet confidence decays over time as expected using
  * the exponential decay formula: value = 0.5^(ageDays/halfLifeDays)
  */
-import { describe, test, expect } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import {
   calculateDecayedValue,
+  calculateMaturityState,
   getDecayedCounts,
   getEffectiveScore,
-  calculateMaturityState,
 } from "../src/scoring.js";
 import {
-  createTestConfig,
   createTestBullet,
+  createTestConfig,
   createTestFeedbackEvent,
   daysAgo,
 } from "./helpers/factories.js";
@@ -101,9 +101,7 @@ describe("Confidence Decay E2E", () => {
       });
 
       const bullet = createTestBullet({
-        feedbackEvents: [
-          createTestFeedbackEvent("helpful", { timestamp: daysAgo(30) }),
-        ],
+        feedbackEvents: [createTestFeedbackEvent("helpful", { timestamp: daysAgo(30) })],
       });
 
       const { decayedHelpful } = getDecayedCounts(bullet, config);

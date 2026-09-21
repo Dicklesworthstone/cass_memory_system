@@ -4,7 +4,7 @@
  * Tests the examples command which displays curated workflows
  * for users to copy-paste.
  */
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { examplesCommand } from "../src/examples.js";
 
 /**
@@ -30,7 +30,7 @@ function captureConsole() {
     restore: () => {
       console.log = originalLog;
       console.error = originalError;
-    }
+    },
   };
 }
 
@@ -96,7 +96,7 @@ describe("examplesCommand", () => {
         const output = JSON.parse(capture.logs.join(""));
 
         const quickStart = output.data.workflows.find(
-          (w: { title: string }) => w.title === "Quick Start"
+          (w: { title: string }) => w.title === "Quick Start",
         );
         expect(quickStart).toBeDefined();
         expect(quickStart.commands.some((c: string) => c.includes("init"))).toBe(true);
@@ -113,7 +113,7 @@ describe("examplesCommand", () => {
         const output = JSON.parse(capture.logs.join(""));
 
         const agentWorkflow = output.data.workflows.find(
-          (w: { title: string }) => w.title === "Agent Workflow"
+          (w: { title: string }) => w.title === "Agent Workflow",
         );
         expect(agentWorkflow).toBeDefined();
         expect(agentWorkflow.commands.some((c: string) => c.includes("mark"))).toBe(true);
@@ -130,7 +130,7 @@ describe("examplesCommand", () => {
         const output = JSON.parse(capture.logs.join(""));
 
         const playbookMgmt = output.data.workflows.find(
-          (w: { title: string }) => w.title === "Playbook Management"
+          (w: { title: string }) => w.title === "Playbook Management",
         );
         expect(playbookMgmt).toBeDefined();
         expect(playbookMgmt.commands.some((c: string) => c.includes("playbook"))).toBe(true);
@@ -146,10 +146,12 @@ describe("examplesCommand", () => {
         const output = JSON.parse(capture.logs.join(""));
 
         const safetyGuards = output.data.workflows.find(
-          (w: { title: string }) => w.title.includes("Safety") || w.title.includes("Guard")
+          (w: { title: string }) => w.title.includes("Safety") || w.title.includes("Guard"),
         );
         expect(safetyGuards).toBeDefined();
-        expect(safetyGuards.commands.some((c: string) => c.includes("guard") || c.includes("trauma"))).toBe(true);
+        expect(
+          safetyGuards.commands.some((c: string) => c.includes("guard") || c.includes("trauma")),
+        ).toBe(true);
       } finally {
         capture.restore();
       }

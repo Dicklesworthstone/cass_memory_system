@@ -4,15 +4,19 @@
  * Tests the basic CLI workflow: init -> context -> mark -> playbook
  * Runs with LLM/cass disabled to verify offline/degraded path.
  */
-import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { execSync, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const CM_PATH = join(import.meta.dir, "..", "src", "cm.ts");
 
-function runCm(args: string[], cwd: string, env: Record<string, string> = {}): {
+function runCm(
+  args: string[],
+  cwd: string,
+  env: Record<string, string> = {},
+): {
   stdout: string;
   stderr: string;
   exitCode: number;
@@ -21,18 +25,18 @@ function runCm(args: string[], cwd: string, env: Record<string, string> = {}): {
     cwd,
     env: {
       ...process.env,
-      CASS_MEMORY_LLM: "none",  // Disable LLM
-      HOME: cwd,  // Isolate from real home
-      ...env
+      CASS_MEMORY_LLM: "none", // Disable LLM
+      HOME: cwd, // Isolate from real home
+      ...env,
     },
     encoding: "utf-8",
-    timeout: 30000
+    timeout: 30000,
   });
 
   return {
     stdout: result.stdout || "",
     stderr: result.stderr || "",
-    exitCode: result.status ?? 1
+    exitCode: result.status ?? 1,
   };
 }
 
@@ -87,12 +91,10 @@ describe("E2E CLI Smoke Test", () => {
   });
 
   test("cm playbook add creates a bullet", () => {
-    const result = runCm([
-      "playbook", "add",
-      "Test rule for smoke testing",
-      "--category", "testing",
-      "--json"
-    ], testDir);
+    const result = runCm(
+      ["playbook", "add", "Test rule for smoke testing", "--category", "testing", "--json"],
+      testDir,
+    );
 
     expect(result.exitCode).toBe(0);
 
@@ -103,11 +105,7 @@ describe("E2E CLI Smoke Test", () => {
   });
 
   test("cm context returns context (degraded without cass)", () => {
-    const result = runCm([
-      "context",
-      "test task for smoke testing",
-      "--json"
-    ], testDir);
+    const result = runCm(["context", "test task for smoke testing", "--json"], testDir);
 
     // May succeed with empty results or warn about missing cass
     expect(result.exitCode).toBeLessThanOrEqual(1);
@@ -221,12 +219,10 @@ describe("E2E CLI Smoke Test", () => {
 
   test("cm undo --feedback fails when no feedback to undo", () => {
     // First add a bullet
-    const addResult = runCm([
-      "playbook", "add",
-      "Test rule for undo testing",
-      "--category", "testing",
-      "--json"
-    ], testDir);
+    const addResult = runCm(
+      ["playbook", "add", "Test rule for undo testing", "--category", "testing", "--json"],
+      testDir,
+    );
     expect(addResult.exitCode).toBe(0);
     const bullet = JSON.parse(addResult.stdout).data?.bullet;
 

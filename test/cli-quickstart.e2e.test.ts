@@ -4,7 +4,7 @@
  * Tests the `cm quickstart` command which outputs documentation
  * designed for consumption by AI coding agents.
  */
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { quickstartCommand } from "../src/commands/quickstart.js";
 import { createE2ELogger } from "./helpers/e2e-logger.js";
 
@@ -28,7 +28,7 @@ function captureConsole() {
     restore: () => {
       console.log = originalLog;
       console.error = originalError;
-    }
+    },
   };
 }
 
@@ -132,7 +132,7 @@ describe("E2E: CLI quickstart command", () => {
         log.snapshot("output", { logs: capture.logs, errors: capture.errors });
 
         // Find and parse JSON output
-        const jsonOutput = capture.logs.find(l => l.startsWith("{"));
+        const jsonOutput = capture.logs.find((l) => l.startsWith("{"));
         expect(jsonOutput).toBeDefined();
 
         const parsed = JSON.parse(jsonOutput!);
@@ -157,7 +157,7 @@ describe("E2E: CLI quickstart command", () => {
           capture.restore();
         }
 
-        const jsonOutput = capture.logs.find(l => l.startsWith("{"));
+        const jsonOutput = capture.logs.find((l) => l.startsWith("{"));
         const parsed = JSON.parse(jsonOutput!);
         const data = parsed.data;
 
@@ -186,7 +186,7 @@ describe("E2E: CLI quickstart command", () => {
           capture.restore();
         }
 
-        const jsonOutput = capture.logs.find(l => l.startsWith("{"));
+        const jsonOutput = capture.logs.find((l) => l.startsWith("{"));
         const parsed = JSON.parse(jsonOutput!);
 
         // oneCommand should reference the context command
@@ -207,7 +207,7 @@ describe("E2E: CLI quickstart command", () => {
           capture.restore();
         }
 
-        const jsonOutput = capture.logs.find(l => l.startsWith("{"));
+        const jsonOutput = capture.logs.find((l) => l.startsWith("{"));
         const parsed = JSON.parse(jsonOutput!);
         const returns = parsed.data.whatItReturns;
 
@@ -234,7 +234,7 @@ describe("E2E: CLI quickstart command", () => {
           capture.restore();
         }
 
-        const jsonOutput = capture.logs.find(l => l.startsWith("{"));
+        const jsonOutput = capture.logs.find((l) => l.startsWith("{"));
         const parsed = JSON.parse(jsonOutput!);
         const protocol = parsed.data.protocol;
 
@@ -257,7 +257,7 @@ describe("E2E: CLI quickstart command", () => {
           capture.restore();
         }
 
-        const jsonOutput = capture.logs.find(l => l.startsWith("{"));
+        const jsonOutput = capture.logs.find((l) => l.startsWith("{"));
         const parsed = JSON.parse(jsonOutput!);
 
         expect(parsed.data.soloUser).toBeDefined();
@@ -278,7 +278,7 @@ describe("E2E: CLI quickstart command", () => {
           capture.restore();
         }
 
-        const jsonOutput = capture.logs.find(l => l.startsWith("{"));
+        const jsonOutput = capture.logs.find((l) => l.startsWith("{"));
         const parsed = JSON.parse(jsonOutput!);
 
         expect(parsed.data.expectations).toBeDefined();

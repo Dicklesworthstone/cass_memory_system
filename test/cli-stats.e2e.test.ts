@@ -8,14 +8,14 @@
  * - Stale and at-risk detection
  * - Merge candidate identification
  */
-import { describe, it, expect, afterEach } from "bun:test";
-import { writeFile, rm, mkdir } from "node:fs/promises";
-import path from "node:path";
+import { afterEach, describe, expect, it } from "bun:test";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
+import path from "node:path";
 import yaml from "yaml";
 
 import { statsCommand } from "../src/commands/stats.js";
-import { createTestLogger, TestLogger } from "./helpers/logger.js";
+import { createTestLogger, type TestLogger } from "./helpers/logger.js";
 
 // --- Test Infrastructure ---
 
@@ -23,7 +23,10 @@ let tempDirs: string[] = [];
 let logger: TestLogger;
 
 async function createTempDir(): Promise<string> {
-  const dirPath = path.join(os.tmpdir(), `stats-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const dirPath = path.join(
+    os.tmpdir(),
+    `stats-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  );
   await mkdir(dirPath, { recursive: true });
   tempDirs.push(dirPath);
   return dirPath;
@@ -54,7 +57,7 @@ function captureConsole() {
     restore: () => {
       console.log = originalLog;
       console.error = originalError;
-    }
+    },
   };
 }
 
@@ -67,26 +70,28 @@ function createTestPlaybook(bullets: any[] = []) {
     metadata: {
       createdAt: now,
       totalReflections: 0,
-      totalSessionsProcessed: 0
+      totalSessionsProcessed: 0,
     },
     bullets,
-    deprecatedPatterns: []
+    deprecatedPatterns: [],
   };
 }
 
-function createTestBullet(overrides: Partial<{
-  id: string;
-  content: string;
-  kind: string;
-  category: string;
-  scope: string;
-  state: string;
-  maturity: string;
-  helpfulCount: number;
-  harmfulCount: number;
-  createdAt: string;
-  updatedAt: string;
-}> = {}) {
+function createTestBullet(
+  overrides: Partial<{
+    id: string;
+    content: string;
+    kind: string;
+    category: string;
+    scope: string;
+    state: string;
+    maturity: string;
+    helpfulCount: number;
+    harmfulCount: number;
+    createdAt: string;
+    updatedAt: string;
+  }> = {},
+) {
   const now = new Date().toISOString();
   return {
     id: overrides.id || `test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -101,7 +106,7 @@ function createTestBullet(overrides: Partial<{
     createdAt: overrides.createdAt || now,
     updatedAt: overrides.updatedAt || now,
     feedbackEvents: [],
-    tags: []
+    tags: [],
   };
 }
 
@@ -129,7 +134,7 @@ describe("E2E: CLI stats command", () => {
     it("outputs valid JSON when --json flag is set", async () => {
       const { home } = await setupTestEnvironment([
         createTestBullet({ id: "stat-1", content: "Rule 1" }),
-        createTestBullet({ id: "stat-2", content: "Rule 2" })
+        createTestBullet({ id: "stat-2", content: "Rule 2" }),
       ]);
       const originalHome = process.env.HOME;
 
@@ -164,7 +169,7 @@ describe("E2E: CLI stats command", () => {
     it("outputs valid JSON when --format json is set (even without --json)", async () => {
       const { home } = await setupTestEnvironment([
         createTestBullet({ id: "stat-1", content: "Rule 1" }),
-        createTestBullet({ id: "stat-2", content: "Rule 2" })
+        createTestBullet({ id: "stat-2", content: "Rule 2" }),
       ]);
       const originalHome = process.env.HOME;
 
@@ -195,7 +200,7 @@ describe("E2E: CLI stats command", () => {
 
     it("includes all expected JSON fields", async () => {
       const { home } = await setupTestEnvironment([
-        createTestBullet({ id: "field-test", content: "Test rule", helpfulCount: 3 })
+        createTestBullet({ id: "field-test", content: "Test rule", helpfulCount: 3 }),
       ]);
       const originalHome = process.env.HOME;
 
@@ -235,7 +240,7 @@ describe("E2E: CLI stats command", () => {
         createTestBullet({ id: "global-1", scope: "global" }),
         createTestBullet({ id: "global-2", scope: "global" }),
         createTestBullet({ id: "lang-1", scope: "language" }),
-        createTestBullet({ id: "workspace-1", scope: "workspace" })
+        createTestBullet({ id: "workspace-1", scope: "workspace" }),
       ]);
       const originalHome = process.env.HOME;
 
@@ -265,7 +270,7 @@ describe("E2E: CLI stats command", () => {
         createTestBullet({ id: "active-1", state: "active" }),
         createTestBullet({ id: "active-2", state: "active" }),
         createTestBullet({ id: "draft-1", state: "draft" }),
-        createTestBullet({ id: "retired-1", state: "retired" })
+        createTestBullet({ id: "retired-1", state: "retired" }),
       ]);
       const originalHome = process.env.HOME;
 
@@ -294,7 +299,7 @@ describe("E2E: CLI stats command", () => {
         createTestBullet({ id: "wf-1", kind: "workflow_rule" }),
         createTestBullet({ id: "wf-2", kind: "workflow_rule" }),
         createTestBullet({ id: "stack-1", kind: "stack_pattern" }),
-        createTestBullet({ id: "anti-1", kind: "anti_pattern" })
+        createTestBullet({ id: "anti-1", kind: "anti_pattern" }),
       ]);
       const originalHome = process.env.HOME;
 
@@ -325,7 +330,7 @@ describe("E2E: CLI stats command", () => {
         createTestBullet({ id: "high-score", helpfulCount: 15, harmfulCount: 0 }),
         createTestBullet({ id: "mid-score", helpfulCount: 5, harmfulCount: 0 }),
         createTestBullet({ id: "low-score", helpfulCount: 1, harmfulCount: 0 }),
-        createTestBullet({ id: "neg-score", helpfulCount: 0, harmfulCount: 5 })
+        createTestBullet({ id: "neg-score", helpfulCount: 0, harmfulCount: 5 }),
       ]);
       const originalHome = process.env.HOME;
 
@@ -362,7 +367,7 @@ describe("E2E: CLI stats command", () => {
         createTestBullet({ id: "top-1", content: "Top performer one", helpfulCount: 20 }),
         createTestBullet({ id: "top-2", content: "Top performer two", helpfulCount: 15 }),
         createTestBullet({ id: "mid-1", content: "Mid performer", helpfulCount: 5 }),
-        createTestBullet({ id: "low-1", content: "Low performer", helpfulCount: 1 })
+        createTestBullet({ id: "low-1", content: "Low performer", helpfulCount: 1 }),
       ]);
       const originalHome = process.env.HOME;
 
@@ -396,7 +401,7 @@ describe("E2E: CLI stats command", () => {
       const { home } = await setupTestEnvironment([
         createTestBullet({ id: "helpful-1", content: "Very helpful rule", helpfulCount: 25 }),
         createTestBullet({ id: "helpful-2", content: "Quite helpful rule", helpfulCount: 15 }),
-        createTestBullet({ id: "meh-1", content: "Less helpful", helpfulCount: 2 })
+        createTestBullet({ id: "meh-1", content: "Less helpful", helpfulCount: 2 }),
       ]);
       const originalHome = process.env.HOME;
 
@@ -426,7 +431,7 @@ describe("E2E: CLI stats command", () => {
       const { home } = await setupTestEnvironment([
         createTestBullet({ id: "at-risk-1", helpfulCount: 0, harmfulCount: 10 }),
         createTestBullet({ id: "at-risk-2", helpfulCount: 1, harmfulCount: 8 }),
-        createTestBullet({ id: "healthy-1", helpfulCount: 10, harmfulCount: 0 })
+        createTestBullet({ id: "healthy-1", helpfulCount: 10, harmfulCount: 0 }),
       ]);
       const originalHome = process.env.HOME;
 
@@ -459,7 +464,7 @@ describe("E2E: CLI stats command", () => {
       const { home } = await setupTestEnvironment([
         createTestBullet({ id: "stale-1", createdAt: oldDate, updatedAt: oldDate }),
         createTestBullet({ id: "stale-2", createdAt: oldDate, updatedAt: oldDate }),
-        createTestBullet({ id: "fresh-1", createdAt: recentDate, updatedAt: recentDate })
+        createTestBullet({ id: "fresh-1", createdAt: recentDate, updatedAt: recentDate }),
       ]);
       const originalHome = process.env.HOME;
 
@@ -487,16 +492,16 @@ describe("E2E: CLI stats command", () => {
       const { home } = await setupTestEnvironment([
         createTestBullet({
           id: "similar-a",
-          content: "Always validate user input before database queries"
+          content: "Always validate user input before database queries",
         }),
         createTestBullet({
           id: "similar-b",
-          content: "Always validate user input before database operations"
+          content: "Always validate user input before database operations",
         }),
         createTestBullet({
           id: "different-1",
-          content: "Use environment variables for configuration management"
-        })
+          content: "Use environment variables for configuration management",
+        }),
       ]);
       const originalHome = process.env.HOME;
 
@@ -531,7 +536,7 @@ describe("E2E: CLI stats command", () => {
   describe("Human-Readable Output", () => {
     it("outputs human-readable format by default", async () => {
       const { home } = await setupTestEnvironment([
-        createTestBullet({ id: "human-1", content: "Test rule", helpfulCount: 5 })
+        createTestBullet({ id: "human-1", content: "Test rule", helpfulCount: 5 }),
       ]);
       const originalHome = process.env.HOME;
 
@@ -558,7 +563,7 @@ describe("E2E: CLI stats command", () => {
 
     it("displays section headers with emojis", async () => {
       const { home } = await setupTestEnvironment([
-        createTestBullet({ id: "emoji-test", helpfulCount: 10 })
+        createTestBullet({ id: "emoji-test", helpfulCount: 10 }),
       ]);
       const originalHome = process.env.HOME;
       const originalNoEmoji = process.env.CASS_MEMORY_NO_EMOJI;
@@ -586,7 +591,7 @@ describe("E2E: CLI stats command", () => {
 
     it("respects CASS_MEMORY_NO_EMOJI for human output", async () => {
       const { home } = await setupTestEnvironment([
-        createTestBullet({ id: "no-emoji-test", helpfulCount: 10 })
+        createTestBullet({ id: "no-emoji-test", helpfulCount: 10 }),
       ]);
       const originalHome = process.env.HOME;
       const originalNoEmoji = process.env.CASS_MEMORY_NO_EMOJI;

@@ -1,17 +1,51 @@
-import { Config, CurationResult, Playbook, PlaybookDelta, DecisionLogEntry, PlaybookBullet, ProcessedEntry } from "./types.js";
-import { loadMergedPlaybook, loadPlaybook, savePlaybook, findBullet, mergePlaybooks, recordReflectionRun } from "./playbook.js";
-import { ProcessedLog, getProcessedLogPath } from "./tracking.js";
-import { findUnprocessedSessions, cassExport } from "./cass.js";
-import { generateDiary } from "./diary.js";
-import { reflectOnSession } from "./reflect.js";
-import { validateDelta } from "./validate.js";
-import type { LLMIO } from "./llm.js";
-import { curatePlaybook } from "./curate.js";
-import { expandPath, log, warn, error, now, fileExists, resolveRepoDir, generateBulletId, hashContent, jaccardSimilarity, ensureDir, parseInlineFeedback } from "./utils.js";
-import { withLock } from "./lock.js";
-import { extractRuleIdsFromTranscript, classifySessionOutcome, recordOutcome, applyOutcomeFeedback, type OutcomeInput } from "./outcome.js";
-import { containsCmSubprocessPayload, stripCmSubprocessPayloads } from "./subprocess-tag.js";
 import path from "node:path";
+import { cassExport, findUnprocessedSessions } from "./cass.js";
+import { curatePlaybook } from "./curate.js";
+import { generateDiary } from "./diary.js";
+import type { LLMIO } from "./llm.js";
+import { withLock } from "./lock.js";
+import {
+  applyOutcomeFeedback,
+  classifySessionOutcome,
+  extractRuleIdsFromTranscript,
+  type OutcomeInput,
+  recordOutcome,
+} from "./outcome.js";
+import {
+  findBullet,
+  loadMergedPlaybook,
+  loadPlaybook,
+  mergePlaybooks,
+  recordReflectionRun,
+  savePlaybook,
+} from "./playbook.js";
+import { reflectOnSession } from "./reflect.js";
+import { containsCmSubprocessPayload, stripCmSubprocessPayloads } from "./subprocess-tag.js";
+import { getProcessedLogPath, ProcessedLog } from "./tracking.js";
+import {
+  type Config,
+  type CurationResult,
+  DecisionLogEntry,
+  type Playbook,
+  type PlaybookBullet,
+  type PlaybookDelta,
+  type ProcessedEntry,
+} from "./types.js";
+import {
+  ensureDir,
+  error,
+  expandPath,
+  fileExists,
+  generateBulletId,
+  hashContent,
+  jaccardSimilarity,
+  log,
+  now,
+  parseInlineFeedback,
+  resolveRepoDir,
+  warn,
+} from "./utils.js";
+import { validateDelta } from "./validate.js";
 
 export interface ReflectionOptions {
   days?: number;
@@ -44,9 +78,27 @@ export interface ReflectionOutcome {
 export type ReflectionProgressEvent =
   | { phase: "discovery"; totalSessions: number }
   | { phase: "session_start"; index: number; totalSessions: number; sessionPath: string }
-  | { phase: "session_skip"; index: number; totalSessions: number; sessionPath: string; reason: string }
-  | { phase: "session_done"; index: number; totalSessions: number; sessionPath: string; deltasGenerated: number }
-  | { phase: "session_error"; index: number; totalSessions: number; sessionPath: string; error: string };
+  | {
+      phase: "session_skip";
+      index: number;
+      totalSessions: number;
+      sessionPath: string;
+      reason: string;
+    }
+  | {
+      phase: "session_done";
+      index: number;
+      totalSessions: number;
+      sessionPath: string;
+      deltasGenerated: number;
+    }
+  | {
+      phase: "session_error";
+      index: number;
+      totalSessions: number;
+      sessionPath: string;
+      error: string;
+    };
 
 function isActiveBullet(bullet: PlaybookBullet): boolean {
   return !bullet.deprecated && bullet.maturity !== "deprecated" && bullet.state !== "retired";
@@ -60,7 +112,7 @@ function findFirstHashMatch(playbook: Playbook, content: string): PlaybookBullet
 function findBestActiveSimilarBullet(
   playbook: Playbook,
   content: string,
-  threshold: number
+  threshold: number,
 ): PlaybookBullet | undefined {
   let best: { bullet: PlaybookBullet; score: number } | undefined;
   for (const b of playbook.bullets) {
@@ -79,7 +131,7 @@ function findBestActiveSimilarBullet(
  */
 export async function orchestrateReflection(
   config: Config,
-  options: ReflectionOptions
+  options: ReflectionOptions,
 ): Promise<ReflectionOutcome> {
   const logPath = expandPath(getProcessedLogPath(options.workspace));
   const globalPath = expandPath(config.playbookPath);
@@ -100,7 +152,7 @@ export async function orchestrateReflection(
     await processedLog.load();
 
     // 2. Snapshot Phase: Load playbook context (without locking playbook yet)
-    // We need the playbook to give context to the LLM. 
+    // We need the playbook to give context to the LLM.
     // Stale data here is acceptable (LLM might suggest a rule that just got added, curation will dedupe).
     const snapshotPlaybook = await loadMergedPlaybook(config);
 
@@ -123,9 +175,9 @@ export async function orchestrateReflection(
             agent: options.agent,
             excludePatterns: config.sessionExcludePatterns,
             includeAll: config.sessionIncludeAll,
-            cliSubprocessCwd: config.cliSubprocessCwd
+            cliSubprocessCwd: config.cliSubprocessCwd,
           },
-          config.cassPath
+          config.cassPath,
         );
         sessions = discovered.map((s) => s.path);
         for (const s of discovered) {
@@ -137,7 +189,7 @@ export async function orchestrateReflection(
       }
     }
 
-    const unprocessed = sessions.filter(s => !processedLog.has(s));
+    const unprocessed = sessions.filter((s) => !processedLog.has(s));
     if (unprocessed.length === 0) {
       return { sessionsProcessed: 0, deltasGenerated: 0, errors };
     }
@@ -161,7 +213,7 @@ export async function orchestrateReflection(
       });
 
       try {
-        const content = await cassExport(sessionPath, "text", config.cassPath, config) || "";
+        const content = (await cassExport(sessionPath, "text", config.cassPath, config)) || "";
 
         // #76: a transcript carrying cm's private payload marker is a recording
         // of one of cm's OWN `claude -p` / codex / gemini calls, not a work
@@ -192,12 +244,14 @@ export async function orchestrateReflection(
           pendingProcessedEntries.push({
             sessionPath,
             processedAt: now(),
-            deltasGenerated: 0
+            deltasGenerated: 0,
           });
           continue;
         }
 
-        const diary = await generateDiary(sessionPath, config, { agent: agentHints.get(sessionPath) });
+        const diary = await generateDiary(sessionPath, config, {
+          agent: agentHints.get(sessionPath),
+        });
 
         // Quick check for empty sessions to save tokens
         if (content.length < 50) {
@@ -214,7 +268,7 @@ export async function orchestrateReflection(
             sessionPath,
             processedAt: now(),
             diaryId: diary.id,
-            deltasGenerated: 0
+            deltasGenerated: 0,
           });
           continue;
         }
@@ -256,9 +310,21 @@ export async function orchestrateReflection(
           const inlineFeedback = parseInlineFeedback(gradableContent);
           if (inlineFeedback.length > 0) {
             for (const fb of inlineFeedback) {
-              const delta: PlaybookDelta = fb.type === "harmful"
-                ? { type: "harmful", bulletId: fb.bulletId, sourceSession: sessionPath, reason: "other", context: fb.reason }
-                : { type: "helpful", bulletId: fb.bulletId, sourceSession: sessionPath, context: fb.reason };
+              const delta: PlaybookDelta =
+                fb.type === "harmful"
+                  ? {
+                      type: "harmful",
+                      bulletId: fb.bulletId,
+                      sourceSession: sessionPath,
+                      reason: "other",
+                      context: fb.reason,
+                    }
+                  : {
+                      type: "helpful",
+                      bulletId: fb.bulletId,
+                      sourceSession: sessionPath,
+                      context: fb.reason,
+                    };
               allDeltas.push(delta);
             }
             inlineFeedbackDeltaCount += inlineFeedback.length;
@@ -267,9 +333,10 @@ export async function orchestrateReflection(
           // Extract rule IDs and classify session outcome for auto-recording.
           // Exclude IDs that already have explicit inline feedback to avoid
           // double-counting (they get direct signal from the delta above).
-          const inlineFeedbackIds = new Set(inlineFeedback.map(fb => fb.bulletId.toLowerCase()));
-          const ruleIds = extractRuleIdsFromTranscript(gradableContent)
-            .filter(id => !inlineFeedbackIds.has(id));
+          const inlineFeedbackIds = new Set(inlineFeedback.map((fb) => fb.bulletId.toLowerCase()));
+          const ruleIds = extractRuleIdsFromTranscript(gradableContent).filter(
+            (id) => !inlineFeedbackIds.has(id),
+          );
           if (ruleIds.length > 0) {
             const outcomeInput = classifySessionOutcome(gradableContent, diary, ruleIds);
             if (outcomeInput) {
@@ -283,7 +350,7 @@ export async function orchestrateReflection(
           sessionPath,
           processedAt: now(),
           diaryId: diary.id,
-          deltasGenerated: validatedDeltas.length
+          deltasGenerated: validatedDeltas.length,
         });
         sessionsProcessed++;
 
@@ -294,7 +361,6 @@ export async function orchestrateReflection(
           sessionPath,
           deltasGenerated: validatedDeltas.length,
         });
-        
       } catch (err: any) {
         const message = err?.message || String(err);
         errors.push(`Failed to process ${sessionPath}: ${message}`);
@@ -313,7 +379,7 @@ export async function orchestrateReflection(
         sessionsProcessed,
         deltasGenerated: allDeltas.length,
         dryRunDeltas: allDeltas,
-        errors
+        errors,
       };
     }
 
@@ -340,7 +406,7 @@ export async function orchestrateReflection(
       if (hasRepo) {
         repoPlaybook = await loadPlaybook(repoPath!);
       }
-      
+
       // Create fresh merged context to ensure deduplication uses up-to-date data
       const freshMerged = mergePlaybooks(globalPlaybook, repoPlaybook);
 
@@ -348,7 +414,7 @@ export async function orchestrateReflection(
       // This allows us to route deprecations to their specific playbooks (Repo vs Global)
       // while adding the new merged rule to the default location (Global).
       const processedDeltas: PlaybookDelta[] = [];
-      
+
       for (const delta of allDeltas) {
         if (delta.type !== "merge") {
           processedDeltas.push(delta);
@@ -356,14 +422,17 @@ export async function orchestrateReflection(
         }
 
         const mergedContent = delta.mergedContent;
-        const threshold = typeof config.dedupSimilarityThreshold === "number" ? config.dedupSimilarityThreshold : 0.85;
+        const threshold =
+          typeof config.dedupSimilarityThreshold === "number"
+            ? config.dedupSimilarityThreshold
+            : 0.85;
 
         // If the merged content already exists (or is very similar), prefer deprecating into it
         // rather than creating a duplicate replacement that curation might skip.
         const exactMatch = findFirstHashMatch(freshMerged, mergedContent);
         if (exactMatch && !isActiveBullet(exactMatch)) {
           warn(
-            `[orchestrator] Skipping merge delta: merged content matches deprecated/blocked bullet ${exactMatch.id}`
+            `[orchestrator] Skipping merge delta: merged content matches deprecated/blocked bullet ${exactMatch.id}`,
           );
           continue;
         }
@@ -381,7 +450,7 @@ export async function orchestrateReflection(
               type: "deprecate",
               bulletId: id,
               reason: `Merged into existing ${replacement.id}`,
-              replacedBy: replacement.id
+              replacedBy: replacement.id,
             });
           }
           continue;
@@ -396,11 +465,11 @@ export async function orchestrateReflection(
             id: newBulletId, // Pre-assign ID so deprecate deltas can reference it
             content: mergedContent,
             category: "merged",
-            tags: []
+            tags: [],
           },
           // Merge deltas don't carry sourceSession, so we use a placeholder
           sourceSession: "merged-operation",
-          reason: delta.reason || "Merged from existing rules"
+          reason: delta.reason || "Merged from existing rules",
         });
 
         // 2. Deprecate the old rules
@@ -409,7 +478,7 @@ export async function orchestrateReflection(
             type: "deprecate",
             bulletId: id,
             reason: `Merged into ${newBulletId}`,
-            replacedBy: newBulletId
+            replacedBy: newBulletId,
           });
         }
       }
@@ -420,9 +489,9 @@ export async function orchestrateReflection(
 
       for (const delta of processedDeltas) {
         let routed = false;
-        
+
         // Feedback/Replace/Delete: Must target existing ID
-        if ('bulletId' in delta && delta.bulletId) {
+        if ("bulletId" in delta && delta.bulletId) {
           if (repoPlaybook && findBullet(repoPlaybook, delta.bulletId)) {
             repoDeltas.push(delta);
             routed = true;
@@ -434,7 +503,7 @@ export async function orchestrateReflection(
 
         // New rules or orphans default to Global
         if (!routed) {
-           globalDeltas.push(delta);
+          globalDeltas.push(delta);
         }
       }
 
@@ -485,7 +554,9 @@ export async function orchestrateReflection(
           missingRules: feedbackResult.missing,
           inlineFeedbackDeltas: inlineFeedbackDeltaCount,
         };
-        log(`Auto-recorded ${records.length} outcome(s): ${feedbackResult.applied} feedback event(s) applied`);
+        log(
+          `Auto-recorded ${records.length} outcome(s): ${feedbackResult.applied} feedback event(s) applied`,
+        );
       } catch (err: any) {
         const msg = err?.message || String(err);
         errors.push(`Auto-outcome recording failed: ${msg}`);

@@ -11,19 +11,19 @@
  * - getOnboardProgress() returns summary
  * - filterUnprocessedSessions() filters correctly
  */
-import { describe, test, expect } from "bun:test";
-import { writeFile, readFile } from "node:fs/promises";
+import { describe, expect, test } from "bun:test";
+import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   createEmptyState,
-  loadOnboardState,
-  saveOnboardState,
-  isSessionProcessed,
-  markSessionProcessed,
-  resetOnboardState,
-  getOnboardProgress,
   filterUnprocessedSessions,
+  getOnboardProgress,
+  isSessionProcessed,
+  loadOnboardState,
+  markSessionProcessed,
   type OnboardState,
+  resetOnboardState,
+  saveOnboardState,
 } from "../src/onboard-state.js";
 import { withTempCassHome } from "./helpers/temp.js";
 
@@ -38,7 +38,7 @@ describe("onboard-state - Unit Tests", () => {
       expect(state.processedSessions).toEqual([]);
       expect(state.stats).toEqual({
         totalSessionsProcessed: 0,
-        totalRulesExtracted: 0
+        totalRulesExtracted: 0,
       });
     });
 
@@ -71,13 +71,13 @@ describe("onboard-state - Unit Tests", () => {
             {
               path: "/sessions/test.jsonl",
               processedAt: "2025-01-01T00:00:00Z",
-              rulesExtracted: 5
-            }
+              rulesExtracted: 5,
+            },
           ],
           stats: {
             totalSessionsProcessed: 1,
-            totalRulesExtracted: 5
-          }
+            totalRulesExtracted: 5,
+          },
         };
 
         const statePath = path.join(env.cassMemoryDir, "onboarding-state.json");
@@ -126,7 +126,7 @@ describe("onboard-state - Unit Tests", () => {
           startedAt: "2025-01-01T00:00:00Z",
           lastUpdatedAt: "2025-01-02T00:00:00Z",
           processedSessions: [],
-          stats: { totalSessionsProcessed: 0, totalRulesExtracted: 0 }
+          stats: { totalSessionsProcessed: 0, totalRulesExtracted: 0 },
         };
 
         const statePath = path.join(env.cassMemoryDir, "onboarding-state.json");
@@ -147,7 +147,7 @@ describe("onboard-state - Unit Tests", () => {
         state.processedSessions.push({
           path: "/test/session.jsonl",
           processedAt: new Date().toISOString(),
-          rulesExtracted: 3
+          rulesExtracted: 3,
         });
 
         await saveOnboardState(state);
@@ -166,7 +166,7 @@ describe("onboard-state - Unit Tests", () => {
         const state = createEmptyState();
         state.processedSessions = [
           { path: "/s1.jsonl", processedAt: "2025-01-01T00:00:00Z", rulesExtracted: 3 },
-          { path: "/s2.jsonl", processedAt: "2025-01-01T00:00:00Z", rulesExtracted: 7 }
+          { path: "/s2.jsonl", processedAt: "2025-01-01T00:00:00Z", rulesExtracted: 7 },
         ];
         // Intentionally wrong stats
         state.stats = { totalSessionsProcessed: 0, totalRulesExtracted: 0 };
@@ -187,7 +187,7 @@ describe("onboard-state - Unit Tests", () => {
         const originalTime = state.lastUpdatedAt;
 
         // Small delay to ensure different timestamp
-        await new Promise(r => setTimeout(r, 10));
+        await new Promise((r) => setTimeout(r, 10));
         await saveOnboardState(state);
 
         const statePath = path.join(env.cassMemoryDir, "onboarding-state.json");
@@ -205,9 +205,9 @@ describe("onboard-state - Unit Tests", () => {
         startedAt: "2025-01-01T00:00:00Z",
         lastUpdatedAt: "2025-01-01T00:00:00Z",
         processedSessions: [
-          { path: "/sessions/test.jsonl", processedAt: "2025-01-01T00:00:00Z", rulesExtracted: 5 }
+          { path: "/sessions/test.jsonl", processedAt: "2025-01-01T00:00:00Z", rulesExtracted: 5 },
         ],
-        stats: { totalSessionsProcessed: 1, totalRulesExtracted: 5 }
+        stats: { totalSessionsProcessed: 1, totalRulesExtracted: 5 },
       };
 
       expect(isSessionProcessed(state, "/sessions/test.jsonl")).toBe(true);
@@ -225,9 +225,9 @@ describe("onboard-state - Unit Tests", () => {
         startedAt: "2025-01-01T00:00:00Z",
         lastUpdatedAt: "2025-01-01T00:00:00Z",
         processedSessions: [
-          { path: "/sessions/test.jsonl", processedAt: "2025-01-01T00:00:00Z", rulesExtracted: 5 }
+          { path: "/sessions/test.jsonl", processedAt: "2025-01-01T00:00:00Z", rulesExtracted: 5 },
         ],
-        stats: { totalSessionsProcessed: 1, totalRulesExtracted: 5 }
+        stats: { totalSessionsProcessed: 1, totalRulesExtracted: 5 },
       };
 
       // Different path representation should still match after normalization
@@ -321,30 +321,27 @@ describe("onboard-state - Unit Tests", () => {
         startedAt: "2025-01-01T00:00:00Z",
         lastUpdatedAt: "2025-01-01T00:00:00Z",
         processedSessions: [
-          { path: "/sessions/s1.jsonl", processedAt: "2025-01-01T00:00:00Z", rulesExtracted: 5 }
+          { path: "/sessions/s1.jsonl", processedAt: "2025-01-01T00:00:00Z", rulesExtracted: 5 },
         ],
-        stats: { totalSessionsProcessed: 1, totalRulesExtracted: 5 }
+        stats: { totalSessionsProcessed: 1, totalRulesExtracted: 5 },
       };
 
       const sessions = [
         { path: "/sessions/s1.jsonl", name: "s1" },
         { path: "/sessions/s2.jsonl", name: "s2" },
-        { path: "/sessions/s3.jsonl", name: "s3" }
+        { path: "/sessions/s3.jsonl", name: "s3" },
       ];
 
       const unprocessed = filterUnprocessedSessions(sessions, state);
 
       expect(unprocessed).toHaveLength(2);
-      expect(unprocessed.map(s => s.name)).toEqual(["s2", "s3"]);
+      expect(unprocessed.map((s) => s.name)).toEqual(["s2", "s3"]);
     });
 
     test("returns all sessions when none processed", () => {
       const state = createEmptyState();
 
-      const sessions = [
-        { path: "/sessions/s1.jsonl" },
-        { path: "/sessions/s2.jsonl" }
-      ];
+      const sessions = [{ path: "/sessions/s1.jsonl" }, { path: "/sessions/s2.jsonl" }];
 
       const unprocessed = filterUnprocessedSessions(sessions, state);
 
@@ -357,9 +354,9 @@ describe("onboard-state - Unit Tests", () => {
         startedAt: "2025-01-01T00:00:00Z",
         lastUpdatedAt: "2025-01-01T00:00:00Z",
         processedSessions: [
-          { path: "/sessions/s1.jsonl", processedAt: "2025-01-01T00:00:00Z", rulesExtracted: 5 }
+          { path: "/sessions/s1.jsonl", processedAt: "2025-01-01T00:00:00Z", rulesExtracted: 5 },
         ],
-        stats: { totalSessionsProcessed: 1, totalRulesExtracted: 5 }
+        stats: { totalSessionsProcessed: 1, totalRulesExtracted: 5 },
       };
 
       const sessions = [{ path: "/sessions/s1.jsonl" }];

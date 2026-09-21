@@ -6,8 +6,8 @@
  *
  * Format: // [cass: helpful|harmful <bulletId>] - reason
  */
-import { describe, test, expect } from "bun:test";
-import { parseInlineFeedback, inlineFeedbackToDeltas } from "../src/utils.js";
+import { describe, expect, test } from "bun:test";
+import { inlineFeedbackToDeltas, parseInlineFeedback } from "../src/utils.js";
 
 describe("parseInlineFeedback", () => {
   describe("Basic parsing", () => {
@@ -200,7 +200,7 @@ describe("inlineFeedbackToDeltas", () => {
   test("converts feedback to deltas with session path", () => {
     const feedback = [
       { type: "helpful" as const, bulletId: "b-abc", reason: "good" },
-      { type: "harmful" as const, bulletId: "b-xyz", reason: "bad" }
+      { type: "harmful" as const, bulletId: "b-xyz", reason: "bad" },
     ];
 
     const deltas = inlineFeedbackToDeltas(feedback, "/path/to/session.jsonl");
@@ -210,20 +210,18 @@ describe("inlineFeedbackToDeltas", () => {
       type: "helpful",
       bulletId: "b-abc",
       sourceSession: "/path/to/session.jsonl",
-      reason: "good"
+      reason: "good",
     });
     expect(deltas[1]).toEqual({
       type: "harmful",
       bulletId: "b-xyz",
       sourceSession: "/path/to/session.jsonl",
-      reason: "bad"
+      reason: "bad",
     });
   });
 
   test("handles feedback without reason", () => {
-    const feedback = [
-      { type: "helpful" as const, bulletId: "b-abc" }
-    ];
+    const feedback = [{ type: "helpful" as const, bulletId: "b-abc" }];
 
     const deltas = inlineFeedbackToDeltas(feedback, "/session");
 

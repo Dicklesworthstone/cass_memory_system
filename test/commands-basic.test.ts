@@ -2,7 +2,7 @@
  * Unit tests for command modules that are otherwise covered only by E2E.
  * Focus: input validation + JSON output shape using real file I/O helpers.
  */
-import { describe, test, expect } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import yaml from "yaml";
 
@@ -14,10 +14,9 @@ import { startersCommand } from "../src/commands/starters.js";
 import { statsCommand } from "../src/commands/stats.js";
 import { traumaCommand } from "../src/commands/trauma.js";
 import { usageCommand } from "../src/commands/usage.js";
-
-import { withTempCassHome } from "./helpers/temp.js";
-import { createTestBullet, createTestPlaybook } from "./helpers/factories.js";
 import { loadPlaybook } from "../src/playbook.js";
+import { createTestBullet, createTestPlaybook } from "./helpers/factories.js";
+import { withTempCassHome } from "./helpers/temp.js";
 
 type Capture = {
   logs: string[];
@@ -189,7 +188,11 @@ describe("commands basic unit coverage (JSON + validation)", () => {
       await withTempCassHome(async (env) => {
         const bullets = [
           createTestBullet({ id: "b-logs", content: "Prefer structured logs", scope: "global" }),
-          createTestBullet({ id: "b-timeouts", content: "Set explicit timeouts", scope: "workspace" }),
+          createTestBullet({
+            id: "b-timeouts",
+            content: "Set explicit timeouts",
+            scope: "workspace",
+          }),
         ];
         writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook(bullets)));
 
@@ -250,8 +253,18 @@ describe("commands basic unit coverage (JSON + validation)", () => {
     await withKeepTemp(async () => {
       await withTempCassHome(async (env) => {
         const bullets = [
-          createTestBullet({ id: "b-active", state: "active", maturity: "candidate", scope: "global" }),
-          createTestBullet({ id: "b-retired", state: "retired", maturity: "deprecated", scope: "workspace" }),
+          createTestBullet({
+            id: "b-active",
+            state: "active",
+            maturity: "candidate",
+            scope: "global",
+          }),
+          createTestBullet({
+            id: "b-retired",
+            state: "retired",
+            maturity: "deprecated",
+            scope: "workspace",
+          }),
         ];
         writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook(bullets)));
 
@@ -279,8 +292,8 @@ describe("commands basic unit coverage (JSON + validation)", () => {
           JSON.stringify(
             { budget: { dailyLimit: 1, monthlyLimit: 2, warningThreshold: 80, currency: "USD" } },
             null,
-            2
-          )
+            2,
+          ),
         );
 
         const capture = captureConsole();
@@ -339,7 +352,10 @@ describe("commands basic unit coverage (JSON + validation)", () => {
         writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([bullet])));
 
         await withCwd(env.home, async () => {
-          const result = await recordFeedback("b-harmful", { harmful: true, reason: "custom-context" });
+          const result = await recordFeedback("b-harmful", {
+            harmful: true,
+            reason: "custom-context",
+          });
           expect(result.type).toBe("harmful");
         });
 
@@ -357,7 +373,11 @@ describe("commands basic unit coverage (JSON + validation)", () => {
       await withTempCassHome(async (env) => {
         const bullets = [
           createTestBullet({ id: "b-logs", content: "Prefer structured logs", scope: "global" }),
-          createTestBullet({ id: "b-timeouts", content: "Set explicit timeouts", scope: "workspace" }),
+          createTestBullet({
+            id: "b-timeouts",
+            content: "Set explicit timeouts",
+            scope: "workspace",
+          }),
         ];
         writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook(bullets)));
 

@@ -1,17 +1,17 @@
-import { loadConfig } from "../config.js";
-import { loadMergedPlaybook, getActiveBullets } from "../playbook.js";
-import { scanSessionsForViolations } from "../audit.js";
-import { scanForTraumas } from "../trauma.js";
-import { AuditResult, ErrorCode } from "../types.js";
-import { cassTimeline, type CassRunner } from "../cass.js";
-import { getAvailableProviders, type LLMIO } from "../llm.js";
 import chalk from "chalk";
-import { getCliName, reportError, printJsonResult, validatePositiveInt } from "../utils.js";
+import { scanSessionsForViolations } from "../audit.js";
+import { type CassRunner, cassTimeline } from "../cass.js";
+import { loadConfig } from "../config.js";
+import { getAvailableProviders, type LLMIO } from "../llm.js";
 import { iconPrefix } from "../output.js";
+import { getActiveBullets, loadMergedPlaybook } from "../playbook.js";
+import { scanForTraumas } from "../trauma.js";
+import { type AuditResult, ErrorCode } from "../types.js";
+import { getCliName, printJsonResult, reportError, validatePositiveInt } from "../utils.js";
 
 export async function auditCommand(
   flags: { days?: number; json?: boolean; trauma?: boolean },
-  deps: { io?: LLMIO; cassRunner?: CassRunner } = {}
+  deps: { io?: LLMIO; cassRunner?: CassRunner } = {},
 ) {
   const startedAtMs = Date.now();
   const command = "audit";
@@ -36,21 +36,25 @@ export async function auditCommand(
     // === TRAUMA SCAN MODE ===
     if (flags.trauma) {
       if (!flags.json) {
-        console.log(chalk.bold.red(`\n${iconPrefix("warning")}Project Hot Stove: Scanning for past catastrophes...`));
+        console.log(
+          chalk.bold.red(
+            `\n${iconPrefix("warning")}Project Hot Stove: Scanning for past catastrophes...`,
+          ),
+        );
       }
-      
+
       const candidates = await scanForTraumas(config, days, deps.cassRunner);
-      
+
       if (flags.json) {
         printJsonResult(command, { candidates }, { startedAtMs });
         return;
       }
-      
+
       if (candidates.length === 0) {
         console.log(chalk.green("No potential traumas found (or maybe you hid them well)."));
         return;
       }
-      
+
       console.log(chalk.yellow(`Found ${candidates.length} candidate traumas:`));
       for (const c of candidates) {
         console.log(chalk.red(`\n[TRAUMA CANDIDATE]`));
@@ -63,8 +67,8 @@ export async function auditCommand(
       }
       console.log(
         chalk.bold(
-          `\nTo convert a candidate into a scar, use: ${cli} trauma add "<pattern>" --severity CRITICAL --message "..."`
-        )
+          `\nTo convert a candidate into a scar, use: ${cli} trauma add "<pattern>" --severity CRITICAL --message "..."`,
+        ),
       );
       console.log(chalk.gray(`Tip: bulk import with: ${cli} trauma import <file>`));
       return;
@@ -76,7 +80,12 @@ export async function auditCommand(
     if (!hasApiKeyOverride && availableProviders.length === 0) {
       const message =
         "Audit requires LLM access. Set one of: ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY, OLLAMA_BASE_URL, AWS credentials (Bedrock), or install a CLI tool (claude/codex/gemini) and set provider to 'cli'.";
-      reportError(message, { code: ErrorCode.MISSING_API_KEY, json: flags.json, command, startedAtMs });
+      reportError(message, {
+        code: ErrorCode.MISSING_API_KEY,
+        json: flags.json,
+        command,
+        startedAtMs,
+      });
       return;
     }
 
@@ -86,7 +95,7 @@ export async function auditCommand(
     const timeline = cassRunner
       ? await cassTimeline(days, config.cassPath, cassRunner)
       : await cassTimeline(days, config.cassPath);
-    
+
     // Safety check: timeline might be empty or malformed
     if (!timeline || !timeline.groups) {
       if (flags.json) {
@@ -102,7 +111,7 @@ export async function auditCommand(
             },
             scannedAt: new Date().toISOString(),
           },
-          { startedAtMs }
+          { startedAtMs },
         );
       } else {
         console.log(chalk.yellow("No session history found."));
@@ -126,7 +135,7 @@ export async function auditCommand(
             },
             scannedAt: new Date().toISOString(),
           },
-          { startedAtMs }
+          { startedAtMs },
         );
       } else {
         console.log(chalk.yellow(`No sessions found in the last ${days} days.`));
@@ -135,7 +144,13 @@ export async function auditCommand(
     }
 
     // Scan
-    const violations = await scanSessionsForViolations(sessions, playbook, config, deps.io, cassRunner);
+    const violations = await scanSessionsForViolations(
+      sessions,
+      playbook,
+      config,
+      deps.io,
+      cassRunner,
+    );
 
     // Stats
     const stats = {
@@ -143,16 +158,16 @@ export async function auditCommand(
       rulesChecked: getActiveBullets(playbook).length,
       violationsFound: violations.length,
       bySeverity: {
-        high: violations.filter(v => v.severity === "high").length,
-        medium: violations.filter(v => v.severity === "medium").length,
-        low: violations.filter(v => v.severity === "low").length
-      }
+        high: violations.filter((v) => v.severity === "high").length,
+        medium: violations.filter((v) => v.severity === "medium").length,
+        low: violations.filter((v) => v.severity === "low").length,
+      },
     };
 
     const result: AuditResult = {
       violations,
       stats,
-      scannedAt: new Date().toISOString()
+      scannedAt: new Date().toISOString(),
     };
 
     if (flags.json) {
@@ -163,8 +178,9 @@ export async function auditCommand(
       console.log(`Violations found: ${stats.violationsFound}`);
       console.log("");
 
-      violations.forEach(v => {
-        const color = v.severity === "high" ? chalk.red : v.severity === "medium" ? chalk.yellow : chalk.blue;
+      violations.forEach((v) => {
+        const color =
+          v.severity === "high" ? chalk.red : v.severity === "medium" ? chalk.yellow : chalk.blue;
         console.log(color(`[${v.severity.toUpperCase()}] Rule ${v.bulletId}`));
         console.log(`  ${v.bulletContent}`);
         console.log(chalk.gray(`  Session: ${v.sessionPath}`));

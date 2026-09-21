@@ -8,12 +8,12 @@
  * - mark-done JSON output
  * - reset confirmation error (JSON)
  */
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { onboardCommand } from "../src/commands/onboard.js";
-import { withTempCassHome } from "./helpers/temp.js";
 import { createE2ELogger } from "./helpers/e2e-logger.js";
+import { withTempCassHome } from "./helpers/temp.js";
 
 function captureConsole() {
   const logs: string[] = [];
@@ -34,7 +34,7 @@ function captureConsole() {
     restore: () => {
       console.log = originalLog;
       console.error = originalError;
-    }
+    },
   };
 }
 

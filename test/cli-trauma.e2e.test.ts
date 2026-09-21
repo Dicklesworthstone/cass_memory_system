@@ -4,22 +4,25 @@
  * Tests the `cm trauma` command for managing trauma entries that prevent
  * repeating dangerous patterns. Uses isolated temp directories.
  */
-import { describe, it, expect, afterEach } from "bun:test";
-import { mkdir, writeFile, rm } from "node:fs/promises";
-import path from "node:path";
+import { afterEach, describe, expect, it } from "bun:test";
 import { execSync } from "node:child_process";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
+import path from "node:path";
 
 import { traumaCommand } from "../src/commands/trauma.js";
 import { loadTraumas } from "../src/trauma.js";
-import { TraumaEntry } from "../src/types.js";
+import type { TraumaEntry } from "../src/types.js";
 
 // --- Helper Functions ---
 
 let tempDirs: string[] = [];
 
 async function createTempDir(): Promise<string> {
-  const dirPath = path.join(os.tmpdir(), `trauma-e2e-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const dirPath = path.join(
+    os.tmpdir(),
+    `trauma-e2e-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  );
   await mkdir(dirPath, { recursive: true });
   tempDirs.push(dirPath);
   return dirPath;
@@ -52,7 +55,7 @@ function captureConsole() {
     restore: () => {
       console.log = originalLog;
       console.error = originalError;
-    }
+    },
   };
 }
 
@@ -97,10 +100,10 @@ function createTestTrauma(overrides: Partial<TraumaEntry> = {}): TraumaEntry {
     trigger_event: {
       session_path: "/test/session.jsonl",
       timestamp: new Date().toISOString(),
-      human_message: "This caused data loss"
+      human_message: "This caused data loss",
     },
     created_at: new Date().toISOString(),
-    ...overrides
+    ...overrides,
   };
 }
 
@@ -140,7 +143,7 @@ describe("E2E: CLI trauma command", () => {
         const trauma = createTestTrauma({
           id: "trauma-list-test",
           pattern: "DROP TABLE",
-          severity: "FATAL"
+          severity: "FATAL",
         });
         const traumasFile = path.join(cassMemoryDir, "traumas.jsonl");
         await writeFile(traumasFile, JSON.stringify(trauma) + "\n");
@@ -208,7 +211,7 @@ describe("E2E: CLI trauma command", () => {
         const traumasFile = path.join(cassMemoryDir, "traumas.jsonl");
         await writeFile(
           traumasFile,
-          JSON.stringify(activeTrauma) + "\n" + JSON.stringify(healedTrauma) + "\n"
+          JSON.stringify(activeTrauma) + "\n" + JSON.stringify(healedTrauma) + "\n",
         );
 
         const capture = captureConsole();
@@ -271,7 +274,7 @@ describe("E2E: CLI trauma command", () => {
           await traumaCommand("add", ["git push --force"], {
             severity: "FATAL",
             message: "Force push destroyed PR history",
-            json: true
+            json: true,
           });
         } finally {
           capture.restore();
@@ -280,7 +283,9 @@ describe("E2E: CLI trauma command", () => {
         const payload = JSON.parse(capture.logs.join("\n"));
         expect(payload.success).toBe(true);
         expect(payload.data.entry.severity).toBe("FATAL");
-        expect(payload.data.entry.trigger_event.human_message).toBe("Force push destroyed PR history");
+        expect(payload.data.entry.trigger_event.human_message).toBe(
+          "Force push destroyed PR history",
+        );
 
         const traumas = await loadTraumas();
         expect(traumas[0].severity).toBe("FATAL");
@@ -302,7 +307,7 @@ describe("E2E: CLI trauma command", () => {
           try {
             await traumaCommand("add", ["npm publish"], {
               scope: "project",
-              json: true
+              json: true,
             });
           } finally {
             capture.restore();
@@ -443,7 +448,9 @@ describe("E2E: CLI trauma command", () => {
         expect(payload.success).toBe(false);
         // Error may include code or message about not found
         const payloadStr = JSON.stringify(payload).toLowerCase();
-        expect(payloadStr.includes("not found") || payloadStr.includes("trauma_not_found")).toBe(true);
+        expect(payloadStr.includes("not found") || payloadStr.includes("trauma_not_found")).toBe(
+          true,
+        );
       } finally {
         process.env.HOME = originalHome;
       }
@@ -486,14 +493,14 @@ describe("E2E: CLI trauma command", () => {
 
         // Verify trauma exists before removal
         const beforeTraumas = await loadTraumas();
-        expect(beforeTraumas.some(t => t.id === uniqueId)).toBe(true);
+        expect(beforeTraumas.some((t) => t.id === uniqueId)).toBe(true);
 
         const capture = captureConsole();
         try {
           await traumaCommand("remove", [uniqueId], {
             force: true,
             yes: true,
-            json: false
+            json: false,
           });
         } finally {
           capture.restore();
@@ -504,7 +511,7 @@ describe("E2E: CLI trauma command", () => {
 
         // Verify our specific trauma was removed
         const traumas = await loadTraumas();
-        expect(traumas.some(t => t.id === uniqueId)).toBe(false);
+        expect(traumas.some((t) => t.id === uniqueId)).toBe(false);
       } finally {
         process.env.HOME = originalHome;
       }
@@ -537,7 +544,7 @@ describe("E2E: CLI trauma command", () => {
 
         // Verify our specific trauma still exists
         const traumas = await loadTraumas();
-        expect(traumas.some(t => t.id === uniqueId)).toBe(true);
+        expect(traumas.some((t) => t.id === uniqueId)).toBe(true);
       } finally {
         process.env.HOME = originalHome;
       }
@@ -559,7 +566,7 @@ describe("E2E: CLI trauma command", () => {
           await traumaCommand("remove", ["trauma-remove-json"], {
             force: true,
             yes: true,
-            json: true
+            json: true,
           });
         } finally {
           capture.restore();
@@ -585,7 +592,7 @@ describe("E2E: CLI trauma command", () => {
           await traumaCommand("remove", ["ghost-trauma-xyz"], {
             force: true,
             yes: true,
-            json: true
+            json: true,
           });
         } finally {
           capture.restore();
@@ -595,7 +602,9 @@ describe("E2E: CLI trauma command", () => {
         expect(payload.success).toBe(false);
         // Error code may be in various formats
         const payloadStr = JSON.stringify(payload).toLowerCase();
-        expect(payloadStr.includes("not found") || payloadStr.includes("trauma_not_found")).toBe(true);
+        expect(payloadStr.includes("not found") || payloadStr.includes("trauma_not_found")).toBe(
+          true,
+        );
       } finally {
         process.env.HOME = originalHome;
       }
@@ -646,10 +655,7 @@ describe("E2E: CLI trauma command", () => {
 
         // Create import file with JSONL patterns
         const importFile = path.join(dir, "patterns.jsonl");
-        await writeFile(
-          importFile,
-          '{"pattern": "rm -rf /"}\n{"pattern": "DROP TABLE"}\n'
-        );
+        await writeFile(importFile, '{"pattern": "rm -rf /"}\n{"pattern": "DROP TABLE"}\n');
 
         const capture = captureConsole();
         try {
@@ -687,7 +693,7 @@ describe("E2E: CLI trauma command", () => {
             await traumaCommand("import", [importFile], {
               severity: "FATAL",
               scope: "project",
-              json: true
+              json: true,
             });
           } finally {
             capture.restore();
@@ -698,12 +704,10 @@ describe("E2E: CLI trauma command", () => {
 
           // Verify the newly imported traumas have correct severity and scope
           const traumas = await loadTraumas();
-          const importedTraumas = traumas.filter(t =>
-            t.pattern.includes(uniqueSuffix)
-          );
+          const importedTraumas = traumas.filter((t) => t.pattern.includes(uniqueSuffix));
           expect(importedTraumas.length).toBe(2);
-          expect(importedTraumas.every(t => t.severity === "FATAL")).toBe(true);
-          expect(importedTraumas.every(t => t.scope === "project")).toBe(true);
+          expect(importedTraumas.every((t) => t.severity === "FATAL")).toBe(true);
+          expect(importedTraumas.every((t) => t.scope === "project")).toBe(true);
         });
       } finally {
         process.env.HOME = originalHome;
@@ -734,7 +738,9 @@ describe("E2E: CLI trauma command", () => {
         expect(payload.data.imported).toBe(2);
         expect(payload.data.warningsCount).toBe(1);
         // warnings is an array of strings - check if any contains the expected text
-        expect(payload.warnings.some((w: string) => w.includes("Line 2") && w.includes("invalid regex"))).toBe(true);
+        expect(
+          payload.warnings.some((w: string) => w.includes("Line 2") && w.includes("invalid regex")),
+        ).toBe(true);
 
         // Verify 2 valid patterns were added
         const traumas = await loadTraumas();
@@ -762,7 +768,9 @@ describe("E2E: CLI trauma command", () => {
         expect(payload.success).toBe(false);
         // Error code may be in various formats
         const payloadStr = JSON.stringify(payload).toLowerCase();
-        expect(payloadStr.includes("not found") || payloadStr.includes("file_not_found")).toBe(true);
+        expect(payloadStr.includes("not found") || payloadStr.includes("file_not_found")).toBe(
+          true,
+        );
       } finally {
         process.env.HOME = originalHome;
       }
@@ -907,7 +915,7 @@ describe("E2E: CLI trauma command", () => {
         const payload = JSON.parse(capture.logs.join("\n"));
         // Filter for our specific test patterns
         const ourTraumas = payload.data.traumas.filter((t: TraumaEntry) =>
-          t.pattern.includes(uniqueId)
+          t.pattern.includes(uniqueId),
         );
         expect(ourTraumas.length).toBe(2);
 

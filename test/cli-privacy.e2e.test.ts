@@ -1,13 +1,13 @@
 /**
  * E2E Tests for CLI privacy command - Cross-agent settings
  */
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { readFile, writeFile } from "node:fs/promises";
 import { privacyCommand } from "../src/commands/privacy.js";
 import { loadConfig } from "../src/config.js";
-import { withTempCassHome, type TestEnv } from "./helpers/temp.js";
 import { createE2ELogger } from "./helpers/e2e-logger.js";
 import { createTestConfig } from "./helpers/factories.js";
+import { type TestEnv, withTempCassHome } from "./helpers/temp.js";
 
 function captureConsole() {
   const logs: string[] = [];
@@ -50,7 +50,11 @@ async function writeTestConfig(env: TestEnv): Promise<void> {
   await writeFile(env.configPath, JSON.stringify(config, null, 2), "utf-8");
 }
 
-async function snapshotConfig(log: ReturnType<typeof createE2ELogger>, env: TestEnv, name: string): Promise<void> {
+async function snapshotConfig(
+  log: ReturnType<typeof createE2ELogger>,
+  env: TestEnv,
+  name: string,
+): Promise<void> {
   const contents = await readFile(env.configPath, "utf-8").catch(() => "");
   log.snapshot(name, contents);
 }
@@ -122,12 +126,17 @@ describe("E2E: CLI privacy command", () => {
       await withTempCassHome(async (env) => {
         await writeTestConfig(env);
 
-        const runJson = async (action: Parameters<typeof privacyCommand>[0], args: string[] = []) => {
+        const runJson = async (
+          action: Parameters<typeof privacyCommand>[0],
+          args: string[] = [],
+        ) => {
           const capture = captureConsole();
           try {
             await withNoColor(async () => {
               await withCwd(env.home, async () => {
-                log.step("Run command", { command: `cm privacy ${action} ${args.join(" ")} --json` });
+                log.step("Run command", {
+                  command: `cm privacy ${action} ${args.join(" ")} --json`,
+                });
                 await privacyCommand(action, args, { json: true, days: 7 });
               });
             });
@@ -152,7 +161,9 @@ describe("E2E: CLI privacy command", () => {
         const allowed = await runJson("allow", ["cursor"]);
         expect(allowed.success).toBe(true);
         expect(allowed.command).toBe("privacy:allow");
-        expect(allowed.data.crossAgent.agents).toEqual(expect.arrayContaining(["claude", "cursor"]));
+        expect(allowed.data.crossAgent.agents).toEqual(
+          expect.arrayContaining(["claude", "cursor"]),
+        );
         await snapshotConfig(log, env, "config.afterAllow");
 
         const denied = await runJson("deny", ["claude"]);
@@ -458,7 +469,7 @@ describe("E2E: CLI privacy command", () => {
           schema_version: 1,
           llm: {
             provider: "openai",
-            model: "gpt-4"
+            model: "gpt-4",
           },
           cassPath: "__cass_not_installed__",
           playbookPath: env.playbookPath,

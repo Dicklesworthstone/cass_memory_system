@@ -1,11 +1,25 @@
 import chalk from "chalk";
 import { loadConfig } from "../config.js";
-import { loadMergedPlaybook, getActiveBullets } from "../playbook.js";
-import { findSimilarBulletsSemantic, resolveSemanticEnabled, formatSemanticModeMessage } from "../semantic.js";
-import { getEffectiveScore } from "../scoring.js";
-import { isJsonOutput, isToonOutput, jaccardSimilarity, truncate, getCliName, printStructuredResult, reportError, validateOneOf, warn } from "../utils.js";
-import { ErrorCode, PlaybookBullet } from "../types.js";
 import { formatRule, formatTipPrefix, getOutputStyle, wrapText } from "../output.js";
+import { getActiveBullets, loadMergedPlaybook } from "../playbook.js";
+import { getEffectiveScore } from "../scoring.js";
+import {
+  findSimilarBulletsSemantic,
+  formatSemanticModeMessage,
+  resolveSemanticEnabled,
+} from "../semantic.js";
+import { ErrorCode, type PlaybookBullet } from "../types.js";
+import {
+  getCliName,
+  isJsonOutput,
+  isToonOutput,
+  jaccardSimilarity,
+  printStructuredResult,
+  reportError,
+  truncate,
+  validateOneOf,
+  warn,
+} from "../utils.js";
 
 export type SimilarScope = "global" | "workspace" | "all";
 
@@ -45,7 +59,7 @@ function isValidScope(value: string): value is SimilarScope {
 
 export async function generateSimilarResults(
   query: string,
-  flags: SimilarFlags = {}
+  flags: SimilarFlags = {},
 ): Promise<SimilarResult> {
   const cleaned = query?.trim();
   if (!cleaned) {
@@ -54,7 +68,11 @@ export async function generateSimilarResults(
 
   const providedLimit = flags.limit;
   if (providedLimit !== undefined) {
-    if (typeof providedLimit !== "number" || !Number.isFinite(providedLimit) || !Number.isInteger(providedLimit)) {
+    if (
+      typeof providedLimit !== "number" ||
+      !Number.isFinite(providedLimit) ||
+      !Number.isInteger(providedLimit)
+    ) {
       throw new Error("--limit must be an integer >= 1");
     }
     if (providedLimit < 1) {
@@ -107,7 +125,9 @@ export async function generateSimilarResults(
       mode = "semantic";
     } catch (err: any) {
       // Caller decides whether to display warnings; we fall back silently here.
-      warn(`[similar] Semantic search failed: ${err.message || String(err)}. Falling back to keyword search.`);
+      warn(
+        `[similar] Semantic search failed: ${err.message || String(err)}. Falling back to keyword search.`,
+      );
       matches = [];
       mode = "keyword";
     }
@@ -193,7 +213,11 @@ export async function similarCommand(query: string, flags: SimilarFlags): Promis
 
     if (result.results.length === 0) {
       console.log(chalk.gray("No matches found."));
-      console.log(chalk.gray(`${formatTipPrefix()}Try lowering the threshold: ${getCliName()} similar "<query>" --threshold 0.5`));
+      console.log(
+        chalk.gray(
+          `${formatTipPrefix()}Try lowering the threshold: ${getCliName()} similar "<query>" --threshold 0.5`,
+        ),
+      );
       return;
     }
 
@@ -207,7 +231,7 @@ export async function similarCommand(query: string, flags: SimilarFlags): Promis
       const score = r.effectiveScore.toFixed(1);
       console.log(
         chalk.bold(`${i + 1}. [${r.id}]`) +
-        chalk.dim(` • sim ${sim} • score ${score} • ${r.category}/${r.scope}`)
+          chalk.dim(` • sim ${sim} • score ${score} • ${r.category}/${r.scope}`),
       );
 
       const contentWidth = Math.max(24, maxWidth - 4);
@@ -218,7 +242,9 @@ export async function similarCommand(query: string, flags: SimilarFlags): Promis
     }
 
     const cli = getCliName();
-    console.log(chalk.gray(`${formatTipPrefix()}Use '${cli} playbook get <id>' to see full details.`));
+    console.log(
+      chalk.gray(`${formatTipPrefix()}Use '${cli} playbook get <id>' to see full details.`),
+    );
   } catch (err: any) {
     const message = err?.message || String(err);
     const code =

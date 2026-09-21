@@ -1,19 +1,19 @@
+import { execFile, spawn, spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { execFile, spawn, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
-import {
-  CassHit,
-  CassHitSchema,
-  CassTimelineGroup,
-  CassTimelineResult,
-  Config,
-  RemoteCassHost
-} from "./types.js";
-import { log, warn, error, expandPath, validatePositiveInt, canonicalAgentName } from "./utils.js";
+import { getSanitizeConfig, loadConfig } from "./config.js";
+import { compileExtraPatterns, sanitize } from "./sanitize.js";
 import { isCmSubprocessTranscriptPath } from "./subprocess-tag.js";
-import { sanitize, compileExtraPatterns } from "./sanitize.js";
-import { loadConfig, getSanitizeConfig } from "./config.js";
+import {
+  type CassHit,
+  CassHitSchema,
+  type CassTimelineGroup,
+  type CassTimelineResult,
+  type Config,
+  RemoteCassHost,
+} from "./types.js";
+import { canonicalAgentName, error, expandPath, log, validatePositiveInt, warn } from "./utils.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -35,7 +35,7 @@ export interface CassRunner {
   execFile: (
     file: string,
     args: string[],
-    options?: { maxBuffer?: number; timeout?: number }
+    options?: { maxBuffer?: number; timeout?: number },
   ) => Promise<{ stdout: string; stderr: string }>;
   spawnSync: (
     file: string,
@@ -45,7 +45,7 @@ export interface CassRunner {
       timeout?: number;
       encoding?: BufferEncoding | "buffer";
       maxBuffer?: number;
-    }
+    },
   ) => {
     status: number | null;
     stdout?: string | Buffer;
@@ -59,8 +59,14 @@ const DEFAULT_CASS_RUNNER: CassRunner = {
   execFile: async (file, args, options) => {
     const result = await execFileAsync(file, args, options);
     return {
-      stdout: typeof (result as any)?.stdout === "string" ? (result as any).stdout : String((result as any)?.stdout ?? ""),
-      stderr: typeof (result as any)?.stderr === "string" ? (result as any).stderr : String((result as any)?.stderr ?? ""),
+      stdout:
+        typeof (result as any)?.stdout === "string"
+          ? (result as any).stdout
+          : String((result as any)?.stdout ?? ""),
+      stderr:
+        typeof (result as any)?.stderr === "string"
+          ? (result as any).stderr
+          : String((result as any)?.stderr ?? ""),
     };
   },
   spawnSync: (file, args, options) => spawnSync(file, args, options as any) as any,
@@ -74,7 +80,12 @@ export interface CassAvailabilityResult {
   resolvedCassPath?: string;
 }
 
-export type CassDegradedReason = "NOT_FOUND" | "INDEX_MISSING" | "FTS_TABLE_MISSING" | "TIMEOUT" | "OTHER";
+export type CassDegradedReason =
+  | "NOT_FOUND"
+  | "INDEX_MISSING"
+  | "FTS_TABLE_MISSING"
+  | "TIMEOUT"
+  | "OTHER";
 
 export interface CassDegradedInfo {
   /** Whether cass-powered history is available for this operation. */
@@ -102,9 +113,7 @@ function coerceContent(raw: any): string | null {
   if (typeof raw === "string") return raw;
 
   if (Array.isArray(raw)) {
-    const parts = raw
-      .map((p) => coerceContent(p))
-      .filter((v): v is string => Boolean(v));
+    const parts = raw.map((p) => coerceContent(p)).filter((v): v is string => Boolean(v));
     return parts.length ? parts.join("\n") : null;
   }
 
@@ -150,9 +159,7 @@ function formatSessionEntry(entry: any): string | null {
 }
 
 function joinMessages(entries: any[]): string | null {
-  const parts = entries
-    .map((e) => formatSessionEntry(e))
-    .filter((v): v is string => Boolean(v));
+  const parts = entries.map((e) => formatSessionEntry(e)).filter((v): v is string => Boolean(v));
   return parts.length ? parts.join("\n") : null;
 }
 
@@ -281,7 +288,7 @@ function parseCassJsonOutput(stdout: string): unknown {
 export function cassAvailable(
   cassPath = "cass",
   opts: { quiet?: boolean } = {},
-  runner: CassRunner = DEFAULT_CASS_RUNNER
+  runner: CassRunner = DEFAULT_CASS_RUNNER,
 ): boolean {
   const resolved = expandPath(cassPath);
   try {
@@ -298,7 +305,9 @@ export function cassAvailable(
     }
     if (result.status !== 0) {
       if (!opts.quiet) {
-        warn(`cassAvailable non-zero status: ${result.status} ${result.stderr?.toString()?.trim() || ""}`.trim());
+        warn(
+          `cassAvailable non-zero status: ${result.status} ${result.stderr?.toString()?.trim() || ""}`.trim(),
+        );
       }
       return false;
     }
@@ -315,22 +324,22 @@ export function cassAvailable(
  */
 export async function handleCassUnavailable(
   options: { cassPath?: string; searchCommonPaths?: boolean } = {},
-  runner: CassRunner = DEFAULT_CASS_RUNNER
+  runner: CassRunner = DEFAULT_CASS_RUNNER,
 ): Promise<CassAvailabilityResult> {
   const configuredPath = options.cassPath || process.env.CASS_PATH || "cass";
-  const common = options.searchCommonPaths === false ? [] : [
-    "/usr/local/bin/cass",
-    "~/.cargo/bin/cass",
-    "~/.local/bin/cass",
-  ];
+  const common =
+    options.searchCommonPaths === false
+      ? []
+      : ["/usr/local/bin/cass", "~/.cargo/bin/cass", "~/.local/bin/cass"];
 
   const candidates = Array.from(new Set([configuredPath, ...common])).map(expandPath);
 
   for (const candidate of candidates) {
     if (cassAvailable(candidate, { quiet: true }, runner)) {
-      const message = candidate === configuredPath
-        ? `cass available at ${candidate}`
-        : `cass found at ${candidate}. Set CASS_PATH=${candidate} or update config.cassPath.`;
+      const message =
+        candidate === configuredPath
+          ? `cass available at ${candidate}`
+          : `cass found at ${candidate}. Set CASS_PATH=${candidate} or update config.cassPath.`;
       return {
         canContinue: true,
         fallbackMode: "none",
@@ -344,7 +353,7 @@ export async function handleCassUnavailable(
     "cass binary not found. Falling back to playbook-only mode (history disabled).",
     "Install via `cargo install coding-agent-search` or download a release binary:",
     "https://github.com/Dicklesworthstone/coding_agent_session_search",
-    "Then set CASS_PATH or config.cassPath."
+    "Then set CASS_PATH or config.cassPath.",
   ].join(" ");
 
   return {
@@ -354,7 +363,10 @@ export async function handleCassUnavailable(
   };
 }
 
-export function cassNeedsIndex(cassPath = "cass", runner: CassRunner = DEFAULT_CASS_RUNNER): boolean {
+export function cassNeedsIndex(
+  cassPath = "cass",
+  runner: CassRunner = DEFAULT_CASS_RUNNER,
+): boolean {
   const resolved = expandPath(cassPath);
   try {
     const result = runner.spawnSync(resolved, ["health"], { stdio: "pipe", timeout: 2000 });
@@ -369,7 +381,7 @@ export function cassNeedsIndex(cassPath = "cass", runner: CassRunner = DEFAULT_C
 export async function cassIndex(
   cassPath = "cass",
   options: { full?: boolean; incremental?: boolean } = {},
-  runner: CassRunner = DEFAULT_CASS_RUNNER
+  runner: CassRunner = DEFAULT_CASS_RUNNER,
 ): Promise<void> {
   const resolved = expandPath(cassPath);
   const args = ["index"];
@@ -406,7 +418,7 @@ export async function cassSearch(
   query: string,
   options: CassSearchOptions = {},
   cassPath = "cass",
-  runner: CassRunner = DEFAULT_CASS_RUNNER
+  runner: CassRunner = DEFAULT_CASS_RUNNER,
 ): Promise<CassHit[]> {
   const resolved = expandPath(cassPath);
   const args = buildCassSearchArgs(query, options);
@@ -414,7 +426,7 @@ export async function cassSearch(
   try {
     const { stdout } = await runner.execFile(resolved, args, {
       maxBuffer: 50 * 1024 * 1024,
-      timeout: (options.timeout || 30) * 1000
+      timeout: (options.timeout || 30) * 1000,
     });
 
     const rawHits = parseCassJsonOutput(stdout);
@@ -423,7 +435,7 @@ export async function cassSearch(
     let hitsArray: unknown[];
     if (Array.isArray(rawHits)) {
       hitsArray = rawHits;
-    } else if (rawHits && typeof rawHits === 'object' && Array.isArray((rawHits as any).hits)) {
+    } else if (rawHits && typeof rawHits === "object" && Array.isArray((rawHits as any).hits)) {
       hitsArray = (rawHits as any).hits;
     } else {
       hitsArray = [rawHits];
@@ -431,11 +443,10 @@ export async function cassSearch(
 
     // Validate and parse with Zod
     return hitsArray.map((h: any) => CassHitSchema.parse(h));
-
   } catch (err: any) {
     if (err.code === CASS_EXIT_CODES.NOT_FOUND) return [];
     if (err instanceof SyntaxError) {
-        error(`Failed to parse cass output: ${err.message}`);
+      error(`Failed to parse cass output: ${err.message}`);
     }
     throw err;
   }
@@ -478,7 +489,8 @@ function buildCassSearchArgs(query: string, options: CassSearchOptions = {}): st
 }
 
 function coerceRemoteHostLabel(host: Config["remoteCass"]["hosts"][number]): string {
-  const label = typeof host.label === "string" && host.label.trim() ? host.label.trim() : host.host.trim();
+  const label =
+    typeof host.label === "string" && host.label.trim() ? host.label.trim() : host.host.trim();
   return label || host.host;
 }
 
@@ -486,7 +498,7 @@ async function sshCassSearch(
   host: Config["remoteCass"]["hosts"][number],
   query: string,
   options: CassSearchOptions,
-  runner: CassRunner
+  runner: CassRunner,
 ): Promise<CassHit[]> {
   const sshTarget = typeof host.host === "string" ? host.host.trim() : "";
   if (!sshTarget) {
@@ -496,22 +508,19 @@ async function sshCassSearch(
     throw new Error(`Invalid remoteCass host '${sshTarget}': ssh target must not start with '-'`);
   }
   if (/\s/.test(sshTarget)) {
-    throw new Error(`Invalid remoteCass host '${sshTarget}': ssh target must not contain whitespace`);
+    throw new Error(
+      `Invalid remoteCass host '${sshTarget}': ssh target must not contain whitespace`,
+    );
   }
-  if (/[^a-zA-Z0-9@._:%\-:\[\]]/.test(sshTarget)) {
-    throw new Error(`Invalid remoteCass host '${sshTarget}': ssh target contains unsafe characters`);
+  if (/[^a-zA-Z0-9@._:%\-:[\]]/.test(sshTarget)) {
+    throw new Error(
+      `Invalid remoteCass host '${sshTarget}': ssh target contains unsafe characters`,
+    );
   }
 
   const commandArgs = ["cass", ...buildCassSearchArgs(query, options)];
   const remoteCommand = commandArgs.map(shellEscapePosix).join(" ");
-  const sshArgs = [
-    "-o",
-    "BatchMode=yes",
-    "-o",
-    "ConnectTimeout=5",
-    sshTarget,
-    remoteCommand,
-  ];
+  const sshArgs = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", sshTarget, remoteCommand];
 
   const timeoutSeconds = options.timeout || 15;
   const { stdout } = await runner.execFile("ssh", sshArgs, {
@@ -531,7 +540,10 @@ async function sshCassSearch(
   }
 
   const hostLabel = coerceRemoteHostLabel(host);
-  return hitsArray.map((h: any) => ({ ...CassHitSchema.parse(h), origin: { kind: "remote", host: hostLabel } }));
+  return hitsArray.map((h: any) => ({
+    ...CassHitSchema.parse(h),
+    origin: { kind: "remote", host: hostLabel },
+  }));
 }
 
 // --- Safe Wrapper ---
@@ -553,7 +565,11 @@ function classifyCassSearchError(err: any, query: string): CassDegradedInfo {
   const code = err?.code;
   const lower = `${msg}`.toLowerCase();
 
-  if (code === CASS_EXIT_CODES.INDEX_MISSING || lower.includes("index missing") || lower.includes("needs index")) {
+  if (
+    code === CASS_EXIT_CODES.INDEX_MISSING ||
+    lower.includes("index missing") ||
+    lower.includes("needs index")
+  ) {
     return {
       available: false,
       reason: "INDEX_MISSING",
@@ -573,7 +589,7 @@ function classifyCassSearchError(err: any, query: string): CassDegradedInfo {
       available: false,
       reason: "TIMEOUT",
       message: "cass search timed out; history may be incomplete.",
-      suggestedFix: ["cass search \"<query>\" --robot --limit 5 --days 7", "cass health"],
+      suggestedFix: ['cass search "<query>" --robot --limit 5 --days 7', "cass health"],
     };
   }
 
@@ -609,7 +625,7 @@ function classifyRemoteCassSearchFailure(
   sshTarget: string,
   label: string,
   query: string,
-  options: CassSearchOptions
+  options: CassSearchOptions,
 ): CassDegradedInfo {
   const rawMessage = normalizeCassErrorMessage(err);
   const stderr = typeof (err as any)?.stderr === "string" ? (err as any).stderr : "";
@@ -624,7 +640,9 @@ function classifyRemoteCassSearchFailure(
       available: false,
       reason: "OTHER",
       message: `remote(${display}): invalid ssh target; check config.remoteCass.hosts.`,
-      suggestedFix: ["Edit config.remoteCass.hosts to a valid ssh target (no whitespace, must not start with '-', only safe hostname/user characters)"],
+      suggestedFix: [
+        "Edit config.remoteCass.hosts to a valid ssh target (no whitespace, must not start with '-', only safe hostname/user characters)",
+      ],
     };
   }
 
@@ -655,7 +673,10 @@ function classifyRemoteCassSearchFailure(
       available: false,
       reason: "NOT_FOUND",
       message: `cass not found on ${display}; remote history disabled for this host.`,
-      suggestedFix: [`ssh ${quotedSshTarget} cargo install coding-agent-search`, `ssh ${quotedSshTarget} cass index --full`],
+      suggestedFix: [
+        `ssh ${quotedSshTarget} cargo install coding-agent-search`,
+        `ssh ${quotedSshTarget} cass index --full`,
+      ],
     };
   }
 
@@ -677,7 +698,10 @@ function classifyRemoteCassSearchFailure(
       available: false,
       reason: "INDEX_MISSING",
       message: `remote(${display}): ${base.message}`,
-      suggestedFix: [`ssh ${quotedSshTarget} cass index --full`, `ssh ${quotedSshTarget} cass health`],
+      suggestedFix: [
+        `ssh ${quotedSshTarget} cass index --full`,
+        `ssh ${quotedSshTarget} cass health`,
+      ],
     };
   }
 
@@ -686,7 +710,10 @@ function classifyRemoteCassSearchFailure(
       available: false,
       reason: "NOT_FOUND",
       message: `remote(${display}): ${base.message}`,
-      suggestedFix: [`ssh ${quotedSshTarget} cargo install coding-agent-search`, `ssh ${quotedSshTarget} cass index --full`],
+      suggestedFix: [
+        `ssh ${quotedSshTarget} cargo install coding-agent-search`,
+        `ssh ${quotedSshTarget} cass index --full`,
+      ],
     };
   }
 
@@ -703,7 +730,7 @@ export async function safeCassSearchWithDegraded(
   options: CassSearchOptions = {},
   cassPath = "cass",
   config?: Config,
-  runner: CassRunner = DEFAULT_CASS_RUNNER
+  runner: CassRunner = DEFAULT_CASS_RUNNER,
 ): Promise<SafeCassSearchResult> {
   if (!query || !query.trim()) {
     return { hits: [] };
@@ -712,33 +739,36 @@ export async function safeCassSearchWithDegraded(
   const force = options.force || process.env.CM_FORCE_CASS_SEARCH === "1";
   const availability = await handleCassUnavailable({ cassPath }, runner);
 
-  const activeConfig = config || await loadConfig();
+  const activeConfig = config || (await loadConfig());
   const sanitizeConfig = getSanitizeConfig(activeConfig);
 
   // Pre-compile patterns for performance (avoid recompilation per hit)
   const compiledConfig = {
     ...sanitizeConfig,
-    extraPatterns: compileExtraPatterns(sanitizeConfig.extraPatterns)
+    extraPatterns: compileExtraPatterns(sanitizeConfig.extraPatterns),
   };
 
   // Helper to sanitize and tag hits with origin
   const processLocalHits = (hits: CassHit[]): CassHit[] =>
-    hits.map(hit => ({
+    hits.map((hit) => ({
       ...hit,
       snippet: sanitize(hit.snippet, compiledConfig),
-      origin: hit.origin || { kind: "local" as const }
+      origin: hit.origin || { kind: "local" as const },
     }));
 
   const processRemoteHits = (hits: CassHit[]): CassHit[] =>
-    hits.map(hit => ({
+    hits.map((hit) => ({
       ...hit,
-      snippet: sanitize(hit.snippet, compiledConfig)
+      snippet: sanitize(hit.snippet, compiledConfig),
       // origin already set by sshCassSearch
     }));
 
   // Start remote searches in parallel if enabled (don't wait for local availability check)
-  const remoteSearchPromises: Array<Promise<{ host: string; label: string; hits: CassHit[]; error?: unknown }>> = [];
-  const remoteEnabled = activeConfig.remoteCass?.enabled && activeConfig.remoteCass.hosts?.length > 0;
+  const remoteSearchPromises: Array<
+    Promise<{ host: string; label: string; hits: CassHit[]; error?: unknown }>
+  > = [];
+  const remoteEnabled =
+    activeConfig.remoteCass?.enabled && activeConfig.remoteCass.hosts?.length > 0;
   const remoteSearchOptions: CassSearchOptions = {
     ...options,
     limit: Math.min(options.limit || 10, 5), // Cap remote results
@@ -750,8 +780,8 @@ export async function safeCassSearchWithDegraded(
       const label = coerceRemoteHostLabel(hostConfig);
       remoteSearchPromises.push(
         sshCassSearch(hostConfig, query, remoteSearchOptions, runner)
-          .then(hits => ({ host: hostConfig.host, label, hits, error: undefined }))
-          .catch(err => ({ host: hostConfig.host, label, hits: [], error: err }))
+          .then((hits) => ({ host: hostConfig.host, label, hits, error: undefined }))
+          .catch((err) => ({ host: hostConfig.host, label, hits: [], error: err })),
       );
     }
   }
@@ -760,7 +790,7 @@ export async function safeCassSearchWithDegraded(
   if (!force && availability.fallbackMode !== "none") {
     // Still try to get remote results even if local is unavailable
     const remoteResults = await Promise.all(remoteSearchPromises);
-    const remoteHits = remoteResults.flatMap(r => processRemoteHits(r.hits));
+    const remoteHits = remoteResults.flatMap((r) => processRemoteHits(r.hits));
     const remoteDegraded = remoteResults
       .filter((r) => r.error)
       .map((r) => ({
@@ -776,7 +806,7 @@ export async function safeCassSearchWithDegraded(
         message: availability.message,
         suggestedFix: ["cargo install coding-agent-search", "cass index"],
       },
-      remoteDegraded: remoteDegraded.length > 0 ? remoteDegraded : undefined
+      remoteDegraded: remoteDegraded.length > 0 ? remoteDegraded : undefined,
     };
   }
 
@@ -794,7 +824,7 @@ export async function safeCassSearchWithDegraded(
 
     // Await remote results
     const remoteResults = await Promise.all(remoteSearchPromises);
-    const remoteHits = remoteResults.flatMap(r => processRemoteHits(r.hits));
+    const remoteHits = remoteResults.flatMap((r) => processRemoteHits(r.hits));
     const remoteDegraded = remoteResults
       .filter((r) => r.error)
       .map((r) => ({
@@ -813,7 +843,7 @@ export async function safeCassSearchWithDegraded(
     return {
       hits: allHits,
       resolvedCassPath: resolvedCassPathForOutput,
-      remoteDegraded: remoteDegraded.length > 0 ? remoteDegraded : undefined
+      remoteDegraded: remoteDegraded.length > 0 ? remoteDegraded : undefined,
     };
   } catch (err: any) {
     const degraded = classifyCassSearchError(err, query);
@@ -826,7 +856,7 @@ export async function safeCassSearchWithDegraded(
 
     // Still try to get remote results even if local fails
     const remoteResults = await Promise.all(remoteSearchPromises);
-    const remoteHits = remoteResults.flatMap(r => processRemoteHits(r.hits));
+    const remoteHits = remoteResults.flatMap((r) => processRemoteHits(r.hits));
     const remoteDegraded = remoteResults
       .filter((r) => r.error)
       .map((r) => ({
@@ -851,18 +881,21 @@ export async function safeCassSearchWithDegraded(
           const fallbackHits = hitsArr.map((hit: any) => ({
             ...CassHitSchema.parse(hit),
             snippet: sanitize(hit.snippet, compiledConfig),
-            origin: { kind: "local" as const }
+            origin: { kind: "local" as const },
           }));
           return {
             hits: [...fallbackHits, ...remoteHits],
             degraded,
             resolvedCassPath: resolvedCassPathForOutput,
-            remoteDegraded: remoteDegraded.length > 0 ? remoteDegraded : undefined
+            remoteDegraded: remoteDegraded.length > 0 ? remoteDegraded : undefined,
           };
         }
       } catch (fallbackErr: any) {
         // Keep degraded info; return empty hits.
-        log(`cass search force fallback failed: ${fallbackErr?.message || String(fallbackErr)}`, true);
+        log(
+          `cass search force fallback failed: ${fallbackErr?.message || String(fallbackErr)}`,
+          true,
+        );
       }
     }
 
@@ -870,7 +903,7 @@ export async function safeCassSearchWithDegraded(
       hits: remoteHits,
       degraded,
       resolvedCassPath: resolvedCassPathForOutput,
-      remoteDegraded: remoteDegraded.length > 0 ? remoteDegraded : undefined
+      remoteDegraded: remoteDegraded.length > 0 ? remoteDegraded : undefined,
     };
   }
 }
@@ -880,7 +913,7 @@ export async function safeCassSearch(
   options: CassSearchOptions = {},
   cassPath = "cass",
   config?: Config,
-  runner: CassRunner = DEFAULT_CASS_RUNNER
+  runner: CassRunner = DEFAULT_CASS_RUNNER,
 ): Promise<CassHit[]> {
   const { hits } = await safeCassSearchWithDegraded(query, options, cassPath, config, runner);
   return hits;
@@ -893,13 +926,15 @@ export async function cassExport(
   format: "markdown" | "json" | "text" = "markdown",
   cassPath = "cass",
   config?: Config,
-  runner: CassRunner = DEFAULT_CASS_RUNNER
+  runner: CassRunner = DEFAULT_CASS_RUNNER,
 ): Promise<string | null> {
   const args = ["export", "--format", format, "--", sessionPath];
   const resolvedCassPath = expandPath(cassPath);
 
   try {
-    const { stdout } = await runner.execFile(resolvedCassPath, args, { maxBuffer: 50 * 1024 * 1024 });
+    const { stdout } = await runner.execFile(resolvedCassPath, args, {
+      maxBuffer: 50 * 1024 * 1024,
+    });
 
     // Detect if cass export returned mostly useless "=== UNKNOWN ===" content
     // This happens when cass doesn't understand the session format (e.g., Codex CLI)
@@ -909,22 +944,25 @@ export async function cassExport(
 
     // If more than 50% of lines are UNKNOWN, try direct parsing
     if (unknownRatio > 0.5 && unknownCount > 3) {
-      log(`cass export returned ${unknownCount} UNKNOWN entries (${Math.round(unknownRatio * 100)}%). Trying direct parse...`, true);
+      log(
+        `cass export returned ${unknownCount} UNKNOWN entries (${Math.round(unknownRatio * 100)}%). Trying direct parse...`,
+        true,
+      );
       const fallback = await handleSessionExportFailure(
         sessionPath,
         new Error("cass export returned mostly UNKNOWN content"),
-        config
+        config,
       );
       if (fallback !== null && fallback.trim().length > 0) {
         return fallback;
       }
     }
 
-    const activeConfig = config || await loadConfig();
+    const activeConfig = config || (await loadConfig());
     const sanitizeConfig = getSanitizeConfig(activeConfig);
     const compiledConfig = {
       ...sanitizeConfig,
-      extraPatterns: compileExtraPatterns(sanitizeConfig.extraPatterns)
+      extraPatterns: compileExtraPatterns(sanitizeConfig.extraPatterns),
     };
     return sanitize(stdout, compiledConfig);
   } catch (err: any) {
@@ -944,25 +982,31 @@ export async function cassExport(
 export async function handleSessionExportFailure(
   sessionPath: string,
   exportError: Error,
-  config?: Config
+  config?: Config,
 ): Promise<string | null> {
-  log(`cass export failed for ${sessionPath}: ${exportError.message}. Attempting fallback parse...`, true);
+  log(
+    `cass export failed for ${sessionPath}: ${exportError.message}. Attempting fallback parse...`,
+    true,
+  );
 
   try {
     const resolvedPath = expandPath(sessionPath);
     const stats = await fs.stat(resolvedPath);
-    if (stats.size > 10 * 1024 * 1024) { // 10MB limit
-      warn(`[cass] Session file too large for fallback parse (${(stats.size / 1024 / 1024).toFixed(2)}MB). Skipping.`);
+    if (stats.size > 10 * 1024 * 1024) {
+      // 10MB limit
+      warn(
+        `[cass] Session file too large for fallback parse (${(stats.size / 1024 / 1024).toFixed(2)}MB). Skipping.`,
+      );
       return null;
     }
 
     const fileContent = await fs.readFile(resolvedPath, "utf-8");
     const ext = path.extname(sessionPath).toLowerCase();
-    const activeConfig = config || await loadConfig();
+    const activeConfig = config || (await loadConfig());
     const sanitizeConfig = getSanitizeConfig(activeConfig);
     const compiledConfig = {
       ...sanitizeConfig,
-      extraPatterns: compileExtraPatterns(sanitizeConfig.extraPatterns)
+      extraPatterns: compileExtraPatterns(sanitizeConfig.extraPatterns),
     };
 
     if (ext === ".jsonl") {
@@ -1015,20 +1059,29 @@ export async function cassExpand(
   contextLines = 3,
   cassPath = "cass",
   config?: Config,
-  runner: CassRunner = DEFAULT_CASS_RUNNER
+  runner: CassRunner = DEFAULT_CASS_RUNNER,
 ): Promise<string | null> {
-  const args = ["expand", "-n", lineNumber.toString(), "-C", contextLines.toString(), "--robot", "--", sessionPath];
+  const args = [
+    "expand",
+    "-n",
+    lineNumber.toString(),
+    "-C",
+    contextLines.toString(),
+    "--robot",
+    "--",
+    sessionPath,
+  ];
   const resolvedCassPath = expandPath(cassPath);
 
   try {
     const { stdout } = await runner.execFile(resolvedCassPath, args);
 
     // Sanitize expanded output
-    const activeConfig = config || await loadConfig();
+    const activeConfig = config || (await loadConfig());
     const sanitizeConfig = getSanitizeConfig(activeConfig);
     const compiledConfig = {
       ...sanitizeConfig,
-      extraPatterns: compileExtraPatterns(sanitizeConfig.extraPatterns)
+      extraPatterns: compileExtraPatterns(sanitizeConfig.extraPatterns),
     };
     return sanitize(stdout, compiledConfig);
   } catch (err: any) {
@@ -1040,12 +1093,12 @@ export async function cassExpand(
 
 export async function cassStats(
   cassPath = "cass",
-  runner: CassRunner = DEFAULT_CASS_RUNNER
+  runner: CassRunner = DEFAULT_CASS_RUNNER,
 ): Promise<any | null> {
   const resolvedCassPath = expandPath(cassPath);
   try {
     const { stdout } = await runner.execFile(resolvedCassPath, ["stats", "--json"], {
-      timeout: 30 * 1000
+      timeout: 30 * 1000,
     });
     const parsed = parseCassJsonOutput(stdout);
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
@@ -1057,7 +1110,7 @@ export async function cassStats(
 export async function cassTimeline(
   days: number,
   cassPath = "cass",
-  runner: CassRunner = DEFAULT_CASS_RUNNER
+  runner: CassRunner = DEFAULT_CASS_RUNNER,
 ): Promise<CassTimelineResult> {
   const resolvedCassPath = expandPath(cassPath);
   try {
@@ -1068,7 +1121,7 @@ export async function cassTimeline(
       {
         maxBuffer: 50 * 1024 * 1024,
         timeout: 30 * 1000,
-      }
+      },
     );
     const parsed = parseCassJsonOutput(stdout);
 
@@ -1132,7 +1185,7 @@ export async function findUnprocessedSessions(
     cliSubprocessCwd?: string;
   },
   cassPath = "cass",
-  runner: CassRunner = DEFAULT_CASS_RUNNER
+  runner: CassRunner = DEFAULT_CASS_RUNNER,
 ): Promise<DiscoveredSession[]> {
   const daysCheck = validatePositiveInt(options.days, "days", { min: 1, allowUndefined: true });
   const days = daysCheck.ok ? (daysCheck.value ?? 7) : 7;
@@ -1160,7 +1213,7 @@ export async function findUnprocessedSessions(
   if (Array.isArray(groups) && groups.length > 0) {
     // Use timeline groups if available
     allSessions = groups.flatMap((g) =>
-      (g.sessions || []).map((s) => ({ path: s.path, agent: s.agent }))
+      (g.sessions || []).map((s) => ({ path: s.path, agent: s.agent })),
     );
   } else {
     // Fallback: use broad search queries to discover recent sessions

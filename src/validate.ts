@@ -1,13 +1,13 @@
+import { type CassRunner, safeCassSearch } from "./cass.js";
+import { type LLMIO, runValidator, type ValidatorResult } from "./llm.js";
 import {
-  Config,
-  PlaybookDelta,
-  EvidenceGateResult,
-  ValidationResult,
+  type Config,
+  type DecisionLogEntry,
+  type EvidenceGateResult,
+  type PlaybookDelta,
   ValidationEvidence,
-  DecisionLogEntry
+  type ValidationResult,
 } from "./types.js";
-import { runValidator, ValidatorResult, type LLMIO } from "./llm.js";
-import { safeCassSearch, type CassRunner } from "./cass.js";
 import { extractKeywords, log, now } from "./utils.js";
 
 // Shared helper so call sites can pass `safeCassSearch(...)` without
@@ -16,7 +16,7 @@ function searchCass(
   query: string,
   options: { limit?: number; days?: number },
   config: Config,
-  runner?: CassRunner
+  runner?: CassRunner,
 ) {
   return runner
     ? safeCassSearch(query, options, config.cassPath, config, runner)
@@ -43,7 +43,7 @@ export function normalizeValidatorVerdict(result: ValidatorResult): ValidatorRes
       ...result,
       verdict: "ACCEPT_WITH_CAUTION",
       valid: true,
-      confidence: result.confidence * 0.8 // Reduce confidence for refined rules
+      confidence: result.confidence * 0.8, // Reduce confidence for refined rules
     };
   }
   if (result.verdict === "ACCEPT_WITH_CAUTION") {
@@ -57,33 +57,33 @@ export function normalizeValidatorVerdict(result: ValidatorResult): ValidatorRes
 // Word boundary patterns to avoid false positives like "fixed-width" or "error handling worked"
 // These patterns match the words as standalone or at phrase boundaries
 const SUCCESS_PATTERNS = [
-  /\bfixed\s+(the|a|an|this|that|it)\b/i,        // "fixed the bug" but not "fixed-width"
-  /\bsuccessfully\b/i,                            // "successfully deployed"
-  /\bsuccess\b(?!ful)/i,                          // "success" but not "successful" (needs context)
-  /\bsolved\s+(the|a|an|this|that|it)\b/i,       // "solved the issue"
-  /\bworking\s+now\b/i,                           // "working now"
-  /\bworks\s+(now|correctly|properly)\b/i,       // "works correctly"
-  /\bresolved\b/i,                                // "resolved"
+  /\bfixed\s+(the|a|an|this|that|it)\b/i, // "fixed the bug" but not "fixed-width"
+  /\bsuccessfully\b/i, // "successfully deployed"
+  /\bsuccess\b(?!ful)/i, // "success" but not "successful" (needs context)
+  /\bsolved\s+(the|a|an|this|that|it)\b/i, // "solved the issue"
+  /\bworking\s+now\b/i, // "working now"
+  /\bworks\s+(now|correctly|properly)\b/i, // "works correctly"
+  /\bresolved\b/i, // "resolved"
 ];
 
 const FAILURE_PATTERNS = [
-  /\bfailed\s+(to|with)\b/i,                      // "failed to compile" but not "failed CI" (could be action)
-  /\berror:/i,                                    // "error:" prefix common in logs
-  /\b(threw|throws)\s+.*error\b/i,               // "threw an error"
-  /\bbroken\b/i,                                  // "broken"
-  /\bcrash(ed|es|ing)?\b/i,                       // "crashed", "crashes"
-  /\bbug\s+(in|found|caused)\b/i,                // "bug in", "bug found"
-  /\bdoesn't\s+work\b/i,                          // "doesn't work"
+  /\bfailed\s+(to|with)\b/i, // "failed to compile" but not "failed CI" (could be action)
+  /\berror:/i, // "error:" prefix common in logs
+  /\b(threw|throws)\s+.*error\b/i, // "threw an error"
+  /\bbroken\b/i, // "broken"
+  /\bcrash(ed|es|ing)?\b/i, // "crashed", "crashes"
+  /\bbug\s+(in|found|caused)\b/i, // "bug in", "bug found"
+  /\bdoesn't\s+work\b/i, // "doesn't work"
 ];
 
 function matchesPatterns(text: string, patterns: RegExp[]): boolean {
-  return patterns.some(pattern => pattern.test(text));
+  return patterns.some((pattern) => pattern.test(text));
 }
 
 export async function evidenceCountGate(
   content: string,
   config: Config,
-  runner?: CassRunner
+  runner?: CassRunner,
 ): Promise<EvidenceGateResult> {
   const keywords = extractKeywords(content);
   if (keywords.length === 0) {
@@ -93,7 +93,7 @@ export async function evidenceCountGate(
       suggestedState: "draft",
       sessionCount: 0,
       successCount: 0,
-      failureCount: 0
+      failureCount: 0,
     };
   }
 
@@ -101,7 +101,7 @@ export async function evidenceCountGate(
     keywords.join(" "),
     { limit: 20, days: config.validationLookbackDays },
     config,
-    runner
+    runner,
   );
 
   const sessions = new Set<string>();
@@ -129,25 +129,31 @@ export async function evidenceCountGate(
       passed: true,
       reason: "No historical evidence found. Proposing as draft.",
       suggestedState: "draft",
-      sessionCount, successCount, failureCount
+      sessionCount,
+      successCount,
+      failureCount,
     };
   }
 
   if (successCount >= 5 && failureCount === 0) {
     return {
       passed: true,
-      reason: `Strong success signal (${successCount} sessions). Auto-accepting.`, 
+      reason: `Strong success signal (${successCount} sessions). Auto-accepting.`,
       suggestedState: "active",
-      sessionCount, successCount, failureCount
+      sessionCount,
+      successCount,
+      failureCount,
     };
   }
 
   if (failureCount >= 3 && successCount === 0) {
     return {
       passed: false,
-      reason: `Strong failure signal (${failureCount} sessions). Auto-rejecting.`, 
+      reason: `Strong failure signal (${failureCount} sessions). Auto-rejecting.`,
       suggestedState: "draft",
-      sessionCount, successCount, failureCount
+      sessionCount,
+      successCount,
+      failureCount,
     };
   }
 
@@ -155,18 +161,24 @@ export async function evidenceCountGate(
     passed: true,
     reason: "Evidence found but ambiguous. Proceeding to LLM validation.",
     suggestedState: "draft",
-    sessionCount, successCount, failureCount
+    sessionCount,
+    successCount,
+    failureCount,
   };
 }
 
 // --- Format Evidence for LLM ---
 
 function formatEvidence(hits: any[]): string {
-  return hits.map((h: any) => `
+  return hits
+    .map(
+      (h: any) => `
 Session: ${h.source_path}
 Snippet: "${h.snippet}"
 Relevance: ${h.score}
-`).join("\n---\n");
+`,
+    )
+    .join("\n---\n");
 }
 
 // --- Main Validator ---
@@ -175,8 +187,13 @@ export async function validateDelta(
   delta: PlaybookDelta,
   config: Config,
   runner?: CassRunner,
-  io?: LLMIO
-): Promise<{ valid: boolean; result?: ValidationResult; gate?: EvidenceGateResult; decisionLog?: DecisionLogEntry[] }> {
+  io?: LLMIO,
+): Promise<{
+  valid: boolean;
+  result?: ValidationResult;
+  gate?: EvidenceGateResult;
+  decisionLog?: DecisionLogEntry[];
+}> {
   const decisionLog: DecisionLogEntry[] = [];
 
   if (delta.type !== "add") {
@@ -185,7 +202,7 @@ export async function validateDelta(
       phase: "add",
       action: "skipped",
       reason: `Non-add delta type: ${delta.type}`,
-      content: undefined
+      content: undefined,
     });
     return { valid: true, decisionLog };
   }
@@ -196,7 +213,7 @@ export async function validateDelta(
       phase: "add",
       action: "skipped",
       reason: "Validation disabled in config",
-      content: delta.bullet.content?.slice(0, 100)
+      content: delta.bullet.content?.slice(0, 100),
     });
     return { valid: true, decisionLog };
   }
@@ -208,7 +225,7 @@ export async function validateDelta(
       phase: "add",
       action: "skipped",
       reason: `Content too short (${content.length} chars < 15)`,
-      content: content.slice(0, 100)
+      content: content.slice(0, 100),
     });
     return { valid: true, decisionLog };
   }
@@ -224,7 +241,11 @@ export async function validateDelta(
       action: "rejected",
       reason: gate.reason,
       content: content.slice(0, 100),
-      details: { sessionCount: gate.sessionCount, successCount: gate.successCount, failureCount: gate.failureCount }
+      details: {
+        sessionCount: gate.sessionCount,
+        successCount: gate.successCount,
+        failureCount: gate.failureCount,
+      },
     });
     return { valid: false, gate, decisionLog };
   }
@@ -236,7 +257,11 @@ export async function validateDelta(
       action: "accepted",
       reason: `Auto-accepted by evidence gate: ${gate.reason}`,
       content: content.slice(0, 100),
-      details: { sessionCount: gate.sessionCount, successCount: gate.successCount, failureCount: gate.failureCount }
+      details: {
+        sessionCount: gate.sessionCount,
+        successCount: gate.successCount,
+        failureCount: gate.failureCount,
+      },
     });
     return {
       valid: true,
@@ -249,9 +274,9 @@ export async function validateDelta(
         evidence: [],
         approved: true,
         supportingEvidence: [],
-        contradictingEvidence: []
+        contradictingEvidence: [],
       },
-      decisionLog
+      decisionLog,
     };
   }
 
@@ -275,12 +300,12 @@ export async function validateDelta(
       phase: "add",
       action: "accepted",
       reason: `Accepted as draft (novel/uncorroborated, no success signal): ${gate.reason}`,
-      content: content.slice(0, 100)
+      content: content.slice(0, 100),
     });
     return {
-        valid: true,
-        gate,
-        decisionLog
+      valid: true,
+      gate,
+      decisionLog,
     };
   }
 
@@ -292,25 +317,29 @@ export async function validateDelta(
   const rawResult = await runValidator(content, formattedEvidence, config, io);
   const result = normalizeValidatorVerdict(rawResult);
 
-  let finalVerdict = result.verdict as "ACCEPT" | "REJECT" | "ACCEPT_WITH_CAUTION" | "REFINE";
+  const finalVerdict = result.verdict as "ACCEPT" | "REJECT" | "ACCEPT_WITH_CAUTION" | "REFINE";
 
   // Map object array to string array for 'evidence' field (legacy/schema compatibility)
-  const evidenceStrings = result.evidence.map(e => e.snippet);
+  const evidenceStrings = result.evidence.map((e) => e.snippet);
 
   // Map object array to ValidationEvidence[] for supporting/contradicting
-  const supporting = result.evidence.filter(e => e.supports).map(e => ({
-    sessionPath: e.sessionPath,
-    snippet: e.snippet,
-    supports: true,
-    confidence: 1.0 // Default confidence
-  }));
+  const supporting = result.evidence
+    .filter((e) => e.supports)
+    .map((e) => ({
+      sessionPath: e.sessionPath,
+      snippet: e.snippet,
+      supports: true,
+      confidence: 1.0, // Default confidence
+    }));
 
-  const contradicting = result.evidence.filter(e => !e.supports).map(e => ({
-    sessionPath: e.sessionPath,
-    snippet: e.snippet,
-    supports: false,
-    confidence: 1.0
-  }));
+  const contradicting = result.evidence
+    .filter((e) => !e.supports)
+    .map((e) => ({
+      sessionPath: e.sessionPath,
+      snippet: e.snippet,
+      supports: false,
+      confidence: 1.0,
+    }));
 
   // Log LLM validation decision
   decisionLog.push({
@@ -323,8 +352,8 @@ export async function validateDelta(
       verdict: finalVerdict,
       confidence: result.confidence,
       supportingCount: supporting.length,
-      contradictingCount: contradicting.length
-    }
+      contradictingCount: contradicting.length,
+    },
   });
 
   return {
@@ -336,9 +365,9 @@ export async function validateDelta(
       refinedRule: result.suggestedRefinement, // Map suggestedRefinement -> refinedRule
       approved: result.valid,
       supportingEvidence: supporting,
-      contradictingEvidence: contradicting
+      contradictingEvidence: contradicting,
     },
     gate,
-    decisionLog
+    decisionLog,
   };
 }

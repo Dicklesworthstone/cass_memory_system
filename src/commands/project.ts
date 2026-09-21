@@ -1,32 +1,42 @@
+import chalk from "chalk";
 import { loadConfig } from "../config.js";
+import { icon } from "../output.js";
+import { exportToAgentsMd, exportToClaudeMd, loadMergedPlaybook } from "../playbook.js";
+import { ErrorCode } from "../types.js";
 import {
-  loadMergedPlaybook,
-  exportToAgentsMd,
-  exportToClaudeMd
-} from "../playbook.js";
-import {
+  atomicWrite,
   fileExists,
   getCliName,
-  atomicWrite,
-  reportError,
   printJsonResult,
-  warn,
+  reportError,
   validateNonEmptyString,
   validateOneOf,
   validatePositiveInt,
+  warn,
 } from "../utils.js";
-import { ErrorCode } from "../types.js";
-import chalk from "chalk";
-import { icon } from "../output.js";
 
-export async function projectCommand(
-  flags: { output?: string; force?: boolean; format?: string; perCategory?: number; top?: number; showCounts?: boolean; json?: boolean }
-) {
+export async function projectCommand(flags: {
+  output?: string;
+  force?: boolean;
+  format?: string;
+  perCategory?: number;
+  top?: number;
+  showCounts?: boolean;
+  json?: boolean;
+}) {
   const startedAtMs = Date.now();
   const command = "project";
   const cli = getCliName();
 
-  const allowedFormats = ["agents.md", "agents", "claude.md", "claude", "raw", "json", "yaml"] as const;
+  const allowedFormats = [
+    "agents.md",
+    "agents",
+    "claude.md",
+    "claude",
+    "raw",
+    "json",
+    "yaml",
+  ] as const;
   const formatCheck = validateOneOf(flags.format, "format", allowedFormats, {
     allowUndefined: true,
     caseInsensitive: true,
@@ -43,7 +53,10 @@ export async function projectCommand(
     return;
   }
 
-  const perCategoryCheck = validatePositiveInt(flags.perCategory, "per-category", { min: 1, allowUndefined: true });
+  const perCategoryCheck = validatePositiveInt(flags.perCategory, "per-category", {
+    min: 1,
+    allowUndefined: true,
+  });
   if (!perCategoryCheck.ok) {
     reportError(perCategoryCheck.message, {
       code: ErrorCode.INVALID_INPUT,
@@ -114,7 +127,7 @@ export async function projectCommand(
       case "claude":
         output = exportToClaudeMd(playbook, config, {
           topN,
-          showCounts
+          showCounts,
         });
         break;
       case "agents.md":
@@ -122,7 +135,7 @@ export async function projectCommand(
       default:
         output = exportToAgentsMd(playbook, config, {
           topN,
-          showCounts
+          showCounts,
         });
         break;
     }
@@ -147,8 +160,12 @@ export async function projectCommand(
       if (flags.json) {
         printJsonResult(
           command,
-          { outputPath, format: format ?? "agents.md", bytesWritten: Buffer.byteLength(output, "utf-8") },
-          { startedAtMs }
+          {
+            outputPath,
+            format: format ?? "agents.md",
+            bytesWritten: Buffer.byteLength(output, "utf-8"),
+          },
+          { startedAtMs },
         );
       } else {
         console.log(chalk.green(`${icon("success")} Exported to ${outputPath}`));

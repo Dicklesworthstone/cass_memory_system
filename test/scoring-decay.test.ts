@@ -1,23 +1,27 @@
-import { describe, test, expect } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import {
+  analyzeScoreDistribution,
   calculateDecayedValue,
+  calculateMaturityState,
+  checkForDemotion,
+  checkForPromotion,
   getDecayedCounts,
   getEffectiveScore,
-  calculateMaturityState,
-  checkForPromotion,
-  checkForDemotion,
   isStale,
-  analyzeScoreDistribution
 } from "../src/scoring.js";
-import { createTestBullet, createTestConfig, createTestFeedbackEvent } from "./helpers/factories.js";
+import {
+  createTestBullet,
+  createTestConfig,
+  createTestFeedbackEvent,
+} from "./helpers/factories.js";
 
 describe("Confidence Decay", () => {
   const config = createTestConfig();
 
   // Helper to create date strings relative to now
   const now = Date.now();
-  const daysAgo = (d: number) => new Date(now - (d * 24 * 60 * 60 * 1000)).toISOString();
-  const daysFromNow = (d: number) => new Date(now + (d * 24 * 60 * 60 * 1000)).toISOString();
+  const daysAgo = (d: number) => new Date(now - d * 24 * 60 * 60 * 1000).toISOString();
+  const daysFromNow = (d: number) => new Date(now + d * 24 * 60 * 60 * 1000).toISOString();
 
   describe("calculateDecayedValue", () => {
     test("should return 1.0 for recent events", () => {
@@ -61,18 +65,18 @@ describe("Confidence Decay", () => {
     });
 
     test("should account for helpful events", () => {
-      const bullet = createTestBullet({ 
+      const bullet = createTestBullet({
         feedbackEvents: [createTestFeedbackEvent("helpful", 0)],
-        maturity: "established"
+        maturity: "established",
       });
       const score = getEffectiveScore(bullet, config);
       expect(score).toBeCloseTo(1.0, 5);
     });
 
     test("should apply harmful multiplier (4x)", () => {
-      const bullet = createTestBullet({ 
+      const bullet = createTestBullet({
         feedbackEvents: [createTestFeedbackEvent("harmful", 0)],
-        maturity: "established"
+        maturity: "established",
       });
       const score = getEffectiveScore(bullet, config);
       expect(score).toBeCloseTo(-4.0, 5);
@@ -82,23 +86,23 @@ describe("Confidence Decay", () => {
       // Both 90 days old (half value)
       const baseEvents = [createTestFeedbackEvent("helpful", 0)];
       const oldEvents = [createTestFeedbackEvent("helpful", 90)]; // should be 0.5
-      
+
       const freshBullet = createTestBullet({ feedbackEvents: baseEvents, maturity: "established" });
       const staleBullet = createTestBullet({ feedbackEvents: oldEvents, maturity: "established" });
-      
+
       const freshScore = getEffectiveScore(freshBullet, config);
       const staleScore = getEffectiveScore(staleBullet, config);
-      
+
       expect(freshScore).toBeCloseTo(1.0, 5);
       expect(staleScore).toBeCloseTo(0.5, 2);
     });
 
     test("should apply maturity multipliers", () => {
-      const bullet = createTestBullet({ 
+      const bullet = createTestBullet({
         maturity: "proven",
-        feedbackEvents: [createTestFeedbackEvent("helpful", 0)]
+        feedbackEvents: [createTestFeedbackEvent("helpful", 0)],
       });
-      
+
       // 1.0 (base) * 1.5 (proven multiplier)
       const score = getEffectiveScore(bullet, config);
       expect(score).toBe(1.5);
@@ -107,11 +111,11 @@ describe("Confidence Decay", () => {
     test("should honor harmful multiplier overrides from config", () => {
       const base = createTestConfig();
       const configWithMultiplier = createTestConfig({
-        scoring: { ...base.scoring, harmfulMultiplier: 2 }
+        scoring: { ...base.scoring, harmfulMultiplier: 2 },
       });
       const bullet = createTestBullet({
         maturity: "established",
-        feedbackEvents: [createTestFeedbackEvent("harmful", 0)]
+        feedbackEvents: [createTestFeedbackEvent("harmful", 0)],
       });
       const score = getEffectiveScore(bullet, configWithMultiplier);
       expect(score).toBeCloseTo(-2, 5);
@@ -123,9 +127,9 @@ describe("Confidence Decay", () => {
       // Need 3 for established - providing 4 to be robust against decay
       const bullet = createTestBullet({
         maturity: "candidate",
-        feedbackEvents: Array(4).fill(null).map((_, idx) =>
-          createTestFeedbackEvent("helpful", 0)
-        )
+        feedbackEvents: Array(4)
+          .fill(null)
+          .map((_, idx) => createTestFeedbackEvent("helpful", 0)),
       });
 
       const newState = calculateMaturityState(bullet, config);
@@ -137,28 +141,28 @@ describe("Confidence Decay", () => {
         createTestFeedbackEvent("helpful", 1),
         createTestFeedbackEvent("harmful", 0),
         createTestFeedbackEvent("harmful", 2),
-        createTestFeedbackEvent("harmful", 0) // Added to ensure total > 3
+        createTestFeedbackEvent("harmful", 0), // Added to ensure total > 3
       ];
-      
+
       const bullet = createTestBullet({
         maturity: "candidate",
-        feedbackEvents: events
+        feedbackEvents: events,
       });
-      
+
       const newState = calculateMaturityState(bullet, config);
       expect(newState).toBe("deprecated");
     });
 
     test("should promote to proven with 10+ helpful and low harmful", () => {
-      const events = Array(12).fill(null).map(() => 
-        createTestFeedbackEvent("helpful", 0)
-      );
-      
+      const events = Array(12)
+        .fill(null)
+        .map(() => createTestFeedbackEvent("helpful", 0));
+
       const bullet = createTestBullet({
         maturity: "established",
-        feedbackEvents: events
+        feedbackEvents: events,
       });
-      
+
       const newState = calculateMaturityState(bullet, config);
       expect(newState).toBe("proven");
     });
@@ -171,10 +175,10 @@ describe("Confidence Decay", () => {
           createTestFeedbackEvent("harmful", 0),
           createTestFeedbackEvent("harmful", 1),
           createTestFeedbackEvent("harmful", 2),
-          createTestFeedbackEvent("harmful", 3)
-        ]
+          createTestFeedbackEvent("harmful", 3),
+        ],
       });
-      
+
       const newState = calculateMaturityState(bullet, config);
       expect(newState).toBe("deprecated");
     });
@@ -185,9 +189,9 @@ describe("Confidence Decay", () => {
       // Need 3 for established - providing 4 to be robust against decay
       const bullet = createTestBullet({
         maturity: "candidate",
-        feedbackEvents: Array(4).fill(null).map(() =>
-          createTestFeedbackEvent("helpful", 0)
-        )
+        feedbackEvents: Array(4)
+          .fill(null)
+          .map(() => createTestFeedbackEvent("helpful", 0)),
       });
 
       const result = checkForPromotion(bullet, config);
@@ -198,7 +202,7 @@ describe("Confidence Decay", () => {
       // Only 1 helpful (total < 3) stays as candidate
       const bullet = createTestBullet({
         maturity: "candidate",
-        feedbackEvents: [createTestFeedbackEvent("helpful", 0)]
+        feedbackEvents: [createTestFeedbackEvent("helpful", 0)],
       });
 
       const result = checkForPromotion(bullet, config);
@@ -219,8 +223,8 @@ describe("Confidence Decay", () => {
         feedbackEvents: [
           createTestFeedbackEvent("helpful", 0),
           createTestFeedbackEvent("helpful", 0),
-          createTestFeedbackEvent("helpful", 0)
-        ]
+          createTestFeedbackEvent("helpful", 0),
+        ],
       });
       const { decayedHelpful, decayedHarmful } = getDecayedCounts(bullet, config);
       expect(decayedHelpful).toBeCloseTo(3.0, 1);
@@ -231,8 +235,8 @@ describe("Confidence Decay", () => {
       const bullet = createTestBullet({
         feedbackEvents: [
           createTestFeedbackEvent("harmful", 0),
-          createTestFeedbackEvent("harmful", 0)
-        ]
+          createTestFeedbackEvent("harmful", 0),
+        ],
       });
       const { decayedHelpful, decayedHarmful } = getDecayedCounts(bullet, config);
       expect(decayedHelpful).toBe(0);
@@ -244,8 +248,8 @@ describe("Confidence Decay", () => {
         feedbackEvents: [
           createTestFeedbackEvent("helpful", 0),
           createTestFeedbackEvent("harmful", 0),
-          createTestFeedbackEvent("helpful", 0)
-        ]
+          createTestFeedbackEvent("helpful", 0),
+        ],
       });
       const { decayedHelpful, decayedHarmful } = getDecayedCounts(bullet, config);
       expect(decayedHelpful).toBeCloseTo(2.0, 1);
@@ -254,7 +258,7 @@ describe("Confidence Decay", () => {
 
     test("should apply decay to old events", () => {
       const bullet = createTestBullet({
-        feedbackEvents: [createTestFeedbackEvent("helpful", 90)] // 90 days = half-life
+        feedbackEvents: [createTestFeedbackEvent("helpful", 90)], // 90 days = half-life
       });
       const { decayedHelpful } = getDecayedCounts(bullet, config);
       expect(decayedHelpful).toBeCloseTo(0.5, 2);
@@ -263,10 +267,10 @@ describe("Confidence Decay", () => {
     test("should honor decayHalfLifeDays overrides from config", () => {
       const base = createTestConfig();
       const fastDecayConfig = createTestConfig({
-        scoring: { ...base.scoring, decayHalfLifeDays: 30 }
+        scoring: { ...base.scoring, decayHalfLifeDays: 30 },
       });
       const bullet = createTestBullet({
-        feedbackEvents: [createTestFeedbackEvent("helpful", 30)]
+        feedbackEvents: [createTestFeedbackEvent("helpful", 30)],
       });
       const { decayedHelpful } = getDecayedCounts(bullet, fastDecayConfig);
       expect(decayedHelpful).toBeCloseTo(0.5, 2); // 30-day half-life halves value at 30 days
@@ -281,8 +285,8 @@ describe("Confidence Decay", () => {
         feedbackEvents: [
           createTestFeedbackEvent("harmful", 0),
           createTestFeedbackEvent("harmful", 0),
-          createTestFeedbackEvent("harmful", 0)
-        ]
+          createTestFeedbackEvent("harmful", 0),
+        ],
       });
       const result = checkForDemotion(bullet, config);
       expect(result).toBe("proven");
@@ -293,7 +297,7 @@ describe("Confidence Decay", () => {
       // With harmfulMultiplier of 4, 1 harmful = -4 score for established
       const bullet = createTestBullet({
         maturity: "established",
-        feedbackEvents: [createTestFeedbackEvent("harmful", 0)]
+        feedbackEvents: [createTestFeedbackEvent("harmful", 0)],
       });
       const result = checkForDemotion(bullet, config);
       expect(result).toBe("auto-deprecate");
@@ -311,8 +315,8 @@ describe("Confidence Decay", () => {
           createTestFeedbackEvent("helpful", 0),
           createTestFeedbackEvent("helpful", 0),
           createTestFeedbackEvent("helpful", 0),
-          createTestFeedbackEvent("harmful", 0)
-        ]
+          createTestFeedbackEvent("harmful", 0),
+        ],
       });
       const result = checkForDemotion(bullet, config);
       expect(result).toBe("established");
@@ -325,8 +329,8 @@ describe("Confidence Decay", () => {
         feedbackEvents: [
           createTestFeedbackEvent("helpful", 0),
           createTestFeedbackEvent("helpful", 0),
-          createTestFeedbackEvent("harmful", 0)
-        ]
+          createTestFeedbackEvent("harmful", 0),
+        ],
       });
       const result = checkForDemotion(bullet, config);
       expect(result).toBe("candidate");
@@ -337,8 +341,8 @@ describe("Confidence Decay", () => {
         maturity: "established",
         feedbackEvents: [
           createTestFeedbackEvent("helpful", 0),
-          createTestFeedbackEvent("helpful", 0)
-        ]
+          createTestFeedbackEvent("helpful", 0),
+        ],
       });
       const result = checkForDemotion(bullet, config);
       expect(result).toBe("established");
@@ -348,14 +352,14 @@ describe("Confidence Decay", () => {
   describe("isStale", () => {
     test("should return false for bullet with recent feedback", () => {
       const bullet = createTestBullet({
-        feedbackEvents: [createTestFeedbackEvent("helpful", 0)]
+        feedbackEvents: [createTestFeedbackEvent("helpful", 0)],
       });
       expect(isStale(bullet, 90)).toBe(false);
     });
 
     test("should return true for bullet with old feedback", () => {
       const bullet = createTestBullet({
-        feedbackEvents: [createTestFeedbackEvent("helpful", 100)] // 100 days ago
+        feedbackEvents: [createTestFeedbackEvent("helpful", 100)], // 100 days ago
       });
       expect(isStale(bullet, 90)).toBe(true);
     });
@@ -364,7 +368,7 @@ describe("Confidence Decay", () => {
       const oldDate = new Date(Date.now() - 100 * 86_400_000).toISOString();
       const bullet = createTestBullet({
         feedbackEvents: [],
-        createdAt: oldDate
+        createdAt: oldDate,
       });
       expect(isStale(bullet, 90)).toBe(true);
     });
@@ -372,7 +376,7 @@ describe("Confidence Decay", () => {
     test("should return false for new bullet with no feedback", () => {
       const bullet = createTestBullet({
         feedbackEvents: [],
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
       });
       expect(isStale(bullet, 90)).toBe(false);
     });
@@ -381,9 +385,9 @@ describe("Confidence Decay", () => {
       const bullet = createTestBullet({
         feedbackEvents: [
           createTestFeedbackEvent("helpful", 100), // Old
-          createTestFeedbackEvent("helpful", 10),  // Recent
-          createTestFeedbackEvent("helpful", 80)   // Medium
-        ]
+          createTestFeedbackEvent("helpful", 10), // Recent
+          createTestFeedbackEvent("helpful", 80), // Medium
+        ],
       });
       // Most recent is 10 days ago, so not stale
       expect(isStale(bullet, 90)).toBe(false);
@@ -391,9 +395,9 @@ describe("Confidence Decay", () => {
 
     test("should respect custom staleDays parameter", () => {
       const bullet = createTestBullet({
-        feedbackEvents: [createTestFeedbackEvent("helpful", 40)] // 40 days ago
+        feedbackEvents: [createTestFeedbackEvent("helpful", 40)], // 40 days ago
       });
-      expect(isStale(bullet, 30)).toBe(true);  // 40 > 30, stale
+      expect(isStale(bullet, 30)).toBe(true); // 40 > 30, stale
       expect(isStale(bullet, 60)).toBe(false); // 40 < 60, not stale
     });
   });
@@ -410,7 +414,9 @@ describe("Confidence Decay", () => {
       // 10 helpful events = 10 raw score
       const excellentBullet = createTestBullet({
         maturity: "established",
-        feedbackEvents: Array(12).fill(null).map(() => createTestFeedbackEvent("helpful", 0))
+        feedbackEvents: Array(12)
+          .fill(null)
+          .map(() => createTestFeedbackEvent("helpful", 0)),
       });
       const result = analyzeScoreDistribution([excellentBullet], config);
       expect(result.excellent).toBe(1);
@@ -420,7 +426,9 @@ describe("Confidence Decay", () => {
       // 6 helpful = 6 raw score for established
       const goodBullet = createTestBullet({
         maturity: "established",
-        feedbackEvents: Array(6).fill(null).map(() => createTestFeedbackEvent("helpful", 0))
+        feedbackEvents: Array(6)
+          .fill(null)
+          .map(() => createTestFeedbackEvent("helpful", 0)),
       });
       const result = analyzeScoreDistribution([goodBullet], config);
       expect(result.good).toBe(1);
@@ -432,8 +440,8 @@ describe("Confidence Decay", () => {
         maturity: "established",
         feedbackEvents: [
           createTestFeedbackEvent("helpful", 0),
-          createTestFeedbackEvent("helpful", 0)
-        ]
+          createTestFeedbackEvent("helpful", 0),
+        ],
       });
       const result = analyzeScoreDistribution([neutralBullet], config);
       expect(result.neutral).toBe(1);
@@ -443,7 +451,7 @@ describe("Confidence Decay", () => {
       // 1 harmful = -4 raw score for established
       const atRiskBullet = createTestBullet({
         maturity: "established",
-        feedbackEvents: [createTestFeedbackEvent("harmful", 0)]
+        feedbackEvents: [createTestFeedbackEvent("harmful", 0)],
       });
       const result = analyzeScoreDistribution([atRiskBullet], config);
       expect(result.atRisk).toBe(1);
@@ -451,10 +459,26 @@ describe("Confidence Decay", () => {
 
     test("should correctly categorize mixed bullets", () => {
       const bullets = [
-        createTestBullet({ maturity: "established", feedbackEvents: Array(12).fill(null).map(() => createTestFeedbackEvent("helpful", 0)) }), // excellent
-        createTestBullet({ maturity: "established", feedbackEvents: Array(6).fill(null).map(() => createTestFeedbackEvent("helpful", 0)) }),  // good
-        createTestBullet({ maturity: "established", feedbackEvents: [createTestFeedbackEvent("helpful", 0)] }), // neutral
-        createTestBullet({ maturity: "established", feedbackEvents: [createTestFeedbackEvent("harmful", 0)] })  // at-risk
+        createTestBullet({
+          maturity: "established",
+          feedbackEvents: Array(12)
+            .fill(null)
+            .map(() => createTestFeedbackEvent("helpful", 0)),
+        }), // excellent
+        createTestBullet({
+          maturity: "established",
+          feedbackEvents: Array(6)
+            .fill(null)
+            .map(() => createTestFeedbackEvent("helpful", 0)),
+        }), // good
+        createTestBullet({
+          maturity: "established",
+          feedbackEvents: [createTestFeedbackEvent("helpful", 0)],
+        }), // neutral
+        createTestBullet({
+          maturity: "established",
+          feedbackEvents: [createTestFeedbackEvent("harmful", 0)],
+        }), // at-risk
       ];
       const result = analyzeScoreDistribution(bullets, config);
       expect(result.excellent).toBe(1);

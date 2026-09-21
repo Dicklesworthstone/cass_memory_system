@@ -1,13 +1,13 @@
 /**
  * Unit tests for playbook get command.
  */
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { playbookCommand } from "../src/commands/playbook.js";
-import { createTestPlaybook, createTestBullet, createTestConfig } from "./helpers/factories.js";
-import { withTempDir } from "./helpers/temp.js";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
+import { playbookCommand } from "../src/commands/playbook.js";
+import { createTestBullet, createTestConfig, createTestPlaybook } from "./helpers/factories.js";
+import { withTempDir } from "./helpers/temp.js";
 
 // Helper to capture console output
 function captureConsole() {
@@ -29,7 +29,7 @@ function captureConsole() {
     restore: () => {
       console.log = originalLog;
       console.error = originalError;
-    }
+    },
   };
 }
 
@@ -117,7 +117,10 @@ describe("playbook get command", () => {
       const { mkdir } = await import("node:fs/promises");
       await mkdir(path.join(dir, ".cass-memory"), { recursive: true });
       const config = createTestConfig({ playbookPath });
-      await writeFile(path.join(dir, ".cass-memory", "config.json"), JSON.stringify(config, null, 2));
+      await writeFile(
+        path.join(dir, ".cass-memory", "config.json"),
+        JSON.stringify(config, null, 2),
+      );
       process.env.HOME = dir;
 
       const capture = captureConsole();

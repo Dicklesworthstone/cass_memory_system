@@ -6,7 +6,7 @@
  * - routeRequest JSON-RPC routing
  * - computePlaybookStats calculation
  */
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -140,7 +140,7 @@ describe("serve.ts helper functions", () => {
       expect(err).toEqual({
         jsonrpc: "2.0",
         id: 1,
-        error: { code: -32000, message: "Test error" }
+        error: { code: -32000, message: "Test error" },
       });
     });
 
@@ -165,7 +165,7 @@ describe("routeRequest JSON-RPC routing", () => {
       const response = await routeRequest({
         jsonrpc: "2.0",
         id: 1,
-        method: "tools/list"
+        method: "tools/list",
       });
 
       expect(response.jsonrpc).toBe("2.0");
@@ -189,7 +189,7 @@ describe("routeRequest JSON-RPC routing", () => {
       const response = await routeRequest({
         jsonrpc: "2.0",
         id: 2,
-        method: "resources/list"
+        method: "resources/list",
       });
 
       expect(response.jsonrpc).toBe("2.0");
@@ -211,7 +211,7 @@ describe("routeRequest JSON-RPC routing", () => {
         jsonrpc: "2.0",
         id: 3,
         method: "tools/call",
-        params: {}
+        params: {},
       });
 
       expect("error" in response).toBe(true);
@@ -228,7 +228,7 @@ describe("routeRequest JSON-RPC routing", () => {
         jsonrpc: "2.0",
         id: 4,
         method: "tools/call",
-        params: { name: "unknown_tool" }
+        params: { name: "unknown_tool" },
       });
 
       expect("error" in response).toBe(true);
@@ -243,7 +243,7 @@ describe("routeRequest JSON-RPC routing", () => {
       const response = await routeRequest({
         jsonrpc: "2.0",
         id: 5,
-        method: "unsupported/method"
+        method: "unsupported/method",
       });
 
       expect("error" in response).toBe(true);
@@ -260,7 +260,7 @@ describe("routeRequest JSON-RPC routing", () => {
         jsonrpc: "2.0",
         id: 6,
         method: "resources/read",
-        params: {}
+        params: {},
       });
 
       expect("error" in response).toBe(true);
@@ -277,7 +277,7 @@ describe("routeRequest JSON-RPC routing", () => {
         jsonrpc: "2.0",
         id: 7,
         method: "resources/read",
-        params: { uri: "cm://unknown" }
+        params: { uri: "cm://unknown" },
       });
 
       expect("error" in response).toBe(true);
@@ -292,7 +292,7 @@ describe("routeRequest JSON-RPC routing", () => {
       const response = await routeRequest({
         jsonrpc: "2.0",
         id: null,
-        method: "tools/list"
+        method: "tools/list",
       });
 
       expect(response.id).toBeNull();
@@ -303,7 +303,7 @@ describe("routeRequest JSON-RPC routing", () => {
     await withTempCassHome(async () => {
       const response = await routeRequest({
         jsonrpc: "2.0",
-        method: "tools/list"
+        method: "tools/list",
       });
 
       expect(response.id).toBeNull();
@@ -377,7 +377,7 @@ describe("computePlaybookStats", () => {
     globalPlaybookPath: "/tmp/global.jsonl",
     repoPlaybookPath: "/tmp/repo.jsonl",
     diaryDir: "/tmp/diary",
-    cassPath: "cass"
+    cassPath: "cass",
   };
 
   it("computes stats for empty playbook", () => {
@@ -407,7 +407,7 @@ describe("computePlaybookStats", () => {
           helpfulCount: 5,
           harmfulCount: 0,
           createdAt: now,
-          updatedAt: now
+          updatedAt: now,
         },
         {
           id: "b2",
@@ -418,7 +418,7 @@ describe("computePlaybookStats", () => {
           helpfulCount: 3,
           harmfulCount: 1,
           createdAt: now,
-          updatedAt: now
+          updatedAt: now,
         },
         {
           id: "b3",
@@ -430,9 +430,9 @@ describe("computePlaybookStats", () => {
           helpfulCount: 0,
           harmfulCount: 2,
           createdAt: now,
-          updatedAt: now
-        }
-      ]
+          updatedAt: now,
+        },
+      ],
     };
     const stats = computePlaybookStats(playbook, mockConfig);
 
@@ -457,9 +457,9 @@ describe("computePlaybookStats", () => {
           helpfulCount: 0,
           harmfulCount: 10,
           createdAt: now,
-          updatedAt: now
-        }
-      ]
+          updatedAt: now,
+        },
+      ],
     };
     const stats = computePlaybookStats(playbook, mockConfig);
 
@@ -476,9 +476,9 @@ describe("computePlaybookStats", () => {
           createdAt: now,
           updatedAt: now,
           helpfulCount: 0,
-          harmfulCount: 0
-        }
-      ]
+          harmfulCount: 0,
+        },
+      ],
     };
     const stats = computePlaybookStats(playbook, mockConfig);
 
@@ -501,7 +501,7 @@ describe("computePlaybookStats", () => {
           helpfulCount: 20,
           harmfulCount: 0,
           createdAt: now,
-          updatedAt: now
+          updatedAt: now,
         },
         {
           id: "b2",
@@ -512,7 +512,7 @@ describe("computePlaybookStats", () => {
           helpfulCount: 10,
           harmfulCount: 0,
           createdAt: now,
-          updatedAt: now
+          updatedAt: now,
         },
         {
           id: "b3",
@@ -523,9 +523,9 @@ describe("computePlaybookStats", () => {
           helpfulCount: 1,
           harmfulCount: 0,
           createdAt: now,
-          updatedAt: now
-        }
-      ]
+          updatedAt: now,
+        },
+      ],
     };
     const stats = computePlaybookStats(playbook, mockConfig);
 
@@ -620,8 +620,8 @@ describe("tool call validation", () => {
         method: "tools/call",
         params: {
           name: "cm_feedback",
-          arguments: { bulletId: "test-123", helpful: false, harmful: false }
-        }
+          arguments: { bulletId: "test-123", helpful: false, harmful: false },
+        },
       });
       expect("error" in response1).toBe(true);
       if ("error" in response1) {
@@ -635,8 +635,8 @@ describe("tool call validation", () => {
         method: "tools/call",
         params: {
           name: "cm_feedback",
-          arguments: { bulletId: "test-123", helpful: true, harmful: true }
-        }
+          arguments: { bulletId: "test-123", helpful: true, harmful: true },
+        },
       });
       expect("error" in response2).toBe(true);
       if ("error" in response2) {
@@ -653,8 +653,8 @@ describe("tool call validation", () => {
         method: "tools/call",
         params: {
           name: "cm_outcome",
-          arguments: { sessionId: "sess-1", outcome: "invalid-outcome" }
-        }
+          arguments: { sessionId: "sess-1", outcome: "invalid-outcome" },
+        },
       });
 
       expect("error" in response).toBe(true);
@@ -672,8 +672,8 @@ describe("tool call validation", () => {
         method: "tools/call",
         params: {
           name: "cm_context",
-          arguments: { task: "" }
-        }
+          arguments: { task: "" },
+        },
       });
 
       expect("error" in response).toBe(true);
@@ -694,8 +694,8 @@ describe("tool call validation", () => {
         method: "tools/call",
         params: {
           name: "cm_context",
-          arguments: { task: "fix the auth bug", limit: 1 }
-        }
+          arguments: { task: "fix the auth bug", limit: 1 },
+        },
       });
 
       expect("result" in response).toBe(true);
@@ -730,8 +730,8 @@ describe("tool call validation", () => {
         method: "tools/call",
         params: {
           name: "memory_search",
-          arguments: { query: "" }
-        }
+          arguments: { query: "" },
+        },
       });
 
       expect("error" in response).toBe(true);
@@ -749,8 +749,8 @@ describe("tool call validation", () => {
         method: "tools/call",
         params: {
           name: "memory_search",
-          arguments: { query: "test", scope: "invalid" }
-        }
+          arguments: { query: "test", scope: "invalid" },
+        },
       });
 
       expect("error" in response).toBe(true);
@@ -768,8 +768,8 @@ describe("tool call validation", () => {
         method: "tools/call",
         params: {
           name: "memory_search",
-          arguments: { query: "test", limit: -1 }
-        }
+          arguments: { query: "test", limit: -1 },
+        },
       });
 
       expect("error" in response).toBe(true);
@@ -787,8 +787,8 @@ describe("tool call validation", () => {
         method: "tools/call",
         params: {
           name: "memory_search",
-          arguments: { query: "test", days: 0 }
-        }
+          arguments: { query: "test", days: 0 },
+        },
       });
 
       expect("error" in response).toBe(true);
@@ -806,8 +806,8 @@ describe("tool call validation", () => {
         method: "tools/call",
         params: {
           name: "cm_context",
-          arguments: { task: "test task", limit: -5 }
-        }
+          arguments: { task: "test task", limit: -5 },
+        },
       });
 
       expect("error" in response).toBe(true);
@@ -825,8 +825,8 @@ describe("tool call validation", () => {
         method: "tools/call",
         params: {
           name: "cm_context",
-          arguments: { task: "test task", top: -1 }
-        }
+          arguments: { task: "test task", top: -1 },
+        },
       });
 
       expect("error" in response).toBe(true);
@@ -844,8 +844,8 @@ describe("tool call validation", () => {
         method: "tools/call",
         params: {
           name: "cm_context",
-          arguments: { task: "test task", history: 0 }
-        }
+          arguments: { task: "test task", history: 0 },
+        },
       });
 
       expect("error" in response).toBe(true);
@@ -863,8 +863,8 @@ describe("tool call validation", () => {
         method: "tools/call",
         params: {
           name: "cm_context",
-          arguments: { task: "test task", days: -1 }
-        }
+          arguments: { task: "test task", days: -1 },
+        },
       });
 
       expect("error" in response).toBe(true);
@@ -882,8 +882,8 @@ describe("tool call validation", () => {
         method: "tools/call",
         params: {
           name: "cm_outcome",
-          arguments: { sessionId: "sess-1", outcome: "success", durationSec: -100 }
-        }
+          arguments: { sessionId: "sess-1", outcome: "success", durationSec: -100 },
+        },
       });
 
       expect("error" in response).toBe(true);
@@ -901,8 +901,8 @@ describe("tool call validation", () => {
         method: "tools/call",
         params: {
           name: "memory_reflect",
-          arguments: { days: 0 }
-        }
+          arguments: { days: 0 },
+        },
       });
 
       expect("error" in response).toBe(true);
@@ -920,8 +920,8 @@ describe("tool call validation", () => {
         method: "tools/call",
         params: {
           name: "memory_reflect",
-          arguments: { maxSessions: -1 }
-        }
+          arguments: { maxSessions: -1 },
+        },
       });
 
       expect("error" in response).toBe(true);
@@ -946,12 +946,9 @@ describe("successful tool calls", () => {
         helpfulCount: 1,
         harmfulCount: 0,
         createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
+        updatedAt: new Date().toISOString(),
       };
-      await writeFile(
-        path.join(env.cassMemoryDir, "playbook.jsonl"),
-        JSON.stringify(bullet)
-      );
+      await writeFile(path.join(env.cassMemoryDir, "playbook.jsonl"), JSON.stringify(bullet));
 
       const response = await routeRequest({
         jsonrpc: "2.0",
@@ -959,8 +956,8 @@ describe("successful tool calls", () => {
         method: "tools/call",
         params: {
           name: "memory_search",
-          arguments: { query: "authentication", scope: "playbook", limit: 5 }
-        }
+          arguments: { query: "authentication", scope: "playbook", limit: 5 },
+        },
       });
 
       expect("result" in response).toBe(true);
@@ -989,12 +986,9 @@ describe("successful tool calls", () => {
         helpfulCount: 0,
         harmfulCount: 0,
         createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
+        updatedAt: new Date().toISOString(),
       };
-      await writeFile(
-        path.join(env.cassMemoryDir, "playbook.jsonl"),
-        JSON.stringify(bullet)
-      );
+      await writeFile(path.join(env.cassMemoryDir, "playbook.jsonl"), JSON.stringify(bullet));
 
       const response = await routeRequest({
         jsonrpc: "2.0",
@@ -1002,8 +996,8 @@ describe("successful tool calls", () => {
         method: "tools/call",
         params: {
           name: "memory_search",
-          arguments: { query: "error", scope: "both", limit: 10, days: 7 }
-        }
+          arguments: { query: "error", scope: "both", limit: 10, days: 7 },
+        },
       });
 
       expect("result" in response).toBe(true);
@@ -1025,8 +1019,8 @@ describe("successful tool calls", () => {
         method: "tools/call",
         params: {
           name: "memory_search",
-          arguments: { query: "test", scope: "cass", limit: 5, agent: "claude", workspace: "/tmp" }
-        }
+          arguments: { query: "test", scope: "cass", limit: 5, agent: "claude", workspace: "/tmp" },
+        },
       });
 
       expect("result" in response).toBe(true);
@@ -1050,9 +1044,9 @@ describe("successful tool calls", () => {
             bulletId: "nonexistent-bullet-123",
             helpful: true,
             reason: "This rule helped fix the bug",
-            session: "test-session-123"
-          }
-        }
+            session: "test-session-123",
+          },
+        },
       });
 
       // Should return error since bullet doesn't exist
@@ -1074,9 +1068,9 @@ describe("successful tool calls", () => {
           arguments: {
             bulletId: "nonexistent-bullet-456",
             harmful: true,
-            reason: "This rule caused issues"
-          }
-        }
+            reason: "This rule caused issues",
+          },
+        },
       });
 
       // Should return error since bullet doesn't exist
@@ -1101,9 +1095,9 @@ describe("successful tool calls", () => {
             rulesUsed: ["rule-1", "rule-2"],
             notes: "Task completed successfully",
             task: "Fix authentication bug",
-            durationSec: 120
-          }
-        }
+            durationSec: 120,
+          },
+        },
       });
 
       expect("result" in response).toBe(true);
@@ -1123,9 +1117,9 @@ describe("successful tool calls", () => {
           name: "cm_outcome",
           arguments: {
             sessionId: "outcome-partial-session",
-            outcome: "partial"
-          }
-        }
+            outcome: "partial",
+          },
+        },
       });
 
       expect("result" in response).toBe(true);
@@ -1143,10 +1137,10 @@ describe("successful tool calls", () => {
           arguments: {
             sessionId: "outcome-mixed-session",
             outcome: "mixed",
-            rulesUsed: ["rule-a", "", "  ", "rule-b"],  // includes empty strings to test filtering
-            notes: "Some parts worked"
-          }
-        }
+            rulesUsed: ["rule-a", "", "  ", "rule-b"], // includes empty strings to test filtering
+            notes: "Some parts worked",
+          },
+        },
       });
 
       expect("result" in response).toBe(true);
@@ -1164,9 +1158,9 @@ describe("successful tool calls", () => {
           arguments: {
             sessionId: "outcome-failure-session",
             outcome: "failure",
-            task: "Failed task"
-          }
-        }
+            task: "Failed task",
+          },
+        },
       });
 
       expect("result" in response).toBe(true);
@@ -1187,18 +1181,15 @@ describe("resource read operations", () => {
         helpfulCount: 2,
         harmfulCount: 0,
         createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
+        updatedAt: new Date().toISOString(),
       };
-      await writeFile(
-        path.join(env.cassMemoryDir, "playbook.jsonl"),
-        JSON.stringify(bullet)
-      );
+      await writeFile(path.join(env.cassMemoryDir, "playbook.jsonl"), JSON.stringify(bullet));
 
       const response = await routeRequest({
         jsonrpc: "2.0",
         id: 1,
         method: "resources/read",
-        params: { uri: "cm://playbook" }
+        params: { uri: "cm://playbook" },
       });
 
       expect("result" in response).toBe(true);
@@ -1216,7 +1207,7 @@ describe("resource read operations", () => {
         jsonrpc: "2.0",
         id: 1,
         method: "resources/read",
-        params: { uri: "cm://outcomes" }
+        params: { uri: "cm://outcomes" },
       });
 
       expect("result" in response).toBe(true);
@@ -1234,7 +1225,7 @@ describe("resource read operations", () => {
         jsonrpc: "2.0",
         id: 1,
         method: "resources/read",
-        params: { uri: "cm://diary" }
+        params: { uri: "cm://diary" },
       });
 
       expect("result" in response).toBe(true);
@@ -1257,18 +1248,15 @@ describe("resource read operations", () => {
         helpfulCount: 1,
         harmfulCount: 0,
         createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
+        updatedAt: new Date().toISOString(),
       };
-      await writeFile(
-        path.join(env.cassMemoryDir, "playbook.jsonl"),
-        JSON.stringify(bullet)
-      );
+      await writeFile(path.join(env.cassMemoryDir, "playbook.jsonl"), JSON.stringify(bullet));
 
       const response = await routeRequest({
         jsonrpc: "2.0",
         id: 1,
         method: "resources/read",
-        params: { uri: "cm://stats" }
+        params: { uri: "cm://stats" },
       });
 
       expect("result" in response).toBe(true);
@@ -1288,7 +1276,7 @@ describe("resource read operations", () => {
         jsonrpc: "2.0",
         id: 1,
         method: "resources/read",
-        params: { uri: "memory://stats" }
+        params: { uri: "memory://stats" },
       });
 
       expect("result" in response).toBe(true);
@@ -1357,8 +1345,8 @@ describe("memory_reflect tool validation", () => {
         method: "tools/call",
         params: {
           name: "memory_reflect",
-          arguments: { workspace: "" }  // Empty workspace should fail validation
-        }
+          arguments: { workspace: "" }, // Empty workspace should fail validation
+        },
       });
 
       expect("error" in response).toBe(true);
@@ -1376,8 +1364,8 @@ describe("memory_reflect tool validation", () => {
         method: "tools/call",
         params: {
           name: "memory_reflect",
-          arguments: { session: "" }  // Empty session should fail validation
-        }
+          arguments: { session: "" }, // Empty session should fail validation
+        },
       });
 
       expect("error" in response).toBe(true);
@@ -1397,8 +1385,8 @@ describe("cm_context tool additional validation", () => {
         method: "tools/call",
         params: {
           name: "cm_context",
-          arguments: { task: "test task", workspace: "" }
-        }
+          arguments: { task: "test task", workspace: "" },
+        },
       });
 
       expect("error" in response).toBe(true);
@@ -1421,12 +1409,9 @@ describe("cm_context tool additional validation", () => {
         helpfulCount: 2,
         harmfulCount: 0,
         createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
+        updatedAt: new Date().toISOString(),
       };
-      await writeFile(
-        path.join(env.cassMemoryDir, "playbook.jsonl"),
-        JSON.stringify(bullet)
-      );
+      await writeFile(path.join(env.cassMemoryDir, "playbook.jsonl"), JSON.stringify(bullet));
 
       const response = await routeRequest({
         jsonrpc: "2.0",
@@ -1434,8 +1419,8 @@ describe("cm_context tool additional validation", () => {
         method: "tools/call",
         params: {
           name: "cm_context",
-          arguments: { task: "testing context functionality", limit: 5, history: 3, days: 7 }
-        }
+          arguments: { task: "testing context functionality", limit: 5, history: 3, days: 7 },
+        },
       });
 
       expect("result" in response).toBe(true);
@@ -1456,8 +1441,8 @@ describe("cm_feedback tool additional validation", () => {
         method: "tools/call",
         params: {
           name: "cm_feedback",
-          arguments: { bulletId: "test-bullet", helpful: true, reason: "", session: "test" }
-        }
+          arguments: { bulletId: "test-bullet", helpful: true, reason: "", session: "test" },
+        },
       });
 
       // Should fail with validation error for empty reason
@@ -1476,8 +1461,8 @@ describe("cm_feedback tool additional validation", () => {
         method: "tools/call",
         params: {
           name: "cm_feedback",
-          arguments: { bulletId: "test-bullet", helpful: true, session: "" }
-        }
+          arguments: { bulletId: "test-bullet", helpful: true, session: "" },
+        },
       });
 
       expect("error" in response).toBe(true);

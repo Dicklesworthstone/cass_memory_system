@@ -1,19 +1,19 @@
-import fs from "node:fs/promises";
-import { writeSync } from "node:fs";
-import path from "node:path";
-import os from "node:os";
-import crypto from "node:crypto";
-import readline from "node:readline";
-import chalk from "chalk";
 import { exec } from "node:child_process";
+import crypto from "node:crypto";
+import { writeSync } from "node:fs";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import readline from "node:readline";
 import { promisify } from "node:util";
-import { ErrorCode, type ContextResult } from "./types.js";
+import chalk from "chalk";
 import { iconPrefix } from "./output.js";
+import { type ContextResult, ErrorCode } from "./types.js";
 
 const execAsync = promisify(exec);
 
 // Import package.json for version (works in Bun runtime and compiled binaries)
-// @ts-ignore - Bun supports JSON imports
+// @ts-expect-error - Bun supports JSON imports
 import packageJson from "../package.json";
 
 /**
@@ -97,7 +97,7 @@ export class InputValidationError extends Error {
     invalidValue: string,
     expectedFormat: string,
     example: string,
-    reason?: string
+    reason?: string,
   ) {
     const message = [
       `Invalid ${inputType}: ${reason || "validation failed"}`,
@@ -192,10 +192,7 @@ const MAX_PATH_LENGTH = 1024;
  * validateAndSanitizeInput('category', 'Error-Handling');
  * // Returns: 'error-handling'
  */
-export function validateAndSanitizeInput(
-  type: InputType,
-  value: string
-): string {
+export function validateAndSanitizeInput(type: InputType, value: string): string {
   // Basic null/undefined check
   if (value === null || value === undefined) {
     throw new InputValidationError(
@@ -203,7 +200,7 @@ export function validateAndSanitizeInput(
       String(value),
       "non-null string",
       getExampleForType(type),
-      "value is null or undefined"
+      "value is null or undefined",
     );
   }
 
@@ -227,7 +224,7 @@ export function validateAndSanitizeInput(
         sanitized,
         "valid input type",
         "bulletId, sessionPath, task, or category",
-        `unknown input type: ${type}`
+        `unknown input type: ${type}`,
       );
   }
 }
@@ -245,7 +242,7 @@ function validateBulletId(value: string): string {
       value,
       "non-empty bullet ID in format b-{timestamp}-{random}",
       "b-m4k8z2x-abc123",
-      "bullet ID is empty"
+      "bullet ID is empty",
     );
   }
 
@@ -256,7 +253,7 @@ function validateBulletId(value: string): string {
       value,
       "format: b-{base36-timestamp}-{random-chars}",
       "b-m4k8z2x-abc123",
-      "bullet ID does not match expected pattern"
+      "bullet ID does not match expected pattern",
     );
   }
 
@@ -276,7 +273,7 @@ function validateSessionPath(value: string): string {
       value,
       "valid file path",
       "~/.claude/sessions/session.jsonl",
-      "path is empty"
+      "path is empty",
     );
   }
 
@@ -287,7 +284,7 @@ function validateSessionPath(value: string): string {
       value,
       `path under ${MAX_PATH_LENGTH} characters`,
       "~/.claude/sessions/session.jsonl",
-      `path exceeds ${MAX_PATH_LENGTH} characters`
+      `path exceeds ${MAX_PATH_LENGTH} characters`,
     );
   }
 
@@ -306,7 +303,7 @@ function validateSessionPath(value: string): string {
       value,
       "normalized absolute path without traversal",
       "~/.claude/sessions/session.jsonl",
-      "path contains suspicious traversal sequences"
+      "path contains suspicious traversal sequences",
     );
   }
 
@@ -319,7 +316,7 @@ function validateSessionPath(value: string): string {
       value,
       `file with extension: ${validExtensions.join(", ")}`,
       "~/.claude/sessions/session.jsonl",
-      `unexpected file extension: ${ext}`
+      `unexpected file extension: ${ext}`,
     );
   }
 
@@ -339,7 +336,7 @@ function validateTask(value: string): string {
       value,
       "non-empty task description",
       "Fix authentication timeout bug",
-      "task is empty"
+      "task is empty",
     );
   }
 
@@ -350,7 +347,7 @@ function validateTask(value: string): string {
       value,
       `task under ${MAX_TASK_LENGTH} characters`,
       "Fix authentication timeout bug",
-      `task exceeds ${MAX_TASK_LENGTH} characters (got ${cleaned.length})`
+      `task exceeds ${MAX_TASK_LENGTH} characters (got ${cleaned.length})`,
     );
   }
 
@@ -373,7 +370,7 @@ function validateCategory(value: string): string {
       value,
       "non-empty category name",
       "error-handling",
-      "category is empty"
+      "category is empty",
     );
   }
 
@@ -387,7 +384,7 @@ function validateCategory(value: string): string {
       value,
       `category under ${MAX_CATEGORY_LENGTH} characters`,
       "error-handling",
-      `category exceeds ${MAX_CATEGORY_LENGTH} characters`
+      `category exceeds ${MAX_CATEGORY_LENGTH} characters`,
     );
   }
 
@@ -398,7 +395,7 @@ function validateCategory(value: string): string {
       value,
       "lowercase alphanumeric with hyphens or underscores, starting with alphanumeric",
       "error-handling",
-      "category contains invalid characters"
+      "category contains invalid characters",
     );
   }
 
@@ -447,7 +444,7 @@ export class PermissionError extends Error {
     currentPermissions: string | undefined,
     suggestedFix: string,
     errorCode: string,
-    originalMessage: string
+    originalMessage: string,
   ) {
     const permStr = currentPermissions ? ` (current: ${currentPermissions})` : "";
     const message = [
@@ -481,9 +478,7 @@ export function isPermissionError(error: unknown): boolean {
 /**
  * Detect the operation type from the error message.
  */
-function detectOperation(
-  error: Error
-): "read" | "write" | "execute" | "delete" | "unknown" {
+function detectOperation(error: Error): "read" | "write" | "execute" | "delete" | "unknown" {
   const msg = error.message.toLowerCase();
   if (msg.includes("open") && msg.includes("r")) return "read";
   if (
@@ -512,9 +507,7 @@ function formatMode(mode: number): string {
 /**
  * Get current file/directory permissions if accessible.
  */
-async function getPermissions(
-  filePath: string
-): Promise<{ mode: string; owner: string } | null> {
+async function getPermissions(filePath: string): Promise<{ mode: string; owner: string } | null> {
   try {
     const stat = await fs.stat(filePath);
     return {
@@ -542,7 +535,7 @@ async function getPermissions(
 function generateSuggestedFix(
   operation: "read" | "write" | "execute" | "delete" | "unknown",
   filePath: string,
-  isDirectory: boolean
+  isDirectory: boolean,
 ): string {
   const escapedPath = filePath.replace(/'/g, "'\\''");
 
@@ -583,10 +576,7 @@ function generateSuggestedFix(
  *   throw error;
  * }
  */
-export async function handlePermissionError(
-  error: Error,
-  filePath: string
-): Promise<never> {
+export async function handlePermissionError(error: Error, filePath: string): Promise<never> {
   const code = (error as NodeJS.ErrnoException).code || "UNKNOWN";
   const operation = detectOperation(error);
 
@@ -606,24 +596,14 @@ export async function handlePermissionError(
 
   const suggestedFix = generateSuggestedFix(operation, filePath, isDirectory);
 
-  throw new PermissionError(
-    filePath,
-    operation,
-    permStr,
-    suggestedFix,
-    code,
-    error.message
-  );
+  throw new PermissionError(filePath, operation, permStr, suggestedFix, code, error.message);
 }
 
 /**
  * Synchronous version of handlePermissionError for use in sync contexts.
  * Uses cached/estimated permissions rather than async stat.
  */
-export function handlePermissionErrorSync(
-  error: Error,
-  filePath: string
-): never {
+export function handlePermissionErrorSync(error: Error, filePath: string): never {
   const code = (error as NodeJS.ErrnoException).code || "UNKNOWN";
   const operation = detectOperation(error);
 
@@ -637,7 +617,7 @@ export function handlePermissionErrorSync(
     undefined, // Can't get permissions synchronously without blocking
     suggestedFix,
     code,
-    error.message
+    error.message,
   );
 }
 
@@ -927,14 +907,9 @@ export function normalizePlatformPath(p: string): string {
   if (isUNC) {
     // Preserve the UNC prefix (//server/share[/...])
     const stripped = input.replace(/^\/\//, "");
-    const normalizedRest = stripped
-      .split("/")
-      .filter(Boolean)
-      .join("/");
+    const normalizedRest = stripped.split("/").filter(Boolean).join("/");
     const rebuilt = `//${normalizedRest}`;
-    return process.platform === "win32"
-      ? rebuilt.replace(/\//g, "\\")
-      : rebuilt;
+    return process.platform === "win32" ? rebuilt.replace(/\//g, "\\") : rebuilt;
   }
 
   if (hasDriveLetter) {
@@ -943,9 +918,7 @@ export function normalizePlatformPath(p: string): string {
     const finalWin = path.win32.isAbsolute(winNormalized)
       ? winNormalized
       : path.win32.resolve(winNormalized);
-    return process.platform === "win32"
-      ? finalWin
-      : finalWin.replace(/\\/g, "/");
+    return process.platform === "win32" ? finalWin : finalWin.replace(/\\/g, "/");
   }
 
   // POSIX-style path: resolve against cwd and normalize
@@ -1141,9 +1114,9 @@ export async function resolveGlobalConfigFile(): Promise<ResolvedConfigFile> {
 }
 
 export async function ensureGlobalStructure(
-  defaultConfigStr?: string, 
-  defaultPlaybookStr?: string
-): Promise<{ created: string[], existed: string[] }> {
+  defaultConfigStr?: string,
+  defaultPlaybookStr?: string,
+): Promise<{ created: string[]; existed: string[] }> {
   const globalDir = resolveGlobalDir();
   const created: string[] = [];
   const existed: string[] = [];
@@ -1153,25 +1126,27 @@ export async function ensureGlobalStructure(
   // Subdirectories
   const subdirs = ["diary", "reflections", "embeddings", "cost"];
   for (const d of subdirs) {
-      await ensureDir(path.join(globalDir, d));
+    await ensureDir(path.join(globalDir, d));
   }
 
   // config.json (or an existing config.yaml/.yml, which must not be shadowed
   // by a freshly written default config.json — JSON takes precedence)
   const configFile = await resolveConfigFileInDir(globalDir);
   if (configFile.exists) {
-      existed.push(path.basename(configFile.path));
+    existed.push(path.basename(configFile.path));
   } else if (defaultConfigStr) {
-      await atomicWrite(configFile.path, defaultConfigStr);
-      created.push("config.json");
+    await atomicWrite(configFile.path, defaultConfigStr);
+    created.push("config.json");
   }
 
   // playbook.yaml
   const playbookPath = path.join(globalDir, "playbook.yaml");
   if (await fileExists(playbookPath)) {
-      existed.push("playbook.yaml");
+    existed.push("playbook.yaml");
   } else {
-      const content = defaultPlaybookStr || `# Global Playbook
+    const content =
+      defaultPlaybookStr ||
+      `# Global Playbook
 schema_version: 2
 name: global-playbook
 description: Personal global playbook rules
@@ -1182,26 +1157,26 @@ metadata:
 deprecatedPatterns: []
 bullets: []
 `;
-      await atomicWrite(playbookPath, content);
-      created.push("playbook.yaml");
+    await atomicWrite(playbookPath, content);
+    created.push("playbook.yaml");
   }
-  
+
   // blocked.log - global blocklist
   const blockedPath = path.join(globalDir, "blocked.log");
   if (await fileExists(blockedPath)) {
-      existed.push("blocked.log");
+    existed.push("blocked.log");
   } else {
-      await atomicWrite(blockedPath, "");
-      created.push("blocked.log");
+    await atomicWrite(blockedPath, "");
+    created.push("blocked.log");
   }
 
   // usage.jsonl
   const usagePath = path.join(globalDir, "usage.jsonl");
   if (await fileExists(usagePath)) {
-      existed.push("usage.jsonl");
+    existed.push("usage.jsonl");
   } else {
-      await atomicWrite(usagePath, "");
-      created.push("usage.jsonl");
+    await atomicWrite(usagePath, "");
+    created.push("usage.jsonl");
   }
 
   return { created, existed };
@@ -1319,10 +1294,10 @@ export async function withLock<T>(filePath: string, operation: () => Promise<T>)
 export async function atomicWrite(filePath: string, content: string): Promise<void> {
   const expanded = typeof expandPath === "function" ? expandPath(filePath) : path.resolve(filePath);
   await ensureDir(path.dirname(expanded));
-  
+
   const tempPath = `${expanded}.tmp.${crypto.randomBytes(8).toString("hex")}`;
   const backupPath = `${expanded}.bak.${crypto.randomBytes(8).toString("hex")}`;
-  
+
   try {
     await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
 
@@ -1333,7 +1308,8 @@ export async function atomicWrite(filePath: string, content: string): Promise<vo
     } catch (err: any) {
       const code = err?.code;
       const maybeWindowsReplaceIssue =
-        process.platform === "win32" && (code === "EEXIST" || code === "EPERM" || code === "EACCES");
+        process.platform === "win32" &&
+        (code === "EEXIST" || code === "EPERM" || code === "EACCES");
       if (!maybeWindowsReplaceIssue) {
         throw err;
       }
@@ -1382,7 +1358,9 @@ export async function atomicWrite(filePath: string, content: string): Promise<vo
       return;
     }
   } catch (err: any) {
-    try { await fs.unlink(tempPath); } catch {} 
+    try {
+      await fs.unlink(tempPath);
+    } catch {}
     throw new Error(`Failed to atomic write to ${expanded}: ${err?.message || String(err)}`);
   }
 }
@@ -1392,10 +1370,7 @@ export async function atomicWrite(filePath: string, content: string): Promise<vo
 export function hashContent(content: string): string {
   if (!content) return crypto.createHash("sha256").update("").digest("hex").substring(0, 16);
 
-  const normalized = content
-    .toLowerCase()
-    .replace(/\s+/g, " ")
-    .trim();
+  const normalized = content.toLowerCase().replace(/\s+/g, " ").trim();
 
   return crypto.createHash("sha256").update(normalized).digest("hex").substring(0, 16);
 }
@@ -1407,37 +1382,36 @@ export function contentHash(content: string): string {
 
 export function tokenize(text: string): string[] {
   if (!text) return [];
-  
+
   // Improved regex: Keeps technical terms like C++, node.js, user_id, C#, .NET
   // Matches:
   // - Words starting with alphanumeric
   // - Can have internal separators (dot, underscore, hyphen, plus) followed by alphanumerics
   // - Can end with pluses or hashes (C++, C#)
-  
+
   const pattern = /[a-z0-9]+(?:[._\-+]+[a-z0-9]+)*[+#]*|[a-z0-9]+[+#]*/g;
   const tokens = text.toLowerCase().match(pattern);
-  
-  return (tokens || [])
-    .filter(t => t.length >= 2); // Min length 2
+
+  return (tokens || []).filter((t) => t.length >= 2); // Min length 2
 }
 
 export function jaccardSimilarity(a: string, b: string): number {
   const tokensA = new Set(tokenize(a));
   const tokensB = new Set(tokenize(b));
-  
+
   if (tokensA.size === 0 && tokensB.size === 0) return 1.0;
   if (tokensA.size === 0 || tokensB.size === 0) return 0.0;
-  
-  const intersection = new Set([...tokensA].filter(x => tokensB.has(x)));
+
+  const intersection = new Set([...tokensA].filter((x) => tokensB.has(x)));
   const union = new Set([...tokensA, ...tokensB]);
-  
+
   return intersection.size / union.size;
 }
 
 export function jaccardSimilaritySets(a: Set<string>, b: Set<string>): number {
   if (a.size === 0 && b.size === 0) return 1.0;
   if (a.size === 0 || b.size === 0) return 0.0;
-  
+
   let intersectionSize = 0;
   // Iterate over smaller set for efficiency
   if (a.size < b.size) {
@@ -1449,7 +1423,7 @@ export function jaccardSimilaritySets(a: Set<string>, b: Set<string>): number {
       if (a.has(token)) intersectionSize++;
     }
   }
-  
+
   const unionSize = a.size + b.size - intersectionSize;
   return intersectionSize / unionSize;
 }
@@ -1463,8 +1437,8 @@ export function generateBulletId(): string {
 }
 
 export function generateDiaryId(sessionPath: string, content?: string): string {
-  const input = content 
-    ? `${sessionPath}-${content}` 
+  const input = content
+    ? `${sessionPath}-${content}`
     : `${sessionPath}-${Date.now()}-${process.hrtime.bigint()}-${Math.random()}`;
   const hash = hashContent(input);
   return `diary-${hash}`;
@@ -1496,7 +1470,7 @@ export function formatRelativeTime(isoDate: string): string {
   const date = new Date(isoDate);
   const diff = Date.now() - date.getTime();
   const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-  
+
   if (days === 0) return "today";
   if (days === 1) return "yesterday";
   if (days < 7) return `${days} days ago`;
@@ -1515,25 +1489,93 @@ export function formatRelativeTime(isoDate: string): string {
 // --- Text & NLP ---
 
 const STOP_WORDS = new Set([
-  "the", "a", "an", "is", "are", "was", "were", "be", "been", "have", "has", "had",
-  "do", "does", "did", "will", "would", "could", "should", "can", "to", "of", "in",
-  "for", "on", "with", "at", "by", "from", "as", "into", "through", "during", "before",
-  "after", "and", "or", "but", "if", "when", "where", "why", "how", "this", "that",
-  "these", "those", "what", "which", "who", "there", "here", "i", "you", "he", "she",
-  "it", "we", "they", "me", "him", "her", "us", "them",
+  "the",
+  "a",
+  "an",
+  "is",
+  "are",
+  "was",
+  "were",
+  "be",
+  "been",
+  "have",
+  "has",
+  "had",
+  "do",
+  "does",
+  "did",
+  "will",
+  "would",
+  "could",
+  "should",
+  "can",
+  "to",
+  "of",
+  "in",
+  "for",
+  "on",
+  "with",
+  "at",
+  "by",
+  "from",
+  "as",
+  "into",
+  "through",
+  "during",
+  "before",
+  "after",
+  "and",
+  "or",
+  "but",
+  "if",
+  "when",
+  "where",
+  "why",
+  "how",
+  "this",
+  "that",
+  "these",
+  "those",
+  "what",
+  "which",
+  "who",
+  "there",
+  "here",
+  "i",
+  "you",
+  "he",
+  "she",
+  "it",
+  "we",
+  "they",
+  "me",
+  "him",
+  "her",
+  "us",
+  "them",
   // Programming syntax keywords (purely syntactic, no semantic meaning)
-  "const", "var", "let", "import", "export", "return",
-  "null", "undefined", "true", "false",
-  "async", "await", "new"
+  "const",
+  "var",
+  "let",
+  "import",
+  "export",
+  "return",
+  "null",
+  "undefined",
+  "true",
+  "false",
+  "async",
+  "await",
+  "new",
 ]);
 
 export function extractKeywords(text: string): string[] {
   const tokens = tokenize(text);
-  const keywords = tokens.filter(t => !STOP_WORDS.has(t));
-  
+  const keywords = tokens.filter((t) => !STOP_WORDS.has(t));
+
   const counts: Record<string, number> = {};
-  keywords.forEach(k => counts[k] = (counts[k] || 0) + 1);
-  
+  keywords.forEach((k) => (counts[k] = (counts[k] || 0) + 1));
+
   return Object.entries(counts)
     .sort((a, b) => b[1] - a[1])
     .slice(0, 10)
@@ -1558,7 +1600,7 @@ export function truncate(text: string, maxLen: number): string {
 export function truncateWithIndicator(
   text: string,
   maxLen: number,
-  indicator: string = "..."
+  indicator: string = "...",
 ): string {
   if (!text) return "";
   if (maxLen <= 0) return text.length > 0 ? indicator : "";
@@ -1607,10 +1649,7 @@ export interface TruncateForContextOptions {
  * // Keep first 2000 chars
  * truncateForContext(longDoc, { maxChars: 2000, strategy: "head" });
  */
-export function truncateForContext(
-  text: string,
-  options: TruncateForContextOptions = {}
-): string {
+export function truncateForContext(text: string, options: TruncateForContextOptions = {}): string {
   if (!text) return "";
 
   const {
@@ -1618,7 +1657,7 @@ export function truncateForContext(
     maxTokens,
     strategy = "middle",
     preserveCodeBlocks = true,
-    truncationMarker = "\n\n[...truncated...]\n\n"
+    truncationMarker = "\n\n[...truncated...]\n\n",
   } = options;
 
   // Calculate max chars from tokens if provided (approx 4 chars per token)
@@ -1754,7 +1793,7 @@ function truncateMiddle(
   text: string,
   availableChars: number,
   marker: string,
-  preserveCodeBlocks: boolean
+  preserveCodeBlocks: boolean,
 ): string {
   if (text.length <= availableChars) return text;
 
@@ -1804,7 +1843,7 @@ function buildDeprecatedMatcher(pattern: string): (text: string) => boolean {
 
 export function checkDeprecatedPatterns(
   history: Array<{ snippet?: string }> = [],
-  deprecatedPatterns: Array<{ pattern: string; replacement?: string; reason?: string }> = []
+  deprecatedPatterns: Array<{ pattern: string; replacement?: string; reason?: string }> = [],
 ): string[] {
   if (!history.length || !deprecatedPatterns.length) return [];
 
@@ -1821,7 +1860,9 @@ export function checkDeprecatedPatterns(
 
       if (matches(snippet)) {
         const reasonSuffix = deprecated.reason ? ` (Reason: ${deprecated.reason})` : "";
-        const replacement = deprecated.replacement ? ` - use ${deprecated.replacement} instead` : "";
+        const replacement = deprecated.replacement
+          ? ` - use ${deprecated.replacement} instead`
+          : "";
         warnings.add(`${deprecated.pattern} was deprecated${replacement}${reasonSuffix}`);
         break;
       }
@@ -1836,34 +1877,33 @@ export function checkDeprecatedPatterns(
 export function scoreBulletRelevance(
   bulletContent: string,
   bulletTags: string[],
-  keywords: string[]
+  keywords: string[],
 ): number {
   if (!bulletContent || keywords.length === 0) return 0;
-  
+
   let score = 0;
   const contentLower = bulletContent.toLowerCase();
-  const tagsLower = bulletTags.map(t => t.toLowerCase());
-  const normalizedKeywords = Array.from(new Set(keywords.map(k => k.toLowerCase())));
-  
+  const tagsLower = bulletTags.map((t) => t.toLowerCase());
+  const normalizedKeywords = Array.from(new Set(keywords.map((k) => k.toLowerCase())));
+
   // Tokenize once
   const contentTokens = new Set(tokenize(contentLower));
 
   for (const k of normalizedKeywords) {
-    
     // Exact match in token set (fast)
     if (contentTokens.has(k)) {
-        score += 3;
-    } 
+      score += 3;
+    }
     // Partial string match (slower fallback for "auth" -> "authenticate")
     else if (contentLower.includes(k)) {
-        score += 1;
+      score += 1;
     }
-    
+
     if (tagsLower.includes(k)) {
-        score += 5; // Higher weight for explicit tags
+      score += 5; // Higher weight for explicit tags
     }
   }
-  
+
   return score;
 }
 
@@ -1876,30 +1916,30 @@ export function scoreBulletRelevance(
  * vocabulary (claude, codex, cursor, aider, pi_agent, omp, gemini, ...).
  */
 const AGENT_ALIASES: Record<string, string> = {
-  "claude_code": "claude",
+  claude_code: "claude",
   "claude-code": "claude",
-  "claudecode": "claude",
-  "codex_cli": "codex",
+  claudecode: "claude",
+  codex_cli: "codex",
   "codex-cli": "codex",
   "aider-cli": "aider",
-  "gemini_cli": "gemini",
+  gemini_cli: "gemini",
   "gemini-cli": "gemini",
   "pi-agent": "pi_agent",
-  "piagent": "pi_agent",
-  "pi": "pi_agent",
+  piagent: "pi_agent",
+  pi: "pi_agent",
   "oh-my-pi": "omp",
-  "oh_my_pi": "omp",
-  "ohmypi": "omp",
+  oh_my_pi: "omp",
+  ohmypi: "omp",
   "prime-agent": "prime_agent",
-  "primeagent": "prime_agent",
+  primeagent: "prime_agent",
   "copilot-cli": "copilot_cli",
   "gh-copilot": "copilot_cli",
-  "github_copilot": "github-copilot",
+  github_copilot: "github-copilot",
   "open-code": "opencode",
   "open-claw": "openclaw",
   "open-hands": "openhands",
   "kimi-code": "kimi",
-  "kimi_code": "kimi",
+  kimi_code: "kimi",
   "kiro-cli": "kiro",
   "grok-cli": "grok",
   "hermes-agent": "hermes",
@@ -1907,14 +1947,14 @@ const AGENT_ALIASES: Record<string, string> = {
   "devin-cli": "devin",
   "factory-droid": "factory",
   "amp-cli": "amp",
-  "agy": "antigravity",
+  agy: "antigravity",
   "antigravity-cli": "antigravity",
   "chat-gpt": "chatgpt",
   "chatgpt-desktop": "chatgpt",
   "qwen-code": "qwen",
   "qwen-cli": "qwen",
   "muse-code": "muse",
-  "muse_code": "muse",
+  muse_code: "muse",
   "vibe-cli": "vibe",
 };
 
@@ -2014,11 +2054,11 @@ export function formatLastHelpful(bullet: {
   let helpfulTimestamps: string[] = [];
 
   if (bullet.helpfulEvents && bullet.helpfulEvents.length > 0) {
-    helpfulTimestamps = bullet.helpfulEvents.map(e => e.timestamp);
+    helpfulTimestamps = bullet.helpfulEvents.map((e) => e.timestamp);
   } else if (bullet.feedbackEvents && bullet.feedbackEvents.length > 0) {
     helpfulTimestamps = bullet.feedbackEvents
-      .filter(e => e.type === "helpful")
-      .map(e => e.timestamp);
+      .filter((e) => e.type === "helpful")
+      .map((e) => e.timestamp);
   }
 
   if (helpfulTimestamps.length === 0) {
@@ -2027,8 +2067,8 @@ export function formatLastHelpful(bullet: {
 
   // Find most recent helpful event
   const sortedTimestamps = helpfulTimestamps
-    .map(ts => new Date(ts).getTime())
-    .filter(ts => !isNaN(ts))
+    .map((ts) => new Date(ts).getTime())
+    .filter((ts) => !isNaN(ts))
     .sort((a, b) => b - a); // Descending (most recent first)
 
   if (sortedTimestamps.length === 0) {
@@ -2114,7 +2154,7 @@ function shellEscapeForUserCommand(text: string): string {
 export function generateSuggestedQueries(
   task: string,
   keywords: string[],
-  options: { preferredAgent?: string; maxSuggestions?: number } = {}
+  options: { preferredAgent?: string; maxSuggestions?: number } = {},
 ): string[] {
   const { preferredAgent, maxSuggestions = 5 } = options;
   const queries: string[] = [];
@@ -2149,7 +2189,7 @@ export function generateSuggestedQueries(
 
     // Check if task already contains problem terms
     const taskLower = task.toLowerCase();
-    const hasProblemTerm = PROBLEM_TERMS.some(term => taskLower.includes(term));
+    const hasProblemTerm = PROBLEM_TERMS.some((term) => taskLower.includes(term));
 
     if (!hasProblemTerm) {
       // Add error-oriented query if task doesn't have problem terms
@@ -2187,7 +2227,11 @@ export function generateSuggestedQueries(
 // --- Logging ---
 
 export function log(msg: string, verbose = false): void {
-  if (verbose || process.env.CASS_MEMORY_VERBOSE === "true" || process.env.CASS_MEMORY_VERBOSE === "1") {
+  if (
+    verbose ||
+    process.env.CASS_MEMORY_VERBOSE === "true" ||
+    process.env.CASS_MEMORY_VERBOSE === "1"
+  ) {
     console.error(chalk.blue(`[${getCliName()}]`), msg);
   }
 }
@@ -2375,7 +2419,9 @@ function findTruBinary(): string | null {
     if (isToonRustBinary(candidate)) {
       return candidate;
     }
-    console.error(`[cm] Warning: ${name}=${JSON.stringify(candidate)} does not look like toon_rust (expected tru); ignoring`);
+    console.error(
+      `[cm] Warning: ${name}=${JSON.stringify(candidate)} does not look like toon_rust (expected tru); ignoring`,
+    );
   }
 
   // Check PATH
@@ -2428,7 +2474,7 @@ function shouldPrintToonStats(options?: { stats?: boolean }): boolean {
  */
 export function printToon(
   value: unknown,
-  options?: { fallbackToJson?: boolean; stats?: boolean }
+  options?: { fallbackToJson?: boolean; stats?: boolean },
 ): void {
   const truBin = findTruBinary();
 
@@ -2439,7 +2485,9 @@ export function printToon(
       printJson(value);
       return;
     }
-    throw new Error("TOON encoding unavailable: tru binary not found. Install via: brew install dicklesworthstone/tap/tru");
+    throw new Error(
+      "TOON encoding unavailable: tru binary not found. Install via: brew install dicklesworthstone/tap/tru",
+    );
   }
 
   const { spawnSync } = require("child_process");
@@ -2470,7 +2518,7 @@ export function printToon(
     const toonTokens = estimateTokensApprox(toonOut);
     const savings = jsonTokens > 0 ? Math.round(100 - (toonTokens * 100) / jsonTokens) : 0;
     console.error(
-      `[stats] JSON: ${jsonTokens} tokens, TOON: ${toonTokens} tokens (${savings}% savings)`
+      `[stats] JSON: ${jsonTokens} tokens, TOON: ${toonTokens} tokens (${savings}% savings)`,
     );
   }
   writeStdoutSync(toonOut);
@@ -2485,7 +2533,7 @@ export function printToon(
  */
 export function printStructuredOutput(
   value: unknown,
-  options?: { json?: boolean; format?: string; stats?: boolean }
+  options?: { json?: boolean; format?: string; stats?: boolean },
 ): void {
   if (isToonOutput(options)) {
     printToon(value, { stats: options?.stats });
@@ -2510,22 +2558,24 @@ export function validateOneOf<T extends string>(
   value: unknown,
   name: string,
   allowed: readonly T[],
-  options: { allowUndefined: true; caseInsensitive?: boolean }
+  options: { allowUndefined: true; caseInsensitive?: boolean },
 ): InputValidationResult<T | undefined>;
 export function validateOneOf<T extends string>(
   value: unknown,
   name: string,
   allowed: readonly T[],
-  options?: { allowUndefined?: false; caseInsensitive?: boolean }
+  options?: { allowUndefined?: false; caseInsensitive?: boolean },
 ): InputValidationResult<T>;
 export function validateOneOf<T extends string>(
   value: unknown,
   name: string,
   allowed: readonly T[],
-  options: { allowUndefined?: boolean; caseInsensitive?: boolean } = {}
+  options: { allowUndefined?: boolean; caseInsensitive?: boolean } = {},
 ): InputValidationResult<T | undefined> {
   if (value === undefined) {
-    return options.allowUndefined ? { ok: true, value: undefined } : { ok: false, message: `${name} is required.` };
+    return options.allowUndefined
+      ? { ok: true, value: undefined }
+      : { ok: false, message: `${name} is required.` };
   }
 
   if (typeof value !== "string") {
@@ -2563,29 +2613,39 @@ export function validateOneOf<T extends string>(
 export function validateNonEmptyString(
   value: unknown,
   name: string,
-  options: { allowUndefined: true; trim?: boolean }
+  options: { allowUndefined: true; trim?: boolean },
 ): InputValidationResult<string | undefined>;
 export function validateNonEmptyString(
   value: unknown,
   name: string,
-  options?: { allowUndefined?: false; trim?: boolean }
+  options?: { allowUndefined?: false; trim?: boolean },
 ): InputValidationResult<string>;
 export function validateNonEmptyString(
   value: unknown,
   name: string,
-  options: { allowUndefined?: boolean; trim?: boolean } = {}
+  options: { allowUndefined?: boolean; trim?: boolean } = {},
 ): InputValidationResult<string | undefined> {
   if (value === undefined) {
-    return options.allowUndefined ? { ok: true, value: undefined } : { ok: false, message: `${name} is required.` };
+    return options.allowUndefined
+      ? { ok: true, value: undefined }
+      : { ok: false, message: `${name} is required.` };
   }
 
   if (typeof value !== "string") {
-    return { ok: false, message: `${name} must be a string.`, details: { field: name, received: value } };
+    return {
+      ok: false,
+      message: `${name} must be a string.`,
+      details: { field: name, received: value },
+    };
   }
 
   const trimmed = value.trim();
   if (!trimmed) {
-    return { ok: false, message: `${name} must be a non-empty string.`, details: { field: name, received: value } };
+    return {
+      ok: false,
+      message: `${name} must be a non-empty string.`,
+      details: { field: name, received: value },
+    };
   }
 
   return { ok: true, value: options.trim === false ? value : trimmed };
@@ -2594,20 +2654,22 @@ export function validateNonEmptyString(
 export function validatePositiveInt(
   value: unknown,
   name: string,
-  options: { min?: number; max?: number; allowUndefined: true }
+  options: { min?: number; max?: number; allowUndefined: true },
 ): InputValidationResult<number | undefined>;
 export function validatePositiveInt(
   value: unknown,
   name: string,
-  options?: { min?: number; max?: number; allowUndefined?: false }
+  options?: { min?: number; max?: number; allowUndefined?: false },
 ): InputValidationResult<number>;
 export function validatePositiveInt(
   value: unknown,
   name: string,
-  options: { min?: number; max?: number; allowUndefined?: boolean } = {}
+  options: { min?: number; max?: number; allowUndefined?: boolean } = {},
 ): InputValidationResult<number | undefined> {
   if (value === undefined) {
-    return options.allowUndefined ? { ok: true, value: undefined } : { ok: false, message: `${name} is required.` };
+    return options.allowUndefined
+      ? { ok: true, value: undefined }
+      : { ok: false, message: `${name} is required.` };
   }
 
   const asNumber =
@@ -2761,7 +2823,10 @@ function defaultRecoveryForCategory(category: ErrorCategory, cli: string): strin
         "Check permissions for the target directory.",
       ];
     case "network":
-      return ["Check your network connection and retry.", "If the issue persists, try again later."];
+      return [
+        "Check your network connection and retry.",
+        "If the issue persists, try again later.",
+      ];
     case "cass":
       return [
         "Ensure `cass` is installed and available on your PATH.",
@@ -2796,7 +2861,7 @@ function defaultRecoveryForCode(code: string, cli: string): string[] | undefined
     case ErrorCode.BULLET_NOT_FOUND:
       return [
         `Run '${cli} playbook list' to see available rule IDs.`,
-        `Use '${cli} similar \"<query>\"' to search for related rules.`,
+        `Use '${cli} similar "<query>"' to search for related rules.`,
         "Double-check the bullet id you provided (example: b-abc123).",
       ];
     case ErrorCode.SESSION_NOT_FOUND:
@@ -2805,7 +2870,10 @@ function defaultRecoveryForCode(code: string, cli: string): string[] | undefined
         "If using cass, run `cass search <query>` to locate the session path.",
       ];
     case ErrorCode.PLAYBOOK_NOT_FOUND:
-      return [`Run '${cli} init' to create the default playbook.`, "Or set playbookPath in config."];
+      return [
+        `Run '${cli} init' to create the default playbook.`,
+        "Or set playbookPath in config.",
+      ];
     case ErrorCode.PLAYBOOK_CORRUPT:
       return [
         `Run '${cli} doctor' to identify corruption and backups.`,
@@ -2833,7 +2901,10 @@ function defaultRecoveryForCode(code: string, cli: string): string[] | undefined
     case ErrorCode.LLM_RATE_LIMITED:
       return ["Wait briefly and retry.", "Reduce parallel requests if running multiple agents."];
     case ErrorCode.FILE_PERMISSION_DENIED:
-      return ["Check file permissions for the path being accessed.", "Re-run with appropriate permissions."];
+      return [
+        "Check file permissions for the path being accessed.",
+        "Re-run with appropriate permissions.",
+      ];
     case ErrorCode.LOCK_ACQUISITION_FAILED:
       return [
         "Another process may be editing the same file. Wait and retry.",
@@ -2849,14 +2920,19 @@ export function getExitCodeForError(err: unknown, code?: string): number {
   return ERROR_CATEGORY_EXIT_CODES[category] ?? 1;
 }
 
-export function buildJsonErrorPayload(err: unknown, options: PrintJsonErrorOptions = {}): JsonErrorPayload {
+export function buildJsonErrorPayload(
+  err: unknown,
+  options: PrintJsonErrorOptions = {},
+): JsonErrorPayload {
   const cli = getCliName();
   const message = getErrorMessage(err);
   const code = options.code ?? ErrorCode.UNKNOWN_ERROR;
   const category = CM_ERROR_CODE_CATEGORIES[code] ?? categorizeError(err);
   const exitCode = options.exitCode ?? ERROR_CATEGORY_EXIT_CODES[category] ?? 1;
   const recovery =
-    (Array.isArray(options.recovery) && options.recovery.length > 0 ? options.recovery : undefined) ??
+    (Array.isArray(options.recovery) && options.recovery.length > 0
+      ? options.recovery
+      : undefined) ??
     defaultRecoveryForCode(code, cli) ??
     defaultRecoveryForCategory(category, cli);
   const docs = options.docs ?? defaultDocsForCode(code);
@@ -2890,10 +2966,7 @@ export function buildJsonErrorPayload(err: unknown, options: PrintJsonErrorOptio
   };
 }
 
-export function printJsonError(
-  err: unknown,
-  options: PrintJsonErrorOptions = {}
-): void {
+export function printJsonError(err: unknown, options: PrintJsonErrorOptions = {}): void {
   printJson(buildJsonErrorPayload(err, options));
 }
 
@@ -2923,7 +2996,7 @@ export function printHumanErrorPayload(payload: JsonErrorPayload): void {
 
 export function reportError(
   err: unknown,
-  options: PrintJsonErrorOptions & { json?: boolean; format?: string } = {}
+  options: PrintJsonErrorOptions & { json?: boolean; format?: string } = {},
 ): number {
   const payload = buildJsonErrorPayload(err, options);
   if (isJsonOutput(options) || isToonOutput(options)) {
@@ -2969,7 +3042,7 @@ export interface JsonResultOptions {
 export function printJsonResult<T>(
   command: string,
   data: T,
-  options: JsonResultOptions = {}
+  options: JsonResultOptions = {},
 ): void {
   printJson(buildJsonSuccessPayload(command, data, options));
 }
@@ -2977,7 +3050,7 @@ export function printJsonResult<T>(
 export function buildJsonSuccessPayload<T>(
   command: string,
   data: T,
-  options: JsonResultOptions = {}
+  options: JsonResultOptions = {},
 ): JsonSuccessPayload<T> {
   const { effect = true, reason, warnings } = options;
   const timestamp = options.timestamp ?? new Date().toISOString();
@@ -3004,7 +3077,7 @@ export function printStructuredResult<T>(
   command: string,
   data: T,
   outputOptions?: { json?: boolean; format?: string; stats?: boolean },
-  options: JsonResultOptions = {}
+  options: JsonResultOptions = {},
 ): void {
   const payload = buildJsonSuccessPayload(command, data, options);
   printStructuredOutput(payload, outputOptions);
@@ -3036,13 +3109,12 @@ export function normalizeYamlKeys<T>(obj: T): T {
   }
 
   if (Array.isArray(obj)) {
-    return obj.map(item => normalizeYamlKeys(item)) as T;
+    return obj.map((item) => normalizeYamlKeys(item)) as T;
   }
 
   if (typeof obj === "object") {
     // Preserve special objects (Date, RegExp, Map, Set, etc.)
-    if (obj instanceof Date || obj instanceof RegExp ||
-        obj instanceof Map || obj instanceof Set) {
+    if (obj instanceof Date || obj instanceof RegExp || obj instanceof Map || obj instanceof Set) {
       return obj;
     }
 
@@ -3108,13 +3180,12 @@ export function camelToSnakeKeys<T>(obj: T): T {
   }
 
   if (Array.isArray(obj)) {
-    return obj.map(item => camelToSnakeKeys(item)) as T;
+    return obj.map((item) => camelToSnakeKeys(item)) as T;
   }
 
   if (typeof obj === "object") {
     // Preserve special objects (Date, RegExp, Map, Set, etc.)
-    if (obj instanceof Date || obj instanceof RegExp ||
-        obj instanceof Map || obj instanceof Set) {
+    if (obj instanceof Date || obj instanceof RegExp || obj instanceof Map || obj instanceof Set) {
       return obj;
     }
 
@@ -3152,9 +3223,7 @@ export const denormalizeYamlKeys = camelToSnakeKeys;
 export function camelToSnake(str: string): string {
   if (!str) return str;
 
-  return str
-    .replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`)
-    .replace(/^_/, ""); // Remove leading underscore from PascalCase
+  return str.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`).replace(/^_/, ""); // Remove leading underscore from PascalCase
 }
 
 /**
@@ -3190,7 +3259,7 @@ export function normalizeLineEndings(text: string): string {
  */
 export function normalizeLineEndingsTo(
   text: string,
-  style: "lf" | "crlf" | "auto" = "auto"
+  style: "lf" | "crlf" | "auto" = "auto",
 ): string {
   if (!text) return text;
 
@@ -3198,9 +3267,7 @@ export function normalizeLineEndingsTo(
   const normalized = normalizeLineEndings(text);
 
   // Then convert to target style
-  const targetStyle = style === "auto"
-    ? (process.platform === "win32" ? "crlf" : "lf")
-    : style;
+  const targetStyle = style === "auto" ? (process.platform === "win32" ? "crlf" : "lf") : style;
 
   if (targetStyle === "crlf") {
     return normalized.replace(/\n/g, "\r\n");
@@ -3265,7 +3332,9 @@ export function formatContextMarkdown(result: ContextResult): string {
     displayed.forEach((hit, idx) => {
       const agent = hit.agent || "unknown";
       const relTime = hit.timestamp ? formatRelativeTime(hit.timestamp) : "";
-      lines.push(`${idx + 1}. ${hit.source_path}:${hit.line_number} (${agent}${relTime ? ", " + relTime : ""})`);
+      lines.push(
+        `${idx + 1}. ${hit.source_path}:${hit.line_number} (${agent}${relTime ? ", " + relTime : ""})`,
+      );
       const snippet = truncateSnippet(hit.snippet.replace(/\n/g, " ").trim(), 150);
       lines.push(`   > ${snippet}`);
       lines.push("");
@@ -3375,8 +3444,8 @@ export function extractBulletReasoning(bullet: BulletWithProvenance): string {
   if (bullet.derivedFrom?.keyEvidence && bullet.derivedFrom.keyEvidence.length > 0) {
     // Join evidence items, take first that fits
     const evidence = bullet.derivedFrom.keyEvidence
-      .filter(e => e && e.trim())
-      .map(e => e.trim());
+      .filter((e) => e && e.trim())
+      .map((e) => e.trim());
 
     if (evidence.length > 0) {
       // If multiple pieces of evidence, join with semicolon
@@ -3462,7 +3531,8 @@ export interface InlineFeedback {
  * - // [cass: helpful b-mn3ot59c-nny4gb] (full generated IDs contain an internal hyphen)
  * - Block comments: slash-star [cass: harmful b-xyz] star-slash
  */
-const INLINE_FEEDBACK_REGEX = /(?:\/\/|#|\/\*)\s*\[cass:\s*(helpful|harmful)\s+(b-[a-zA-Z0-9]+(?:-[a-zA-Z0-9]+)*)\](?:\s*[-:]?\s*(.+?))?(?:\s*\*\/)?$/gm;
+const INLINE_FEEDBACK_REGEX =
+  /(?:\/\/|#|\/\*)\s*\[cass:\s*(helpful|harmful)\s+(b-[a-zA-Z0-9]+(?:-[a-zA-Z0-9]+)*)\](?:\s*[-:]?\s*(.+?))?(?:\s*\*\/)?$/gm;
 
 /**
  * Parse inline feedback comments from session content.
@@ -3515,7 +3585,7 @@ export function parseInlineFeedback(content: string): InlineFeedback[] {
           type: type as "helpful" | "harmful",
           bulletId,
           reason: reason?.trim() || undefined,
-          lineNumber: i + 1
+          lineNumber: i + 1,
         });
       }
     }
@@ -3533,13 +3603,18 @@ export function parseInlineFeedback(content: string): InlineFeedback[] {
  */
 export function inlineFeedbackToDeltas(
   feedback: InlineFeedback[],
-  sessionPath: string
-): Array<{ type: "helpful" | "harmful"; bulletId: string; sourceSession: string; reason?: string }> {
-  return feedback.map(f => ({
+  sessionPath: string,
+): Array<{
+  type: "helpful" | "harmful";
+  bulletId: string;
+  sourceSession: string;
+  reason?: string;
+}> {
+  return feedback.map((f) => ({
     type: f.type,
     bulletId: f.bulletId,
     sourceSession: sessionPath,
-    reason: f.reason
+    reason: f.reason,
   }));
 }
 // --- Graceful Shutdown ---
@@ -3607,7 +3682,7 @@ export function combineAbortSignals(signals: AbortSignal[]): AbortSignal {
 
 export async function withAbortCheck<T>(
   operation: () => Promise<T>,
-  checkIntervalMs?: number
+  checkIntervalMs?: number,
 ): Promise<T> {
   checkAbort();
   // checkIntervalMs is deprecated/unused as we cannot interrupt promises externally
@@ -3618,7 +3693,7 @@ export async function withAbortCheck<T>(
 
 export async function withAbortableSequence<T, R>(
   items: T[],
-  processor: (item: T, index: number) => Promise<R>
+  processor: (item: T, index: number) => Promise<R>,
 ): Promise<R[]> {
   const results: R[] = [];
   for (let i = 0; i < items.length; i++) {
@@ -3641,11 +3716,13 @@ export function setupGracefulShutdown(): void {
 
     void (async () => {
       for (const handler of [...shutdownHandlers]) {
-        try { await handler(); } catch {}
+        try {
+          await handler();
+        } catch {}
       }
       try {
-         const { releaseAllLocks } = await import("./lock.js");
-         await releaseAllLocks();
+        const { releaseAllLocks } = await import("./lock.js");
+        await releaseAllLocks();
       } catch {}
       const code = signal === "SIGINT" ? 130 : signal === "SIGTERM" ? 143 : 1;
       process.exit(code);

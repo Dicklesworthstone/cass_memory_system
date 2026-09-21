@@ -52,7 +52,7 @@ function looksLikeLockDirPath(lockPath: string): boolean {
 
 async function safeRemoveLockDir(
   lockPath: string,
-  options: { expectedOwner?: string; expectedPid?: string } = {}
+  options: { expectedOwner?: string; expectedPid?: string } = {},
 ): Promise<boolean> {
   if (!looksLikeLockDirPath(lockPath)) {
     warn(`[lock] Refusing to remove non-lock dir: ${lockPath}`);
@@ -101,7 +101,10 @@ async function safeRemoveLockDir(
 /**
  * Check if a lock dir is stale (older than threshold).
  */
-async function isLockStale(lockPath: string, thresholdMs = STALE_LOCK_THRESHOLD_MS): Promise<boolean> {
+async function isLockStale(
+  lockPath: string,
+  thresholdMs = STALE_LOCK_THRESHOLD_MS,
+): Promise<boolean> {
   try {
     const stat = await fs.stat(lockPath);
     const ageMs = Date.now() - stat.mtimeMs;
@@ -114,7 +117,10 @@ async function isLockStale(lockPath: string, thresholdMs = STALE_LOCK_THRESHOLD_
 /**
  * Try to clean up a stale lock dir.
  */
-async function tryRemoveStaleLock(lockPath: string, thresholdMs = STALE_LOCK_THRESHOLD_MS): Promise<boolean> {
+async function tryRemoveStaleLock(
+  lockPath: string,
+  thresholdMs = STALE_LOCK_THRESHOLD_MS,
+): Promise<boolean> {
   try {
     if (!(await isLockStale(lockPath, thresholdMs))) return false;
     if (activeLocks.has(lockPath)) return false;
@@ -184,7 +190,7 @@ async function tryRemoveAbandonedLock(lockPath: string): Promise<boolean> {
 export async function withLock<T>(
   targetPath: string,
   operation: () => Promise<T>,
-  options: { retries?: number; delay?: number; staleLockThresholdMs?: number } = {}
+  options: { retries?: number; delay?: number; staleLockThresholdMs?: number } = {},
 ): Promise<T> {
   const maxRetries = options.retries ?? 20;
   const retryDelay = options.delay ?? 100;
@@ -210,7 +216,7 @@ export async function withLock<T>(
         if (await tryRemoveStaleLock(lockPath, staleThreshold)) {
           continue;
         }
-        await new Promise(resolve => setTimeout(resolve, retryDelay));
+        await new Promise((resolve) => setTimeout(resolve, retryDelay));
         continue;
       }
       if (err?.code === "ENOENT") {

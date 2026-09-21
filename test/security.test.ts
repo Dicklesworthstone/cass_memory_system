@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { sanitize, compileExtraPatterns, SECRET_PATTERNS } from "../src/sanitize.js";
+import { compileExtraPatterns, SECRET_PATTERNS, sanitize } from "../src/sanitize.js";
 
 // =============================================================================
 // SECRET_PATTERNS
@@ -404,14 +404,12 @@ describe("compileExtraPatterns", () => {
 describe("dependency security", () => {
   it("pins every protobufjs resolution to the patched 7.6.5 release", () => {
     const root = join(import.meta.dir, "..");
-    const packageJson = JSON.parse(
-      readFileSync(join(root, "package.json"), "utf8"),
-    ) as { overrides?: Record<string, string> };
+    const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
+      overrides?: Record<string, string>;
+    };
     const lockfile = readFileSync(join(root, "bun.lock"), "utf8");
     const resolvedVersions = [
-      ...lockfile.matchAll(
-        /"protobufjs": \["protobufjs@(\d+\.\d+\.\d+)"/g,
-      ),
+      ...lockfile.matchAll(/"protobufjs": \["protobufjs@(\d+\.\d+\.\d+)"/g),
     ].map((match) => match[1]);
 
     expect(packageJson.overrides?.protobufjs).toBe("7.6.5");
@@ -420,9 +418,9 @@ describe("dependency security", () => {
 
   it("pins the AWS XML builder without vulnerable fast-xml transitive packages", () => {
     const root = join(import.meta.dir, "..");
-    const packageJson = JSON.parse(
-      readFileSync(join(root, "package.json"), "utf8"),
-    ) as { overrides?: Record<string, string> };
+    const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
+      overrides?: Record<string, string>;
+    };
     const lockfile = readFileSync(join(root, "bun.lock"), "utf8");
     const resolvedVersions = [
       ...lockfile.matchAll(

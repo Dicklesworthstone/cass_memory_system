@@ -6,18 +6,22 @@
  * - --per-category + --showCounts behavior
  * - Safe overwrite guard for --output
  */
-import { describe, test, expect } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import yaml from "yaml";
 
 import { projectCommand } from "../src/commands/project.js";
+import {
+  createTestBullet,
+  createTestFeedbackEvent,
+  createTestPlaybook,
+} from "./helpers/factories.js";
 import { withTempCassHome } from "./helpers/temp.js";
-import { createTestBullet, createTestFeedbackEvent, createTestPlaybook } from "./helpers/factories.js";
 
 async function withEnvAsync<T>(
   overrides: Record<string, string | undefined>,
-  fn: () => Promise<T>
+  fn: () => Promise<T>,
 ): Promise<T> {
   const previous: Record<string, string | undefined> = {};
   for (const [key, value] of Object.entries(overrides)) {
@@ -46,17 +50,15 @@ async function withCwd<T>(cwd: string, fn: () => Promise<T>): Promise<T> {
   }
 }
 
-async function captureConsoleLog<T>(fn: () => Promise<T> | T): Promise<{ result: T; output: string }> {
+async function captureConsoleLog<T>(
+  fn: () => Promise<T> | T,
+): Promise<{ result: T; output: string }> {
   const original = console.log;
   const lines: string[] = [];
 
   // eslint-disable-next-line no-console
   console.log = (...args: unknown[]) => {
-    lines.push(
-      args
-        .map((arg) => (typeof arg === "string" ? arg : JSON.stringify(arg)))
-        .join(" ")
-    );
+    lines.push(args.map((arg) => (typeof arg === "string" ? arg : JSON.stringify(arg))).join(" "));
   };
 
   try {
@@ -100,7 +102,9 @@ describe("project command - Unit Tests", () => {
             state: "active",
             helpfulCount: 1,
             harmfulCount: 0,
-            feedbackEvents: [createTestFeedbackEvent("helpful", { timestamp: new Date().toISOString() })],
+            feedbackEvents: [
+              createTestFeedbackEvent("helpful", { timestamp: new Date().toISOString() }),
+            ],
           });
           const anti = createTestBullet({
             id: "b-project-anti",
@@ -115,7 +119,7 @@ describe("project command - Unit Tests", () => {
 
           process.exitCode = 0;
           const { output } = await captureConsoleLog(() =>
-            projectCommand({ json: true, format: "agents.md", perCategory: 1, showCounts: false })
+            projectCommand({ json: true, format: "agents.md", perCategory: 1, showCounts: false }),
           );
 
           const payload = JSON.parse(output) as JsonEnvelope<{ format: string; content: string }>;
@@ -153,7 +157,7 @@ describe("project command - Unit Tests", () => {
 
         process.exitCode = 0;
         const { output } = await captureConsoleLog(() =>
-          projectCommand({ json: true, format: "claude.md", perCategory: 10 })
+          projectCommand({ json: true, format: "claude.md", perCategory: 10 }),
         );
 
         const payload = JSON.parse(output) as JsonEnvelope<{ format: string; content: string }>;
@@ -178,13 +182,17 @@ describe("project command - Unit Tests", () => {
         writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([rule])));
 
         process.exitCode = 0;
-        const { output } = await captureConsoleLog(() => projectCommand({ json: true, format: "raw" }));
+        const { output } = await captureConsoleLog(() =>
+          projectCommand({ json: true, format: "raw" }),
+        );
 
         const payload = JSON.parse(output) as JsonEnvelope<{ format: string; content: string }>;
         expect(payload.success).toBe(true);
         expect(payload.data?.format).toBe("raw");
 
-        const parsedPlaybook = JSON.parse(payload.data?.content ?? "{}") as { bullets?: Array<{ id: string }> };
+        const parsedPlaybook = JSON.parse(payload.data?.content ?? "{}") as {
+          bullets?: Array<{ id: string }>;
+        };
         expect(parsedPlaybook.bullets?.map((b) => b.id)).toContain("b-project-raw");
       });
     });
@@ -201,7 +209,7 @@ describe("project command - Unit Tests", () => {
 
           process.exitCode = 0;
           const { output } = await captureConsoleLog(() =>
-            projectCommand({ json: true, format: "agents.md", output: outPath, force: false })
+            projectCommand({ json: true, format: "agents.md", output: outPath, force: false }),
           );
 
           const payload = JSON.parse(output) as JsonEnvelope<unknown>;
@@ -225,7 +233,7 @@ describe("project command - Unit Tests", () => {
 
     process.exitCode = 0;
     const badPerCategory = await captureConsoleLog(() =>
-      projectCommand({ json: true, format: "agents.md", perCategory: 0 })
+      projectCommand({ json: true, format: "agents.md", perCategory: 0 }),
     );
     const badPerCategoryPayload = JSON.parse(badPerCategory.output) as any;
     expect(badPerCategoryPayload.success).toBe(false);

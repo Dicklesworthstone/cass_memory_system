@@ -2,23 +2,23 @@
 // LLM Provider Abstraction - Using Vercel AI SDK
 // Supports OpenAI, Anthropic, Google, Ollama, AWS Bedrock, and CLI providers with a unified interface
 
-import { createOpenAI } from "@ai-sdk/openai";
+import { createAmazonBedrock } from "@ai-sdk/amazon-bedrock";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
-import { createAmazonBedrock } from "@ai-sdk/amazon-bedrock";
-import { createOllama } from "ollama-ai-provider";
+import { createOpenAI } from "@ai-sdk/openai";
 import { generateObject, type LanguageModel } from "ai";
+import { createOllama } from "ollama-ai-provider";
 import { z } from "zod";
-import type { Config, DiaryEntry, LLMProvider } from "./types.js";
-import { DEFAULT_ANTHROPIC_MODEL } from "./types.js";
 import { checkBudget, recordCost } from "./cost.js";
-import { truncateForContext, warn } from "./utils.js";
 import {
   CM_SUBPROCESS_ENV_VALUE,
   CM_SUBPROCESS_ENV_VAR,
   resolveCliSubprocessCwd,
   tagCmSubprocessPrompt,
 } from "./subprocess-tag.js";
+import type { Config, DiaryEntry, LLMProvider } from "./types.js";
+import { DEFAULT_ANTHROPIC_MODEL } from "./types.js";
+import { truncateForContext, warn } from "./utils.js";
 
 // Re-export LLMProvider from types.ts (single source of truth)
 export type { LLMProvider } from "./types.js";
@@ -99,15 +99,13 @@ export function getApiKey(provider: string): string {
   const envVar = ENV_VAR_MAP[normalized];
   if (!envVar || !API_KEY_SUPPORTED_PROVIDERS.includes(normalized)) {
     const supported = API_KEY_SUPPORTED_PROVIDERS.join(", ");
-    throw new Error(
-      `Unknown LLM provider '${provider}'. Supported providers: ${supported}.`
-    );
+    throw new Error(`Unknown LLM provider '${provider}'. Supported providers: ${supported}.`);
   }
 
   const apiKey = process.env[envVar];
   if (!apiKey || apiKey.trim() === "") {
     throw new Error(
-      `${envVar} environment variable not found. Set it with: export ${envVar}=<your-key>`
+      `${envVar} environment variable not found. Set it with: export ${envVar}=<your-key>`,
     );
   }
 
@@ -129,7 +127,7 @@ export function validateApiKey(provider: string): void {
   const expectedPrefix = KEY_PREFIX_MAP[normalized];
   if (expectedPrefix && !apiKey.startsWith(expectedPrefix)) {
     warn(
-      `Warning: ${provider} API key does not start with '${expectedPrefix}' - this may be incorrect`
+      `Warning: ${provider} API key does not start with '${expectedPrefix}' - this may be incorrect`,
     );
   }
 
@@ -137,16 +135,14 @@ export function validateApiKey(provider: string): void {
   const lowerKey = apiKey.toLowerCase();
   for (const placeholder of placeholders) {
     if (lowerKey.includes(placeholder.toLowerCase())) {
-      warn(
-        `Warning: ${provider} API key appears to contain a placeholder ('${placeholder}')`
-      );
+      warn(`Warning: ${provider} API key appears to contain a placeholder ('${placeholder}')`);
       break;
     }
   }
 
   if (apiKey.length < 20) {
     warn(
-      `Warning: ${provider} API key seems too short (${apiKey.length} chars) - this may be incorrect`
+      `Warning: ${provider} API key seems too short (${apiKey.length} chars) - this may be incorrect`,
     );
   }
 }
@@ -167,7 +163,14 @@ export function resolveOllamaBaseUrl(ollamaBaseUrl?: string): string {
   return ollamaBaseUrl || "http://localhost:11434";
 }
 
-export function getModel(config: { provider: string; model: string; apiKey?: string; baseUrl?: string; ollamaBaseUrl?: string; disableStructuredOutputs?: boolean }): LanguageModel {
+export function getModel(config: {
+  provider: string;
+  model: string;
+  apiKey?: string;
+  baseUrl?: string;
+  ollamaBaseUrl?: string;
+  disableStructuredOutputs?: boolean;
+}): LanguageModel {
   const provider = config.provider as LLMProvider;
 
   if (provider === "cli") {
@@ -226,9 +229,12 @@ export function getModel(config: { provider: string; model: string; apiKey?: str
         ? openaiProvider(config.model, { structuredOutputs: false })
         : openaiProvider(config.model);
     }
-    case "anthropic": return createAnthropic({ apiKey, ...(baseURL ? { baseURL } : {}) })(config.model);
-    case "google": return createGoogleGenerativeAI({ apiKey, ...(baseURL ? { baseURL } : {}) })(config.model);
-    default: throw new Error(`Unsupported provider: ${config.provider}`);
+    case "anthropic":
+      return createAnthropic({ apiKey, ...(baseURL ? { baseURL } : {}) })(config.model);
+    case "google":
+      return createGoogleGenerativeAI({ apiKey, ...(baseURL ? { baseURL } : {}) })(config.model);
+    default:
+      throw new Error(`Unsupported provider: ${config.provider}`);
   }
 }
 
@@ -249,11 +255,9 @@ export function getModel(config: { provider: string; model: string; apiKey?: str
  */
 export function objectGenerationOverrides(
   provider: string,
-  disableStructuredOutputs?: boolean
+  disableStructuredOutputs?: boolean,
 ): { mode?: "json" } {
-  return provider === "openai" && disableStructuredOutputs
-    ? { mode: "json" }
-    : {};
+  return provider === "openai" && disableStructuredOutputs ? { mode: "json" } : {};
 }
 
 // --- CLI LLM Backend ---
@@ -267,9 +271,9 @@ const CLI_TOOL_CONFIGS: Record<string, { flags: string[] }> = {
   // is passed), so a pure JSON-summarizer call doesn't boot the entire MCP stack
   // + hooks. On MCP-heavy machines that startup cost added many seconds per call
   // and intermittently pushed a single call over the timeout → 0 deltas (#54).
-  claude:  { flags: ["-p", "--strict-mcp-config"] },
-  codex:   { flags: [] },           // codex (reads from stdin)
-  gemini:  { flags: [] },           // gemini (reads from stdin)
+  claude: { flags: ["-p", "--strict-mcp-config"] },
+  codex: { flags: [] }, // codex (reads from stdin)
+  gemini: { flags: [] }, // gemini (reads from stdin)
 };
 
 /** Auto-detection order: prefer tools most likely to support JSON output via stdin. */
@@ -299,7 +303,10 @@ export function resolveCliCommand(cliCommand?: string): string | null {
   } else {
     // Auto-detect: check known tools on PATH
     for (const tool of CLI_AUTO_DETECT_ORDER) {
-      if (Bun.which(tool)) { result = tool; break; }
+      if (Bun.which(tool)) {
+        result = tool;
+        break;
+      }
     }
   }
 
@@ -323,12 +330,18 @@ function extractJsonFromOutput(output: string): string {
   const trimmed = output.trim().replace(/^\uFEFF/, "");
 
   // Strategy 1: the entire output is valid JSON
-  try { JSON.parse(trimmed); return trimmed; } catch {}
+  try {
+    JSON.parse(trimmed);
+    return trimmed;
+  } catch {}
 
   // Strategy 2: extract from markdown code fences
   const fenceMatch = trimmed.match(/```(?:json)?\s*\n([\s\S]*?)\n\s*```/);
   if (fenceMatch) {
-    try { JSON.parse(fenceMatch[1].trim()); return fenceMatch[1].trim(); } catch {}
+    try {
+      JSON.parse(fenceMatch[1].trim());
+      return fenceMatch[1].trim();
+    } catch {}
   }
 
   // Strategy 3: find the first `{...}` or `[...]` that parses as valid JSON.
@@ -341,7 +354,10 @@ function extractJsonFromOutput(output: string): string {
     for (let j = trimmed.length - 1; j > i; j--) {
       if (trimmed[j] !== closing) continue;
       const candidate = trimmed.slice(i, j + 1);
-      try { JSON.parse(candidate); return candidate; } catch {}
+      try {
+        JSON.parse(candidate);
+        return candidate;
+      } catch {}
       break; // only try the outermost matching close for this opening
     }
   }
@@ -364,7 +380,7 @@ export async function cliGenerateObject<T>(
   const cmd = resolveCliCommand(cliCommand);
   if (!cmd) {
     throw new Error(
-      "No CLI LLM tool found. Install one of: claude, codex, gemini — or set cliCommand in config."
+      "No CLI LLM tool found. Install one of: claude, codex, gemini — or set cliCommand in config.",
     );
   }
 
@@ -374,10 +390,14 @@ export async function cliGenerateObject<T>(
     const schemaDef = (schema as any)?._def;
     if (schemaDef?.typeName === "ZodObject" && schemaDef?.shape) {
       const shape = typeof schemaDef.shape === "function" ? schemaDef.shape() : schemaDef.shape;
-      const fields = Object.entries(shape).map(([k, v]) => `"${k}": ${(v as any)?._def?.typeName || "unknown"}`);
+      const fields = Object.entries(shape).map(
+        ([k, v]) => `"${k}": ${(v as any)?._def?.typeName || "unknown"}`,
+      );
       schemaHint = `{ ${fields.join(", ")} }`;
     }
-  } catch { /* non-critical — use generic hint */ }
+  } catch {
+    /* non-critical — use generic hint */
+  }
 
   // The caller's prompt is bracketed with cm's private payload markers (#76).
   // Claude Code persists a `-p` call as an ordinary session transcript, so
@@ -425,7 +445,9 @@ export async function cliGenerateObject<T>(
     } catch (err: any) {
       // A cwd we cannot create is not worth failing the call over — fall back
       // to inheriting cm's cwd and rely on the payload marker.
-      warn(`[CLI] Could not create LLM subprocess directory ${subprocessCwd}: ${err?.message || err}`);
+      warn(
+        `[CLI] Could not create LLM subprocess directory ${subprocessCwd}: ${err?.message || err}`,
+      );
       subprocessCwd = null;
     }
   }
@@ -465,10 +487,11 @@ export async function cliGenerateObject<T>(
   let stderr: string;
   let exitCode: number;
   try {
-    [stdout, stderr, exitCode] = await Promise.race([
-      resultPromise,
-      timeoutPromise,
-    ]) as [string, string, number];
+    [stdout, stderr, exitCode] = (await Promise.race([resultPromise, timeoutPromise])) as [
+      string,
+      string,
+      number,
+    ];
   } finally {
     clearTimeout(timeoutId!);
   }
@@ -476,13 +499,13 @@ export async function cliGenerateObject<T>(
   // Guard against runaway output (10MB should be far more than any LLM response)
   const MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
   if (stdout.length > MAX_OUTPUT_BYTES) {
-    throw new Error(`CLI tool '${cmd}' produced ${(stdout.length / 1024 / 1024).toFixed(1)}MB of output (limit: ${MAX_OUTPUT_BYTES / 1024 / 1024}MB)`);
+    throw new Error(
+      `CLI tool '${cmd}' produced ${(stdout.length / 1024 / 1024).toFixed(1)}MB of output (limit: ${MAX_OUTPUT_BYTES / 1024 / 1024}MB)`,
+    );
   }
 
   if (exitCode !== 0) {
-    throw new Error(
-      `CLI tool '${cmd}' exited with code ${exitCode}: ${stderr.slice(0, 500)}`
-    );
+    throw new Error(`CLI tool '${cmd}' exited with code ${exitCode}: ${stderr.slice(0, 500)}`);
   }
 
   if (!stdout.trim()) {
@@ -495,16 +518,14 @@ export async function cliGenerateObject<T>(
   try {
     parsed = JSON.parse(jsonStr);
   } catch (e) {
-    throw new Error(
-      `Failed to parse JSON from '${cmd}' output:\n${jsonStr.slice(0, 500)}`
-    );
+    throw new Error(`Failed to parse JSON from '${cmd}' output:\n${jsonStr.slice(0, 500)}`);
   }
 
   // Validate against schema
   const validated = schema.safeParse(parsed);
   if (!validated.success) {
     throw new Error(
-      `CLI output failed schema validation: ${validated.error.message}\nRaw JSON: ${jsonStr.slice(0, 500)}`
+      `CLI output failed schema validation: ${validated.error.message}\nRaw JSON: ${jsonStr.slice(0, 500)}`,
     );
   }
 
@@ -524,9 +545,11 @@ export function isLLMAvailable(provider: LLMProvider): boolean {
   // Bedrock supports multiple auth methods: explicit credentials, shared
   // credentials file, IAM roles, etc.  Check for the most common env vars.
   if (provider === "bedrock") {
-    return !!(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY)
-      || !!process.env.AWS_PROFILE
-      || !!process.env.AWS_WEB_IDENTITY_TOKEN_FILE;
+    return (
+      !!(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) ||
+      !!process.env.AWS_PROFILE ||
+      !!process.env.AWS_WEB_IDENTITY_TOKEN_FILE
+    );
   }
   // CLI provider: check if a CLI LLM tool is on PATH
   if (provider === "cli") {
@@ -537,9 +560,7 @@ export function isLLMAvailable(provider: LLMProvider): boolean {
 }
 
 export function getAvailableProviders(): LLMProvider[] {
-  return (Object.keys(ENV_VAR_MAP) as LLMProvider[]).filter((provider) =>
-    isLLMAvailable(provider)
-  );
+  return (Object.keys(ENV_VAR_MAP) as LLMProvider[]).filter((provider) => isLLMAvailable(provider));
 }
 
 // --- Prompt Templates ---
@@ -743,18 +764,15 @@ Respond with:
 }`,
 } as const;
 
-export function fillPrompt(
-  template: string,
-  values: Record<string, string>
-): string {
+export function fillPrompt(template: string, values: Record<string, string>): string {
   // Use a single-pass regex replacement to prevent recursive substitution vulnerabilities.
   // This constructs a regex like /\{key1\}|\{key2\}|.../g and replaces each match.
-  
+
   const keys = Object.keys(values);
   if (keys.length === 0) return template;
 
   // Escape keys for regex safety (though keys are usually trusted identifiers)
-  const escapedKeys = keys.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const escapedKeys = keys.map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
   const pattern = new RegExp(`\\{(${escapedKeys.join("|")})\\}`, "g");
 
   return template.replace(pattern, (match, key) => {
@@ -790,8 +808,8 @@ export const LLM_RETRY_CONFIG = {
     "ECONNRESET",
     "429",
     "500",
-    "503"
-  ]
+    "503",
+  ],
 };
 
 async function withTimeout<T>(promise: Promise<T>, ms: number, operationName: string): Promise<T> {
@@ -822,7 +840,7 @@ export interface LLMTimeoutOverrides {
 export async function llmWithRetry<T>(
   operation: () => Promise<T>,
   operationName: string,
-  overrides: LLMTimeoutOverrides = {}
+  overrides: LLMTimeoutOverrides = {},
 ): Promise<T> {
   const startTime = Date.now();
   let attempt = 0;
@@ -839,7 +857,7 @@ export async function llmWithRetry<T>(
     overrides.totalTimeoutMs && overrides.totalTimeoutMs > 0
       ? overrides.totalTimeoutMs
       : LLM_RETRY_CONFIG.totalTimeoutMs,
-    minTotal
+    minTotal,
   );
 
   while (true) {
@@ -852,25 +870,27 @@ export async function llmWithRetry<T>(
       return await withTimeout(operation(), perOperationTimeoutMs, operationName);
     } catch (err: any) {
       attempt++;
-      const isRetryable = LLM_RETRY_CONFIG.retryableErrors.some(e => {
+      const isRetryable = LLM_RETRY_CONFIG.retryableErrors.some((e) => {
         const lowerE = e.toLowerCase();
         const messageMatch = err.message?.toLowerCase().includes(lowerE);
         const codeMatch = err.code?.toString().includes(e);
         const statusMatch = err.statusCode?.toString().includes(e);
         return messageMatch || codeMatch || statusMatch;
       });
-      
+
       if (!isRetryable || attempt > LLM_RETRY_CONFIG.maxRetries) {
         throw err;
       }
-      
+
       const delay = Math.min(
-        LLM_RETRY_CONFIG.baseDelayMs * Math.pow(2, attempt), 
-        LLM_RETRY_CONFIG.maxDelayMs
+        LLM_RETRY_CONFIG.baseDelayMs * 2 ** attempt,
+        LLM_RETRY_CONFIG.maxDelayMs,
       );
-      
-      warn(`[LLM] ${operationName} failed (attempt ${attempt}): ${err.message}. Retrying in ${delay}ms...`);
-      await new Promise(resolve => setTimeout(resolve, delay));
+
+      warn(
+        `[LLM] ${operationName} failed (attempt ${attempt}): ${err.message}. Retrying in ${delay}ms...`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, delay));
     }
   }
 }
@@ -880,7 +900,7 @@ async function monitoredGenerateObject<T>(
   options: any,
   config: Config,
   context: string,
-  io: LLMIO = DEFAULT_LLM_IO
+  io: LLMIO = DEFAULT_LLM_IO,
 ): Promise<LLMGenerateObjectResult<T>> {
   const budgetCheck = await checkBudget(config);
   if (!budgetCheck.allowed) {
@@ -898,10 +918,10 @@ async function monitoredGenerateObject<T>(
       model: config.model,
       tokensIn: result.usage.promptTokens,
       tokensOut: result.usage.completionTokens,
-      context
+      context,
     });
   }
-  
+
   return result;
 }
 
@@ -943,10 +963,11 @@ export function resolveEffectiveLLMConfig(config: Config): Config {
     if (!_autoFallbackNoticeShown) {
       _autoFallbackNoticeShown = true;
       const envVar = provider === "cli" ? "CASS_CLI_COMMAND" : `the ${provider} API key`;
-      const target = fallback === "cli"
-        ? "local CLI tool"
-        : `${fallback} (${FALLBACK_MODELS[fallback]})`;
-      warn(`[LLM] Provider '${provider}' is not configured — auto-falling back to ${target}. Configure ${envVar} to use '${provider}' directly.`);
+      const target =
+        fallback === "cli" ? "local CLI tool" : `${fallback} (${FALLBACK_MODELS[fallback]})`;
+      warn(
+        `[LLM] Provider '${provider}' is not configured — auto-falling back to ${target}. Configure ${envVar} to use '${provider}' directly.`,
+      );
     }
     return { ...config, provider: fallback, model: FALLBACK_MODELS[fallback] };
   }
@@ -959,7 +980,7 @@ export async function generateObjectSafe<T>(
   prompt: string,
   config: Config,
   maxAttempts: number = 3,
-  io: LLMIO = DEFAULT_LLM_IO
+  io: LLMIO = DEFAULT_LLM_IO,
 ): Promise<T> {
   // Honor the auto-fallback chain doctor advertises (real LLM calls only —
   // mock LLMIO tests inject responses directly and must stay hermetic).
@@ -973,10 +994,17 @@ export async function generateObjectSafe<T>(
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         // On retry, prepend the previous error so the model can self-correct
-        const retryPrompt = attempt > 1 && lastCliError
-          ? `[PREVIOUS ATTEMPT FAILED: ${lastCliError}]\nYou MUST output valid JSON this time.\n\n${prompt}`
-          : prompt;
-        const result = await cliGenerateObject(schema, retryPrompt, config.cliCommand, config.llmTimeoutMs, config.cliSubprocessCwd);
+        const retryPrompt =
+          attempt > 1 && lastCliError
+            ? `[PREVIOUS ATTEMPT FAILED: ${lastCliError}]\nYou MUST output valid JSON this time.\n\n${prompt}`
+            : prompt;
+        const result = await cliGenerateObject(
+          schema,
+          retryPrompt,
+          config.cliCommand,
+          config.llmTimeoutMs,
+          config.cliSubprocessCwd,
+        );
         return result.object;
       } catch (err: any) {
         lastCliError = err.message?.slice(0, 200);
@@ -1000,7 +1028,7 @@ export async function generateObjectSafe<T>(
       // Without this the #47 escape hatch was silently dropped here and
       // strict json_schema / forced tool_choice still reached gateways that
       // reject them (see PR #59).
-      disableStructuredOutputs: config.disableStructuredOutputs
+      disableStructuredOutputs: config.disableStructuredOutputs,
     };
     model = getModel(llmConfig);
   }
@@ -1008,27 +1036,33 @@ export async function generateObjectSafe<T>(
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const enhancedPrompt = attempt > 1
-        ? `[PREVIOUS ATTEMPT FAILED - OUTPUT MUST BE VALID JSON]\n\n${prompt}\n\nCRITICAL: Your response MUST be valid JSON matching the provided schema exactly. Ensure all required fields are present.`
-        : prompt;
+      const enhancedPrompt =
+        attempt > 1
+          ? `[PREVIOUS ATTEMPT FAILED - OUTPUT MUST BE VALID JSON]\n\n${prompt}\n\nCRITICAL: Your response MUST be valid JSON matching the provided schema exactly. Ensure all required fields are present.`
+          : prompt;
 
       const temperature = attempt > 1 ? 0.35 : 0.3;
 
-      const result = await monitoredGenerateObject<T>({
-        model,
-        schema,
-        prompt: enhancedPrompt,
-        temperature,
-        ...objectGenerationOverrides(config.provider, config.disableStructuredOutputs)
-      }, config, "generateObjectSafe", io);
+      const result = await monitoredGenerateObject<T>(
+        {
+          model,
+          schema,
+          prompt: enhancedPrompt,
+          temperature,
+          ...objectGenerationOverrides(config.provider, config.disableStructuredOutputs),
+        },
+        config,
+        "generateObjectSafe",
+        io,
+      );
 
       return result.object;
     } catch (err: any) {
       lastError = err;
-      
+
       const errorMsg = err.message || String(err);
       const isBudgetError = errorMsg.includes("budget exceeded");
-      
+
       // Stop immediately for budget errors
       if (isBudgetError) throw err;
 
@@ -1046,10 +1080,10 @@ export async function generateObjectSafe<T>(
         warn(`[LLM] Model/endpoint not found (${status ?? 404}): ${errorMsg}. Not retrying.`);
         throw new Error(
           `${errorMsg}\n` +
-          `Hint: model '${config.model}' was rejected by provider '${config.provider}' — it may have been retired. ` +
-          `Update the "model" field in ~/.cass-memory/config.json (or .cass/config.yaml) to a current model id ` +
-          `(e.g. "${DEFAULT_ANTHROPIC_MODEL}" for Anthropic) and re-run.`,
-          { cause: err }
+            `Hint: model '${config.model}' was rejected by provider '${config.provider}' — it may have been retired. ` +
+            `Update the "model" field in ~/.cass-memory/config.json (or .cass/config.yaml) to a current model id ` +
+            `(e.g. "${DEFAULT_ANTHROPIC_MODEL}" for Anthropic) and re-run.`,
+          { cause: err },
         );
       }
 
@@ -1059,17 +1093,18 @@ export async function generateObjectSafe<T>(
         warn(`[LLM] Hard API error (${status}): ${errorMsg}. Not retrying.`);
         throw err;
       }
-      
+
       // Check if it's a network/rate-limit error that llmWithRetry should handle
-      const isNetworkOrApiError = LLM_RETRY_CONFIG.retryableErrors.some(e => 
-        errorMsg.toLowerCase().includes(e.toLowerCase()) || 
-        err.code?.toString().includes(e) ||
-        err.statusCode?.toString().includes(e)
+      const isNetworkOrApiError = LLM_RETRY_CONFIG.retryableErrors.some(
+        (e) =>
+          errorMsg.toLowerCase().includes(e.toLowerCase()) ||
+          err.code?.toString().includes(e) ||
+          err.statusCode?.toString().includes(e),
       );
 
       if (isNetworkOrApiError) {
-         // Rethrow so llmWithRetry can handle the backoff/retry logic at the higher level
-         throw err; 
+        // Rethrow so llmWithRetry can handle the backoff/retry logic at the higher level
+        throw err;
       }
 
       // If we are here, it's likely a schema validation error or model hallucination (JSON parse error).
@@ -1087,7 +1122,8 @@ export async function generateObjectSafe<T>(
       const rejectedValue = err?.value ?? err?.cause?.value;
       const diagnosticParts: string[] = [];
       if (typeof rawText === "string" && rawText.length > 0) {
-        const snippet = rawText.length > 500 ? `${rawText.slice(0, 500)}…[+${rawText.length - 500}]` : rawText;
+        const snippet =
+          rawText.length > 500 ? `${rawText.slice(0, 500)}…[+${rawText.length - 500}]` : rawText;
         diagnosticParts.push(`raw=${JSON.stringify(snippet)}`);
       }
       if (rejectedValue !== undefined) {
@@ -1095,13 +1131,19 @@ export async function generateObjectSafe<T>(
           const valueStr = JSON.stringify(rejectedValue);
           const valueSnippet = valueStr.length > 500 ? `${valueStr.slice(0, 500)}…` : valueStr;
           diagnosticParts.push(`value=${valueSnippet}`);
-        } catch { /* unserializable */ }
+        } catch {
+          /* unserializable */
+        }
       }
       const diagnostic = diagnosticParts.length > 0 ? ` | ${diagnosticParts.join(" ")}` : "";
       if (attempt < maxAttempts) {
-        warn(`[LLM] Schema validation failed (attempt ${attempt}): ${errorMsg}${diagnostic}. Retrying with stricter prompt...`);
+        warn(
+          `[LLM] Schema validation failed (attempt ${attempt}): ${errorMsg}${diagnostic}. Retrying with stricter prompt...`,
+        );
       } else {
-        warn(`[LLM] Schema validation failed after ${maxAttempts} attempts: ${errorMsg}${diagnostic}`);
+        warn(
+          `[LLM] Schema validation failed after ${maxAttempts} attempts: ${errorMsg}${diagnostic}`,
+        );
       }
     }
   }
@@ -1147,7 +1189,7 @@ export async function extractDiary<T>(
   sessionContent: string,
   metadata: { sessionPath: string; agent: string; workspace?: string },
   config: Config,
-  io: LLMIO = DEFAULT_LLM_IO
+  io: LLMIO = DEFAULT_LLM_IO,
 ): Promise<T> {
   const truncatedContent = truncateForContext(sessionContent, { maxChars: 50000 });
 
@@ -1155,15 +1197,19 @@ export async function extractDiary<T>(
     sessionPath: metadata.sessionPath,
     agent: metadata.agent,
     workspace: metadata.workspace || "unknown",
-    content: truncatedContent
+    content: truncatedContent,
   });
 
-  return llmWithRetry(async () => {
-    return generateObjectSafe(schema, prompt, config, 3, io);
-  }, "extractDiary", {
-    perOperationTimeoutMs: config.llmTimeoutMs,
-    totalTimeoutMs: config.llmTotalTimeoutMs,
-  });
+  return llmWithRetry(
+    async () => {
+      return generateObjectSafe(schema, prompt, config, 3, io);
+    },
+    "extractDiary",
+    {
+      perOperationTimeoutMs: config.llmTimeoutMs,
+      totalTimeoutMs: config.llmTotalTimeoutMs,
+    },
+  );
 }
 
 export async function runReflector<T>(
@@ -1173,7 +1219,7 @@ export async function runReflector<T>(
   cassHistory: string,
   iteration: number,
   config: Config,
-  io: LLMIO = DEFAULT_LLM_IO
+  io: LLMIO = DEFAULT_LLM_IO,
 ): Promise<T> {
   // Only check env-based stubs when using default IO (backward compat for subprocess E2E tests).
   // When explicit LLMIO is injected, tests control responses directly via the io object.
@@ -1186,16 +1232,17 @@ export async function runReflector<T>(
 
   const diaryText = `
 Status: ${diary.status}
-Accomplishments: ${diary.accomplishments.join('\n- ')}
-Decisions: ${diary.decisions.join('\n- ')}
-Challenges: ${diary.challenges.join('\n- ')}
-Preferences: ${diary.preferences.join('\n- ')}
-Key Learnings: ${diary.keyLearnings.join('\n- ')}
+Accomplishments: ${diary.accomplishments.join("\n- ")}
+Decisions: ${diary.decisions.join("\n- ")}
+Challenges: ${diary.challenges.join("\n- ")}
+Preferences: ${diary.preferences.join("\n- ")}
+Key Learnings: ${diary.keyLearnings.join("\n- ")}
 `.trim();
 
-  const iterationNote = iteration > 0
-    ? `This is iteration ${iteration + 1}. Focus on insights you may have missed in previous passes.`
-    : "";
+  const iterationNote =
+    iteration > 0
+      ? `This is iteration ${iteration + 1}. Focus on insights you may have missed in previous passes.`
+      : "";
 
   const safeExistingBullets = truncateForContext(existingBullets, { maxChars: 20000 });
   const safeCassHistory = truncateForContext(cassHistory, { maxChars: 20000 });
@@ -1214,7 +1261,7 @@ Key Learnings: ${diary.keyLearnings.join('\n- ')}
 
 export interface ValidatorResult {
   valid: boolean;
-  verdict: 'ACCEPT' | 'REJECT' | 'REFINE' | 'ACCEPT_WITH_CAUTION';
+  verdict: "ACCEPT" | "REJECT" | "REFINE" | "ACCEPT_WITH_CAUTION";
   confidence: number;
   reason: string;
   evidence: Array<{ sessionPath: string; snippet: string; supports: boolean }>;
@@ -1229,16 +1276,20 @@ export interface ValidatorResult {
 // strict mode rejects with HTTP 400 on OpenAI-compatible gateways. Arrays are
 // now required with no default — the model is expected to supply `[]` when
 // there is no evidence, which the prompt already implies.
-const ValidatorOutputSchema = z.object({
-  verdict: z.enum(['ACCEPT', 'REJECT', 'REFINE', 'ACCEPT_WITH_CAUTION']),
-  confidence: z.number().min(0).max(1),
-  reason: z.string(),
-  evidence: z.object({
-    supporting: z.array(z.string()),
-    contradicting: z.array(z.string())
-  }).strict(),
-  suggestedRefinement: z.string().nullable()
-}).strict();
+const ValidatorOutputSchema = z
+  .object({
+    verdict: z.enum(["ACCEPT", "REJECT", "REFINE", "ACCEPT_WITH_CAUTION"]),
+    confidence: z.number().min(0).max(1),
+    reason: z.string(),
+    evidence: z
+      .object({
+        supporting: z.array(z.string()),
+        contradicting: z.array(z.string()),
+      })
+      .strict(),
+    suggestedRefinement: z.string().nullable(),
+  })
+  .strict();
 
 // Helper interface for ValidatorOutput
 type ValidatorOutput = z.infer<typeof ValidatorOutputSchema>;
@@ -1247,13 +1298,13 @@ export async function runValidator(
   proposedRule: string,
   formattedEvidence: string,
   config: Config,
-  io: LLMIO = DEFAULT_LLM_IO
+  io: LLMIO = DEFAULT_LLM_IO,
 ): Promise<ValidatorResult> {
   const safeEvidence = truncateForContext(formattedEvidence, { maxChars: 30000 });
 
   const prompt = fillPrompt(PROMPTS.validator, {
     proposedRule,
-    evidence: safeEvidence
+    evidence: safeEvidence,
   });
 
   return llmWithRetry(async () => {
@@ -1264,16 +1315,20 @@ export async function runValidator(
 
     const mappedEvidence = [
       ...supporting.map((s: string) => ({ sessionPath: "unknown", snippet: s, supports: true })),
-      ...contradicting.map((s: string) => ({ sessionPath: "unknown", snippet: s, supports: false }))
+      ...contradicting.map((s: string) => ({
+        sessionPath: "unknown",
+        snippet: s,
+        supports: false,
+      })),
     ];
 
     return {
-      valid: object.verdict === 'ACCEPT',
+      valid: object.verdict === "ACCEPT",
       verdict: object.verdict,
       confidence: object.confidence,
       reason: object.reason,
       evidence: mappedEvidence,
-      suggestedRefinement: object.suggestedRefinement || undefined
+      suggestedRefinement: object.suggestedRefinement || undefined,
     };
   }, "runValidator");
 }
@@ -1284,17 +1339,23 @@ export async function generateContext(
   history: string,
   deprecatedPatterns: string,
   config: Config,
-  io: LLMIO = DEFAULT_LLM_IO
+  io: LLMIO = DEFAULT_LLM_IO,
 ): Promise<string> {
   const prompt = fillPrompt(PROMPTS.context, {
     task: truncateForContext(task, { maxChars: 5000 }),
     bullets: truncateForContext(bullets, { maxChars: 20000 }),
     history: truncateForContext(history, { maxChars: 20000 }),
-    deprecatedPatterns: truncateForContext(deprecatedPatterns, { maxChars: 5000 })
+    deprecatedPatterns: truncateForContext(deprecatedPatterns, { maxChars: 5000 }),
   });
 
   return llmWithRetry(async () => {
-    const result = await generateObjectSafe(z.object({ briefing: z.string() }), prompt, config, 3, io);
+    const result = await generateObjectSafe(
+      z.object({ briefing: z.string() }),
+      prompt,
+      config,
+      3,
+      io,
+    );
     return result.briefing;
   }, "generateContext");
 }
@@ -1302,7 +1363,7 @@ export async function generateContext(
 export async function generateSearchQueries(
   task: string,
   config: Config,
-  io: LLMIO = DEFAULT_LLM_IO
+  io: LLMIO = DEFAULT_LLM_IO,
 ): Promise<string[]> {
   const prompt = `Given this task: ${truncateForContext(task, { maxChars: 5000 })}
 
@@ -1316,11 +1377,11 @@ Make queries specific enough to be useful but broad enough to match variations.`
 
   return llmWithRetry(async () => {
     const result = await generateObjectSafe(
-      z.object({ queries: z.array(z.string()).max(5) }), 
-      prompt, 
+      z.object({ queries: z.array(z.string()).max(5) }),
+      prompt,
       config,
       3,
-      io
+      io,
     );
     return result.queries;
   }, "generateSearchQueries");
@@ -1345,13 +1406,15 @@ export async function llmWithFallback<T>(
   schema: z.ZodSchema<T>,
   prompt: string,
   config: Config,
-  io: LLMIO = DEFAULT_LLM_IO
+  io: LLMIO = DEFAULT_LLM_IO,
 ): Promise<T> {
   const primaryProvider = config.provider as LLMProvider;
   const primaryModel = config.model;
 
   const apiKeyOverride =
-    typeof config.apiKey === "string" && config.apiKey.trim() !== "" ? config.apiKey.trim() : undefined;
+    typeof config.apiKey === "string" && config.apiKey.trim() !== ""
+      ? config.apiKey.trim()
+      : undefined;
 
   const availableProviders = getAvailableProviders();
   const providerOrder: Array<{ provider: LLMProvider; model: string; apiKey?: string }> = [];
@@ -1359,8 +1422,13 @@ export async function llmWithFallback<T>(
   // Ollama and Bedrock are always considered available when explicitly configured
   // as the primary provider: Ollama defaults to localhost:11434, and Bedrock can
   // use IAM roles or instance profiles that we can't detect via env vars.
-  const primaryUsesImplicitAuth = primaryProvider === "ollama" || primaryProvider === "bedrock" || primaryProvider === "cli";
-  if (availableProviders.includes(primaryProvider) || apiKeyOverride !== undefined || primaryUsesImplicitAuth) {
+  const primaryUsesImplicitAuth =
+    primaryProvider === "ollama" || primaryProvider === "bedrock" || primaryProvider === "cli";
+  if (
+    availableProviders.includes(primaryProvider) ||
+    apiKeyOverride !== undefined ||
+    primaryUsesImplicitAuth
+  ) {
     providerOrder.push({ provider: primaryProvider, model: primaryModel, apiKey: apiKeyOverride });
   }
 
@@ -1373,7 +1441,7 @@ export async function llmWithFallback<T>(
   if (providerOrder.length === 0) {
     throw new Error(
       "No LLM providers available. Set one of: OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY, or OLLAMA_BASE_URL. " +
-      "Other options: configure AWS credentials for Bedrock (AWS_ACCESS_KEY_ID+AWS_SECRET_ACCESS_KEY) or install a local CLI tool (claude, codex, gemini)."
+        "Other options: configure AWS credentials for Bedrock (AWS_ACCESS_KEY_ID+AWS_SECRET_ACCESS_KEY) or install a local CLI tool (claude, codex, gemini).",
     );
   }
 
@@ -1386,22 +1454,40 @@ export async function llmWithFallback<T>(
     try {
       // CLI provider: bypass AI SDK, shell out directly
       if (provider === "cli") {
-        const result = await cliGenerateObject<T>(schema, prompt, config.cliCommand, config.llmTimeoutMs, config.cliSubprocessCwd);
+        const result = await cliGenerateObject<T>(
+          schema,
+          prompt,
+          config.cliCommand,
+          config.llmTimeoutMs,
+          config.cliSubprocessCwd,
+        );
         return result.object;
       }
 
-      const llmModel = getModel({ provider, model, apiKey, baseUrl: config.baseUrl, ollamaBaseUrl: config.ollamaBaseUrl, disableStructuredOutputs: config.disableStructuredOutputs });
+      const llmModel = getModel({
+        provider,
+        model,
+        apiKey,
+        baseUrl: config.baseUrl,
+        ollamaBaseUrl: config.ollamaBaseUrl,
+        disableStructuredOutputs: config.disableStructuredOutputs,
+      });
       const costConfig: Config = { ...config, provider, model, apiKey };
 
-      const result = await monitoredGenerateObject<T>({
-        model: llmModel,
-        schema,
-        prompt,
-        temperature: 0.3,
-        // Keyed on the per-iteration fallback provider, not config.provider:
-        // a fallback hop to/from openai must get the right request shape.
-        ...objectGenerationOverrides(provider, config.disableStructuredOutputs)
-      }, costConfig, "llmWithFallback", io);
+      const result = await monitoredGenerateObject<T>(
+        {
+          model: llmModel,
+          schema,
+          prompt,
+          temperature: 0.3,
+          // Keyed on the per-iteration fallback provider, not config.provider:
+          // a fallback hop to/from openai must get the right request shape.
+          ...objectGenerationOverrides(provider, config.disableStructuredOutputs),
+        },
+        costConfig,
+        "llmWithFallback",
+        io,
+      );
 
       return result.object;
     } catch (err: any) {
@@ -1416,9 +1502,7 @@ export async function llmWithFallback<T>(
     }
   }
 
-  const errorSummary = errors
-    .map(e => `${e.provider}: ${e.error}`)
-    .join("\n  ");
+  const errorSummary = errors.map((e) => `${e.provider}: ${e.error}`).join("\n  ");
 
   throw new Error(`All LLM providers failed:\n  ${errorSummary}`);
 }

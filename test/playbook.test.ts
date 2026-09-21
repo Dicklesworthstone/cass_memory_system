@@ -1,32 +1,32 @@
-import { describe, it, expect, afterEach } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
+import { execSync } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { execSync } from "node:child_process";
 import yaml from "yaml";
 
 import {
   addBullet,
   appendBlockedLog,
+  appendToxicLog,
+  type BlockedEntry,
   computeFullStats,
   createEmptyPlaybook,
-  recordReflectionRun,
   deprecateBullet,
   exportToMarkdown,
   findBullet,
   getActiveBullets,
   getBulletsByCategory,
+  loadBlockedLog,
+  loadMergedPlaybook,
   loadPlaybook,
   loadPlaybookWithRecovery,
-  loadMergedPlaybook,
-  loadBlockedLog,
   loadToxicLog,
-  appendToxicLog,
+  recordReflectionRun,
   savePlaybook,
-  BlockedEntry,
   ToxicEntry,
 } from "../src/playbook.js";
-import { Playbook, PlaybookBullet } from "../src/types.js";
+import { type Playbook, PlaybookBullet } from "../src/types.js";
 import { createTestBullet, createTestConfig } from "./helpers/index.js";
 
 async function writePlaybookFile(file: string, playbook: Playbook) {
@@ -226,7 +226,10 @@ describe("loadPlaybookWithRecovery", () => {
       expect(playbook.bullets).toHaveLength(0);
       expect(recovery?.backupPath).toBeTruthy();
       if (recovery?.backupPath) {
-        const backupExists = await fs.stat(recovery.backupPath).then(() => true).catch(() => false);
+        const backupExists = await fs
+          .stat(recovery.backupPath)
+          .then(() => true)
+          .catch(() => false);
         expect(backupExists).toBe(true);
         const backupContents = await fs.readFile(recovery.backupPath, "utf-8");
         expect(backupContents).toContain("not valid yaml");
@@ -310,9 +313,7 @@ describe("loadMergedPlaybook", () => {
       ];
 
       const repoPb = createEmptyPlaybook("repo");
-      repoPb.bullets = [
-        createTestBullet({ id: "b-repo-keep", content: "repo keep" }),
-      ];
+      repoPb.bullets = [createTestBullet({ id: "b-repo-keep", content: "repo keep" })];
 
       await writePlaybookFile(globalPath, globalPb);
       await writePlaybookFile(repoPath, repoPb);
@@ -338,7 +339,7 @@ describe("loadMergedPlaybook", () => {
       expect(activeContents).toContain("keep me");
       expect(activeContents).toContain("repo keep");
 
-      const blockedBullet = merged.bullets.find(b => b.content === blockedContent);
+      const blockedBullet = merged.bullets.find((b) => b.content === blockedContent);
       expect(blockedBullet?.deprecated).toBe(true);
       expect(blockedBullet?.deprecationReason).toBe("BLOCKED_CONTENT");
     });
@@ -434,7 +435,7 @@ describe("playbook roundtrip", () => {
       const bullet = addBullet(
         pb,
         { content: "Test rule content", category: "testing" },
-        "~/.cursor/sessions/abc.jsonl"
+        "~/.cursor/sessions/abc.jsonl",
       );
       expect(bullet.id).toMatch(/^b-/);
       await savePlaybook(pb, file);
@@ -458,7 +459,7 @@ describe("addBullet", () => {
     const bullet = addBullet(
       pb,
       { content: "New rule", category: "testing" },
-      "/path/session.jsonl"
+      "/path/session.jsonl",
     );
 
     expect(bullet.id).toMatch(/^b-/);
@@ -470,7 +471,7 @@ describe("addBullet", () => {
     const bullet = addBullet(
       pb,
       { id: "b-custom-1", content: "New rule", category: "testing" },
-      "/path/session.jsonl"
+      "/path/session.jsonl",
     );
 
     expect(bullet.id).toBe("b-custom-1");
@@ -479,10 +480,18 @@ describe("addBullet", () => {
 
   it("throws when provided id already exists", () => {
     const pb = createEmptyPlaybook();
-    addBullet(pb, { id: "b-collision", content: "Rule 1", category: "testing" }, "/path/session.jsonl");
+    addBullet(
+      pb,
+      { id: "b-collision", content: "Rule 1", category: "testing" },
+      "/path/session.jsonl",
+    );
 
     expect(() => {
-      addBullet(pb, { id: "b-collision", content: "Rule 2", category: "testing" }, "/path/session.jsonl");
+      addBullet(
+        pb,
+        { id: "b-collision", content: "Rule 2", category: "testing" },
+        "/path/session.jsonl",
+      );
     }).toThrow();
   });
 
@@ -491,7 +500,7 @@ describe("addBullet", () => {
     const bullet = addBullet(
       pb,
       { content: "Rule content", category: "style" },
-      "/path/session.jsonl"
+      "/path/session.jsonl",
     );
 
     expect(bullet.content).toBe("Rule content");
@@ -500,11 +509,7 @@ describe("addBullet", () => {
 
   it("sets default values for optional fields", () => {
     const pb = createEmptyPlaybook();
-    const bullet = addBullet(
-      pb,
-      { content: "Rule", category: "test" },
-      "/path/session.jsonl"
-    );
+    const bullet = addBullet(pb, { content: "Rule", category: "test" }, "/path/session.jsonl");
 
     expect(bullet.scope).toBe("global");
     expect(bullet.type).toBe("rule");
@@ -522,7 +527,7 @@ describe("addBullet", () => {
     const bullet = addBullet(
       pb,
       { content: "Rule", category: "test" },
-      "~/.claude-code/sessions/abc.jsonl"
+      "~/.claude-code/sessions/abc.jsonl",
     );
 
     expect(bullet.sourceAgents).toContain("claude");
@@ -534,7 +539,7 @@ describe("addBullet", () => {
     const bullet = addBullet(
       pb,
       { content: "Rule", category: "test", kind: "project_convention" },
-      "/path/session.jsonl"
+      "/path/session.jsonl",
     );
 
     expect(bullet.kind).toBe("project_convention");
@@ -545,7 +550,7 @@ describe("addBullet", () => {
     const bullet = addBullet(
       pb,
       { content: "Rule", category: "test", scope: "workspace" },
-      "/path/session.jsonl"
+      "/path/session.jsonl",
     );
 
     expect(bullet.scope).toBe("workspace");
@@ -556,7 +561,7 @@ describe("addBullet", () => {
     const bullet = addBullet(
       pb,
       { content: "Rule", category: "test", tags: ["tag1", "tag2"] },
-      "/path/session.jsonl"
+      "/path/session.jsonl",
     );
 
     expect(bullet.tags).toContain("tag1");
@@ -565,11 +570,7 @@ describe("addBullet", () => {
 
   it("sets timestamps", () => {
     const pb = createEmptyPlaybook();
-    const bullet = addBullet(
-      pb,
-      { content: "Rule", category: "test" },
-      "/path/session.jsonl"
-    );
+    const bullet = addBullet(pb, { content: "Rule", category: "test" }, "/path/session.jsonl");
 
     expect(bullet.createdAt).toBeTruthy();
     expect(bullet.updatedAt).toBeTruthy();
@@ -577,12 +578,7 @@ describe("addBullet", () => {
 
   it("uses custom decay half-life", () => {
     const pb = createEmptyPlaybook();
-    const bullet = addBullet(
-      pb,
-      { content: "Rule", category: "test" },
-      "/path/session.jsonl",
-      60
-    );
+    const bullet = addBullet(pb, { content: "Rule", category: "test" }, "/path/session.jsonl", 60);
 
     expect(bullet.confidenceDecayHalfLifeDays).toBe(60);
   });
@@ -639,7 +635,7 @@ describe("deprecateBullet", () => {
     const bullet = addBullet(
       pb,
       { content: "Rule to deprecate", category: "testing" },
-      "~/.cursor/sessions/abc.jsonl"
+      "~/.cursor/sessions/abc.jsonl",
     );
 
     const ok = deprecateBullet(pb, bullet.id, "Superseded", "new-id");
@@ -911,8 +907,18 @@ describe("loadBlockedLog", () => {
     await withTempDir(async (dir) => {
       const logPath = path.join(dir, "blocked.log");
       const lines = [
-        JSON.stringify({ id: "t-1", content: "Blocked 1", reason: "r1", forgottenAt: "2024-01-01" }),
-        JSON.stringify({ id: "t-2", content: "Blocked 2", reason: "r2", forgottenAt: "2024-01-02" }),
+        JSON.stringify({
+          id: "t-1",
+          content: "Blocked 1",
+          reason: "r1",
+          forgottenAt: "2024-01-01",
+        }),
+        JSON.stringify({
+          id: "t-2",
+          content: "Blocked 2",
+          reason: "r2",
+          forgottenAt: "2024-01-02",
+        }),
       ].join("\n");
       await fs.writeFile(logPath, lines + "\n");
 
@@ -927,7 +933,12 @@ describe("loadBlockedLog", () => {
       const lines = [
         JSON.stringify({ id: "t-1", content: "Valid", reason: "r", forgottenAt: "2024-01-01" }),
         "not valid json",
-        JSON.stringify({ id: "t-2", content: "Also valid", reason: "r", forgottenAt: "2024-01-02" }),
+        JSON.stringify({
+          id: "t-2",
+          content: "Also valid",
+          reason: "r",
+          forgottenAt: "2024-01-02",
+        }),
       ].join("\n");
       await fs.writeFile(logPath, lines + "\n");
 
@@ -943,7 +954,12 @@ describe("loadBlockedLog", () => {
         JSON.stringify({ id: "t-1", content: "Valid", reason: "r", forgottenAt: "2024-01-01" }),
         "",
         "   ",
-        JSON.stringify({ id: "t-2", content: "Also valid", reason: "r", forgottenAt: "2024-01-02" }),
+        JSON.stringify({
+          id: "t-2",
+          content: "Also valid",
+          reason: "r",
+          forgottenAt: "2024-01-02",
+        }),
       ].join("\n");
       await fs.writeFile(logPath, lines);
 
@@ -992,8 +1008,18 @@ describe("appendBlockedLog", () => {
   it("appends to existing file", async () => {
     await withTempDir(async (dir) => {
       const logPath = path.join(dir, "blocked.log");
-      const entry1: BlockedEntry = { id: "t-1", content: "First", reason: "r", forgottenAt: "2024-01-01" };
-      const entry2: BlockedEntry = { id: "t-2", content: "Second", reason: "r", forgottenAt: "2024-01-02" };
+      const entry1: BlockedEntry = {
+        id: "t-1",
+        content: "First",
+        reason: "r",
+        forgottenAt: "2024-01-01",
+      };
+      const entry2: BlockedEntry = {
+        id: "t-2",
+        content: "Second",
+        reason: "r",
+        forgottenAt: "2024-01-02",
+      };
 
       await appendBlockedLog(entry1, logPath);
       await appendBlockedLog(entry2, logPath);
@@ -1006,7 +1032,12 @@ describe("appendBlockedLog", () => {
   it("creates parent directories", async () => {
     await withTempDir(async (dir) => {
       const logPath = path.join(dir, "nested/deep/blocked.log");
-      const entry: BlockedEntry = { id: "t-1", content: "Test", reason: "r", forgottenAt: "2024-01-01" };
+      const entry: BlockedEntry = {
+        id: "t-1",
+        content: "Test",
+        reason: "r",
+        forgottenAt: "2024-01-01",
+      };
 
       await appendBlockedLog(entry, logPath);
 
@@ -1087,16 +1118,18 @@ describe("computeFullStats", () => {
     const pb = createEmptyPlaybook();
     pb.bullets = [
       createTestBullet({ helpfulCount: 10, harmfulCount: 0 }), // excellent
-      createTestBullet({ helpfulCount: 3, harmfulCount: 0 }),  // good
-      createTestBullet({ helpfulCount: 0, harmfulCount: 0 }),  // neutral
+      createTestBullet({ helpfulCount: 3, harmfulCount: 0 }), // good
+      createTestBullet({ helpfulCount: 0, harmfulCount: 0 }), // neutral
     ];
 
     const stats = computeFullStats(pb, config);
     // Score distribution depends on scoring.ts getEffectiveScore
-    expect(stats.scoreDistribution.excellent +
-           stats.scoreDistribution.good +
-           stats.scoreDistribution.neutral +
-           stats.scoreDistribution.atRisk).toBe(3);
+    expect(
+      stats.scoreDistribution.excellent +
+        stats.scoreDistribution.good +
+        stats.scoreDistribution.neutral +
+        stats.scoreDistribution.atRisk,
+    ).toBe(3);
   });
 });
 

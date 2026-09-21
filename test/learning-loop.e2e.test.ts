@@ -8,11 +8,19 @@
  * 3) Accept feedback via `cm mark`
  * 4) Prune harmful bullets during a subsequent curation pass (triggered by another reflect)
  */
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createTestLogger } from "./helpers/logger.js";
 
 const CM_PATH = join(import.meta.dir, "..", "src", "cm.ts");
@@ -97,17 +105,24 @@ describe("E2E: ACE Learning Loop", () => {
       writeFileSync(
         sessionAPath,
         [
-          JSON.stringify({ role: "user", content: "We keep missing Promise rejections in our code and tests." }),
-          JSON.stringify({ role: "assistant", content: "We should add a rule about always handling Promise rejections." }),
+          JSON.stringify({
+            role: "user",
+            content: "We keep missing Promise rejections in our code and tests.",
+          }),
+          JSON.stringify({
+            role: "assistant",
+            content: "We should add a rule about always handling Promise rejections.",
+          }),
         ].join("\n") + "\n",
-        "utf-8"
+        "utf-8",
       );
       logger.step("session-a", "info", "Wrote mock session A", { sessionAPath });
       logger.endStep("session-a", true);
 
       // Step 2: reflect session A (adds a bullet)
       logger.startStep("reflect-a");
-      const ruleA = "Always handle Promise rejections (use try/catch or .catch) to avoid silent failures";
+      const ruleA =
+        "Always handle Promise rejections (use try/catch or .catch) to avoid silent failures";
       const reflectA = runCm(["reflect", "--session", sessionAPath, "--json"], testDir, {
         CM_REFLECTOR_STUBS: JSON.stringify([
           {
@@ -155,11 +170,16 @@ describe("E2E: ACE Learning Loop", () => {
       });
       expect(listA.exitCode).toBe(0);
       const listAResponse = JSON.parse(listA.stdout) as any;
-      const bulletA = listAResponse.data.bullets.find((b: any) => typeof b?.content === "string" && b.content.includes("Promise rejections"));
+      const bulletA = listAResponse.data.bullets.find(
+        (b: any) => typeof b?.content === "string" && b.content.includes("Promise rejections"),
+      );
       expect(bulletA).toBeDefined();
       const bulletAId = bulletA.id as string;
       expect(bulletAId).toMatch(/^b-/);
-      logger.step("find-bullet-a", "info", "Identified bullet A", { bulletAId, content: bulletA.content });
+      logger.step("find-bullet-a", "info", "Identified bullet A", {
+        bulletAId,
+        content: bulletA.content,
+      });
       logger.endStep("find-bullet-a", true);
 
       // Step 4: context surfaces learned bullet
@@ -208,13 +228,20 @@ describe("E2E: ACE Learning Loop", () => {
       writeFileSync(
         sessionBPath,
         [
-          JSON.stringify({ role: "user", content: "We also need guidance on caching expensive computations." }),
-          JSON.stringify({ role: "assistant", content: "Add a rule to prefer memoization or caching in hot paths." }),
+          JSON.stringify({
+            role: "user",
+            content: "We also need guidance on caching expensive computations.",
+          }),
+          JSON.stringify({
+            role: "assistant",
+            content: "Add a rule to prefer memoization or caching in hot paths.",
+          }),
         ].join("\n") + "\n",
-        "utf-8"
+        "utf-8",
       );
 
-      const ruleB = "Cache expensive computations in hot paths (memoize or persist) to reduce repeated work";
+      const ruleB =
+        "Cache expensive computations in hot paths (memoize or persist) to reduce repeated work";
       const reflectB = runCm(["reflect", "--session", sessionBPath, "--json"], testDir, {
         CM_REFLECTOR_STUBS: JSON.stringify([
           {
@@ -270,11 +297,13 @@ describe("E2E: ACE Learning Loop", () => {
       expect(contextAfter.exitCode).toBe(0);
       const contextAfterJson = JSON.parse(contextAfter.stdout) as any;
       expect(Array.isArray(contextAfterJson.data.relevantBullets)).toBe(true);
-      expect(contextAfterJson.data.relevantBullets.some((b: any) => b.id === bulletAId)).toBe(false);
+      expect(contextAfterJson.data.relevantBullets.some((b: any) => b.id === bulletAId)).toBe(
+        false,
+      );
       expect(Array.isArray(contextAfterJson.data.antiPatterns)).toBe(true);
 
       logger.endStep("verify-prune", true);
     },
-    { timeout: 60000 }
+    { timeout: 60000 },
   );
 });

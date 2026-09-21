@@ -2,14 +2,14 @@
  * Unit tests for runSelfTest function in doctor command.
  * Tests end-to-end smoke testing capabilities.
  */
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { runSelfTest, HealthCheck } from "../src/commands/doctor.js";
-import { createTestConfig } from "./helpers/factories.js";
-import type { Config } from "../src/types.js";
-import { withTempDir, withTempCassHome } from "./helpers/temp.js";
-import { writeFile, mkdir, rm } from "node:fs/promises";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
+import { HealthCheck, runSelfTest } from "../src/commands/doctor.js";
+import type { Config } from "../src/types.js";
+import { createTestConfig } from "./helpers/factories.js";
+import { withTempCassHome, withTempDir } from "./helpers/temp.js";
 
 describe("runSelfTest", () => {
   // Save and restore env vars
@@ -93,7 +93,7 @@ describe("runSelfTest", () => {
         const config = createSelfTestConfig({ playbookPath });
         const checks = await runSelfTest(config);
 
-        const playbookCheck = checks.find(c => c.item === "Playbook Load");
+        const playbookCheck = checks.find((c) => c.item === "Playbook Load");
         expect(playbookCheck).toBeDefined();
         expect(playbookCheck!.category).toBe("Self-Test");
         expect(playbookCheck!.status).toBe("pass");
@@ -110,7 +110,7 @@ describe("runSelfTest", () => {
         const config = createSelfTestConfig({ playbookPath });
         const checks = await runSelfTest(config);
 
-        const playbookCheck = checks.find(c => c.item === "Playbook Load");
+        const playbookCheck = checks.find((c) => c.item === "Playbook Load");
         expect(playbookCheck).toBeDefined();
         expect(playbookCheck!.status).toBe("pass");
         expect(playbookCheck!.message).toContain("0 bullets");
@@ -124,7 +124,7 @@ describe("runSelfTest", () => {
         const config = createSelfTestConfig({ playbookPath });
         const checks = await runSelfTest(config);
 
-        const playbookCheck = checks.find(c => c.item === "Playbook Load");
+        const playbookCheck = checks.find((c) => c.item === "Playbook Load");
         expect(playbookCheck).toBeDefined();
         // loadPlaybook creates an empty playbook if not found
         expect(playbookCheck!.status).toBe("pass");
@@ -142,11 +142,11 @@ describe("runSelfTest", () => {
         // Use non-existent cass path
         const config = createSelfTestConfig({
           playbookPath,
-          cassPath: "/nonexistent/cass"
+          cassPath: "/nonexistent/cass",
         });
         const checks = await runSelfTest(config);
 
-        const cassCheck = checks.find(c => c.item === "Cass Search");
+        const cassCheck = checks.find((c) => c.item === "Cass Search");
         expect(cassCheck).toBeDefined();
         expect(cassCheck!.status).toBe("warn");
         expect(cassCheck!.message).toContain("cass not available");
@@ -162,11 +162,11 @@ describe("runSelfTest", () => {
 
         const config = createSelfTestConfig({
           playbookPath,
-          sanitization: { enabled: true, extraPatterns: [], auditLog: false, auditLevel: "info" }
+          sanitization: { enabled: true, extraPatterns: [], auditLog: false, auditLevel: "info" },
         });
         const checks = await runSelfTest(config);
 
-        const sanitizeCheck = checks.find(c => c.item === "Sanitization");
+        const sanitizeCheck = checks.find((c) => c.item === "Sanitization");
         expect(sanitizeCheck).toBeDefined();
         expect(sanitizeCheck!.category).toBe("Self-Test");
         // Built-in patterns should be >= 10
@@ -182,11 +182,11 @@ describe("runSelfTest", () => {
 
         const config = createSelfTestConfig({
           playbookPath,
-          sanitization: { enabled: false, extraPatterns: [], auditLog: false, auditLevel: "off" }
+          sanitization: { enabled: false, extraPatterns: [], auditLog: false, auditLevel: "off" },
         });
         const checks = await runSelfTest(config);
 
-        const sanitizeCheck = checks.find(c => c.item === "Sanitization");
+        const sanitizeCheck = checks.find((c) => c.item === "Sanitization");
         expect(sanitizeCheck).toBeDefined();
         expect(sanitizeCheck!.status).toBe("warn");
         expect(sanitizeCheck!.message).toBe("Disabled");
@@ -208,7 +208,7 @@ describe("runSelfTest", () => {
         });
         const checks = await runSelfTest(config);
 
-        const configCheck = checks.find(c => c.item === "Config Validation");
+        const configCheck = checks.find((c) => c.item === "Config Validation");
         expect(configCheck).toBeDefined();
         expect(configCheck!.status).toBe("pass");
         expect(configCheck!.message).toBe("Config valid");
@@ -226,11 +226,13 @@ describe("runSelfTest", () => {
         });
         const checks = await runSelfTest(config);
 
-        const configCheck = checks.find(c => c.item === "Config Validation");
+        const configCheck = checks.find((c) => c.item === "Config Validation");
         expect(configCheck).toBeDefined();
         expect(configCheck!.status).toBe("warn");
         expect(configCheck!.message).toContain("issue(s) found");
-        expect((configCheck!.details as any).issues).toContain("dedupSimilarityThreshold should be 0-1");
+        expect((configCheck!.details as any).issues).toContain(
+          "dedupSimilarityThreshold should be 0-1",
+        );
       });
     });
 
@@ -245,10 +247,12 @@ describe("runSelfTest", () => {
         });
         const checks = await runSelfTest(config);
 
-        const configCheck = checks.find(c => c.item === "Config Validation");
+        const configCheck = checks.find((c) => c.item === "Config Validation");
         expect(configCheck).toBeDefined();
         expect(configCheck!.status).toBe("warn");
-        expect((configCheck!.details as any).issues).toContain("pruneHarmfulThreshold should be non-negative");
+        expect((configCheck!.details as any).issues).toContain(
+          "pruneHarmfulThreshold should be non-negative",
+        );
       });
     });
   });
@@ -267,7 +271,7 @@ describe("runSelfTest", () => {
         const config = createSelfTestConfig({ playbookPath, provider: "anthropic" });
         const checks = await runSelfTest(config);
 
-        const llmCheck = checks.find(c => c.item === "LLM System");
+        const llmCheck = checks.find((c) => c.item === "LLM System");
         expect(llmCheck).toBeDefined();
         expect(llmCheck!.status).toBe("fail");
         expect(llmCheck!.message).toContain("No API keys configured");
@@ -284,11 +288,11 @@ describe("runSelfTest", () => {
         const config = createSelfTestConfig({
           playbookPath,
           provider: "anthropic",
-          model: "claude-3-5-sonnet-20241022"
+          model: "claude-3-5-sonnet-20241022",
         });
         const checks = await runSelfTest(config);
 
-        const llmCheck = checks.find(c => c.item === "LLM System");
+        const llmCheck = checks.find((c) => c.item === "LLM System");
         expect(llmCheck).toBeDefined();
         expect(llmCheck!.status).toBe("pass");
         expect(llmCheck!.message).toContain("anthropic");
@@ -307,7 +311,7 @@ describe("runSelfTest", () => {
         const config = createSelfTestConfig({ playbookPath, provider: "anthropic" });
         const checks = await runSelfTest(config);
 
-        const llmCheck = checks.find(c => c.item === "LLM System");
+        const llmCheck = checks.find((c) => c.item === "LLM System");
         expect(llmCheck).toBeDefined();
         expect(llmCheck!.status).toBe("warn");
         expect(llmCheck!.message).toContain("anthropic");
@@ -331,11 +335,11 @@ describe("runSelfTest", () => {
           playbookPath,
           provider: "anthropic",
           model: "claude-sonnet-4-20250514",
-          apiKey: "sk-ant-api03-config-based-key-abc123"
+          apiKey: "sk-ant-api03-config-based-key-abc123",
         });
         const checks = await runSelfTest(config);
 
-        const llmCheck = checks.find(c => c.item === "LLM System");
+        const llmCheck = checks.find((c) => c.item === "LLM System");
         expect(llmCheck).toBeDefined();
         expect(llmCheck!.status).toBe("pass");
         expect(llmCheck!.message).toContain("anthropic");
@@ -360,10 +364,10 @@ describe("runSelfTest", () => {
         expect(checks.length).toBe(5);
 
         // All should be in Self-Test category
-        expect(checks.every(c => c.category === "Self-Test")).toBe(true);
+        expect(checks.every((c) => c.category === "Self-Test")).toBe(true);
 
         // Should have all 5 items
-        const items = checks.map(c => c.item);
+        const items = checks.map((c) => c.item);
         expect(items).toContain("Playbook Load");
         expect(items).toContain("Cass Search");
         expect(items).toContain("Sanitization");

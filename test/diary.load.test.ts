@@ -1,9 +1,9 @@
-import { describe, test, expect } from "bun:test";
-import { writeFile, mkdir } from "node:fs/promises";
+import { describe, expect, test } from "bun:test";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { loadAllDiaries, loadDiary, findDiaryBySession } from "../src/diary.js";
 import { DEFAULT_CONFIG } from "../src/config.js";
-import { DiaryEntry } from "../src/types.js";
+import { findDiaryBySession, loadAllDiaries, loadDiary } from "../src/diary.js";
+import type { DiaryEntry } from "../src/types.js";
 import { withTempDir } from "./helpers/index.js";
 
 const makeDiary = (overrides: Partial<DiaryEntry>): DiaryEntry => ({
@@ -34,8 +34,14 @@ describe("diary loading", () => {
       const dir = path.join(tmp, "diary");
       await mkdir(dir, { recursive: true });
 
-      const newer = makeDiary({ id: "newer", timestamp: new Date("2025-12-08T10:00:00Z").toISOString() });
-      const older = makeDiary({ id: "older", timestamp: new Date("2025-12-07T10:00:00Z").toISOString() });
+      const newer = makeDiary({
+        id: "newer",
+        timestamp: new Date("2025-12-08T10:00:00Z").toISOString(),
+      });
+      const older = makeDiary({
+        id: "older",
+        timestamp: new Date("2025-12-07T10:00:00Z").toISOString(),
+      });
 
       await writeFile(path.join(dir, "newer.json"), JSON.stringify(newer, null, 2));
       await writeFile(path.join(dir, "older.json"), JSON.stringify(older, null, 2));
@@ -77,4 +83,3 @@ describe("diary loading", () => {
     });
   });
 });
-

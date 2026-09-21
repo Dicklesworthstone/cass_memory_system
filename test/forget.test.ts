@@ -8,12 +8,12 @@
  * - Error handling for non-existent bullet
  * - JSON output format
  */
-import { describe, test, expect } from "bun:test";
-import { writeFileSync, readFileSync, existsSync } from "node:fs";
-import yaml from "yaml";
+import { describe, expect, test } from "bun:test";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { Playbook, PlaybookBullet } from "../src/types.js";
+import yaml from "yaml";
 import { forgetCommand } from "../src/commands/forget.js";
+import type { Playbook, PlaybookBullet } from "../src/types.js";
 import { withTempCassHome } from "./helpers/temp.js";
 
 // Test helper to create a bullet
@@ -40,7 +40,7 @@ function createTestBullet(overrides: Partial<PlaybookBullet> = {}): PlaybookBull
     deprecated: false,
     pinned: false,
     ...overrides,
-    confidenceDecayHalfLifeDays: overrides.confidenceDecayHalfLifeDays ?? 90
+    confidenceDecayHalfLifeDays: overrides.confidenceDecayHalfLifeDays ?? 90,
   };
 }
 
@@ -53,10 +53,10 @@ function createTestPlaybook(bullets: PlaybookBullet[] = []): Playbook {
     metadata: {
       createdAt: "2025-01-01T00:00:00Z",
       totalReflections: 0,
-      totalSessionsProcessed: 0
+      totalSessionsProcessed: 0,
     },
     deprecatedPatterns: [],
-    bullets
+    bullets,
   };
 }
 
@@ -68,10 +68,13 @@ describe("forget command - Unit Tests", () => {
       writeFileSync(env.playbookPath, yaml.stringify(playbook));
 
       // Create config
-      writeFileSync(env.configPath, JSON.stringify({
-        playbookPath: env.playbookPath,
-        diaryDir: env.diaryDir
-      }));
+      writeFileSync(
+        env.configPath,
+        JSON.stringify({
+          playbookPath: env.playbookPath,
+          diaryDir: env.diaryDir,
+        }),
+      );
 
       process.exitCode = 0;
 
@@ -88,10 +91,13 @@ describe("forget command - Unit Tests", () => {
       writeFileSync(env.playbookPath, yaml.stringify(playbook));
 
       // Create config
-      writeFileSync(env.configPath, JSON.stringify({
-        playbookPath: env.playbookPath,
-        diaryDir: env.diaryDir
-      }));
+      writeFileSync(
+        env.configPath,
+        JSON.stringify({
+          playbookPath: env.playbookPath,
+          diaryDir: env.diaryDir,
+        }),
+      );
 
       process.exitCode = 0;
 
@@ -101,7 +107,7 @@ describe("forget command - Unit Tests", () => {
 
       // Check playbook - bullet should be deprecated
       const updatedPlaybook = yaml.parse(readFileSync(env.playbookPath, "utf-8")) as Playbook;
-      const deprecatedBullet = updatedPlaybook.bullets.find(b => b.id === "b-forget2");
+      const deprecatedBullet = updatedPlaybook.bullets.find((b) => b.id === "b-forget2");
       expect(deprecatedBullet).toBeDefined();
       expect(deprecatedBullet?.deprecated).toBe(true);
       expect(deprecatedBullet?.deprecationReason).toBe("var is deprecated in modern JS");
@@ -122,22 +128,25 @@ describe("forget command - Unit Tests", () => {
         id: "b-forget3",
         content: "Always use synchronous file operations",
         category: "performance",
-        tags: ["io"]
+        tags: ["io"],
       });
       const playbook = createTestPlaybook([bullet]);
       writeFileSync(env.playbookPath, yaml.stringify(playbook));
 
       // Create config
-      writeFileSync(env.configPath, JSON.stringify({
-        playbookPath: env.playbookPath,
-        diaryDir: env.diaryDir
-      }));
+      writeFileSync(
+        env.configPath,
+        JSON.stringify({
+          playbookPath: env.playbookPath,
+          diaryDir: env.diaryDir,
+        }),
+      );
 
       process.exitCode = 0;
 
       await forgetCommand("b-forget3", {
         reason: "Synchronous operations block the event loop",
-        invert: true
+        invert: true,
       });
 
       expect(process.exitCode).toBe(0);
@@ -146,11 +155,11 @@ describe("forget command - Unit Tests", () => {
       const updatedPlaybook = yaml.parse(readFileSync(env.playbookPath, "utf-8")) as Playbook;
 
       // Original should be deprecated
-      const original = updatedPlaybook.bullets.find(b => b.id === "b-forget3");
+      const original = updatedPlaybook.bullets.find((b) => b.id === "b-forget3");
       expect(original?.deprecated).toBe(true);
 
       // Anti-pattern should be created
-      const antiPattern = updatedPlaybook.bullets.find(b => b.isNegative === true);
+      const antiPattern = updatedPlaybook.bullets.find((b) => b.isNegative === true);
       expect(antiPattern).toBeDefined();
       expect(antiPattern?.content).toContain("AVOID:");
       expect(antiPattern?.content).toContain("Always use synchronous file operations");
@@ -165,10 +174,13 @@ describe("forget command - Unit Tests", () => {
       writeFileSync(env.playbookPath, yaml.stringify(playbook));
 
       // Create config
-      writeFileSync(env.configPath, JSON.stringify({
-        playbookPath: env.playbookPath,
-        diaryDir: env.diaryDir
-      }));
+      writeFileSync(
+        env.configPath,
+        JSON.stringify({
+          playbookPath: env.playbookPath,
+          diaryDir: env.diaryDir,
+        }),
+      );
 
       process.exitCode = 0;
 
@@ -185,10 +197,13 @@ describe("forget command - Unit Tests", () => {
       writeFileSync(env.playbookPath, yaml.stringify(playbook));
 
       // Create config
-      writeFileSync(env.configPath, JSON.stringify({
-        playbookPath: env.playbookPath,
-        diaryDir: env.diaryDir
-      }));
+      writeFileSync(
+        env.configPath,
+        JSON.stringify({
+          playbookPath: env.playbookPath,
+          diaryDir: env.diaryDir,
+        }),
+      );
 
       process.exitCode = 0;
 

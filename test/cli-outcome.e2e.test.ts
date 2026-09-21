@@ -7,14 +7,14 @@
  * - outcome-apply soft success when session not found
  * - outcome-apply applying a logged outcome
  */
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import { outcomeCommand, applyOutcomeLogCommand } from "../src/commands/outcome.js";
-import { withTempCassHome } from "./helpers/temp.js";
+import { applyOutcomeLogCommand, outcomeCommand } from "../src/commands/outcome.js";
+import { findBullet, loadPlaybook, savePlaybook } from "../src/playbook.js";
 import { createE2ELogger } from "./helpers/e2e-logger.js";
 import { createTestBullet, createTestPlaybook } from "./helpers/factories.js";
-import { savePlaybook, loadPlaybook, findBullet } from "../src/playbook.js";
+import { withTempCassHome } from "./helpers/temp.js";
 
 function captureConsole() {
   const logs: string[] = [];
@@ -35,7 +35,7 @@ function captureConsole() {
     restore: () => {
       console.log = originalLog;
       console.error = originalError;
-    }
+    },
   };
 }
 
@@ -69,7 +69,7 @@ describe("E2E: CLI outcome commands", () => {
               duration: 120,
               errors: 0,
               text: "Thanks, that worked",
-              json: true
+              json: true,
             });
           } finally {
             capture.restore();
@@ -110,7 +110,7 @@ describe("E2E: CLI outcome commands", () => {
             await outcomeCommand({
               status: "success",
               rules: "  ",
-              json: true
+              json: true,
             });
           } finally {
             capture.restore();
@@ -176,7 +176,7 @@ describe("E2E: CLI outcome commands", () => {
             outcome: "success",
             rulesUsed: ["b-outcome-apply"],
             recordedAt: "2026-01-01T00:00:00.000Z",
-            path: logPath
+            path: logPath,
           };
           await writeFile(logPath, JSON.stringify(record) + "\n", "utf-8");
 

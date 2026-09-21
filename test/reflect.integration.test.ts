@@ -1,10 +1,10 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { reflectOnSession } from "../src/reflect.js";
-import { createTestConfig, createTestPlaybook } from "./helpers/factories.js";
-import { DiaryEntrySchema } from "../src/types.js";
 import { __resetReflectorStubsForTest } from "../src/llm.js";
+import { reflectOnSession } from "../src/reflect.js";
+import { DiaryEntrySchema } from "../src/types.js";
+import { createTestConfig, createTestPlaybook } from "./helpers/factories.js";
 
 const fixturePath = path.join(process.cwd(), "test/fixtures/diary-success.json");
 
@@ -31,9 +31,9 @@ describe("Reflector pipeline (integration, stubbed LLM)", () => {
             type: "add",
             bullet: { content: "Rule A", category: "testing" },
             reason: "iteration one",
-            sourceSession: diary.sessionPath
-          }
-        ]
+            sourceSession: diary.sessionPath,
+          },
+        ],
       },
       {
         deltas: [
@@ -41,9 +41,9 @@ describe("Reflector pipeline (integration, stubbed LLM)", () => {
             type: "add",
             bullet: { content: "Rule B", category: "testing" },
             reason: "iteration two",
-            sourceSession: diary.sessionPath
-          }
-        ]
+            sourceSession: diary.sessionPath,
+          },
+        ],
       },
       {
         deltas: [
@@ -51,10 +51,10 @@ describe("Reflector pipeline (integration, stubbed LLM)", () => {
             type: "add",
             bullet: { content: "Rule A", category: "testing" },
             reason: "duplicate",
-            sourceSession: diary.sessionPath
-          }
-        ]
-      }
+            sourceSession: diary.sessionPath,
+          },
+        ],
+      },
     ];
 
     process.env.CM_REFLECTOR_STUBS = JSON.stringify(stub);
@@ -63,7 +63,9 @@ describe("Reflector pipeline (integration, stubbed LLM)", () => {
     const deltas = result.deltas;
 
     expect(deltas).toHaveLength(2);
-    const addDeltas = deltas.filter((d): d is Extract<typeof deltas[number], { type: "add" }> => d.type === "add");
+    const addDeltas = deltas.filter(
+      (d): d is Extract<(typeof deltas)[number], { type: "add" }> => d.type === "add",
+    );
     expect(addDeltas[0].bullet.content).toBe("Rule A");
     expect(addDeltas[1].bullet.content).toBe("Rule B");
   });

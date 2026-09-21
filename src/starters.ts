@@ -1,14 +1,14 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
-import {
-  Playbook,
-  PlaybookBullet,
+import { createEmptyPlaybook } from "./playbook.js";
+import type {
   BulletKind,
   BulletMaturity,
-  BulletSource
+  BulletSource,
+  Playbook,
+  PlaybookBullet,
 } from "./types.js";
-import { createEmptyPlaybook } from "./playbook.js";
 import { expandPath, hashContent, now, resolveGlobalDir } from "./utils.js";
 
 type StarterBulletInput = {
@@ -83,8 +83,8 @@ const BUILTIN_STARTERS: StarterDefinition[] = [
         category: "general",
         maturity: "established",
         tags: ["reliability", "networking"],
-      }
-    ]
+      },
+    ],
   },
   {
     name: "react",
@@ -92,33 +92,35 @@ const BUILTIN_STARTERS: StarterDefinition[] = [
     bullets: [
       {
         id: "starter-react-effect-deps",
-        content: "Include every referenced value in useEffect/useMemo dependency arrays to avoid stale closures.",
+        content:
+          "Include every referenced value in useEffect/useMemo dependency arrays to avoid stale closures.",
         category: "react",
         maturity: "established",
-        tags: ["react", "hooks"]
+        tags: ["react", "hooks"],
       },
       {
         id: "starter-react-stable-keys",
         content: "Use stable unique keys for lists; avoid array index keys when order can change.",
         category: "react",
         maturity: "proven",
-        tags: ["react", "lists"]
+        tags: ["react", "lists"],
       },
       {
         id: "starter-react-conditional-guards",
         content: "Guard browser-only APIs (window, document) behind runtime checks for SSR safety.",
         category: "react",
         maturity: "established",
-        tags: ["nextjs", "ssr"]
+        tags: ["nextjs", "ssr"],
       },
       {
         id: "starter-react-accessibility",
-        content: "Provide accessible names/roles for interactive elements and keep tab order predictable.",
+        content:
+          "Provide accessible names/roles for interactive elements and keep tab order predictable.",
         category: "react",
         maturity: "established",
-        tags: ["a11y"]
-      }
-    ]
+        tags: ["a11y"],
+      },
+    ],
   },
   {
     name: "python",
@@ -129,30 +131,32 @@ const BUILTIN_STARTERS: StarterDefinition[] = [
         content: "Use strict type hints and dataclasses/Pydantic models at module boundaries.",
         category: "python",
         maturity: "established",
-        tags: ["typing", "api"]
+        tags: ["typing", "api"],
       },
       {
         id: "starter-python-dependency-injection",
-        content: "Share resources (DB clients, HTTP sessions) via dependency injection instead of globals.",
+        content:
+          "Share resources (DB clients, HTTP sessions) via dependency injection instead of globals.",
         category: "python",
         maturity: "established",
-        tags: ["fastapi", "architecture"]
+        tags: ["fastapi", "architecture"],
       },
       {
         id: "starter-python-timeouts",
         content: "Set explicit timeouts on HTTP and DB operations; never rely on defaults.",
         category: "python",
         maturity: "established",
-        tags: ["reliability"]
+        tags: ["reliability"],
       },
       {
         id: "starter-python-logging",
-        content: "Log structured context (request id, user, model) using a shared logger; avoid print.",
+        content:
+          "Log structured context (request id, user, model) using a shared logger; avoid print.",
         category: "python",
         maturity: "established",
-        tags: ["observability"]
-      }
-    ]
+        tags: ["observability"],
+      },
+    ],
   },
   {
     name: "node",
@@ -163,30 +167,33 @@ const BUILTIN_STARTERS: StarterDefinition[] = [
         content: "Use centralized error middleware; ensure async handlers propagate errors to it.",
         category: "node",
         maturity: "established",
-        tags: ["express", "error-handling"]
+        tags: ["express", "error-handling"],
       },
       {
         id: "starter-node-http-timeouts",
-        content: "Set request and socket timeouts for outbound HTTP clients; fail fast on hung peers.",
+        content:
+          "Set request and socket timeouts for outbound HTTP clients; fail fast on hung peers.",
         category: "node",
         maturity: "established",
-        tags: ["networking"]
+        tags: ["networking"],
       },
       {
         id: "starter-node-config",
-        content: "Load configuration once at startup and validate required env vars; avoid reading env at runtime hotspots.",
+        content:
+          "Load configuration once at startup and validate required env vars; avoid reading env at runtime hotspots.",
         category: "node",
         maturity: "established",
-        tags: ["configuration"]
+        tags: ["configuration"],
       },
       {
         id: "starter-node-shutdown",
-        content: "Handle SIGTERM by stopping new work, draining in-flight requests, and closing connections.",
+        content:
+          "Handle SIGTERM by stopping new work, draining in-flight requests, and closing connections.",
         category: "node",
         maturity: "established",
-        tags: ["ops", "reliability"]
-      }
-    ]
+        tags: ["ops", "reliability"],
+      },
+    ],
   },
   {
     name: "rust",
@@ -197,31 +204,34 @@ const BUILTIN_STARTERS: StarterDefinition[] = [
         content: "Use thiserror/anyhow for rich errors; avoid unwrap/expect in library code.",
         category: "rust",
         maturity: "established",
-        tags: ["error-handling"]
+        tags: ["error-handling"],
       },
       {
         id: "starter-rust-clippy",
-        content: "Run clippy and rustfmt in CI; treat clippy::pedantic warnings as fixes, not noise.",
+        content:
+          "Run clippy and rustfmt in CI; treat clippy::pedantic warnings as fixes, not noise.",
         category: "rust",
         maturity: "established",
-        tags: ["lint"]
+        tags: ["lint"],
       },
       {
         id: "starter-rust-concurrency",
-        content: "Prefer Send/Sync-aware primitives and structured concurrency; avoid spawning detached tasks without supervision.",
+        content:
+          "Prefer Send/Sync-aware primitives and structured concurrency; avoid spawning detached tasks without supervision.",
         category: "rust",
         maturity: "established",
-        tags: ["concurrency"]
+        tags: ["concurrency"],
       },
       {
         id: "starter-rust-logging",
-        content: "Use structured tracing (tracing crate) with request ids instead of println! debugging.",
+        content:
+          "Use structured tracing (tracing crate) with request ids instead of println! debugging.",
         category: "rust",
         maturity: "established",
-        tags: ["observability"]
-      }
-    ]
-  }
+        tags: ["observability"],
+      },
+    ],
+  },
 ];
 
 async function discoverCustomStarterFiles(): Promise<string[]> {
@@ -236,7 +246,11 @@ async function discoverCustomStarterFiles(): Promise<string[]> {
       const entries = await fs.readdir(root, { withFileTypes: true });
       for (const entry of entries) {
         if (!entry.isFile()) continue;
-        if (entry.name.endsWith(".yaml") || entry.name.endsWith(".yml") || entry.name.endsWith(".json")) {
+        if (
+          entry.name.endsWith(".yaml") ||
+          entry.name.endsWith(".yml") ||
+          entry.name.endsWith(".json")
+        ) {
           files.push(path.join(root, entry.name));
         }
       }
@@ -256,11 +270,11 @@ function stableStarterId(defName: string, bullet: StarterBulletInput, index: num
 function normalizeBullet(
   def: StarterDefinition,
   bullet: StarterBulletInput,
-  index: number
+  index: number,
 ): PlaybookBullet {
   const timestamp = now();
   const content = bullet.content || ""; // Handle missing content gracefully
-  
+
   return {
     id: stableStarterId(def.name, bullet, index),
     content: content,
@@ -285,7 +299,7 @@ function normalizeBullet(
     sourceSessions: [`${STARTER_SESSION_TAG}:${def.name}`],
     sourceAgents: [STARTER_SESSION_TAG],
     tags: bullet.tags || [],
-    searchPointer: content.slice(0, 80)
+    searchPointer: content.slice(0, 80),
   };
 }
 
@@ -305,7 +319,7 @@ async function loadCustomStarter(pathname: string): Promise<StarterDefinition | 
       name: parsed.name || path.basename(pathname, path.extname(pathname)),
       description: parsed.description || "Custom starter",
       bullets: parsed.bullets,
-      source: "custom"
+      source: "custom",
     };
   } catch {
     return null;
@@ -317,7 +331,7 @@ export async function listStarters(): Promise<StarterSummary[]> {
     name: starter.name,
     description: starter.description,
     bulletCount: starter.bullets.length,
-    source: "builtin"
+    source: "builtin",
   }));
 
   const customs: StarterSummary[] = [];
@@ -330,7 +344,7 @@ export async function listStarters(): Promise<StarterSummary[]> {
       description: loaded.description,
       bulletCount: loaded.bullets.length,
       source: "custom",
-      path: file
+      path: file,
     });
   }
 
@@ -360,7 +374,7 @@ export async function loadStarter(name: string): Promise<Playbook | null> {
 export function applyStarter(
   target: Playbook,
   starter: Playbook,
-  options: { preferExisting?: boolean } = {}
+  options: { preferExisting?: boolean } = {},
 ): { added: number; skipped: number } {
   const preferExisting = options.preferExisting !== false;
   const existingIds = new Set(target.bullets.map((b) => b.id));

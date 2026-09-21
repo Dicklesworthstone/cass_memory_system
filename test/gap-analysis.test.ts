@@ -1,12 +1,12 @@
-import { describe, test, expect } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import {
-  RULE_CATEGORIES,
-  CATEGORY_KEYWORDS,
   analyzePlaybookGaps,
+  CATEGORY_KEYWORDS,
   detectCategories,
   getGapSearchQueries,
-  scoreSessionForGaps,
+  RULE_CATEGORIES,
   type RuleCategory,
+  scoreSessionForGaps,
 } from "../src/gap-analysis.js";
 import { createEmptyPlaybook } from "../src/playbook.js";
 import { createTestBullet } from "./helpers/factories.js";
@@ -100,8 +100,12 @@ describe("gap-analysis.ts", () => {
     test("retired and deprecated bullets are excluded", () => {
       const pb = createEmptyPlaybook("test");
       pb.bullets.push(createTestBullet({ content: "Active rule", category: "testing" }));
-      pb.bullets.push(createTestBullet({ content: "Retired rule", category: "testing", state: "retired" }));
-      pb.bullets.push(createTestBullet({ content: "Deprecated rule", category: "testing", deprecated: true }));
+      pb.bullets.push(
+        createTestBullet({ content: "Retired rule", category: "testing", state: "retired" }),
+      );
+      pb.bullets.push(
+        createTestBullet({ content: "Deprecated rule", category: "testing", deprecated: true }),
+      );
 
       const analysis = analyzePlaybookGaps(pb);
 
@@ -174,7 +178,7 @@ describe("gap-analysis.ts", () => {
 
     test("returns max 3 categories", () => {
       const categories = detectCategories(
-        "debug error test mock api endpoint performance cache security auth"
+        "debug error test mock api endpoint performance cache security auth",
       );
       expect(categories.length).toBeLessThanOrEqual(3);
     });
@@ -210,7 +214,7 @@ describe("gap-analysis.ts", () => {
       const queries = getGapSearchQueries(gaps);
 
       // Security keywords should be in queries since it's critical
-      expect(queries.some(q => q.includes("security") || q.includes("auth"))).toBe(true);
+      expect(queries.some((q) => q.includes("security") || q.includes("auth"))).toBe(true);
     });
 
     test("returns empty array when no gaps", () => {

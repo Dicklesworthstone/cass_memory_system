@@ -8,19 +8,18 @@
  * - Invalid diary entries
  * - Schema violations in deltas
  */
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { writeFileSync, mkdirSync, readFileSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import yaml from "yaml";
-
-import { orchestrateReflection } from "../src/orchestrator.js";
-import { reflectOnSession } from "../src/reflect.js";
 import { curatePlaybook } from "../src/curate.js";
 import { generateDiary } from "../src/diary.js";
-import { DiaryEntrySchema } from "../src/types.js";
-import { cleanupEnvironment, createIsolatedEnvironment, TestEnv } from "./helpers/temp.js";
-import { createTestConfig, createTestPlaybook, createTestBullet } from "./helpers/factories.js";
 import { __resetReflectorStubsForTest } from "../src/llm.js";
+import { orchestrateReflection } from "../src/orchestrator.js";
+import { reflectOnSession } from "../src/reflect.js";
+import { DiaryEntrySchema } from "../src/types.js";
+import { createTestBullet, createTestConfig, createTestPlaybook } from "./helpers/factories.js";
+import { cleanupEnvironment, createIsolatedEnvironment, type TestEnv } from "./helpers/temp.js";
 
 async function withIsolatedHome<T>(fn: (env: TestEnv) => Promise<T>): Promise<T> {
   const env = await createIsolatedEnvironment("pipeline-failures-test");
@@ -48,10 +47,19 @@ function writeSession(sessionPath: string, content: string): void {
 
 function writeValidSession(sessionPath: string): void {
   const lines = [
-    JSON.stringify({ role: "user", content: "Help me write a function that validates email addresses." }),
-    JSON.stringify({ role: "assistant", content: "Here's a regex-based email validator with proper error handling." }),
+    JSON.stringify({
+      role: "user",
+      content: "Help me write a function that validates email addresses.",
+    }),
+    JSON.stringify({
+      role: "assistant",
+      content: "Here's a regex-based email validator with proper error handling.",
+    }),
     JSON.stringify({ role: "user", content: "Can you add unit tests for edge cases?" }),
-    JSON.stringify({ role: "assistant", content: "Added comprehensive tests covering empty strings, special chars, and subdomains." }),
+    JSON.stringify({
+      role: "assistant",
+      content: "Added comprehensive tests covering empty strings, special chars, and subdomains.",
+    }),
   ];
   writeSession(sessionPath, lines.join("\n") + "\n");
 }
@@ -178,7 +186,10 @@ describe("Pipeline failure modes", () => {
           "invalid json line",
           JSON.stringify({ role: "assistant", content: "Another valid line" }),
           "{truncated json",
-          JSON.stringify({ role: "user", content: "Final valid line that makes this long enough to process" }),
+          JSON.stringify({
+            role: "user",
+            content: "Final valid line that makes this long enough to process",
+          }),
         ];
         writeSession(sessionPath, lines.join("\n") + "\n");
 
@@ -221,14 +232,22 @@ describe("Pipeline failure modes", () => {
         writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])), "utf-8");
 
         process.env.CASS_MEMORY_LLM = "none";
-        process.env.CM_REFLECTOR_STUBS = JSON.stringify([{
-          deltas: [{
-            type: "add",
-            bullet: { content: "Rule from session with missing cass", category: "testing", tags: [] },
-            reason: "Test",
-            sourceSession: "stub",
-          }]
-        }]);
+        process.env.CM_REFLECTOR_STUBS = JSON.stringify([
+          {
+            deltas: [
+              {
+                type: "add",
+                bullet: {
+                  content: "Rule from session with missing cass",
+                  category: "testing",
+                  tags: [],
+                },
+                reason: "Test",
+                sourceSession: "stub",
+              },
+            ],
+          },
+        ]);
 
         const outcome = await orchestrateReflection(config, { session: sessionPath });
 
@@ -374,7 +393,11 @@ describe("Pipeline failure modes", () => {
 
       const delta = {
         type: "add" as const,
-        bullet: { content: "Prefer sync database operations for simplicity", category: "database", tags: [] },
+        bullet: {
+          content: "Prefer sync database operations for simplicity",
+          category: "database",
+          tags: [],
+        },
         reason: "Contradicts existing rules",
         sourceSession: "/path",
       };

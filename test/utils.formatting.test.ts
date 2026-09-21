@@ -1,11 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import {
-  formatRelativeTime,
+  error,
   formatLastHelpful,
+  formatRelativeTime,
   generateSuggestedQueries,
   log,
   warn,
-  error,
 } from "../src/utils.js";
 
 // =============================================================================
@@ -82,9 +82,7 @@ describe("formatLastHelpful", () => {
 
   it("returns 'Never' for feedbackEvents with no helpful type", () => {
     const bullet = {
-      feedbackEvents: [
-        { type: "harmful", timestamp: new Date().toISOString() },
-      ],
+      feedbackEvents: [{ type: "harmful", timestamp: new Date().toISOString() }],
     };
     expect(formatLastHelpful(bullet)).toBe("Never");
   });
@@ -158,9 +156,7 @@ describe("formatLastHelpful", () => {
 
   it("uses feedbackEvents when helpfulEvents is undefined", () => {
     const bullet = {
-      feedbackEvents: [
-        { type: "helpful", timestamp: new Date().toISOString() },
-      ],
+      feedbackEvents: [{ type: "helpful", timestamp: new Date().toISOString() }],
     };
     expect(formatLastHelpful(bullet)).toBe("just now");
   });
@@ -169,10 +165,7 @@ describe("formatLastHelpful", () => {
     const oldTimestamp = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
     const recentTimestamp = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
     const bullet = {
-      helpfulEvents: [
-        { timestamp: oldTimestamp },
-        { timestamp: recentTimestamp },
-      ],
+      helpfulEvents: [{ timestamp: oldTimestamp }, { timestamp: recentTimestamp }],
     };
     expect(formatLastHelpful(bullet)).toBe("2 hours ago");
   });
@@ -180,20 +173,14 @@ describe("formatLastHelpful", () => {
   it("ignores invalid timestamps", () => {
     const validTimestamp = new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString();
     const bullet = {
-      helpfulEvents: [
-        { timestamp: "not-a-date" },
-        { timestamp: validTimestamp },
-      ],
+      helpfulEvents: [{ timestamp: "not-a-date" }, { timestamp: validTimestamp }],
     };
     expect(formatLastHelpful(bullet)).toBe("1 hour ago");
   });
 
   it("returns 'Never' when all timestamps are invalid", () => {
     const bullet = {
-      helpfulEvents: [
-        { timestamp: "invalid1" },
-        { timestamp: "invalid2" },
-      ],
+      helpfulEvents: [{ timestamp: "invalid1" }, { timestamp: "invalid2" }],
     };
     expect(formatLastHelpful(bullet)).toBe("Never");
   });
@@ -233,9 +220,12 @@ describe("generateSuggestedQueries", () => {
   });
 
   it("includes task keywords in suggestions", () => {
-    const result = generateSuggestedQueries("authentication timeout", ["authentication", "timeout"]);
+    const result = generateSuggestedQueries("authentication timeout", [
+      "authentication",
+      "timeout",
+    ]);
     const hasRelevantKeyword = result.some(
-      (q) => q.includes("authentication") || q.includes("timeout")
+      (q) => q.includes("authentication") || q.includes("timeout"),
     );
     expect(hasRelevantKeyword).toBe(true);
   });
@@ -279,19 +269,26 @@ describe("generateSuggestedQueries", () => {
 
   it("default maxSuggestions is 5", () => {
     const result = generateSuggestedQueries("task with many keywords", [
-      "a", "b", "c", "d", "e", "f", "g", "h",
+      "a",
+      "b",
+      "c",
+      "d",
+      "e",
+      "f",
+      "g",
+      "h",
     ]);
     expect(result.length).toBeLessThanOrEqual(5);
   });
 
   it("varies day ranges in suggestions", () => {
-    const result = generateSuggestedQueries("complex task", [
-      "authentication", "timeout", "error",
-    ]);
-    const dayMatches = result.map((q) => {
-      const match = q.match(/--days\s+(\d+)/);
-      return match ? parseInt(match[1]) : null;
-    }).filter(Boolean);
+    const result = generateSuggestedQueries("complex task", ["authentication", "timeout", "error"]);
+    const dayMatches = result
+      .map((q) => {
+        const match = q.match(/--days\s+(\d+)/);
+        return match ? parseInt(match[1]) : null;
+      })
+      .filter(Boolean);
 
     // Should have different day ranges
     if (dayMatches.length > 1) {
@@ -356,10 +353,10 @@ describe("formatting edge cases", () => {
   });
 
   it("generateSuggestedQueries handles special characters in task", () => {
-    const result = generateSuggestedQueries(
-      "fix bug with 'quotes' and \"double quotes\"",
-      ["fix", "bug"]
-    );
+    const result = generateSuggestedQueries("fix bug with 'quotes' and \"double quotes\"", [
+      "fix",
+      "bug",
+    ]);
     expect(Array.isArray(result)).toBe(true);
   });
 

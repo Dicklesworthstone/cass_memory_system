@@ -8,13 +8,13 @@
  * - Text output (via stdout capture)
  * - Edge cases (no evidence, no feedback, deprecated bullets)
  */
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import yaml from "yaml";
-import { Playbook, PlaybookBullet, DiaryEntry } from "../src/types.js";
 import { whyCommand } from "../src/commands/why.js";
-import { withTempCassHome, TestEnv } from "./helpers/temp.js";
+import type { DiaryEntry, Playbook, PlaybookBullet } from "../src/types.js";
+import { type TestEnv, withTempCassHome } from "./helpers/temp.js";
 
 // Helper to create a test bullet with known properties
 function createTestBullet(overrides: Partial<PlaybookBullet> = {}): PlaybookBullet {
@@ -40,7 +40,7 @@ function createTestBullet(overrides: Partial<PlaybookBullet> = {}): PlaybookBull
     deprecated: overrides.deprecated ?? false,
     pinned: false,
     reasoning: overrides.reasoning,
-    confidenceDecayHalfLifeDays: overrides.confidenceDecayHalfLifeDays ?? 90
+    confidenceDecayHalfLifeDays: overrides.confidenceDecayHalfLifeDays ?? 90,
   };
 }
 
@@ -53,10 +53,10 @@ function createTestPlaybook(bullets: PlaybookBullet[] = []): Playbook {
     metadata: {
       createdAt: "2025-01-01T00:00:00Z",
       totalReflections: 0,
-      totalSessionsProcessed: 0
+      totalSessionsProcessed: 0,
     },
     deprecatedPatterns: [],
-    bullets
+    bullets,
   };
 }
 
@@ -77,20 +77,27 @@ function createTestDiary(overrides: Partial<DiaryEntry> = {}): DiaryEntry {
     keyLearnings: overrides.keyLearnings ?? ["Test learning"],
     relatedSessions: overrides.relatedSessions ?? [],
     tags: overrides.tags ?? [],
-    searchAnchors: overrides.searchAnchors ?? []
+    searchAnchors: overrides.searchAnchors ?? [],
   };
 }
 
 // Helper to set up a test environment with playbook and config
-async function setupTestEnv(env: TestEnv, bullets: PlaybookBullet[], diaries: DiaryEntry[] = []): Promise<void> {
+async function setupTestEnv(
+  env: TestEnv,
+  bullets: PlaybookBullet[],
+  diaries: DiaryEntry[] = [],
+): Promise<void> {
   const playbook = createTestPlaybook(bullets);
   writeFileSync(env.playbookPath, yaml.stringify(playbook));
 
   // Create config
-  writeFileSync(env.configPath, JSON.stringify({
-    playbookPath: env.playbookPath,
-    diaryDir: env.diaryDir
-  }));
+  writeFileSync(
+    env.configPath,
+    JSON.stringify({
+      playbookPath: env.playbookPath,
+      diaryDir: env.diaryDir,
+    }),
+  );
 
   // Write diary entries if provided
   for (const diary of diaries) {
@@ -115,7 +122,7 @@ function captureConsole(): { logs: string[]; errors: string[]; restore: () => vo
     restore: () => {
       console.log = originalLog;
       console.error = originalError;
-    }
+    },
   };
 }
 
@@ -137,7 +144,7 @@ describe("why command - Unit Tests", () => {
       await withTempCassHome(async (env) => {
         const bullet = createTestBullet({
           id: "b-exact123",
-          content: "Use const for immutable values"
+          content: "Use const for immutable values",
         });
         await setupTestEnv(env, [bullet]);
 
@@ -194,7 +201,7 @@ describe("why command - Unit Tests", () => {
         }
 
         expect(process.exitCode).toBe(2);
-        expect(capture.errors.some(e => e.includes("not found"))).toBe(true);
+        expect(capture.errors.some((e) => e.includes("not found"))).toBe(true);
       });
     });
   });
@@ -209,7 +216,7 @@ describe("why command - Unit Tests", () => {
           maturity: "proven",
           createdAt: "2025-06-15T10:30:00Z",
           helpfulCount: 5,
-          harmfulCount: 1
+          harmfulCount: 1,
         });
         await setupTestEnv(env, [bullet]);
 
@@ -237,7 +244,7 @@ describe("why command - Unit Tests", () => {
       await withTempCassHome(async (env) => {
         const bullet = createTestBullet({
           id: "b-reason123",
-          reasoning: 'Learned from session where "async operations" caused issues'
+          reasoning: 'Learned from session where "async operations" caused issues',
         });
         await setupTestEnv(env, [bullet]);
 
@@ -259,7 +266,7 @@ describe("why command - Unit Tests", () => {
       await withTempCassHome(async (env) => {
         const bullet = createTestBullet({
           id: "b-evidence123",
-          reasoning: 'The user said "always validate input" and "never trust user data"'
+          reasoning: 'The user said "always validate input" and "never trust user data"',
         });
         await setupTestEnv(env, [bullet]);
 
@@ -286,14 +293,14 @@ describe("why command - Unit Tests", () => {
             {
               type: "helpful",
               timestamp: "2025-06-01T10:00:00Z",
-              sessionPath: "/sessions/s1.jsonl"
+              sessionPath: "/sessions/s1.jsonl",
             },
             {
               type: "harmful",
               timestamp: "2025-06-02T10:00:00Z",
-              reason: "caused_bug"
-            }
-          ]
+              reason: "caused_bug",
+            },
+          ],
         });
         await setupTestEnv(env, [bullet]);
 
@@ -318,7 +325,7 @@ describe("why command - Unit Tests", () => {
         const bullet = createTestBullet({
           id: "b-effective123",
           helpfulCount: 15,
-          harmfulCount: 0
+          harmfulCount: 0,
         });
         await setupTestEnv(env, [bullet]);
 
@@ -334,7 +341,7 @@ describe("why command - Unit Tests", () => {
         const output = parseJsonSuccessData(capture.logs.join(""));
         // Effectiveness should be one of the defined levels
         expect(["Very high", "High", "Moderate", "Low", "Negative"]).toContain(
-          output.currentStatus.effectiveness
+          output.currentStatus.effectiveness,
         );
         // Verify counts are passed through correctly
         expect(output.currentStatus.helpfulCount).toBe(15);
@@ -348,10 +355,7 @@ describe("why command - Unit Tests", () => {
       await withTempCassHome(async (env) => {
         const bullet = createTestBullet({
           id: "b-sources123",
-          sourceSessions: [
-            "/sessions/session1.jsonl",
-            "/sessions/session2.jsonl"
-          ]
+          sourceSessions: ["/sessions/session1.jsonl", "/sessions/session2.jsonl"],
         });
         await setupTestEnv(env, [bullet]);
 
@@ -376,7 +380,7 @@ describe("why command - Unit Tests", () => {
         const sessions = Array.from({ length: 10 }, (_, i) => `/sessions/s${i}.jsonl`);
         const bullet = createTestBullet({
           id: "b-many123",
-          sourceSessions: sessions
+          sourceSessions: sessions,
         });
         await setupTestEnv(env, [bullet]);
 
@@ -399,7 +403,7 @@ describe("why command - Unit Tests", () => {
         const sessions = Array.from({ length: 15 }, (_, i) => `/sessions/s${i}.jsonl`);
         const bullet = createTestBullet({
           id: "b-verbose123",
-          sourceSessions: sessions
+          sourceSessions: sessions,
         });
         await setupTestEnv(env, [bullet]);
 
@@ -425,7 +429,7 @@ describe("why command - Unit Tests", () => {
           id: "b-noevidence123",
           sourceSessions: [],
           feedbackEvents: [],
-          reasoning: undefined
+          reasoning: undefined,
         });
         await setupTestEnv(env, [bullet]);
 
@@ -452,7 +456,7 @@ describe("why command - Unit Tests", () => {
         const bullet = createTestBullet({
           id: "b-deprecated123",
           deprecated: true,
-          deprecationReason: "Outdated practice"
+          deprecationReason: "Outdated practice",
         });
         await setupTestEnv(env, [bullet]);
 
@@ -477,7 +481,7 @@ describe("why command - Unit Tests", () => {
           id: "b-antipattern123",
           content: "AVOID: Using var for variable declarations",
           isNegative: true,
-          tags: ["anti-pattern"]
+          tags: ["anti-pattern"],
         });
         await setupTestEnv(env, [bullet]);
 
@@ -500,7 +504,7 @@ describe("why command - Unit Tests", () => {
       await withTempCassHome(async (env) => {
         const bullet = createTestBullet({
           id: "b-special123",
-          content: 'Use "double quotes" and handle <html> & special chars'
+          content: 'Use "double quotes" and handle <html> & special chars',
         });
         await setupTestEnv(env, [bullet]);
 
@@ -530,7 +534,7 @@ describe("why command - Unit Tests", () => {
           category: "error-handling",
           maturity: "proven",
           helpfulCount: 8,
-          harmfulCount: 2
+          harmfulCount: 2,
         });
         await setupTestEnv(env, [bullet]);
 
@@ -582,7 +586,7 @@ describe("why command - Unit Tests", () => {
       await withTempCassHome(async (env) => {
         const bullet = createTestBullet({
           id: "b-diary123",
-          createdAt: "2025-06-15T12:00:00Z"
+          createdAt: "2025-06-15T12:00:00Z",
         });
         await setupTestEnv(env, [bullet], []);
 
@@ -605,7 +609,7 @@ describe("why command - Unit Tests", () => {
     test("includes diaryEntries field in result", async () => {
       await withTempCassHome(async (env) => {
         const bullet = createTestBullet({
-          id: "b-diary456"
+          id: "b-diary456",
         });
         await setupTestEnv(env, [bullet]);
 

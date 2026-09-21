@@ -4,18 +4,18 @@
  * Per bead cass_memory_system-xex1:
  * init → quickstart → context → outcome(success) → reflect → stats → context (learning applied)
  */
-import { describe, it, expect } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
-import { initCommand } from "../src/commands/init.js";
-import { quickstartCommand } from "../src/commands/quickstart.js";
 import { generateContextResult } from "../src/commands/context.js";
+import { initCommand } from "../src/commands/init.js";
 import { outcomeCommand } from "../src/commands/outcome.js";
+import { quickstartCommand } from "../src/commands/quickstart.js";
 import { reflectCommand } from "../src/commands/reflect.js";
 import { statsCommand } from "../src/commands/stats.js";
-import { withTempCassHome, type TestEnv } from "./helpers/temp.js";
 import { createE2ELogger } from "./helpers/e2e-logger.js";
+import { type TestEnv, withTempCassHome } from "./helpers/temp.js";
 
 function captureConsole() {
   const logs: string[] = [];
@@ -50,7 +50,7 @@ function captureConsole() {
 async function snapshotFile(
   log: ReturnType<typeof createE2ELogger>,
   name: string,
-  filePath: string
+  filePath: string,
 ): Promise<void> {
   const contents = await readFile(filePath, "utf-8").catch(() => "");
   log.snapshot(name, contents);
@@ -68,7 +68,7 @@ async function patchConfigForOffline(env: TestEnv): Promise<void> {
 
 async function withEnv<T>(
   next: Record<string, string | undefined>,
-  fn: () => Promise<T>
+  fn: () => Promise<T>,
 ): Promise<T> {
   const prev: Record<string, string | undefined> = {};
   for (const [k, v] of Object.entries(next)) {
@@ -192,7 +192,7 @@ describe("Workflow E2E: first week", () => {
                 "Start with a failing test for edge cases, then implement the minimal function to make it pass.",
             }),
           ].join("\n") + "\n",
-          "utf-8"
+          "utf-8",
         );
 
         log.step("Run reflect on a session (stubbed deltas)", { sessionPath });
@@ -223,13 +223,13 @@ describe("Workflow E2E: first week", () => {
             log.snapshot("reflect.stdout", reflectStdout);
             const reflectPayload = JSON.parse(reflectStdout) as any;
             expect(reflectPayload.success).toBe(true);
-          }
+          },
         );
 
         const playbookAfterReflectRaw = await readFile(env.playbookPath, "utf-8");
         const playbookAfterReflect = yaml.parse(playbookAfterReflectRaw) as any;
         const learnedBullet = (playbookAfterReflect?.bullets || []).find(
-          (b: any) => typeof b?.content === "string" && b.content === learnedContent
+          (b: any) => typeof b?.content === "string" && b.content === learnedContent,
         );
         expect(learnedBullet).toBeDefined();
         log.snapshot("playbook.afterReflect", playbookAfterReflect);
@@ -252,11 +252,10 @@ describe("Workflow E2E: first week", () => {
         log.step("Generate context for second task (learning applied)");
         const context2 = await generateContextResult("write failing tests for edge cases", {});
         log.snapshot("context.second", context2.result);
-        expect(
-          context2.result.relevantBullets.some((b: any) => b?.id === learnedBullet.id)
-        ).toBe(true);
+        expect(context2.result.relevantBullets.some((b: any) => b?.id === learnedBullet.id)).toBe(
+          true,
+        );
       }, "cass-first-week");
     });
   });
 });
-

@@ -1,18 +1,18 @@
 import chalk from "chalk";
-import { icon } from "../output.js";
+import { type CassRunner, cassAvailable, cassTimeline } from "../cass.js";
 import { getDefaultConfig, readGlobalConfigRaw, saveConfig } from "../config.js";
 import { withLock } from "../lock.js";
-import { cassAvailable, cassTimeline, type CassRunner } from "../cass.js";
-import { Config, ConfigSchema, ErrorCode } from "../types.js";
+import { icon } from "../output.js";
+import { type Config, ConfigSchema, ErrorCode } from "../types.js";
 import {
+  canonicalAgentName,
   ensureGlobalStructure,
-  resolveGlobalConfigFile,
-  now,
   getCliName,
+  now,
   printJsonResult,
   reportError,
+  resolveGlobalConfigFile,
   validatePositiveInt,
-  canonicalAgentName,
 } from "../utils.js";
 
 function normalizeAgentName(agent: string): string {
@@ -87,12 +87,16 @@ async function loadGlobalConfigEnsuringInit(): Promise<Config> {
 async function getCassAgentCounts(
   days: number,
   cassPath: string,
-  runner?: CassRunner
+  runner?: CassRunner,
 ): Promise<Record<string, number> | null> {
-  const available = runner ? cassAvailable(cassPath, { quiet: true }, runner) : cassAvailable(cassPath, { quiet: true });
+  const available = runner
+    ? cassAvailable(cassPath, { quiet: true }, runner)
+    : cassAvailable(cassPath, { quiet: true });
   if (!available) return null;
 
-  const timeline = runner ? await cassTimeline(days, cassPath, runner) : await cassTimeline(days, cassPath);
+  const timeline = runner
+    ? await cassTimeline(days, cassPath, runner)
+    : await cassTimeline(days, cassPath);
   const counts: Record<string, number> = {};
 
   for (const group of timeline.groups) {
@@ -114,7 +118,7 @@ export async function privacyCommand(
   action: "status" | "enable" | "disable" | "allow" | "deny",
   args: string[],
   flags: { json?: boolean; days?: number } = {},
-  deps: { cassRunner?: CassRunner } = {}
+  deps: { cassRunner?: CassRunner } = {},
 ): Promise<void> {
   const startedAtMs = Date.now();
   const command = `privacy:${action}`;
@@ -166,12 +170,18 @@ export async function privacyCommand(
       console.log(chalk.bold("\nPrivacy Status"));
       console.log(chalk.gray("═".repeat(50)));
       console.log(
-        `Cross-agent enrichment: ${config.crossAgent.enabled ? chalk.green("ENABLED") : chalk.yellow("DISABLED")}`
+        `Cross-agent enrichment: ${config.crossAgent.enabled ? chalk.green("ENABLED") : chalk.yellow("DISABLED")}`,
       );
-      console.log(`Consent given: ${config.crossAgent.consentGiven ? chalk.green("yes") : chalk.yellow("no")}`);
+      console.log(
+        `Consent given: ${config.crossAgent.consentGiven ? chalk.green("yes") : chalk.yellow("no")}`,
+      );
       console.log(`Consent date: ${config.crossAgent.consentDate || "none"}`);
-      console.log(`Allowlist: ${formatAgentList((config.crossAgent.agents || []).map(normalizeAgentName))}`);
-      console.log(`Audit log: ${config.crossAgent.auditLog === false ? chalk.yellow("off") : chalk.green("on")}`);
+      console.log(
+        `Allowlist: ${formatAgentList((config.crossAgent.agents || []).map(normalizeAgentName))}`,
+      );
+      console.log(
+        `Audit log: ${config.crossAgent.auditLog === false ? chalk.yellow("off") : chalk.green("on")}`,
+      );
 
       if (counts) {
         console.log(chalk.bold(`\nAgents seen in cass timeline (last ${days} days):`));
@@ -184,7 +194,9 @@ export async function privacyCommand(
           }
         }
       } else {
-        console.log(chalk.yellow("\n(cass not available; cannot compute per-agent session counts)"));
+        console.log(
+          chalk.yellow("\n(cass not available; cannot compute per-agent session counts)"),
+        );
       }
 
       console.log(chalk.dim(`\nTo enable: ${cli} privacy enable`));
@@ -196,7 +208,7 @@ export async function privacyCommand(
       await withLock(globalConfigPath, async () => {
         // Reload config inside lock to ensure atomic update
         config = await loadGlobalConfigEnsuringInit();
-        
+
         const requested = args.map(normalizeAgentName).filter(Boolean);
         const discoveredCounts = await getCassAgentCounts(days, config.cassPath, runner);
         const discoveredAgents = discoveredCounts ? Object.keys(discoveredCounts) : [];
@@ -260,7 +272,9 @@ export async function privacyCommand(
       await withLock(globalConfigPath, async () => {
         config = await loadGlobalConfigEnsuringInit();
         const normalized = normalizeAgentName(agent);
-        const next = Array.from(new Set([...(config.crossAgent.agents || []).map(normalizeAgentName), normalized])).sort();
+        const next = Array.from(
+          new Set([...(config.crossAgent.agents || []).map(normalizeAgentName), normalized]),
+        ).sort();
 
         config.crossAgent = {
           ...config.crossAgent,
@@ -295,7 +309,10 @@ export async function privacyCommand(
       await withLock(globalConfigPath, async () => {
         config = await loadGlobalConfigEnsuringInit();
         const normalized = normalizeAgentName(agent);
-        const next = (config.crossAgent.agents || []).map(normalizeAgentName).filter((a) => a !== normalized).sort();
+        const next = (config.crossAgent.agents || [])
+          .map(normalizeAgentName)
+          .filter((a) => a !== normalized)
+          .sort();
 
         config.crossAgent = {
           ...config.crossAgent,
@@ -306,7 +323,9 @@ export async function privacyCommand(
         if (flags.json) {
           printJsonResult(command, { crossAgent: config.crossAgent }, { startedAtMs });
         } else {
-          console.log(chalk.green(`${icon("success")} Removed agent '${normalized}' from allowlist`));
+          console.log(
+            chalk.green(`${icon("success")} Removed agent '${normalized}' from allowlist`),
+          );
           console.log(`  Allowlist: ${formatAgentList(next)}`);
         }
       });
