@@ -362,7 +362,10 @@ export async function reflectCommand(
         errors: result.errors,
         autoOutcome: result.autoOutcome,
       },
-      { startedAtMs },
+      // Per-session and discovery failures are also surfaced as envelope
+      // warnings so a cron consumer can tell "nothing to learn" from "could
+      // not look" without parsing `data.errors` (#78).
+      { startedAtMs, warnings: result.errors.length > 0 ? result.errors : undefined },
     );
     return;
   }

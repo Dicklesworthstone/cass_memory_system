@@ -1254,9 +1254,16 @@ Key Learnings: ${diary.keyLearnings.join("\n- ")}
     iterationNote,
   });
 
-  return llmWithRetry(async () => {
-    return generateObjectSafe(schema, prompt, config, 3, io);
-  }, "runReflector");
+  return llmWithRetry(
+    async () => {
+      return generateObjectSafe(schema, prompt, config, 3, io);
+    },
+    "runReflector",
+    {
+      perOperationTimeoutMs: config.llmTimeoutMs,
+      totalTimeoutMs: config.llmTotalTimeoutMs,
+    },
+  );
 }
 
 export interface ValidatorResult {
@@ -1307,30 +1314,37 @@ export async function runValidator(
     evidence: safeEvidence,
   });
 
-  return llmWithRetry(async () => {
-    const object = await generateObjectSafe(ValidatorOutputSchema, prompt, config, 3, io);
+  return llmWithRetry(
+    async () => {
+      const object = await generateObjectSafe(ValidatorOutputSchema, prompt, config, 3, io);
 
-    const supporting = object.evidence?.supporting ?? [];
-    const contradicting = object.evidence?.contradicting ?? [];
+      const supporting = object.evidence?.supporting ?? [];
+      const contradicting = object.evidence?.contradicting ?? [];
 
-    const mappedEvidence = [
-      ...supporting.map((s: string) => ({ sessionPath: "unknown", snippet: s, supports: true })),
-      ...contradicting.map((s: string) => ({
-        sessionPath: "unknown",
-        snippet: s,
-        supports: false,
-      })),
-    ];
+      const mappedEvidence = [
+        ...supporting.map((s: string) => ({ sessionPath: "unknown", snippet: s, supports: true })),
+        ...contradicting.map((s: string) => ({
+          sessionPath: "unknown",
+          snippet: s,
+          supports: false,
+        })),
+      ];
 
-    return {
-      valid: object.verdict === "ACCEPT",
-      verdict: object.verdict,
-      confidence: object.confidence,
-      reason: object.reason,
-      evidence: mappedEvidence,
-      suggestedRefinement: object.suggestedRefinement || undefined,
-    };
-  }, "runValidator");
+      return {
+        valid: object.verdict === "ACCEPT",
+        verdict: object.verdict,
+        confidence: object.confidence,
+        reason: object.reason,
+        evidence: mappedEvidence,
+        suggestedRefinement: object.suggestedRefinement || undefined,
+      };
+    },
+    "runValidator",
+    {
+      perOperationTimeoutMs: config.llmTimeoutMs,
+      totalTimeoutMs: config.llmTotalTimeoutMs,
+    },
+  );
 }
 
 export async function generateContext(
@@ -1348,16 +1362,23 @@ export async function generateContext(
     deprecatedPatterns: truncateForContext(deprecatedPatterns, { maxChars: 5000 }),
   });
 
-  return llmWithRetry(async () => {
-    const result = await generateObjectSafe(
-      z.object({ briefing: z.string() }),
-      prompt,
-      config,
-      3,
-      io,
-    );
-    return result.briefing;
-  }, "generateContext");
+  return llmWithRetry(
+    async () => {
+      const result = await generateObjectSafe(
+        z.object({ briefing: z.string() }),
+        prompt,
+        config,
+        3,
+        io,
+      );
+      return result.briefing;
+    },
+    "generateContext",
+    {
+      perOperationTimeoutMs: config.llmTimeoutMs,
+      totalTimeoutMs: config.llmTotalTimeoutMs,
+    },
+  );
 }
 
 export async function generateSearchQueries(
@@ -1375,16 +1396,23 @@ Generate 3-5 diverse search queries to find relevant information:
 
 Make queries specific enough to be useful but broad enough to match variations.`;
 
-  return llmWithRetry(async () => {
-    const result = await generateObjectSafe(
-      z.object({ queries: z.array(z.string()).max(5) }),
-      prompt,
-      config,
-      3,
-      io,
-    );
-    return result.queries;
-  }, "generateSearchQueries");
+  return llmWithRetry(
+    async () => {
+      const result = await generateObjectSafe(
+        z.object({ queries: z.array(z.string()).max(5) }),
+        prompt,
+        config,
+        3,
+        io,
+      );
+      return result.queries;
+    },
+    "generateSearchQueries",
+    {
+      perOperationTimeoutMs: config.llmTimeoutMs,
+      totalTimeoutMs: config.llmTotalTimeoutMs,
+    },
+  );
 }
 
 // --- Multi-Provider Fallback ---

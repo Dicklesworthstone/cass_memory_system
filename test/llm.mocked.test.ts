@@ -163,3 +163,23 @@ describe("LLM flows with injected generateObject", () => {
     expect(prompt).toContain("Session: /tmp/s2");
   });
 });
+
+describe("runReflector honors configured LLM timeouts (#78)", () => {
+  it("times out after config.llmTimeoutMs instead of the 30s default", async () => {
+    const io: LLMIO = {
+      generateObject: () => new Promise(() => {}), // never resolves
+    };
+    const config = createTestConfig({
+      apiKey: "sk-ant-test-0000000000000000",
+      llmTimeoutMs: 20,
+      llmTotalTimeoutMs: 5000,
+    });
+    const schema = z.object({ deltas: z.array(z.object({ type: z.string() })) });
+    const started = Date.now();
+    await expect(
+      runReflector(schema, createTestDiary(), "bullets", "history", 0, config, io),
+    ).rejects.toThrow(/runReflector timed out after 20ms/);
+    // Three attempts with 20ms budgets plus backoff must stay far below 30s.
+    expect(Date.now() - started).toBeLessThan(20000);
+  }, 25000);
+});

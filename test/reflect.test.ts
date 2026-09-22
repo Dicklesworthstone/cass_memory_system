@@ -720,3 +720,78 @@ describe("reflectCommand human output", () => {
     });
   });
 });
+
+describe("reflectOnSession reflector failures (#78)", () => {
+  const config = createTestConfig();
+
+  test("reports a failure when the reflector never produced deltas", async () => {
+    const diary = createTestDiary();
+    const playbook = createTestPlaybook();
+    await withLlmShim(
+      { errors: { reflector: new Error("runReflector timed out after 30000ms") } },
+      async (io) => {
+        const result = await reflectOnSession(diary, playbook, config, io);
+        expect(result.deltas).toEqual([]);
+        expect(result.failure).toContain("runReflector timed out after 30000ms");
+      },
+    );
+  });
+
+  test("a pass that proposed nothing still counts as a completed pass", async () => {
+    const diary = createTestDiary();
+    const playbook = createTestPlaybook();
+    let calls = 0;
+    await withLlmShim(
+      {
+        reflector: () => {
+          calls++;
+          if (calls > 1) throw new Error("invalid_api_key: rejected on the second pass");
+          return { deltas: [] };
+        },
+      },
+      async (io) => {
+        const result = await reflectOnSession(
+          diary,
+          playbook,
+          { ...config, maxReflectorIterations: 3 },
+          io,
+        );
+        expect(result.deltas).toEqual([]);
+        expect(result.failure).toBeUndefined();
+      },
+    );
+  });
+
+  test("keeps deltas from a successful pass when a later iteration fails", async () => {
+    const diary = createTestDiary();
+    const playbook = createTestPlaybook();
+    const delta: PlaybookDelta = {
+      type: "add",
+      bullet: { content: "Rule from pass one", category: "test" },
+      reason: "first pass worked",
+      sourceSession: diary.sessionPath,
+    };
+    let calls = 0;
+    await withLlmShim(
+      {
+        reflector: () => {
+          calls++;
+          if (calls > 1) throw new Error("invalid_api_key: rejected on the second pass");
+          return { deltas: [delta] };
+        },
+      },
+      async (io) => {
+        const result = await reflectOnSession(
+          diary,
+          playbook,
+          { ...config, maxReflectorIterations: 3 },
+          io,
+        );
+        expect(result.deltas.map((d) => (d.type === "add" ? d.bullet.content : d.type))).toEqual([
+          "Rule from pass one",
+        ]);
+        expect(result.failure).toBeUndefined();
+      },
+    );
+  });
+});

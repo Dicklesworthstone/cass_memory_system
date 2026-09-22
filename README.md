@@ -1536,6 +1536,8 @@ back to whichever file is active, in its own format.
 | `maxHistoryInContext` | `10` | Max history snippets to return |
 | `sessionLookbackDays` | `7` | Days to search for related sessions |
 | `minRelevanceScore` | `0.1` | Min relevance to include a bullet |
+| `cassHistoryTimeoutSeconds` | `20` | Budget for the `cass search` behind `cm context` history snippets; raise it on large archives (env: `CM_CASS_HISTORY_TIMEOUT_SECONDS`) |
+| `cassTimelineTimeoutSeconds` | `120` | Budget for the `cass timeline` session discovery behind `cm reflect` (env: `CM_CASS_TIMELINE_TIMEOUT_SECONDS`) |
 
 #### Privacy Settings
 
@@ -1698,6 +1700,8 @@ Alternatively, point cass-memory at a local Ollama daemon (no WASM):
 | `OPENAI_API_KEY` | API key for OpenAI |
 | `GOOGLE_GENERATIVE_AI_API_KEY` | API key for Google Gemini |
 | `CASS_PATH` | Path to cass binary |
+| `CM_CASS_HISTORY_TIMEOUT_SECONDS` | Overrides `cassHistoryTimeoutSeconds` (budget for `cm context` history search) |
+| `CM_CASS_TIMELINE_TIMEOUT_SECONDS` | Overrides `cassTimelineTimeoutSeconds` (budget for `cm reflect` session discovery) |
 | `CASS_MEMORY_LLM` | Set to `none` for LLM-free mode |
 
 ---

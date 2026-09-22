@@ -260,6 +260,15 @@ export async function loadConfig(cliOverrides: Partial<Config> = {}): Promise<Co
   if (Object.keys(serveEnv).length > 0) {
     envOverrides.serve = serveEnv as Config["serve"];
   }
+  // cass subprocess budgets (#78): large archives need more than the defaults.
+  const historyTimeout = parseEnvInt(process.env.CM_CASS_HISTORY_TIMEOUT_SECONDS);
+  if (historyTimeout !== undefined && historyTimeout > 0) {
+    envOverrides.cassHistoryTimeoutSeconds = historyTimeout;
+  }
+  const timelineTimeout = parseEnvInt(process.env.CM_CASS_TIMELINE_TIMEOUT_SECONDS);
+  if (timelineTimeout !== undefined && timelineTimeout > 0) {
+    envOverrides.cassTimelineTimeoutSeconds = timelineTimeout;
+  }
 
   // Base URL env var fallback: provider-specific env vars override config.
   // Checked in order: OPENAI_BASE_URL, ANTHROPIC_BASE_URL, GOOGLE_BASE_URL.
@@ -473,8 +482,7 @@ async function writeGlobalConfigKeys(
  */
 export async function patchGlobalConfig(
   values:
-    | Record<string, unknown>
-    | ((existing: Record<string, unknown>) => Record<string, unknown>),
+    Record<string, unknown> | ((existing: Record<string, unknown>) => Record<string, unknown>),
 ): Promise<boolean> {
   const { file, data } = await readGlobalConfigRaw();
   if (data === null) return false;

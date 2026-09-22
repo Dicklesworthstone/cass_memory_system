@@ -58,7 +58,8 @@ import {
 } from "../utils.js";
 
 const MAX_CASS_HISTORY_QUERY_TERMS = 8;
-const CASS_HISTORY_TIMEOUT_SECONDS = 8;
+// Fallback only; the effective budget is config.cassHistoryTimeoutSeconds (#78).
+const DEFAULT_CASS_HISTORY_TIMEOUT_SECONDS = 20;
 const PATHOLOGICAL_CASS_QUERY_TOKEN = /^(?:bd|br)-[a-z0-9]+(?:[.-][a-z0-9]+)+$/i;
 
 /**
@@ -493,7 +494,7 @@ export async function generateContextResult(
       limit: flags.history ?? config.maxHistoryInContext,
       days: flags.days ?? config.sessionLookbackDays,
       workspace: flags.workspace,
-      timeout: CASS_HISTORY_TIMEOUT_SECONDS,
+      timeout: config.cassHistoryTimeoutSeconds ?? DEFAULT_CASS_HISTORY_TIMEOUT_SECONDS,
     },
     config.cassPath,
     config,

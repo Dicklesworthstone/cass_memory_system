@@ -24,6 +24,8 @@ export function createTestConfig(overrides: Partial<Config> = {}): Config {
     provider: "anthropic",
     model: "claude-3-5-sonnet-20241022",
     cassPath: "cass",
+    cassHistoryTimeoutSeconds: 20,
+    cassTimelineTimeoutSeconds: 120,
     remoteCass: {
       enabled: false,
       hosts: [],

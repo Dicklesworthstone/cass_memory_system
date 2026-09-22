@@ -428,6 +428,12 @@ export const ConfigSchema = z.object({
   llmTimeoutMs: z.number().int().positive().optional(),
   llmTotalTimeoutMs: z.number().int().positive().optional(),
   cassPath: z.string().default("cass"),
+  // Wall-clock budget (seconds) for the `cass search` that fills `cm context`
+  // history snippets. Env override: CM_CASS_HISTORY_TIMEOUT_SECONDS (#78).
+  cassHistoryTimeoutSeconds: z.number().int().positive().default(20),
+  // Wall-clock budget (seconds) for `cass timeline` session discovery in
+  // `cm reflect`. Env override: CM_CASS_TIMELINE_TIMEOUT_SECONDS (#78).
+  cassTimelineTimeoutSeconds: z.number().int().positive().default(120),
   remoteCass: RemoteCassConfigSchema.default({}),
   playbookPath: z.string().default("~/.cass-memory/playbook.yaml"),
   diaryDir: z.string().default("~/.cass-memory/diary"),
@@ -579,6 +585,8 @@ export interface CassTimelineGroup {
 
 export interface CassTimelineResult {
   groups: CassTimelineGroup[];
+  /** Set when the `cass timeline` call itself failed (timeout, crash, bad JSON). */
+  error?: string;
 }
 
 // ============================================================================

@@ -81,11 +81,7 @@ export interface CassAvailabilityResult {
 }
 
 export type CassDegradedReason =
-  | "NOT_FOUND"
-  | "INDEX_MISSING"
-  | "FTS_TABLE_MISSING"
-  | "TIMEOUT"
-  | "OTHER";
+  "NOT_FOUND" | "INDEX_MISSING" | "FTS_TABLE_MISSING" | "TIMEOUT" | "OTHER";
 
 export interface CassDegradedInfo {
   /** Whether cass-powered history is available for this operation. */
@@ -1107,12 +1103,20 @@ export async function cassStats(
   }
 }
 
+/** Default `cass timeline` budget when no config is supplied (#78). */
+export const DEFAULT_CASS_TIMELINE_TIMEOUT_SECONDS = 120;
+
 export async function cassTimeline(
   days: number,
   cassPath = "cass",
   runner: CassRunner = DEFAULT_CASS_RUNNER,
+  options: { timeoutSeconds?: number } = {},
 ): Promise<CassTimelineResult> {
   const resolvedCassPath = expandPath(cassPath);
+  const timeoutSeconds =
+    options.timeoutSeconds && options.timeoutSeconds > 0
+      ? options.timeoutSeconds
+      : DEFAULT_CASS_TIMELINE_TIMEOUT_SECONDS;
   try {
     // cass timeline uses --since Nd format, not --days
     const { stdout } = await runner.execFile(
@@ -1120,7 +1124,7 @@ export async function cassTimeline(
       ["timeline", "--since", `${days}d`, "--json"],
       {
         maxBuffer: 50 * 1024 * 1024,
-        timeout: 30 * 1000,
+        timeout: timeoutSeconds * 1000,
       },
     );
     const parsed = parseCassJsonOutput(stdout);
@@ -1158,7 +1162,15 @@ export async function cassTimeline(
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     warn(`[cass] Timeline query failed; session counts may be incomplete. ${message}`);
-    return { groups: [] };
+    // An archive that has never been indexed has nothing to discover; that is
+    // an empty result, not a discovery failure (#78). Everything else
+    // (timeouts, crashes, unparseable output) is reported so callers can tell
+    // "could not look" from "nothing there".
+    const code = (err as { code?: unknown } | null)?.code;
+    if (code === CASS_EXIT_CODES.INDEX_MISSING || code === CASS_EXIT_CODES.NOT_FOUND) {
+      return { groups: [] };
+    }
+    return { groups: [], error: message };
   }
 }
 
@@ -1183,6 +1195,8 @@ export async function findUnprocessedSessions(
      * calls and are dropped unconditionally — see the #76 note below.
      */
     cliSubprocessCwd?: string;
+    /** Budget for the `cass timeline` discovery call (`config.cassTimelineTimeoutSeconds`). */
+    timelineTimeoutSeconds?: number;
   },
   cassPath = "cass",
   runner: CassRunner = DEFAULT_CASS_RUNNER,
@@ -1205,7 +1219,9 @@ export async function findUnprocessedSessions(
   const includeAll = options.includeAll ?? false;
 
   // Try timeline first
-  const timeline = await cassTimeline(days, cassPath, runner);
+  const timeline = await cassTimeline(days, cassPath, runner, {
+    timeoutSeconds: options.timelineTimeoutSeconds,
+  });
   const groups = timeline.groups || [];
 
   let allSessions: DiscoveredSession[] = [];
@@ -1235,6 +1251,14 @@ export async function findUnprocessedSessions(
       } catch {
         // Ignore search errors, try next query
       }
+    }
+    // Discovery that could not look is not the same as an archive with nothing
+    // new (#78). Surface it so `cm reflect` reports an error instead of
+    // silently succeeding with zero sessions night after night.
+    if (timeline.error && allSessions.length === 0) {
+      throw new Error(
+        `cass timeline failed (${timeline.error}) and the fallback search discovered no sessions`,
+      );
     }
   }
 

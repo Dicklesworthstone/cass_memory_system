@@ -176,6 +176,7 @@ export async function orchestrateReflection(
             excludePatterns: config.sessionExcludePatterns,
             includeAll: config.sessionIncludeAll,
             cliSubprocessCwd: config.cliSubprocessCwd,
+            timelineTimeoutSeconds: config.cassTimelineTimeoutSeconds,
           },
           config.cassPath,
         );
@@ -274,6 +275,13 @@ export async function orchestrateReflection(
         }
 
         const reflectResult = await reflectOnSession(diary, snapshotPlaybook, config, options.io);
+        if (reflectResult.failure !== undefined && reflectResult.deltas.length === 0) {
+          // The reflector never produced anything for this session (timeout,
+          // provider error, unparseable output). Throwing here keeps the
+          // session OUT of the processed log so the next run retries it,
+          // instead of recording it as "processed, 0 deltas" forever (#78).
+          throw new Error(`Reflector failed: ${reflectResult.failure}`);
+        }
 
         // Validation
         const validatedDeltas: PlaybookDelta[] = [];

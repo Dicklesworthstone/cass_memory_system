@@ -690,10 +690,15 @@ describe("orchestrateReflection diary agent provenance (#73)", () => {
         validationEnabled: false,
       });
 
+      // A reflector that fails outright no longer counts as "processed"
+      // (#78), so give this provenance test a reflector that succeeds with
+      // nothing to say.
       await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
-        const outcome = await orchestrateReflection(config, { session: sessionPath });
-        expect(outcome.errors).toEqual([]);
-        expect(outcome.sessionsProcessed).toBe(1);
+        await withLlmShim({ reflector: { deltas: [] } }, async (io) => {
+          const outcome = await orchestrateReflection(config, { session: sessionPath, io });
+          expect(outcome.errors).toEqual([]);
+          expect(outcome.sessionsProcessed).toBe(1);
+        });
       });
 
       const diaryFiles = readdirSync(env.diaryDir).filter((f) => f.endsWith(".json"));
@@ -701,6 +706,53 @@ describe("orchestrateReflection diary agent provenance (#73)", () => {
       const diary = JSON.parse(readFileSync(path.join(env.diaryDir, diaryFiles[0]!), "utf-8"));
       expect(diary.agent).toBe("omp");
       expect(diary.sessionPath).toBe(sessionPath);
+    });
+  });
+});
+
+describe("orchestrateReflection reflector failures (#78)", () => {
+  test("a session whose reflector failed is reported and left unprocessed for retry", async () => {
+    await withIsolatedHome(async (env) => {
+      writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])), "utf-8");
+
+      const sessionPath = path.join(env.home, "sessions", "reflector-fails.jsonl");
+      writeJsonlSession(sessionPath, [
+        { role: "user", content: "I need help writing reliable unit tests for my CLI tool." },
+        {
+          role: "assistant",
+          content: "Sure. Let's start by identifying seams and adding deterministic fixtures.",
+        },
+      ]);
+
+      const config = createTestConfig({
+        playbookPath: env.playbookPath,
+        diaryDir: env.diaryDir,
+        cassPath: "/__missing__/cass",
+        validationEnabled: false,
+      });
+
+      await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
+        await withLlmShim(
+          { errors: { reflector: new Error("runReflector timed out after 30000ms") } },
+          async (io) => {
+            const outcome = await orchestrateReflection(config, { session: sessionPath, io });
+
+            expect(outcome.sessionsProcessed).toBe(0);
+            expect(outcome.deltasGenerated).toBe(0);
+            expect(outcome.errors).toHaveLength(1);
+            expect(outcome.errors[0]).toContain(sessionPath);
+            expect(outcome.errors[0]).toContain("Reflector failed");
+
+            let logContent = "";
+            try {
+              logContent = readFileSync(expandPath(getProcessedLogPath()), "utf-8");
+            } catch {
+              // No log written at all is also "not marked processed".
+            }
+            expect(logContent).not.toContain(sessionPath);
+          },
+        );
+      });
     });
   });
 });

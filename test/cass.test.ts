@@ -262,8 +262,40 @@ describe("cass.ts core functions (runner stubbed)", () => {
 
     expect(capturedOptions).toEqual({
       maxBuffer: 50 * 1024 * 1024,
-      timeout: 30 * 1000,
+      timeout: 120 * 1000,
     });
+  });
+
+  it("cassTimeline honors a configured timeout budget (#78)", async () => {
+    let capturedOptions: { maxBuffer?: number; timeout?: number } | undefined;
+    const runner = createCassRunnerStub({
+      execStdout: { timeline: JSON.stringify({ groups: [] }) },
+      onExecFile: (_file, args, options) => {
+        if (args[0] === "timeline") capturedOptions = options;
+      },
+    });
+
+    await cassTimeline(7, "cass", runner, { timeoutSeconds: 300 });
+    expect(capturedOptions?.timeout).toBe(300 * 1000);
+
+    // A nonsensical budget falls back to the default rather than disabling the timeout.
+    await cassTimeline(7, "cass", runner, { timeoutSeconds: 0 });
+    expect(capturedOptions?.timeout).toBe(120 * 1000);
+  });
+
+  it("cassTimeline reports the failure on the result (#78)", async () => {
+    const originalError = console.error;
+    console.error = () => {};
+    try {
+      const runner = createCassRunnerStub({
+        execError: { timeline: { code: "ETIMEDOUT", message: "timeline timed out" } },
+      });
+      const result = await cassTimeline(7, "cass", runner);
+      expect(result.groups).toEqual([]);
+      expect(result.error).toContain("timeline timed out");
+    } finally {
+      console.error = originalError;
+    }
   });
 
   it("cassTimeline surfaces execution failures on stderr", async () => {
@@ -285,7 +317,8 @@ describe("cass.ts core functions (runner stubbed)", () => {
 
       const result = await cassTimeline(365, "cass", runner);
 
-      expect(result).toEqual({ groups: [] });
+      expect(result.groups).toEqual([]);
+      expect(result.error).toContain("stdout maxBuffer length exceeded");
       expect(errors.join("\n")).toContain("Timeline query failed");
       expect(errors.join("\n")).toContain("stdout maxBuffer length exceeded");
     } finally {
@@ -556,5 +589,90 @@ describe("cass.ts core functions (runner stubbed)", () => {
     expect(hits).toHaveLength(2);
     expect(hits[0].source_path).toBe("a.ts");
     expect(hits[1].source_path).toBe("b.ts");
+  });
+});
+
+describe("findUnprocessedSessions discovery failures (#78)", () => {
+  it("throws when the timeline failed and the fallback search found nothing", async () => {
+    const originalError = console.error;
+    console.error = () => {};
+    try {
+      const runner = createCassRunnerStub({
+        execError: {
+          timeline: { code: "ETIMEDOUT", message: "cass timeline timed out after 30s" },
+          search: { code: "ETIMEDOUT", message: "cass search timed out" },
+        },
+      });
+      await expect(findUnprocessedSessions(new Set(), {}, "cass", runner)).rejects.toThrow(
+        /cass timeline failed \(cass timeline timed out after 30s\)/,
+      );
+    } finally {
+      console.error = originalError;
+    }
+  });
+
+  it("still returns fallback-search sessions when only the timeline failed", async () => {
+    const originalError = console.error;
+    console.error = () => {};
+    try {
+      const hit = {
+        source_path: "/home/u/.claude/projects/p/s1.jsonl",
+        line_number: 1,
+        snippet: "the build is green",
+        agent: "claude_code",
+        score: 0.5,
+      };
+      const runner = createCassRunnerStub({
+        execError: { timeline: { code: "ETIMEDOUT", message: "timeline timed out" } },
+        execStdout: { search: JSON.stringify({ hits: [hit] }) },
+      });
+      const result = await findUnprocessedSessions(new Set(), {}, "cass", runner);
+      expect(result.map((s) => s.path)).toEqual([hit.source_path]);
+    } finally {
+      console.error = originalError;
+    }
+  });
+
+  it("treats a missing cass index as no sessions rather than a discovery failure", async () => {
+    const originalError = console.error;
+    console.error = () => {};
+    try {
+      const runner = createCassRunnerStub({
+        execError: {
+          timeline: { code: CASS_EXIT_CODES.INDEX_MISSING, message: "Database not found" },
+          search: { code: CASS_EXIT_CODES.INDEX_MISSING, message: "Database not found" },
+        },
+      });
+      const result = await findUnprocessedSessions(new Set(), {}, "cass", runner);
+      expect(result).toEqual([]);
+    } finally {
+      console.error = originalError;
+    }
+  });
+
+  it("returns an empty list, not an error, when the timeline succeeds with no sessions", async () => {
+    const runner = createCassRunnerStub({
+      execStdout: {
+        timeline: JSON.stringify({ groups: [] }),
+        search: JSON.stringify({ hits: [] }),
+      },
+    });
+    const result = await findUnprocessedSessions(new Set(), {}, "cass", runner);
+    expect(result).toEqual([]);
+  });
+
+  it("passes the configured timeline budget through (#78)", async () => {
+    let capturedTimeout: number | undefined;
+    const runner = createCassRunnerStub({
+      execStdout: {
+        timeline: JSON.stringify({ groups: [] }),
+        search: JSON.stringify({ hits: [] }),
+      },
+      onExecFile: (_file, args, options) => {
+        if (args[0] === "timeline") capturedTimeout = options?.timeout;
+      },
+    });
+    await findUnprocessedSessions(new Set(), { timelineTimeoutSeconds: 45 }, "cass", runner);
+    expect(capturedTimeout).toBe(45 * 1000);
   });
 });

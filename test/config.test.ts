@@ -1294,3 +1294,38 @@ semantic_search_enabled: false
     });
   });
 });
+
+describe("cass subprocess timeout config (#78)", () => {
+  const saved = {
+    history: process.env.CM_CASS_HISTORY_TIMEOUT_SECONDS,
+    timeline: process.env.CM_CASS_TIMELINE_TIMEOUT_SECONDS,
+  };
+  afterEach(() => {
+    if (saved.history === undefined) delete process.env.CM_CASS_HISTORY_TIMEOUT_SECONDS;
+    else process.env.CM_CASS_HISTORY_TIMEOUT_SECONDS = saved.history;
+    if (saved.timeline === undefined) delete process.env.CM_CASS_TIMELINE_TIMEOUT_SECONDS;
+    else process.env.CM_CASS_TIMELINE_TIMEOUT_SECONDS = saved.timeline;
+  });
+
+  test("defaults are larger than the old hard-coded 8s/30s caps", () => {
+    expect(DEFAULT_CONFIG.cassHistoryTimeoutSeconds).toBe(20);
+    expect(DEFAULT_CONFIG.cassTimelineTimeoutSeconds).toBe(120);
+  });
+
+  test("CLI/config overrides are honored", async () => {
+    const config = await loadConfig({
+      cassHistoryTimeoutSeconds: 45,
+      cassTimelineTimeoutSeconds: 600,
+    });
+    expect(config.cassHistoryTimeoutSeconds).toBe(45);
+    expect(config.cassTimelineTimeoutSeconds).toBe(600);
+  });
+
+  test("environment overrides win over defaults and ignore garbage", async () => {
+    process.env.CM_CASS_HISTORY_TIMEOUT_SECONDS = "90";
+    process.env.CM_CASS_TIMELINE_TIMEOUT_SECONDS = "not-a-number";
+    const config = await loadConfig({});
+    expect(config.cassHistoryTimeoutSeconds).toBe(90);
+    expect(config.cassTimelineTimeoutSeconds).toBe(DEFAULT_CONFIG.cassTimelineTimeoutSeconds);
+  });
+});
