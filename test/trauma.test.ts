@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { CassRunner } from "../src/cass.js";
 import {
   DOOM_PATTERNS,
+  extractExecutedCommands,
   findMatchingTrauma,
   healTraumaById,
   loadTraumas,
@@ -11,6 +12,7 @@ import {
   saveTrauma,
   scanForTraumas,
   setTraumaStatusById,
+  splitShellCommand,
   type TraumaCandidate,
 } from "../src/trauma.js";
 import type { TraumaEntry } from "../src/types.js";
@@ -1006,5 +1008,179 @@ describe("Edge Cases", () => {
       const match = findMatchingTrauma("删除所有数据库", loaded);
       expect(match).not.toBeNull();
     });
+  });
+});
+
+// =============================================================================
+// #83: executed commands come from structured tool inputs, not the text export
+// =============================================================================
+describe("scanForTraumas - executed commands (#83)", () => {
+  const searchHit = (sourcePath: string) =>
+    JSON.stringify({
+      count: 1,
+      hits: [
+        { source_path: sourcePath, line_number: 1, agent: "claude", snippet: "sorry", score: 0.9 },
+      ],
+    });
+
+  /** Runner whose text export shows only tool stubs, like cass 0.8 `--format text`. */
+  function formatAwareRunner(records: unknown[], text: string): CassRunner {
+    return {
+      execFile: async (_file, args) => {
+        if (args[0] === "search") return { stdout: searchHit("/sessions/s.jsonl"), stderr: "" };
+        if (args[0] === "export") {
+          const format = args[args.indexOf("--format") + 1];
+          return { stdout: format === "json" ? JSON.stringify(records) : text, stderr: "" };
+        }
+        throw new Error(`unexpected cass ${args[0]}`);
+      },
+      spawnSync: () => ({ status: 0, stdout: "", stderr: "" }),
+      spawn: () => {
+        throw new Error("spawn not implemented in stub");
+      },
+    };
+  }
+
+  it("finds a Claude Code Bash command that the text export reduced to a stub", async () => {
+    const records = [
+      { type: "user", message: { role: "user", content: "clean up the worktree" } },
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu_1",
+              name: "Bash",
+              input: {
+                command: "cd /home/u/repo && rm -rf /home/u/repo/.worktrees/feature",
+                description: "Remove worktree",
+              },
+            },
+          ],
+        },
+      },
+    ];
+    const text =
+      "User: clean up the worktree\nAssistant: [Tool: Bash - Remove worktree]\nSorry, a mistake.";
+    const candidates = await scanForTraumas(
+      createTestConfig(),
+      30,
+      formatAwareRunner(records, text),
+    );
+
+    const rm = candidates.find((c) => c.description === "Recursive deletion of system directories");
+    expect(rm).toBeDefined();
+    expect(rm!.sessionPath).toBe("/sessions/s.jsonl");
+    expect(rm!.evidence).toStartWith("rm -rf /home");
+    expect(rm!.context).toContain("Executed: cd /home/u/repo && rm -rf");
+  });
+
+  it("finds Codex exec_command / shell calls in function_call arguments", async () => {
+    const records = [
+      {
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "exec_command",
+          arguments: JSON.stringify({ cmd: "git status\ngit reset --hard HEAD~3", workdir: "/r" }),
+        },
+      },
+      {
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "shell",
+          arguments: JSON.stringify({ command: ["bash", "-lc", "git push origin main --force"] }),
+        },
+      },
+    ];
+    const candidates = await scanForTraumas(
+      createTestConfig(),
+      30,
+      formatAwareRunner(records, "[Tool: exec_command]"),
+    );
+    const descriptions = candidates.map((c) => c.description);
+    expect(descriptions).toContain("Git hard reset");
+    expect(descriptions).toContain("Git force push");
+    expect(candidates.find((c) => c.description === "Git hard reset")!.evidence).toBe(
+      "git reset --hard",
+    );
+  });
+
+  it("does not report a session whose commands and prose are harmless", async () => {
+    const records = [
+      {
+        type: "assistant",
+        message: {
+          content: [
+            { type: "tool_use", name: "Bash", input: { command: "ls -la && git status" } },
+          ],
+        },
+      },
+    ];
+    const candidates = await scanForTraumas(
+      createTestConfig(),
+      30,
+      formatAwareRunner(records, "[Tool: Bash - list]"),
+    );
+    expect(candidates).toEqual([]);
+  });
+
+  it("sanitizes secrets in executed-command evidence", async () => {
+    const records = [
+      {
+        type: "assistant",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              name: "Bash",
+              input: {
+                command:
+                  "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY " +
+                  "psql -c 'DROP DATABASE prod'",
+              },
+            },
+          ],
+        },
+      },
+    ];
+    const candidates = await scanForTraumas(createTestConfig(), 30, formatAwareRunner(records, ""));
+    const drop = candidates.find((c) => c.description === "Drop database");
+    expect(drop).toBeDefined();
+    expect(drop!.context).not.toContain("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY");
+  });
+});
+
+describe("extractExecutedCommands / splitShellCommand (#83)", () => {
+  it("reads command fields across agent record shapes", () => {
+    const commands = extractExecutedCommands([
+      { message: { content: [{ type: "tool_use", input: { command: "echo claude" } }] } },
+      { payload: { type: "function_call", arguments: '{"cmd":"echo codex"}' } },
+      { payload: { type: "local_shell_call", action: { command: ["ls", "-la"] } } },
+      { toolCall: { name: "run_command", args: { CommandLine: "echo agy" } } },
+      { payload: { type: "function_call", arguments: "not json" } },
+    ]);
+    expect(commands).toEqual(["echo claude", "echo codex", "ls -la", "echo agy"]);
+  });
+
+  it("unwraps shell -c argv", () => {
+    expect(extractExecutedCommands({ command: ["/bin/zsh", "-lc", "rm -rf /x"] })).toEqual([
+      "rm -rf /x",
+    ]);
+  });
+
+  it("splits compound commands into simple commands", () => {
+    const script = "cd /r && sudo rm -rf /r/x || true; echo done | tee log\ngit status";
+    expect(splitShellCommand(script)).toEqual([
+      "cd /r",
+      "rm -rf /r/x",
+      "true",
+      "echo done",
+      "tee log",
+      "git status",
+    ]);
   });
 });

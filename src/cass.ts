@@ -1047,6 +1047,70 @@ export async function handleSessionExportFailure(
   return null;
 }
 
+/** Largest session file read directly when `cass export --format json` fails. */
+const RECORDS_FALLBACK_MAX_BYTES = 50 * 1024 * 1024;
+
+/**
+ * Export a session's structured records (`cass export --format json`), which
+ * keep tool-call inputs that the text/markdown exports drop (#83).
+ *
+ * The records are returned UNSANITIZED: redaction can corrupt JSON, so the
+ * caller must sanitize whatever strings it extracts before surfacing them.
+ * If cass cannot export the session, a `.jsonl` / `.json` file is read
+ * directly. Returns null when no records can be obtained.
+ */
+export async function cassExportRecords(
+  sessionPath: string,
+  cassPath = "cass",
+  runner: CassRunner = DEFAULT_CASS_RUNNER,
+): Promise<unknown[] | null> {
+  try {
+    const { stdout } = await runner.execFile(
+      expandPath(cassPath),
+      ["export", "--format", "json", "--", sessionPath],
+      { maxBuffer: 50 * 1024 * 1024 },
+    );
+    const parsed = parseCassJsonOutput(stdout);
+    if (Array.isArray(parsed)) return parsed;
+    if (parsed && typeof parsed === "object") {
+      const messages = (parsed as { messages?: unknown }).messages;
+      return Array.isArray(messages) ? messages : [parsed];
+    }
+  } catch {
+    // Fall through to reading the file directly.
+  }
+
+  try {
+    const resolvedPath = expandPath(sessionPath);
+    const stats = await fs.stat(resolvedPath);
+    if (stats.size > RECORDS_FALLBACK_MAX_BYTES) return null;
+    const fileContent = await fs.readFile(resolvedPath, "utf-8");
+    const ext = path.extname(resolvedPath).toLowerCase();
+    if (ext === ".jsonl") {
+      const records: unknown[] = [];
+      for (const line of fileContent.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          records.push(JSON.parse(trimmed));
+        } catch {
+          // Skip a torn or non-JSON line.
+        }
+      }
+      return records;
+    }
+    if (ext === ".json") {
+      const parsed = JSON.parse(fileContent);
+      if (Array.isArray(parsed)) return parsed;
+      const messages = parsed?.messages;
+      return Array.isArray(messages) ? messages : [parsed];
+    }
+  } catch {
+    // Unreadable or unparseable: no records.
+  }
+  return null;
+}
+
 // --- Expand ---
 
 export async function cassExpand(
@@ -1103,6 +1167,23 @@ export async function cassStats(
   }
 }
 
+/**
+ * Normalize a cass timeline timestamp to an ISO-8601 string. cass emits epoch
+ * milliseconds (numbers); older shapes used strings. Missing or unparseable
+ * values become "" so callers can treat them as unknown.
+ */
+export function timelineTimeToIso(value: unknown): string {
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || value <= 0) return "";
+    // Values below 1e11 cannot be epoch ms of any real session (that is 1973);
+    // treat them as epoch seconds.
+    const d = new Date(value < 1e11 ? value * 1000 : value);
+    return Number.isNaN(d.getTime()) ? "" : d.toISOString();
+  }
+  if (typeof value === "string") return value.trim();
+  return "";
+}
+
 /** Default `cass timeline` budget when no config is supplied (#78). */
 export const DEFAULT_CASS_TIMELINE_TIMEOUT_SECONDS = 120;
 
@@ -1144,13 +1225,18 @@ export async function cassTimeline(
                 path: s.path || s.source_path || "",
                 agent: s.agent || "unknown",
                 messageCount: s.messageCount || s.message_count || 0,
-                // Coerce to string in case created_at is a Unix timestamp number
-                startTime: String(s.startTime || s.start_time || s.created_at || ""),
-                endTime: String(s.endTime || s.end_time || ""),
+                // cass >= 0.8 emits `started_at` / `ended_at` as epoch ms (#85).
+                startTime: timelineTimeToIso(
+                  s.startTime || s.start_time || s.started_at || s.created_at,
+                ),
+                endTime: timelineTimeToIso(s.endTime || s.end_time || s.ended_at),
               })),
             });
           }
         }
+        // cass builds `groups` from a HashMap, so key order changes on every
+        // run (#85). Sort so every consumer sees a stable, chronological order.
+        groupsArray.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
         return { groups: groupsArray };
       }
       // Already in expected format
@@ -1227,10 +1313,28 @@ export async function findUnprocessedSessions(
   let allSessions: DiscoveredSession[] = [];
 
   if (Array.isArray(groups) && groups.length > 0) {
-    // Use timeline groups if available
-    allSessions = groups.flatMap((g) =>
-      (g.sessions || []).map((s) => ({ path: s.path, agent: s.agent })),
+    // Use timeline groups if available. Order oldest-first by start time
+    // (#85): the `maxSessions` batch must be deterministic, and draining the
+    // backlog from the old end reflects sessions before they age out of the
+    // lookback window. Sessions without a usable time sort last, in cass's
+    // (group-sorted) order.
+    const timed = groups.flatMap((g) =>
+      (g.sessions || []).map((s) => {
+        const t = s.startTime ? Date.parse(s.startTime) : Number.NaN;
+        return {
+          session: { path: s.path, agent: s.agent },
+          time: Number.isNaN(t) ? Number.POSITIVE_INFINITY : t,
+        };
+      }),
     );
+    timed.sort((a, b) => {
+      if (a.time !== b.time) return a.time < b.time ? -1 : 1;
+      // Both untimed: keep cass's order (groups are already sorted by key and
+      // Array#sort is stable). Same instant: break the tie by path.
+      if (a.time === Number.POSITIVE_INFINITY) return 0;
+      return a.session.path < b.session.path ? -1 : a.session.path > b.session.path ? 1 : 0;
+    });
+    allSessions = timed.map((t) => t.session);
   } else {
     // Fallback: use broad search queries to discover recent sessions
     // This works around cass timeline returning empty groups

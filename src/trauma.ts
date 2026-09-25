@@ -1,7 +1,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { type CassRunner, cassExport, cassSearch } from "./cass.js";
+import { type CassRunner, cassExport, cassExportRecords, cassSearch } from "./cass.js";
+import { getSanitizeConfig } from "./config.js";
 import { withLock } from "./lock.js";
+import { compileExtraPatterns, sanitize } from "./sanitize.js";
 import { type Config, type TraumaEntry, TraumaEntrySchema } from "./types.js";
 import {
   atomicWrite,
@@ -86,9 +88,97 @@ export interface TraumaCandidate {
   timestamp?: string;
 }
 
+const COMMAND_KEYS = new Set(["command", "cmd", "CommandLine", "commandLine"]);
+const MAX_RECORD_DEPTH = 64;
+
+/** `["bash", "-lc", "<script>"]` → the script; any other argv → joined words. */
+function argvToCommand(argv: string[]): string {
+  const shellFlagIdx = argv.findIndex((a) => /^-[a-z]*c$/.test(a));
+  if (shellFlagIdx >= 1 && shellFlagIdx === argv.length - 2) {
+    const shell = path.basename(argv[shellFlagIdx - 1] ?? "");
+    if (/^(ba|z|da|k|fi)?sh$/.test(shell)) return argv[argv.length - 1]!;
+  }
+  return argv.join(" ");
+}
+
+/**
+ * Collect the shell commands an agent actually executed from a session's
+ * structured records (#83). Text exports reduce tool calls to stubs such as
+ * `[Tool: Bash - <description>]`, so the commands must come from tool inputs:
+ *
+ * - Claude Code: `tool_use` blocks with `input.command`
+ * - Codex: `function_call` payloads whose `arguments` JSON string holds
+ *   `cmd` / `command` (string or argv), and `local_shell_call` argv
+ * - Gemini / Antigravity / others: `args.command`, `args.CommandLine`
+ *
+ * The walk is structural rather than per-connector so new agent formats that
+ * name the field `command` / `cmd` are covered without code changes.
+ */
+export function extractExecutedCommands(records: unknown): string[] {
+  const out: string[] = [];
+  const visit = (node: unknown, depth: number): void => {
+    if (depth > MAX_RECORD_DEPTH || node === null || typeof node !== "object") return;
+    if (Array.isArray(node)) {
+      for (const item of node) visit(item, depth + 1);
+      return;
+    }
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      if (COMMAND_KEYS.has(key)) {
+        if (typeof value === "string" && value.trim()) {
+          out.push(value);
+          continue;
+        }
+        if (
+          Array.isArray(value) &&
+          value.length > 0 &&
+          value.every((v): v is string => typeof v === "string")
+        ) {
+          out.push(argvToCommand(value));
+          continue;
+        }
+      }
+      if (key === "arguments" && typeof value === "string") {
+        const trimmed = value.trim();
+        if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+          try {
+            visit(JSON.parse(trimmed), depth + 1);
+          } catch {
+            // Not JSON; nothing structured to read.
+          }
+        }
+        continue;
+      }
+      visit(value, depth + 1);
+    }
+  };
+  visit(records, 0);
+  return out;
+}
+
+/**
+ * Split a shell command into the simple commands it runs, so `^`-anchored
+ * DOOM_PATTERNS match `cd x && rm -rf y` or a multi-line script. This is a
+ * heuristic (it does not honour quoting); `cm audit --trauma` output is for
+ * human review.
+ */
+export function splitShellCommand(command: string): string[] {
+  return command
+    .split(/\r?\n|&&|\|\||;|\|/)
+    .map((s) =>
+      s
+        .trim()
+        .replace(/^[({]\s*/, "")
+        .replace(/^(?:sudo|exec|time|nohup|command)\s+/, "")
+        .trim(),
+    )
+    .filter(Boolean);
+}
+
 /**
  * Scan cass history for potential traumas.
- * Looks for "apology" keywords AND "destruction" patterns.
+ * Looks for "apology" keywords AND "destruction" patterns. Commands the agent
+ * executed (structured tool inputs) are checked first; the text export still
+ * catches commands quoted or typed in prose.
  */
 export async function scanForTraumas(
   config: Config,
@@ -120,13 +210,48 @@ export async function scanForTraumas(
   log(`Scanning ${sessionPaths.length} sessions for potential traumas...`);
 
   // 2. Analyze each session
+  const sanitizeConfig = getSanitizeConfig(config);
+  const compiledSanitizeConfig = {
+    ...sanitizeConfig,
+    extraPatterns: compileExtraPatterns(sanitizeConfig.extraPatterns),
+  };
+
   for (const sessionPath of sessionPaths) {
     try {
+      // Executed commands, from structured tool-call inputs (#83). Records are
+      // unsanitized, so everything surfaced from them is sanitized below.
+      const records = await cassExportRecords(sessionPath, config.cassPath, cassRunner);
+      const commandSegments = records
+        ? extractExecutedCommands(records).flatMap((command) =>
+            splitShellCommand(command).map((segment) => ({ command, segment })),
+          )
+        : [];
+
       const content = await cassExport(sessionPath, "text", config.cassPath, config, cassRunner);
-      if (!content) continue;
+      if (!content && commandSegments.length === 0) continue;
 
       // Check for DOOM patterns
       for (const doom of DOOM_PATTERNS) {
+        const segmentRegex = new RegExp(doom.pattern, "i");
+        const executed = commandSegments.find(({ segment }) => segmentRegex.test(segment));
+        if (executed) {
+          const segmentMatch = segmentRegex.exec(executed.segment);
+          const fullCommand =
+            executed.command.length > 500
+              ? `${executed.command.slice(0, 500)}…`
+              : executed.command;
+          candidates.push({
+            sessionPath,
+            matchedPattern: doom.pattern,
+            description: doom.description,
+            evidence: sanitize(segmentMatch?.[0] ?? executed.segment, compiledSanitizeConfig),
+            context: sanitize(`Executed: ${fullCommand.trim()}`, compiledSanitizeConfig),
+            timestamp: undefined,
+          });
+          continue;
+        }
+
+        if (!content) continue;
         const regex = new RegExp(doom.pattern, "mi"); // Multiline, case-insensitive
         const match = regex.exec(content);
 
