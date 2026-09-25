@@ -824,3 +824,125 @@ describe("TRAUMA_GUARD_SCRIPT - Edge Cases", () => {
     });
   });
 });
+
+// =============================================================================
+// Global trauma dir resolution (GH #82): the installed guard and pre-commit hook
+// must read the same global traumas.jsonl that `cm trauma add` writes via
+// resolveGlobalDir(): CASS_MEMORY_HOME, then $XDG_DATA_HOME/cass-memory, then
+// ~/.cass-memory.
+// =============================================================================
+describe("TRAUMA_GUARD_SCRIPT / GIT_PRECOMMIT_HOOK - global dir resolution (#82)", () => {
+  const trauma: TraumaEntry = {
+    id: "t-env",
+    severity: "FATAL",
+    pattern: "rm -rf /srv/data",
+    scope: "global",
+    status: "active",
+    trigger_event: { session_path: "x", timestamp: "2026-09-01T00:00:00Z" },
+    created_at: "2026-09-01T00:00:00Z",
+  };
+
+  async function writeTraumaFile(globalDir: string): Promise<void> {
+    await mkdir(globalDir, { recursive: true });
+    await writeFile(join(globalDir, "traumas.jsonl"), JSON.stringify(trauma) + "\n");
+  }
+
+  function baseEnv(home: string): NodeJS.ProcessEnv {
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: home };
+    delete env.CASS_MEMORY_HOME;
+    delete env.XDG_DATA_HOME;
+    return env;
+  }
+
+  function runGuard(dir: string, env: NodeJS.ProcessEnv) {
+    return spawnSync("python3", [join(dir, "trauma_guard.py")], {
+      input: JSON.stringify({ tool_name: "Bash", tool_input: { command: "rm -rf /srv/data" } }),
+      encoding: "utf-8",
+      timeout: 5000,
+      cwd: dir,
+      env,
+    });
+  }
+
+  async function writeGuard(dir: string): Promise<void> {
+    await writeFile(join(dir, "trauma_guard.py"), getPythonScript());
+  }
+
+  it("guard reads CASS_MEMORY_HOME/traumas.jsonl", async () => {
+    await withTempDir("guard-cmhome", async (dir) => {
+      await writeGuard(dir);
+      await writeTraumaFile(join(dir, "cmhome"));
+      const env = { ...baseEnv(join(dir, "home")), CASS_MEMORY_HOME: join(dir, "cmhome") };
+      const result = runGuard(dir, env);
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout).hookSpecificOutput.permissionDecision).toBe("deny");
+    });
+  });
+
+  it("guard expands ~ in CASS_MEMORY_HOME", async () => {
+    await withTempDir("guard-cmhome-tilde", async (dir) => {
+      await writeGuard(dir);
+      await writeTraumaFile(join(dir, "home", "custom-cm"));
+      const env = { ...baseEnv(join(dir, "home")), CASS_MEMORY_HOME: "~/custom-cm" };
+      const result = runGuard(dir, env);
+      expect(result.stdout).toContain("deny");
+    });
+  });
+
+  it("guard reads $XDG_DATA_HOME/cass-memory/traumas.jsonl", async () => {
+    await withTempDir("guard-xdg", async (dir) => {
+      await writeGuard(dir);
+      await writeTraumaFile(join(dir, "xdg", "cass-memory"));
+      const env = { ...baseEnv(join(dir, "home")), XDG_DATA_HOME: join(dir, "xdg") };
+      const result = runGuard(dir, env);
+      expect(result.stdout).toContain("deny");
+    });
+  });
+
+  it("CASS_MEMORY_HOME takes precedence over XDG_DATA_HOME and ~/.cass-memory", async () => {
+    await withTempDir("guard-precedence", async (dir) => {
+      await writeGuard(dir);
+      // Trauma exists only under XDG and ~/.cass-memory; CASS_MEMORY_HOME is empty.
+      await writeTraumaFile(join(dir, "xdg", "cass-memory"));
+      await writeTraumaFile(join(dir, "home", ".cass-memory"));
+      await mkdir(join(dir, "cmhome"), { recursive: true });
+      const env = {
+        ...baseEnv(join(dir, "home")),
+        CASS_MEMORY_HOME: join(dir, "cmhome"),
+        XDG_DATA_HOME: join(dir, "xdg"),
+      };
+      const result = runGuard(dir, env);
+      expect(result.status).toBe(0);
+      expect(result.stdout.trim()).toBe("");
+    });
+  });
+
+  it("falls back to ~/.cass-memory when neither variable is set", async () => {
+    await withTempDir("guard-default", async (dir) => {
+      await writeGuard(dir);
+      await writeTraumaFile(join(dir, "home", ".cass-memory"));
+      const result = runGuard(dir, baseEnv(join(dir, "home")));
+      expect(result.stdout).toContain("deny");
+    });
+  });
+
+  it("pre-commit hook reads CASS_MEMORY_HOME/traumas.jsonl", async () => {
+    await withTempDir("precommit-cmhome", async (dir) => {
+      const script = getPythonScript(GIT_PRECOMMIT_HOOK).replace(
+        /def get_staged_diff\(\):[\s\S]+?return result.stdout\n {4}except:\n {8}return ""/,
+        'def get_staged_diff():\n    return """@@ -0,0 +1 @@\n+rm -rf /srv/data\n"""\n',
+      );
+      expect(script).toContain("+rm -rf /srv/data");
+      const scriptPath = join(dir, "pre-commit.py");
+      await writeFile(scriptPath, script);
+      await writeTraumaFile(join(dir, "cmhome"));
+      const result = spawnSync("python3", [scriptPath], {
+        encoding: "utf-8",
+        timeout: 5000,
+        cwd: dir,
+        env: { ...baseEnv(join(dir, "home")), CASS_MEMORY_HOME: join(dir, "cmhome") },
+      });
+      expect(result.status).toBe(1);
+    });
+  });
+});

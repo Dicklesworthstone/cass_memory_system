@@ -25,7 +25,8 @@ const FIRE = "\\U0001F525";
 export const TRAUMA_GUARD_SCRIPT = String.raw`#!/usr/bin/env python3
 """
 Dynamic Trauma Guard for Project Hot Stove.
-Reads from ~/.cass-memory/traumas.jsonl and .cass/traumas.jsonl to enforce safety.
+Reads the global traumas.jsonl (CASS_MEMORY_HOME, $XDG_DATA_HOME/cass-memory,
+or ~/.cass-memory) and the repo's .cass/traumas.jsonl to enforce safety.
 """
 import json
 import sys
@@ -33,7 +34,18 @@ import re
 import os
 from pathlib import Path
 
-GLOBAL_TRAUMA_FILE = Path.home() / ".cass-memory" / "traumas.jsonl"
+def resolve_global_dir():
+    """Mirror cm's resolveGlobalDir() (GH #82): CASS_MEMORY_HOME, then
+    $XDG_DATA_HOME/cass-memory, then ~/.cass-memory."""
+    cass_home = os.environ.get("CASS_MEMORY_HOME")
+    if cass_home:
+        return Path(os.path.expanduser(cass_home))
+    xdg_data_home = os.environ.get("XDG_DATA_HOME")
+    if xdg_data_home:
+        return Path(os.path.expanduser(xdg_data_home)) / "cass-memory"
+    return Path.home() / ".cass-memory"
+
+GLOBAL_TRAUMA_FILE = resolve_global_dir() / "traumas.jsonl"
 
 def find_repo_root():
     """Find the root of the current git repository."""
@@ -185,7 +197,18 @@ import os
 import subprocess
 from pathlib import Path
 
-GLOBAL_TRAUMA_FILE = Path.home() / ".cass-memory" / "traumas.jsonl"
+def resolve_global_dir():
+    """Mirror cm's resolveGlobalDir() (GH #82): CASS_MEMORY_HOME, then
+    $XDG_DATA_HOME/cass-memory, then ~/.cass-memory."""
+    cass_home = os.environ.get("CASS_MEMORY_HOME")
+    if cass_home:
+        return Path(os.path.expanduser(cass_home))
+    xdg_data_home = os.environ.get("XDG_DATA_HOME")
+    if xdg_data_home:
+        return Path(os.path.expanduser(xdg_data_home)) / "cass-memory"
+    return Path.home() / ".cass-memory"
+
+GLOBAL_TRAUMA_FILE = resolve_global_dir() / "traumas.jsonl"
 
 def find_repo_root():
     """Find the root of the current git repository."""
