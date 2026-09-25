@@ -13,7 +13,6 @@ import { type ContextResult, ErrorCode } from "./types.js";
 const execAsync = promisify(exec);
 
 // Import package.json for version (works in Bun runtime and compiled binaries)
-// @ts-expect-error - Bun supports JSON imports
 import packageJson from "../package.json";
 
 /**
