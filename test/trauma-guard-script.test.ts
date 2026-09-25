@@ -1,8 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { GIT_PRECOMMIT_HOOK, TRAUMA_GUARD_SCRIPT } from "../src/trauma_guard_script.js";
+import {
+  GIT_PRECOMMIT_HOOK,
+  renderGuardScript,
+  TRAUMA_GUARD_SCRIPT,
+} from "../src/trauma_guard_script.js";
 import type { TraumaEntry } from "../src/types.js";
 import { withTempDir } from "./helpers/index.js";
 
@@ -943,6 +947,155 @@ describe("TRAUMA_GUARD_SCRIPT / GIT_PRECOMMIT_HOOK - global dir resolution (#82)
         env: { ...baseEnv(join(dir, "home")), CASS_MEMORY_HOME: join(dir, "cmhome") },
       });
       expect(result.status).toBe(1);
+    });
+  });
+
+  // The hook's environment can differ from cm's (CASS_MEMORY_HOME set only for
+  // the `cm serve` daemon, a relative value resolved against another cwd).
+  // `cm guard` bakes the dir it resolved into the script, and the hook reads
+  // it in addition to the dir its own environment points at.
+  it("installed guard reads the global dir baked in at install time when its env lacks the override", async () => {
+    await withTempDir("guard-baked", async (dir) => {
+      await writeFile(
+        join(dir, "trauma_guard.py"),
+        renderGuardScript(getPythonScript(), join(dir, "cmhome")),
+      );
+      await writeTraumaFile(join(dir, "cmhome"));
+      // Neither variable set in the hook's environment.
+      const result = runGuard(dir, baseEnv(join(dir, "home")));
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout).hookSpecificOutput.permissionDecision).toBe("deny");
+    });
+  });
+
+  it("baked global dir is absolute even when cm resolved a relative CASS_MEMORY_HOME", async () => {
+    await withTempDir("guard-baked-relative", async (dir) => {
+      const originalCwd = process.cwd();
+      let script: string;
+      try {
+        process.chdir(dir);
+        script = renderGuardScript(getPythonScript(), "rel-cmhome");
+      } finally {
+        process.chdir(originalCwd);
+      }
+      await writeTraumaFile(join(dir, "rel-cmhome"));
+      const hookCwd = join(dir, "elsewhere");
+      await mkdir(hookCwd, { recursive: true });
+      await writeFile(join(hookCwd, "trauma_guard.py"), script);
+      // The hook sees the same relative value but runs from another cwd.
+      const env = { ...baseEnv(join(dir, "home")), CASS_MEMORY_HOME: "rel-cmhome" };
+      const result = runGuard(hookCwd, env);
+      expect(result.stdout).toContain("deny");
+    });
+  });
+
+  it("baked dir and env dir are both enforced", async () => {
+    await withTempDir("guard-baked-and-env", async (dir) => {
+      await writeFile(
+        join(dir, "trauma_guard.py"),
+        renderGuardScript(getPythonScript(), join(dir, "baked-empty")),
+      );
+      await mkdir(join(dir, "baked-empty"), { recursive: true });
+      await writeTraumaFile(join(dir, "cmhome"));
+      const env = { ...baseEnv(join(dir, "home")), CASS_MEMORY_HOME: join(dir, "cmhome") };
+      expect(runGuard(dir, env).stdout).toContain("deny");
+    });
+  });
+
+  it("expands ~name like cm's expandPath (under $HOME, not another user's home)", async () => {
+    await withTempDir("guard-tilde-name", async (dir) => {
+      await writeGuard(dir);
+      await writeTraumaFile(join(dir, "home", "cmhome-x"));
+      const env = { ...baseEnv(join(dir, "home")), CASS_MEMORY_HOME: "~cmhome-x" };
+      expect(runGuard(dir, env).stdout).toContain("deny");
+    });
+  });
+
+  it("an undecodable byte in traumas.jsonl does not drop the valid entries", async () => {
+    await withTempDir("guard-bad-utf8", async (dir) => {
+      await writeGuard(dir);
+      const globalDir = join(dir, "home", ".cass-memory");
+      await mkdir(globalDir, { recursive: true });
+      await writeFile(
+        join(globalDir, "traumas.jsonl"),
+        Buffer.concat([
+          Buffer.from('{"note":"'),
+          Buffer.from([0xff, 0xfe]),
+          Buffer.from('"}\n'),
+          Buffer.from(`${JSON.stringify(trauma)}\n`),
+        ]),
+      );
+      expect(runGuard(dir, baseEnv(join(dir, "home"))).stdout).toContain("deny");
+    });
+  });
+
+  it("renderGuardScript fills the placeholder in both scripts with a valid Python literal", async () => {
+    await withTempDir("guard-render", async (dir) => {
+      const weird = join(dir, 'we"ird\\dir');
+      for (const template of [TRAUMA_GUARD_SCRIPT, GIT_PRECOMMIT_HOOK]) {
+        const rendered = renderGuardScript(template, weird);
+        expect(rendered).not.toContain("__CM_INSTALLED_GLOBAL_DIR__");
+        const scriptPath = join(dir, "render.py");
+        await writeFile(scriptPath, rendered);
+        const probe = spawnSync(
+          "python3",
+          [
+            "-c",
+            "import ast,sys; t=ast.parse(open(sys.argv[1]).read()); print([n.value.value for n in t.body if isinstance(n, ast.Assign) and getattr(n.targets[0], 'id', '')=='INSTALLED_GLOBAL_DIR'][0])",
+            scriptPath,
+          ],
+          { encoding: "utf-8", timeout: 5000 },
+        );
+        expect(probe.status).toBe(0);
+        expect(probe.stdout.trim()).toBe(weird);
+      }
+    });
+  });
+});
+
+describe("cm guard --install / --git write refreshed scripts (#82)", () => {
+  async function withCassHome<T>(dir: string, fn: () => Promise<T>): Promise<T> {
+    const originalCwd = process.cwd();
+    const originalHome = process.env.CASS_MEMORY_HOME;
+    try {
+      process.chdir(dir);
+      process.env.CASS_MEMORY_HOME = join(dir, "cmhome");
+      return await fn();
+    } finally {
+      process.chdir(originalCwd);
+      if (originalHome === undefined) delete process.env.CASS_MEMORY_HOME;
+      else process.env.CASS_MEMORY_HOME = originalHome;
+    }
+  }
+
+  it("--git refreshes an already-installed guard script instead of keeping the stale copy", async () => {
+    await withTempDir("guard-git-refresh", async (dir) => {
+      await withCassHome(dir, async () => {
+        spawnSync("git", ["init", "-q"], { cwd: dir });
+        const { installGitHook } = await import("../src/commands/guard.js");
+        expect(await installGitHook(false, true)).toBe(true);
+        const scriptPath = join(dir, ".git", "hooks", "trauma-guard-precommit.py");
+        // Simulate a pre-#82 install: stale script, wrapper already in place.
+        await writeFile(scriptPath, "# stale guard\n");
+        expect(await installGitHook(false, true)).toBe(true);
+        const refreshed = await readFile(scriptPath, "utf-8");
+        expect(refreshed).toContain("def global_trauma_files");
+        expect(refreshed).toContain(JSON.stringify(join(dir, "cmhome")));
+        const wrapper = await readFile(join(dir, ".git", "hooks", "pre-commit"), "utf-8");
+        expect(wrapper.match(/trauma-guard-precommit\.py/g)?.length).toBe(1);
+      });
+    });
+  });
+
+  it("--install bakes the resolved global dir into trauma_guard.py", async () => {
+    await withTempDir("guard-install-baked", async (dir) => {
+      await withCassHome(dir, async () => {
+        await mkdir(join(dir, ".claude"), { recursive: true });
+        const { installGuard } = await import("../src/commands/guard.js");
+        await installGuard(false, true);
+        const script = await readFile(join(dir, ".claude", "hooks", "trauma_guard.py"), "utf-8");
+        expect(script).toContain(`INSTALLED_GLOBAL_DIR = ${JSON.stringify(join(dir, "cmhome"))}`);
+      });
     });
   });
 });

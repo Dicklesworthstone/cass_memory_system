@@ -813,6 +813,39 @@ describe("doctorCommand", () => {
         },
       );
     });
+
+    test("warns when the installed guard predates GH #82 (ignores CASS_MEMORY_HOME)", async () => {
+      await withEnvAsync(
+        {
+          ANTHROPIC_API_KEY: undefined,
+          OPENAI_API_KEY: undefined,
+          GOOGLE_GENERATIVE_AI_API_KEY: undefined,
+        },
+        async () => {
+          await withTempCassHome(async (env) => {
+            await withCwd(env.home, async () => {
+              await writeFile(env.configPath, JSON.stringify({ cassPath: "cass" }, null, 2));
+              await writeFile(env.playbookPath, createValidPlaybookYaml());
+              await mkdir(path.join(env.home, ".claude", "hooks"), { recursive: true });
+              // Parses fine, but hard-codes ~/.cass-memory like pre-#82 installs.
+              await writeFile(
+                path.join(env.home, ".claude", "hooks", "trauma_guard.py"),
+                'from pathlib import Path\nGLOBAL_TRAUMA_FILE = Path.home() / ".cass-memory" / "traumas.jsonl"\n',
+              );
+
+              process.exitCode = 0;
+              const { output } = await captureConsoleLog(() => doctorCommand({ json: true }));
+              const guardCheck = JSON.parse(output).data.checks.find(
+                (c: any) => c.category === "Trauma System" && c.item === "Safety Guard",
+              );
+              expect(guardCheck).toBeDefined();
+              expect(guardCheck.status).toBe("warn");
+              expect(guardCheck.message).toContain("outdated");
+            });
+          });
+        },
+      );
+    });
   });
 
   describe("sanitization pattern checks", () => {

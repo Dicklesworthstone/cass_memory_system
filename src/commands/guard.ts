@@ -2,7 +2,11 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import chalk from "chalk";
 import { iconPrefix } from "../output.js";
-import { GIT_PRECOMMIT_HOOK, TRAUMA_GUARD_SCRIPT } from "../trauma_guard_script.js";
+import {
+  GIT_PRECOMMIT_HOOK,
+  renderGuardScript,
+  TRAUMA_GUARD_SCRIPT,
+} from "../trauma_guard_script.js";
 import { ErrorCode } from "../types.js";
 import {
   ensureDir,
@@ -11,6 +15,7 @@ import {
   printJsonResult,
   reportError,
   resolveGitRoot,
+  resolveGlobalDir,
 } from "../utils.js";
 
 export async function guardCommand(flags: { install?: boolean; git?: boolean; json?: boolean }) {
@@ -89,7 +94,12 @@ export async function installGuard(json?: boolean, silent?: boolean) {
   }
 
   // 2. Write Script
-  await fs.writeFile(scriptPath, TRAUMA_GUARD_SCRIPT, { encoding: "utf-8", mode: 0o755 });
+  // The script bakes in the global dir cm resolves now (GH #82), so re-running
+  // the install always refreshes it.
+  await fs.writeFile(scriptPath, renderGuardScript(TRAUMA_GUARD_SCRIPT, resolveGlobalDir()), {
+    encoding: "utf-8",
+    mode: 0o755,
+  });
 
   // 2a. Post-write validation — confirm the script is parseable Python.
   //
@@ -289,13 +299,28 @@ export async function installGitHook(json?: boolean, silent?: boolean): Promise<
     existingHook = await fs.readFile(preCommitPath, "utf-8");
     // Check if our hook is already installed
     if (existingHook.includes("trauma-guard-precommit") || existingHook.includes("HOT STOVE")) {
+      // The pre-commit wrapper stays as is, but the guard script it calls is
+      // cm's own file: rewrite it so a re-run picks up fixes and the current
+      // global dir (GH #82). Otherwise `cm guard --git` could never update it.
+      let refreshed = false;
+      if (existingHook.includes("trauma-guard-precommit")) {
+        await fs.writeFile(
+          path.join(gitHooksDir, scriptName),
+          renderGuardScript(GIT_PRECOMMIT_HOOK, resolveGlobalDir()),
+          { encoding: "utf-8", mode: 0o755 },
+        );
+        refreshed = true;
+      }
       if (silent) return true;
       if (json) {
         printJsonResult(
           command,
           {
-            message: "Git pre-commit trauma guard already installed.",
+            message: refreshed
+              ? "Git pre-commit trauma guard already installed; guard script refreshed."
+              : "Git pre-commit trauma guard already installed.",
             alreadyInstalled: true,
+            refreshed,
             hookPath: preCommitPath,
           },
           { startedAtMs },
@@ -304,6 +329,9 @@ export async function installGitHook(json?: boolean, silent?: boolean): Promise<
         console.log(
           chalk.blue(`• Git pre-commit trauma guard already installed at ${preCommitPath}`),
         );
+        if (refreshed) {
+          console.log(chalk.green(`✓ Refreshed ${scriptName} in ${gitHooksDir}`));
+        }
       }
       return true;
     }
@@ -311,7 +339,10 @@ export async function installGitHook(json?: boolean, silent?: boolean): Promise<
 
   // Write the guard script to a separate file
   const guardScriptPath = path.join(gitHooksDir, scriptName);
-  await fs.writeFile(guardScriptPath, GIT_PRECOMMIT_HOOK, { encoding: "utf-8", mode: 0o755 });
+  await fs.writeFile(guardScriptPath, renderGuardScript(GIT_PRECOMMIT_HOOK, resolveGlobalDir()), {
+    encoding: "utf-8",
+    mode: 0o755,
+  });
 
   // Create or update pre-commit hook to call our script
   // Escape quotes in path to prevent injection

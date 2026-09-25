@@ -770,14 +770,28 @@ async function computeDoctorChecks(
       // Catch that and similar future breakages by actually parsing the
       // installed file with `python3 -c "import ast; ast.parse(...)"`.
       const parseCheck = await validateGuardParseable(guardPath);
+      // GH #82: guards installed before the fix read only
+      // ~/.cass-memory/traumas.jsonl, so with CASS_MEMORY_HOME / XDG_DATA_HOME
+      // set they allow every command while still parsing fine.
+      let outdated = false;
+      if (parseCheck.ok) {
+        try {
+          outdated = !(await fs.readFile(guardPath, "utf-8")).includes("def global_trauma_files");
+        } catch {
+          outdated = false;
+        }
+      }
       checks.push({
         category: "Trauma System",
         item: "Safety Guard",
-        status: parseCheck.ok ? "pass" : "fail",
-        message: parseCheck.ok
-          ? "Guard installed in .claude/hooks and parses as valid Python"
-          : `Guard is installed but does NOT parse as valid Python — ${parseCheck.reason}. ` +
-            "Reinstall with 'cm guard --install'.",
+        status: !parseCheck.ok ? "fail" : outdated ? "warn" : "pass",
+        message: !parseCheck.ok
+          ? `Guard is installed but does NOT parse as valid Python — ${parseCheck.reason}. ` +
+            "Reinstall with 'cm guard --install'."
+          : outdated
+            ? "Guard is outdated: it ignores CASS_MEMORY_HOME / XDG_DATA_HOME and may miss global traumas. " +
+              "Refresh with 'cm guard --install'."
+            : "Guard installed in .claude/hooks and parses as valid Python",
       });
     }
   }

@@ -1,3 +1,5 @@
+import path from "node:path";
+
 // FIRE is emitted into the produced Python script as the Python-side escape
 // `\U0001F525` (NOT the emoji character and NOT the JS-side escape `\u{1F525}`).
 //
@@ -34,18 +36,46 @@ import re
 import os
 from pathlib import Path
 
+# Absolute global dir that cm resolved when it installed this hook (filled in
+# by cm guard). The hook's environment can differ from cm's: a
+# CASS_MEMORY_HOME set only for the cm serve daemon, or a relative value
+# resolved against a different cwd. Both locations are read (GH #82).
+INSTALLED_GLOBAL_DIR = "__CM_INSTALLED_GLOBAL_DIR__"
+
+def expand_home(p):
+    """Mirror cm's expandPath(): "~", "~/x" and "~x" all resolve under $HOME."""
+    if not p.startswith("~"):
+        return p
+    home = os.environ.get("HOME") or str(Path.home())
+    rest = p[2:] if p.startswith("~/") else p[1:]
+    return os.path.join(home, rest) if rest else home
+
 def resolve_global_dir():
     """Mirror cm's resolveGlobalDir() (GH #82): CASS_MEMORY_HOME, then
     $XDG_DATA_HOME/cass-memory, then ~/.cass-memory."""
     cass_home = os.environ.get("CASS_MEMORY_HOME")
     if cass_home:
-        return Path(os.path.expanduser(cass_home))
+        return Path(expand_home(cass_home))
     xdg_data_home = os.environ.get("XDG_DATA_HOME")
     if xdg_data_home:
-        return Path(os.path.expanduser(xdg_data_home)) / "cass-memory"
-    return Path.home() / ".cass-memory"
+        return Path(expand_home(xdg_data_home)) / "cass-memory"
+    return Path(expand_home("~/.cass-memory"))
 
-GLOBAL_TRAUMA_FILE = resolve_global_dir() / "traumas.jsonl"
+def global_trauma_files():
+    """Global traumas.jsonl files to enforce: the one cm resolves in this
+    environment and the one it resolved at install time (deduplicated)."""
+    dirs = [resolve_global_dir()]
+    if INSTALLED_GLOBAL_DIR and not INSTALLED_GLOBAL_DIR.startswith("__CM_"):
+        dirs.append(Path(INSTALLED_GLOBAL_DIR))
+    files = []
+    seen = set()
+    for d in dirs:
+        candidate = d / "traumas.jsonl"
+        key = os.path.normcase(os.path.abspath(str(candidate)))
+        if key not in seen:
+            seen.add(key)
+            files.append(candidate)
+    return files
 
 def find_repo_root():
     """Find the root of the current git repository."""
@@ -60,10 +90,12 @@ def load_traumas():
     """Load active traumas from global and project storage."""
     traumas = []
     
-    # Load Global
-    if GLOBAL_TRAUMA_FILE.exists():
+    # Load Global: every location cm may have written global traumas to.
+    for global_file in global_trauma_files():
+        if not global_file.exists():
+            continue
         try:
-            with open(GLOBAL_TRAUMA_FILE, "r", encoding="utf-8") as f:
+            with open(global_file, "r", encoding="utf-8", errors="replace") as f:
                 for line in f:
                     if line.strip():
                         try:
@@ -81,7 +113,7 @@ def load_traumas():
         repo_file = repo_root / ".cass" / "traumas.jsonl"
         if repo_file.exists():
             try:
-                with open(repo_file, "r", encoding="utf-8") as f:
+                with open(repo_file, "r", encoding="utf-8", errors="replace") as f:
                     for line in f:
                         if line.strip():
                             try:
@@ -197,18 +229,46 @@ import os
 import subprocess
 from pathlib import Path
 
+# Absolute global dir that cm resolved when it installed this hook (filled in
+# by cm guard). The hook's environment can differ from cm's: a
+# CASS_MEMORY_HOME set only for the cm serve daemon, or a relative value
+# resolved against a different cwd. Both locations are read (GH #82).
+INSTALLED_GLOBAL_DIR = "__CM_INSTALLED_GLOBAL_DIR__"
+
+def expand_home(p):
+    """Mirror cm's expandPath(): "~", "~/x" and "~x" all resolve under $HOME."""
+    if not p.startswith("~"):
+        return p
+    home = os.environ.get("HOME") or str(Path.home())
+    rest = p[2:] if p.startswith("~/") else p[1:]
+    return os.path.join(home, rest) if rest else home
+
 def resolve_global_dir():
     """Mirror cm's resolveGlobalDir() (GH #82): CASS_MEMORY_HOME, then
     $XDG_DATA_HOME/cass-memory, then ~/.cass-memory."""
     cass_home = os.environ.get("CASS_MEMORY_HOME")
     if cass_home:
-        return Path(os.path.expanduser(cass_home))
+        return Path(expand_home(cass_home))
     xdg_data_home = os.environ.get("XDG_DATA_HOME")
     if xdg_data_home:
-        return Path(os.path.expanduser(xdg_data_home)) / "cass-memory"
-    return Path.home() / ".cass-memory"
+        return Path(expand_home(xdg_data_home)) / "cass-memory"
+    return Path(expand_home("~/.cass-memory"))
 
-GLOBAL_TRAUMA_FILE = resolve_global_dir() / "traumas.jsonl"
+def global_trauma_files():
+    """Global traumas.jsonl files to enforce: the one cm resolves in this
+    environment and the one it resolved at install time (deduplicated)."""
+    dirs = [resolve_global_dir()]
+    if INSTALLED_GLOBAL_DIR and not INSTALLED_GLOBAL_DIR.startswith("__CM_"):
+        dirs.append(Path(INSTALLED_GLOBAL_DIR))
+    files = []
+    seen = set()
+    for d in dirs:
+        candidate = d / "traumas.jsonl"
+        key = os.path.normcase(os.path.abspath(str(candidate)))
+        if key not in seen:
+            seen.add(key)
+            files.append(candidate)
+    return files
 
 def find_repo_root():
     """Find the root of the current git repository."""
@@ -225,10 +285,12 @@ def load_traumas():
     """Load active traumas from global and project storage."""
     traumas = []
 
-    # Load Global
-    if GLOBAL_TRAUMA_FILE.exists():
+    # Load Global: every location cm may have written global traumas to.
+    for global_file in global_trauma_files():
+        if not global_file.exists():
+            continue
         try:
-            with open(GLOBAL_TRAUMA_FILE, "r", encoding="utf-8") as f:
+            with open(global_file, "r", encoding="utf-8", errors="replace") as f:
                 for line in f:
                     if line.strip():
                         try:
@@ -246,7 +308,7 @@ def load_traumas():
         repo_file = repo_root / ".cass" / "traumas.jsonl"
         if repo_file.exists():
             try:
-                with open(repo_file, "r", encoding="utf-8") as f:
+                with open(repo_file, "r", encoding="utf-8", errors="replace") as f:
                     for line in f:
                         if line.strip():
                             try:
@@ -346,3 +408,22 @@ def main():
 if __name__ == "__main__":
     main()
 `;
+
+/**
+ * Literal in both scripts that `cm guard` replaces with the absolute global
+ * directory cm resolved at install time (GH #82).
+ */
+export const INSTALLED_GLOBAL_DIR_PLACEHOLDER = '"__CM_INSTALLED_GLOBAL_DIR__"';
+
+/**
+ * Produce the script to install: bakes in the absolute global dir cm resolves
+ * now, so the hook still reads it when its own environment differs from cm's
+ * (CASS_MEMORY_HOME set only for `cm serve`, a relative value, …). The
+ * hook also re-resolves the dir from its own environment at run time.
+ */
+export function renderGuardScript(script: string, globalDir: string): string {
+  // JSON string syntax is a valid Python string literal.
+  return script
+    .split(INSTALLED_GLOBAL_DIR_PLACEHOLDER)
+    .join(JSON.stringify(path.resolve(globalDir)));
+}
