@@ -214,7 +214,14 @@ export async function orchestrateReflection(
       });
 
       try {
-        const content = (await cassExport(sessionPath, "text", config.cassPath, config)) || "";
+        const exported = await cassExport(sessionPath, "text", config.cassPath, config);
+        // A session that could not be exported at all (missing file, cass and
+        // the fallback parser both failed) is an error that leaves it
+        // unprocessed for retry, not an "empty session" to mark done (#85).
+        if (exported === null) {
+          throw new Error(`Failed to export session: ${sessionPath}`);
+        }
+        const content = exported;
 
         // #76: a transcript carrying cm's private payload marker is a recording
         // of one of cm's OWN `claude -p` / codex / gemini calls, not a work
@@ -250,11 +257,8 @@ export async function orchestrateReflection(
           continue;
         }
 
-        const diary = await generateDiary(sessionPath, config, {
-          agent: agentHints.get(sessionPath),
-        });
-
-        // Quick check for empty sessions to save tokens
+        // Quick check for empty sessions, BEFORE the diary's LLM call (#85):
+        // an empty transcript must not cost a diary generation.
         if (content.length < 50) {
           options.onProgress?.({
             phase: "session_skip",
@@ -268,11 +272,14 @@ export async function orchestrateReflection(
           pendingProcessedEntries.push({
             sessionPath,
             processedAt: now(),
-            diaryId: diary.id,
             deltasGenerated: 0,
           });
           continue;
         }
+
+        const diary = await generateDiary(sessionPath, config, {
+          agent: agentHints.get(sessionPath),
+        });
 
         const reflectResult = await reflectOnSession(diary, snapshotPlaybook, config, options.io);
         if (reflectResult.failure !== undefined && reflectResult.deltas.length === 0) {

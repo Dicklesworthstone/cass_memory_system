@@ -385,6 +385,99 @@ describe("cass.ts core functions (runner stubbed)", () => {
     expect(result[0]).toEqual({ path: "s2.jsonl", agent: "claude" });
   });
 
+  // #85: cass 0.8 emits `groups` from a HashMap (key order differs per run) and
+  // uses `started_at` / `ended_at` (epoch ms) + `source_path` / `message_count`.
+  const cass08Session = (p: string, startedAt: number | null, endedAt: number | null = null) => ({
+    id: 1,
+    agent: "claude_code",
+    title: "t",
+    started_at: startedAt,
+    ended_at: endedAt,
+    source_path: p,
+    message_count: 7,
+  });
+
+  it("cassTimeline maps cass 0.8 started_at/ended_at epoch ms and sorts groups (#85)", async () => {
+    const t1 = Date.UTC(2026, 8, 4, 23, 5);
+    const t2 = Date.UTC(2026, 8, 11, 8, 30);
+    const output = JSON.stringify({
+      range: { start: 0, end: 1 },
+      total_sessions: 2,
+      groups: {
+        "2026-09-11 08:00": [cass08Session("/s/b.jsonl", t2, t2 + 60_000)],
+        "2026-09-04 23:00": [cass08Session("/s/a.jsonl", t1, null)],
+      },
+    });
+    const runner = createCassRunnerStub({ execStdout: { timeline: output } });
+    const result = await cassTimeline(30, "cass", runner);
+
+    expect(result.groups.map((g) => g.date)).toEqual(["2026-09-04 23:00", "2026-09-11 08:00"]);
+    expect(result.groups[0].sessions[0]).toEqual({
+      path: "/s/a.jsonl",
+      agent: "claude_code",
+      messageCount: 7,
+      startTime: new Date(t1).toISOString(),
+      endTime: "",
+    });
+    expect(result.groups[1].sessions[0].endTime).toBe(new Date(t2 + 60_000).toISOString());
+  });
+
+  it("findUnprocessedSessions picks a deterministic oldest-first batch (#85)", async () => {
+    const base = Date.UTC(2026, 8, 1);
+    const hour = 3_600_000;
+    const sessions = {
+      "2026-09-01 05:00": [cass08Session("/s/e.jsonl", base + 5 * hour)],
+      "2026-09-01 01:00": [
+        cass08Session("/s/b.jsonl", base + 1 * hour + 1),
+        cass08Session("/s/a.jsonl", base + 1 * hour),
+      ],
+      "2026-09-01 03:00": [cass08Session("/s/c.jsonl", base + 3 * hour)],
+      "unknown": [cass08Session("/s/z-no-time.jsonl", null)],
+      "2026-09-01 04:00": [cass08Session("/s/d.jsonl", base + 4 * hour)],
+    };
+    const keys = Object.keys(sessions);
+    // cass's HashMap emits these keys in a different order on every run.
+    const permutations = [
+      keys,
+      [...keys].reverse(),
+      [keys[2], keys[4], keys[0], keys[3], keys[1], keys[5]],
+    ];
+
+    const batches: string[][] = [];
+    for (const order of permutations) {
+      const groups: Record<string, unknown> = {};
+      for (const k of order) groups[k!] = sessions[k as keyof typeof sessions];
+      const runner = createCassRunnerStub({
+        execStdout: { timeline: JSON.stringify({ groups }) },
+      });
+      const result = await findUnprocessedSessions(
+        new Set(["/s/a.jsonl"]),
+        { maxSessions: 3 },
+        "cass",
+        runner,
+      );
+      batches.push(result.map((s) => s.path));
+    }
+
+    expect(batches[0]).toEqual(["/s/b.jsonl", "/s/c.jsonl", "/s/d.jsonl"]);
+    expect(batches[1]).toEqual(batches[0]);
+    expect(batches[2]).toEqual(batches[0]);
+
+    // A session with no usable start time is still discoverable, after the timed ones.
+    const runner = createCassRunnerStub({
+      execStdout: { timeline: JSON.stringify({ groups: sessions }) },
+    });
+    const all = await findUnprocessedSessions(new Set(), { maxSessions: 10 }, "cass", runner);
+    expect(all.map((s) => s.path)).toEqual([
+      "/s/a.jsonl",
+      "/s/b.jsonl",
+      "/s/c.jsonl",
+      "/s/d.jsonl",
+      "/s/e.jsonl",
+      "/s/z-no-time.jsonl",
+    ]);
+  });
+
   it("findUnprocessedSessions returns cass's agent attribution per session (#73)", async () => {
     const output = JSON.stringify({
       groups: [

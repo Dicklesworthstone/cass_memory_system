@@ -212,6 +212,16 @@ describe("orchestrateReflection (unit)", () => {
         const logPath = expandPath(getProcessedLogPath());
         const content = readFileSync(logPath, "utf-8");
         expect(content).toContain(sessionPath);
+
+        // #85: the too-short check runs before diary generation, so an empty
+        // session never costs a diary (an LLM call outside CASS_MEMORY_LLM=none).
+        let diaries: string[] = [];
+        try {
+          diaries = readdirSync(env.diaryDir).filter((f) => f.endsWith(".json"));
+        } catch {
+          diaries = [];
+        }
+        expect(diaries).toEqual([]);
       });
     });
   });
