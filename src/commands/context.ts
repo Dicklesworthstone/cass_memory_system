@@ -13,7 +13,7 @@ import {
   iconPrefix,
   wrapText,
 } from "../output.js";
-import { getActiveBullets, loadMergedPlaybook } from "../playbook.js";
+import { getActiveBullets, loadMergedPlaybookWithSources } from "../playbook.js";
 import { createProgress, type ProgressReporter } from "../progress.js";
 import { sanitize } from "../sanitize.js";
 import { getEffectiveScore } from "../scoring.js";
@@ -24,6 +24,7 @@ import {
   resolveSemanticEnabled,
 } from "../semantic.js";
 import { findMatchingTrauma, loadTraumas } from "../trauma.js";
+import { workspaceMatches } from "../workspace.js";
 import {
   type CassSearchHit,
   type Config,
@@ -66,7 +67,7 @@ const PATHOLOGICAL_CASS_QUERY_TOKEN = /^(?:bd|br)-[a-z0-9]+(?:[.-][a-z0-9]+)+$/i
  * Resolve the effective workspace path for filtering workspace-scoped bullets.
  *
  * Workspace-scoped bullets store their `workspace` field as an absolute path
- * and are matched by exact string comparison. To make repo-local rules visible:
+ * and are matched with `bulletAppliesToWorkspace`. To make repo-local rules visible:
  *  - default to the current working directory when no workspace is provided, so
  *    running `cm context` inside a repo surfaces that repo's rules; and
  *  - canonicalize any provided value (expand `~`, resolve `.`/relative paths and
@@ -94,6 +95,35 @@ export function resolveWorkspaceFilter(workspace?: string): string | undefined {
   } catch {
     return resolved;
   }
+}
+
+/**
+ * Should a bullet be offered in `effectiveWorkspace`?
+ *
+ * Non-workspace scopes always apply. A `scope: workspace` bullet applies when
+ * the working directory is its workspace or below it, with linked git
+ * worktrees mapped onto the main worktree (#81). A workspace-scoped bullet
+ * from the repo playbook may omit `workspace` (so the file stays portable
+ * across clones); it is scoped to the repository that playbook belongs to.
+ */
+export function bulletAppliesToWorkspace(
+  bullet: PlaybookBullet,
+  effectiveWorkspace: string | undefined,
+  repo: { repoRoot: string | null; repoBulletIds: Set<string> } = {
+    repoRoot: null,
+    repoBulletIds: new Set(),
+  },
+): boolean {
+  if (bullet.scope !== "workspace") return true;
+  if (!effectiveWorkspace) return false;
+  const scopeDir =
+    bullet.workspace && bullet.workspace.trim() !== ""
+      ? bullet.workspace
+      : repo.repoRoot && repo.repoBulletIds.has(bullet.id)
+        ? repo.repoRoot
+        : undefined;
+  if (!scopeDir) return false;
+  return workspaceMatches(scopeDir, effectiveWorkspace);
 }
 
 /**
@@ -432,26 +462,25 @@ export async function generateContextResult(
 ): Promise<ContextComputation> {
   const config = await loadConfig();
 
-  const playbook = await loadMergedPlaybook(config);
-
-  const keywords = extractKeywords(task);
-  const cassQuery = buildCassHistoryQuery(task);
-
   // Default workspace to cwd and canonicalize so repo-local (workspace-scoped)
   // rules surface automatically, and `--workspace .`/relative paths match the
   // absolute paths stored on bullets.
   const effectiveWorkspace = resolveWorkspaceFilter(flags.workspace);
 
-  const activeBullets = getActiveBullets(playbook).filter((b) => {
-    // Always include global rules
-    if (b.scope !== "workspace") return true;
+  // The repo playbook comes from the workspace being asked about, not from
+  // wherever this process happens to run (matters for `cm serve`, #81).
+  const sources = await loadMergedPlaybookWithSources(
+    config,
+    effectiveWorkspace ? { cwd: effectiveWorkspace } : {},
+  );
+  const playbook = sources.playbook;
 
-    // For workspace rules, only include if a workspace is resolved AND matches.
-    // Canonicalize the stored workspace too so symlink/relative differences in
-    // how the rule was authored don't defeat the exact-match comparison.
-    if (!effectiveWorkspace || !b.workspace) return false;
-    return resolveWorkspaceFilter(b.workspace) === effectiveWorkspace;
-  });
+  const keywords = extractKeywords(task);
+  const cassQuery = buildCassHistoryQuery(task);
+
+  const activeBullets = getActiveBullets(playbook).filter((b) =>
+    bulletAppliesToWorkspace(b, effectiveWorkspace, sources),
+  );
 
   const scoringMeta: ScoreBulletsMeta = { semanticMode: "keyword" };
   const scoredBullets = await scoreBulletsEnhanced(activeBullets, task, keywords, config, {
@@ -623,18 +652,20 @@ export async function contextWithoutCass(
   warn(`cass unavailable - showing playbook only${reason ? ` (${reason})` : ""}`);
 
   try {
-    const playbook = await loadMergedPlaybook(config);
-    const keywords = extractKeywords(task);
-
     // Mirror generateContextResult: default workspace to cwd and canonicalize
     // so workspace-scoped rules surface in the cass-unavailable fallback too.
     const effectiveWorkspace = resolveWorkspaceFilter(workspace);
 
-    const activeBullets = getActiveBullets(playbook).filter((b) => {
-      if (b.scope !== "workspace") return true;
-      if (!effectiveWorkspace || !b.workspace) return false;
-      return resolveWorkspaceFilter(b.workspace) === effectiveWorkspace;
-    });
+    const sources = await loadMergedPlaybookWithSources(
+      config,
+      effectiveWorkspace ? { cwd: effectiveWorkspace } : {},
+    );
+    const playbook = sources.playbook;
+    const keywords = extractKeywords(task);
+
+    const activeBullets = getActiveBullets(playbook).filter((b) =>
+      bulletAppliesToWorkspace(b, effectiveWorkspace, sources),
+    );
 
     const scoredBullets: ScoredBullet[] = activeBullets.map((b) => {
       const relevance = scoreBulletRelevance(b.content, b.tags, keywords);

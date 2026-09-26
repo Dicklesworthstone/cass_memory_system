@@ -462,6 +462,24 @@ export const ConfigSchema = z.object({
   ]),
   // Set to true to include all sessions (ignore exclusion patterns)
   sessionIncludeAll: z.boolean().default(false),
+  // Bounded retry for sessions whose reflection fails (#85). A failing session
+  // is retried on later runs (after fresh sessions) until it has failed this
+  // many times in a row; after that it is only retried once the cooldown has
+  // passed, and the cooldown doubles with every further failure (max 30 days).
+  sessionRetryMaxFailures: z.number().int().positive().default(3),
+  sessionRetryCooldownHours: z.number().positive().default(24),
+  // Project-aware reflection (#81).
+  //  - "off" (default): the reflector is not told the session's workspace.
+  //  - "scoped": the reflector sees the session's project and may tag a rule
+  //    `scope: workspace`; such rules are stored in the global playbook with
+  //    `workspace` set to the project root, so `cm context` offers them only
+  //    inside that project (including its subdirectories and worktrees).
+  //  - "repo": like "scoped", but a project that already has a `.cass/`
+  //    directory receives its project rules in `.cass/playbook.yaml`.
+  // In every mode a `scope: workspace` rule is pinned to the session's
+  // project root (or made global when the project is unknown), never left
+  // with a missing/LLM-invented workspace that would hide it everywhere.
+  projectRuleRouting: z.enum(["off", "scoped", "repo"]).default("off"),
   dedupSimilarityThreshold: z.number().default(0.85),
   pruneHarmfulThreshold: z.number().default(3),
   defaultDecayHalfLife: z.number().default(90),
@@ -780,6 +798,28 @@ export const ProcessedEntrySchema = z.object({
   processedAt: z.string(),
   diaryId: z.string().optional(),
   deltasGenerated: z.number().default(0),
+  // --- Incremental reflection (#85) ---
+  // Number of exported session records already reflected (the watermark). A
+  // session that grows is re-reflected from this record on, so earlier turns
+  // (and their helpful/harmful feedback) are never counted twice. Entries
+  // without it (older logs, `onboard mark-done`) are never re-reflected.
+  recordCount: z.number().int().nonnegative().optional(),
+  // Hash of the last reflected record; a mismatch means the file was
+  // rewritten, so the watermark cannot be trusted.
+  lastRecordHash: z.string().optional(),
+  // Growth signals observed when the entry was written: cass timeline's
+  // message_count / ended_at and the session file size.
+  messageCount: z.number().nonnegative().optional(),
+  endedAt: z.string().optional(),
+  sizeBytes: z.number().nonnegative().optional(),
+  // --- Bounded retry (#85) ---
+  // "failed": the last attempt failed. The session is retried by later runs
+  // (after fresh sessions) until `failures` reaches the configured limit, then
+  // only after a cooldown, so sessions that always fail cannot starve batches.
+  status: z.enum(["processed", "failed"]).optional(),
+  failures: z.number().int().nonnegative().optional(),
+  lastFailureAt: z.string().optional(),
+  lastError: z.string().optional(),
 });
 export type ProcessedEntry = z.infer<typeof ProcessedEntrySchema>;
 

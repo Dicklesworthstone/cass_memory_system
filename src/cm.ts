@@ -204,12 +204,17 @@ export function createProgram(argv: string[] = process.argv): Command {
     .option("--category <cat>", "Category", "general")
     .option("--file <path>", "Batch add from JSON file (use '-' for stdin)")
     .option("--session <path>", "Session path to track in onboarding progress")
+    .option(
+      "--repo",
+      "Add to this repository's playbook (.cass/playbook.yaml); the rule applies only inside this repo",
+    )
     .option("--check", "Show validation results before adding")
     .option("--strict", "With --check, fail on warnings instead of adding")
     .option("-j, --json", "Output JSON")
     .addHelpText("after", () =>
       formatCommandExamples([
         'playbook add "Always validate user input" --category security --json',
+        'playbook add "Run migrations with make db-migrate" --repo --json',
         "playbook add --file rules.json --check --json",
         "playbook add --file - --json",
       ]),
@@ -517,10 +522,15 @@ export function createProgram(argv: string[] = process.argv): Command {
     .option("--workspace <path>", "Filter by workspace")
     .option("-j, --json", "Output JSON")
     .option("--session <path>", "Process specific session file")
+    .option(
+      "--force",
+      "With --session: reflect the whole transcript again even if it was processed (feedback from turns already reflected is not counted twice)",
+    )
     .addHelpText("after", () =>
       formatCommandExamples([
         "reflect --days 7 --json",
         "reflect --session /path/to/session.jsonl --json",
+        "reflect --session /path/to/session.jsonl --force --json",
         "reflect --dry-run --json",
       ]),
     )

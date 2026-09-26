@@ -1265,7 +1265,20 @@ export interface DiscoveredSession {
   path: string;
   /** cass's agent slug for the session (e.g. `claude_code`, `omp`); may be "unknown". */
   agent: string;
+  /** cass timeline `message_count`, when discovery came from the timeline (#85). */
+  messageCount?: number;
+  /** cass timeline `ended_at` as ISO-8601, when known (#85). */
+  endedAt?: string;
+  /** Session working directory, when cass reported one (search hits do, #81). */
+  workspace?: string;
 }
+
+/**
+ * How a caller wants a discovered session treated (#85). "new" and "grown"
+ * sessions fill the batch first (oldest first), then "retry" sessions whose
+ * earlier attempt failed; "skip" drops the session.
+ */
+export type DiscoveryEligibility = "new" | "grown" | "retry" | "skip";
 
 export async function findUnprocessedSessions(
   processed: Set<string>,
@@ -1283,6 +1296,12 @@ export async function findUnprocessedSessions(
     cliSubprocessCwd?: string;
     /** Budget for the `cass timeline` discovery call (`config.cassTimelineTimeoutSeconds`). */
     timelineTimeoutSeconds?: number;
+    /**
+     * Decides per session whether it is due (#85). When given it replaces the
+     * plain `processed` set check, so a processed session that has grown, or a
+     * failed one whose retry is due, can be selected again.
+     */
+    classify?: (session: DiscoveredSession) => DiscoveryEligibility;
   },
   cassPath = "cass",
   runner: CassRunner = DEFAULT_CASS_RUNNER,
@@ -1321,8 +1340,13 @@ export async function findUnprocessedSessions(
     const timed = groups.flatMap((g) =>
       (g.sessions || []).map((s) => {
         const t = s.startTime ? Date.parse(s.startTime) : Number.NaN;
+        const session: DiscoveredSession = { path: s.path, agent: s.agent };
+        if (typeof s.messageCount === "number" && s.messageCount > 0) {
+          session.messageCount = s.messageCount;
+        }
+        if (s.endTime) session.endedAt = s.endTime;
         return {
-          session: { path: s.path, agent: s.agent },
+          session,
           time: Number.isNaN(t) ? Number.POSITIVE_INFINITY : t,
         };
       }),
@@ -1349,7 +1373,11 @@ export async function findUnprocessedSessions(
         for (const hit of hits) {
           if (!seenPaths.has(hit.source_path)) {
             seenPaths.add(hit.source_path);
-            allSessions.push({ path: hit.source_path, agent: hit.agent });
+            const session: DiscoveredSession = { path: hit.source_path, agent: hit.agent };
+            if (typeof hit.workspace === "string" && hit.workspace.trim()) {
+              session.workspace = hit.workspace.trim();
+            }
+            allSessions.push(session);
           }
         }
       } catch {
@@ -1383,11 +1411,60 @@ export async function findUnprocessedSessions(
   const isOwnSubprocess = (sessionPath: string): boolean =>
     isCmSubprocessTranscriptPath(sessionPath, options.cliSubprocessCwd);
 
-  return allSessions
-    .filter((s) => !processed.has(s.path))
+  const candidates = allSessions
     .filter((s) => !isOwnSubprocess(s.path))
     .filter((s) => !agentNormalized || canonicalAgentName(s.agent) === agentNormalized)
     .filter((s) => !matchesExcludePattern(s.path))
-    .map((s) => ({ path: s.path, agent: s.agent || "unknown" }))
-    .slice(0, maxSessions);
+    .map((s) => ({ ...s, agent: s.agent || "unknown" }));
+
+  if (!options.classify) {
+    return candidates.filter((s) => !processed.has(s.path)).slice(0, maxSessions);
+  }
+
+  // Due sessions first (oldest first, as sorted above), then retries of
+  // sessions that failed before. A handful of sessions that fail every time
+  // must never take the whole batch from sessions that have not been tried.
+  const due: DiscoveredSession[] = [];
+  const retries: DiscoveredSession[] = [];
+  for (const s of candidates) {
+    const eligibility = options.classify(s);
+    if (eligibility === "new" || eligibility === "grown") due.push(s);
+    else if (eligibility === "retry") retries.push(s);
+  }
+  return [...due, ...retries].slice(0, maxSessions);
+}
+
+/**
+ * Render exported session records (see `cassExportRecords`) as sanitized
+ * transcript text, e.g. only the records added since the last reflection (#85).
+ * Returns "" when no record carries readable content.
+ */
+export function formatSessionRecords(records: unknown[], config: Config): string {
+  const joined = joinMessages(records);
+  if (!joined) return "";
+  const sanitizeConfig = getSanitizeConfig(config);
+  return sanitize(joined, {
+    ...sanitizeConfig,
+    extraPatterns: compileExtraPatterns(sanitizeConfig.extraPatterns),
+  });
+}
+
+/**
+ * The working directory a session ran in, read from its records: Claude Code
+ * stamps `cwd` on every message, Codex puts it in the `session_meta` payload.
+ * Returns undefined when no record names an absolute directory (#81).
+ */
+export function extractSessionWorkspace(records: unknown[]): string | undefined {
+  const limit = Math.min(records.length, 500);
+  for (let i = 0; i < limit; i++) {
+    const r = records[i] as Record<string, any> | null;
+    if (!r || typeof r !== "object") continue;
+    const candidates = [r.cwd, r.workspace, r.payload?.cwd, r.meta?.cwd];
+    for (const c of candidates) {
+      if (typeof c === "string" && c.trim() && (path.isAbsolute(c.trim()) || c.trim().startsWith("~"))) {
+        return c.trim();
+      }
+    }
+  }
+  return undefined;
 }

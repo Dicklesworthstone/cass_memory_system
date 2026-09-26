@@ -1026,17 +1026,20 @@ export async function fileExists(filePath: string): Promise<boolean> {
 /**
  * Returns the git repository root directory, or null if not in a git repo.
  */
-export async function resolveGitRoot(): Promise<string | null> {
+export async function resolveGitRoot(cwd?: string): Promise<string | null> {
   try {
-    const { stdout } = await execAsync("git rev-parse --show-toplevel");
-    return stdout.trim();
+    const { stdout } = await execAsync(
+      "git rev-parse --show-toplevel",
+      cwd ? { cwd: expandPath(cwd) } : {},
+    );
+    return stdout.trim() || null;
   } catch {
     return null;
   }
 }
 
-export async function resolveRepoDir(): Promise<string | null> {
-  const gitRoot = await resolveGitRoot();
+export async function resolveRepoDir(cwd?: string): Promise<string | null> {
+  const gitRoot = await resolveGitRoot(cwd);
   return gitRoot ? path.join(gitRoot, ".cass") : null;
 }
 

@@ -435,6 +435,7 @@ export class ProcessedLog {
               const normalizedSessionPath = normalizeSessionPathForLog(entry.sessionPath);
               if (!normalizedSessionPath) continue;
               this.entries.set(normalizedSessionPath, {
+                ...pickIncrementalFields(entry),
                 sessionPath: normalizedSessionPath,
                 processedAt: entry.processedAt || new Date().toISOString(),
                 diaryId: entry.diaryId || entry.id, // Handle both keys for compatibility
@@ -525,10 +526,16 @@ export class ProcessedLog {
     }
   }
 
+  /**
+   * True when the session has been reflected (or deliberately skipped). A
+   * session whose last attempt failed is NOT processed; see `get()` for its
+   * retry state.
+   */
   has(sessionPath: string): boolean {
     const normalized = normalizeSessionPathForLog(sessionPath);
     if (!normalized) return false;
-    return this.entries.has(normalized);
+    const entry = this.entries.get(normalized);
+    return entry !== undefined && entry.status !== "failed";
   }
 
   get(sessionPath: string): ProcessedEntry | undefined {
@@ -543,7 +550,112 @@ export class ProcessedLog {
     this.entries.set(normalized, { ...entry, sessionPath: normalized });
   }
 
+  /** Paths of processed sessions (failed attempts excluded). */
   getProcessedPaths(): Set<string> {
-    return new Set(this.entries.keys());
+    const paths = new Set<string>();
+    for (const [p, entry] of this.entries) {
+      if (entry.status !== "failed") paths.add(p);
+    }
+    return paths;
   }
+}
+
+function pickIncrementalFields(raw: Record<string, unknown>): Partial<ProcessedEntry> {
+  const out: Partial<ProcessedEntry> = {};
+  const nonNegInt = (v: unknown): v is number =>
+    typeof v === "number" && Number.isInteger(v) && v >= 0;
+  const nonNeg = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0;
+  const str = (v: unknown): v is string => typeof v === "string" && v.length > 0;
+  if (nonNegInt(raw.recordCount)) out.recordCount = raw.recordCount;
+  if (str(raw.lastRecordHash)) out.lastRecordHash = raw.lastRecordHash;
+  if (nonNeg(raw.messageCount)) out.messageCount = raw.messageCount;
+  if (str(raw.endedAt)) out.endedAt = raw.endedAt;
+  if (nonNeg(raw.sizeBytes)) out.sizeBytes = raw.sizeBytes;
+  if (raw.status === "processed" || raw.status === "failed") out.status = raw.status;
+  if (nonNegInt(raw.failures)) out.failures = raw.failures;
+  if (str(raw.lastFailureAt)) out.lastFailureAt = raw.lastFailureAt;
+  if (str(raw.lastError)) out.lastError = raw.lastError;
+  return out;
+}
+
+// -----------------------------------------------------------------------------
+// Session eligibility for reflection (#85)
+// -----------------------------------------------------------------------------
+
+/** What discovery observed about a session right now. */
+export interface ObservedSessionState {
+  messageCount?: number;
+  endedAt?: string;
+  sizeBytes?: number;
+}
+
+export interface SessionRetryPolicy {
+  maxFailures: number;
+  cooldownMs: number;
+}
+
+/** Longest a repeatedly failing session is ever parked. */
+export const MAX_SESSION_RETRY_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * - "new": never attempted.
+ * - "grown": reflected before, has a watermark, and has grown since.
+ * - "retry": the last attempt failed and the retry policy allows another.
+ * - "skip": processed and unchanged, has no watermark to resume from, or is
+ *   cooling down after repeated failures.
+ */
+export type SessionEligibility = "new" | "grown" | "retry" | "skip";
+
+/** True when any growth signal increased since the entry was written. */
+export function sessionHasGrown(entry: ProcessedEntry, observed: ObservedSessionState): boolean {
+  if (
+    typeof observed.messageCount === "number" &&
+    typeof entry.messageCount === "number" &&
+    observed.messageCount > entry.messageCount
+  ) {
+    return true;
+  }
+  if (observed.endedAt && entry.endedAt) {
+    const now = Date.parse(observed.endedAt);
+    const then = Date.parse(entry.endedAt);
+    if (!Number.isNaN(now) && !Number.isNaN(then) && now > then) return true;
+  }
+  if (
+    typeof observed.sizeBytes === "number" &&
+    typeof entry.sizeBytes === "number" &&
+    observed.sizeBytes > entry.sizeBytes
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * When may a failed session be retried? Immediately while it has failed fewer
+ * than `maxFailures` times; after that only once `cooldownMs` has passed since
+ * the last failure, doubling per further failure (capped at 30 days).
+ */
+export function nextRetryAtMs(entry: ProcessedEntry, policy: SessionRetryPolicy): number {
+  const failures = entry.failures ?? 1;
+  if (failures < policy.maxFailures) return 0;
+  const last = entry.lastFailureAt ? Date.parse(entry.lastFailureAt) : Number.NaN;
+  if (Number.isNaN(last)) return 0;
+  const exponent = Math.min(failures - policy.maxFailures, 20);
+  const cooldown = Math.min(policy.cooldownMs * 2 ** exponent, MAX_SESSION_RETRY_COOLDOWN_MS);
+  return last + cooldown;
+}
+
+export function classifySessionForReflection(
+  entry: ProcessedEntry | undefined,
+  observed: ObservedSessionState,
+  policy: SessionRetryPolicy,
+  nowMs: number = Date.now(),
+): SessionEligibility {
+  if (!entry) return "new";
+  if (entry.status === "failed") {
+    return nowMs >= nextRetryAtMs(entry, policy) ? "retry" : "skip";
+  }
+  // No watermark: re-reflecting would re-count every earlier turn.
+  if (entry.recordCount === undefined) return "skip";
+  return sessionHasGrown(entry, observed) ? "grown" : "skip";
 }

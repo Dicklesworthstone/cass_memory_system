@@ -67,6 +67,7 @@ export async function reflectCommand(
     json?: boolean;
     llm?: boolean; // Ignored, always uses LLM if validation enabled
     session?: string;
+    force?: boolean;
   } = {},
 ): Promise<void> {
   const startedAtMs = Date.now();
@@ -143,6 +144,17 @@ export async function reflectCommand(
     return;
   }
 
+  if (options.force && !sessionCheck.value) {
+    reportError("--force requires --session <path>", {
+      code: ErrorCode.INVALID_INPUT,
+      hint: `Example: ${cli} reflect --session <path> --force --json`,
+      json: options.json,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+
   const normalizedOptions = {
     ...options,
     ...(daysCheck.value !== undefined ? { days: daysCheck.value } : {}),
@@ -195,6 +207,7 @@ export async function reflectCommand(
     agent: normalizedOptions.agent,
     workspace: normalizedOptions.workspace,
     session: normalizedOptions.session,
+    force: normalizedOptions.force === true,
     dryRun: normalizedOptions.dryRun,
     onProgress: (event) => {
       if (normalizedOptions.json) {
@@ -359,6 +372,7 @@ export async function reflectCommand(
       {
         global: result.globalResult,
         repo: result.repoResult,
+        ...(result.projectResults ? { projects: result.projectResults } : {}),
         errors: result.errors,
         autoOutcome: result.autoOutcome,
       },

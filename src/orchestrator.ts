@@ -1,7 +1,15 @@
+import fs from "node:fs";
 import path from "node:path";
-import { cassExport, findUnprocessedSessions } from "./cass.js";
+import {
+  cassExport,
+  cassExportRecords,
+  type DiscoveredSession,
+  extractSessionWorkspace,
+  findUnprocessedSessions,
+  formatSessionRecords,
+} from "./cass.js";
 import { curatePlaybook } from "./curate.js";
-import { generateDiary } from "./diary.js";
+import { generateDiary, generateDiaryFromContent } from "./diary.js";
 import type { LLMIO } from "./llm.js";
 import { withLock } from "./lock.js";
 import {
@@ -21,7 +29,12 @@ import {
 } from "./playbook.js";
 import { reflectOnSession } from "./reflect.js";
 import { containsCmSubprocessPayload, stripCmSubprocessPayloads } from "./subprocess-tag.js";
-import { getProcessedLogPath, ProcessedLog } from "./tracking.js";
+import {
+  classifySessionForReflection,
+  getProcessedLogPath,
+  ProcessedLog,
+  type SessionRetryPolicy,
+} from "./tracking.js";
 import {
   type Config,
   type CurationResult,
@@ -46,6 +59,7 @@ import {
   warn,
 } from "./utils.js";
 import { validateDelta } from "./validate.js";
+import { normalizeWorkspacePath, resolveProjectRoot } from "./workspace.js";
 
 export interface ReflectionOptions {
   days?: number;
@@ -53,6 +67,14 @@ export interface ReflectionOptions {
   agent?: string;
   workspace?: string;
   session?: string; // Specific session path
+  /**
+   * With `session`: reflect the whole transcript again even if it was
+   * processed before (and ignore any retry cooldown). Only rule changes are
+   * taken from the already-reflected part; helpful/harmful feedback and
+   * outcome grading still come only from turns added since the last pass, so
+   * nothing is counted twice (#85).
+   */
+  force?: boolean;
   dryRun?: boolean;
   onProgress?: (event: ReflectionProgressEvent) => void;
   /** Optional LLMIO for testing - bypasses env-based stubs when provided */
@@ -64,6 +86,8 @@ export interface ReflectionOutcome {
   deltasGenerated: number;
   globalResult?: CurationResult;
   repoResult?: CurationResult;
+  /** Project rules routed to other repositories' `.cass/playbook.yaml` (#81, "repo" mode). */
+  projectResults?: Array<{ playbookPath: string; result: CurationResult }>;
   dryRunDeltas?: PlaybookDelta[];
   errors: string[];
   /** Auto-recorded rule outcomes from processed sessions */
@@ -99,6 +123,46 @@ export type ReflectionProgressEvent =
       sessionPath: string;
       error: string;
     };
+
+function statSizeSync(sessionPath: string): number | undefined {
+  try {
+    return fs.statSync(expandPath(sessionPath)).size;
+  } catch {
+    return undefined;
+  }
+}
+
+function hashRecord(record: unknown): string {
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(record) ?? String(record);
+  } catch {
+    serialized = String(record);
+  }
+  return hashContent(serialized);
+}
+
+function watermarkFor(records: unknown[]): Pick<ProcessedEntry, "recordCount" | "lastRecordHash"> {
+  return records.length > 0
+    ? { recordCount: records.length, lastRecordHash: hashRecord(records[records.length - 1]) }
+    : { recordCount: 0 };
+}
+
+/** Repo playbook that project rules for `projectRoot` go to in "repo" mode, if the repo opted in. */
+function repoPlaybookTargetFor(projectRoot: string): string | null {
+  const cassDir = path.join(projectRoot, ".cass");
+  try {
+    if (!fs.statSync(cassDir).isDirectory()) return null;
+    fs.accessSync(cassDir, fs.constants.W_OK);
+  } catch {
+    return null;
+  }
+  return path.join(cassDir, "playbook.yaml");
+}
+
+function samePlaybookPath(a: string, b: string): boolean {
+  return normalizeWorkspacePath(a) === normalizeWorkspacePath(b);
+}
 
 function isActiveBullet(bullet: PlaybookBullet): boolean {
   return !bullet.deprecated && bullet.maturity !== "deprecated" && bullet.state !== "retired";
@@ -161,11 +225,20 @@ export async function orchestrateReflection(
     // Agent attribution cass reported per session; the diary uses it as the
     // authoritative provenance instead of re-inferring from the path (#73).
     const agentHints = new Map<string, string>();
+    // Everything discovery learned per session (growth signals, workspace).
+    const discoveryInfo = new Map<string, DiscoveredSession>();
     const errors: string[] = [];
+
+    const retryPolicy: SessionRetryPolicy = {
+      maxFailures: config.sessionRetryMaxFailures ?? 3,
+      cooldownMs: (config.sessionRetryCooldownHours ?? 24) * 60 * 60 * 1000,
+    };
+    const routing = config.projectRuleRouting ?? "off";
 
     if (options.session) {
       sessions = [options.session];
     } else {
+      const nowMs = Date.now();
       try {
         const discovered = await findUnprocessedSessions(
           processedLog.getProcessedPaths(),
@@ -177,12 +250,30 @@ export async function orchestrateReflection(
             includeAll: config.sessionIncludeAll,
             cliSubprocessCwd: config.cliSubprocessCwd,
             timelineTimeoutSeconds: config.cassTimelineTimeoutSeconds,
+            // #85: a processed session that has grown since, or a failed one
+            // whose retry is due, is selected again.
+            classify: (s) => {
+              const entry = processedLog.get(s.path);
+              const canResume =
+                entry !== undefined && entry.status !== "failed" && entry.recordCount !== undefined;
+              return classifySessionForReflection(
+                entry,
+                {
+                  messageCount: s.messageCount,
+                  endedAt: s.endedAt,
+                  sizeBytes: canResume ? statSizeSync(s.path) : undefined,
+                },
+                retryPolicy,
+                nowMs,
+              );
+            },
           },
           config.cassPath,
         );
         sessions = discovered.map((s) => s.path);
         for (const s of discovered) {
           if (s.agent) agentHints.set(s.path, s.agent);
+          discoveryInfo.set(s.path, s);
         }
       } catch (err: any) {
         errors.push(`Session discovery failed: ${err.message}`);
@@ -190,7 +281,15 @@ export async function orchestrateReflection(
       }
     }
 
-    const unprocessed = sessions.filter((s) => !processedLog.has(s));
+    // An explicitly named session that was processed before is re-examined
+    // only when it can be resumed from a watermark (new turns), or with
+    // --force. A failed one is retried regardless of any cooldown.
+    const unprocessed = sessions.filter((s) => {
+      if (!options.session) return true;
+      const entry = processedLog.get(s);
+      if (!entry || entry.status === "failed" || options.force) return true;
+      return entry.recordCount !== undefined;
+    });
     if (unprocessed.length === 0) {
       return { sessionsProcessed: 0, deltasGenerated: 0, errors };
     }
@@ -200,6 +299,13 @@ export async function orchestrateReflection(
     // 4. Reflection Phase (LLM) - Done WITHOUT holding playbook locks
     const allDeltas: PlaybookDelta[] = [];
     const pendingProcessedEntries: ProcessedEntry[] = [];
+    // Log updates that do not count as a reflected session: growth that added
+    // no new records (refreshes the growth signals so discovery stops picking
+    // the session), and failed attempts (bounded retry, #85).
+    const pendingRefreshEntries: ProcessedEntry[] = [];
+    const pendingFailureEntries: ProcessedEntry[] = [];
+    // "repo" routing (#81): add deltas bound for another repo's playbook.
+    const projectTargets = new Map<PlaybookDelta, { playbookPath: string; projectRoot: string }>();
     const pendingOutcomes: OutcomeInput[] = [];
     let sessionsProcessed = 0;
     let inlineFeedbackDeltaCount = 0;
@@ -213,15 +319,99 @@ export async function orchestrateReflection(
         sessionPath,
       });
 
+      const prior = processedLog.get(sessionPath);
+      const priorDone = prior !== undefined && prior.status !== "failed";
+      const watermark = prior?.recordCount;
+      // Turns before the watermark (or, without one, a processed session's
+      // whole transcript) were graded by an earlier pass.
+      const previouslyGraded = priorDone || watermark !== undefined;
+      const discovered = discoveryInfo.get(sessionPath);
+      const forceFull = !!options.force && !!options.session;
+      // Resume from the watermark: reflect only records added since (#85).
+      const incremental = watermark !== undefined && !forceFull;
+      // Size is read BEFORE exporting: growth during the export then shows up
+      // as growth next time instead of being hidden behind the stored size.
+      const growthSignals: Pick<ProcessedEntry, "messageCount" | "endedAt" | "sizeBytes"> = {};
+      const messageCount = discovered?.messageCount ?? prior?.messageCount;
+      if (messageCount !== undefined) growthSignals.messageCount = messageCount;
+      const endedAt = discovered?.endedAt ?? prior?.endedAt;
+      if (endedAt) growthSignals.endedAt = endedAt;
+      const sizeBytes = statSizeSync(sessionPath);
+      if (sizeBytes !== undefined) growthSignals.sizeBytes = sizeBytes;
+
       try {
-        const exported = await cassExport(sessionPath, "text", config.cassPath, config);
-        // A session that could not be exported at all (missing file, cass and
-        // the fallback parser both failed) is an error that leaves it
-        // unprocessed for retry, not an "empty session" to mark done (#85).
-        if (exported === null) {
-          throw new Error(`Failed to export session: ${sessionPath}`);
+        let content: string;
+        let records: unknown[] | null;
+        let sliceNote = "";
+        if (incremental) {
+          records = await cassExportRecords(sessionPath, config.cassPath);
+          if (records === null) {
+            throw new Error(`Failed to export session: ${sessionPath}`);
+          }
+          const total = records.length;
+          const rewritten =
+            total < watermark ||
+            (watermark > 0 &&
+              prior?.lastRecordHash !== undefined &&
+              hashRecord(records[watermark - 1]) !== prior.lastRecordHash);
+          if (rewritten || total === watermark) {
+            // Nothing to reflect. A rewritten transcript cannot be sliced
+            // safely, so its current end becomes the new watermark rather than
+            // re-reflecting (and re-counting) turns seen before.
+            options.onProgress?.({
+              phase: "session_skip",
+              index: i + 1,
+              totalSessions: unprocessed.length,
+              sessionPath,
+              reason: rewritten
+                ? "Transcript was rewritten since it was last reflected; only turns added from now on will be reflected"
+                : "No new messages since the last reflection",
+            });
+            if (!options.session || !priorDone || rewritten) {
+              pendingRefreshEntries.push({
+                sessionPath,
+                processedAt: prior?.processedAt ?? now(),
+                ...(prior?.diaryId ? { diaryId: prior.diaryId } : {}),
+                deltasGenerated: prior?.deltasGenerated ?? 0,
+                ...watermarkFor(records),
+                ...growthSignals,
+              });
+            }
+            continue;
+          }
+          content = formatSessionRecords(records.slice(watermark), config);
+          sliceNote = `[Continuation of a session reflected earlier: records ${watermark + 1}-${total} only. Earlier turns were already reflected.]\n\n`;
+        } else {
+          const exported = await cassExport(sessionPath, "text", config.cassPath, config);
+          // A session that could not be exported at all (missing file, cass and
+          // the fallback parser both failed) is an error that leaves it
+          // unprocessed for retry, not an "empty session" to mark done (#85).
+          if (exported === null) {
+            throw new Error(`Failed to export session: ${sessionPath}`);
+          }
+          content = exported;
+          // Watermark for the next pass, taken right after the transcript was
+          // exported. If records cannot be read the entry has no watermark and
+          // the session is simply never resumed (the pre-#85 behaviour).
+          records = await cassExportRecords(sessionPath, config.cassPath);
         }
-        const content = exported;
+        const watermarkFields = records ? watermarkFor(records) : {};
+
+        // Feedback and outcome grading must only see turns that were never
+        // graded before (#85). Only a forced full pass differs from `content`.
+        let gradingSource = content;
+        if (forceFull && previouslyGraded) {
+          gradingSource =
+            watermark !== undefined && records && records.length > watermark
+              ? formatSessionRecords(records.slice(watermark), config)
+              : "";
+        }
+
+        // #81: the project the session ran in (cass search hit, else the
+        // transcript's own cwd), used to pin workspace-scoped rules.
+        const sessionWorkspace =
+          discovered?.workspace ?? (records ? extractSessionWorkspace(records) : undefined);
+        const projectRoot = sessionWorkspace ? resolveProjectRoot(sessionWorkspace) : undefined;
 
         // #76: a transcript carrying cm's private payload marker is a recording
         // of one of cm's OWN `claude -p` / codex / gemini calls, not a work
@@ -253,6 +443,8 @@ export async function orchestrateReflection(
             sessionPath,
             processedAt: now(),
             deltasGenerated: 0,
+            ...watermarkFields,
+            ...growthSignals,
           });
           continue;
         }
@@ -273,13 +465,19 @@ export async function orchestrateReflection(
             sessionPath,
             processedAt: now(),
             deltasGenerated: 0,
+            ...watermarkFields,
+            ...growthSignals,
           });
           continue;
         }
 
-        const diary = await generateDiary(sessionPath, config, {
+        const diaryHint = {
           agent: agentHints.get(sessionPath),
-        });
+          ...(sessionWorkspace ? { workspace: sessionWorkspace } : {}),
+        };
+        const diary = incremental
+          ? await generateDiaryFromContent(sessionPath, sliceNote + content, config, diaryHint)
+          : await generateDiary(sessionPath, config, diaryHint);
 
         const reflectResult = await reflectOnSession(diary, snapshotPlaybook, config, options.io);
         if (reflectResult.failure !== undefined && reflectResult.deltas.length === 0) {
@@ -290,9 +488,17 @@ export async function orchestrateReflection(
           throw new Error(`Reflector failed: ${reflectResult.failure}`);
         }
 
+        // A forced full pass over an already-reflected transcript cannot tell
+        // which turns a reflector helpful/harmful judgement came from, so it
+        // contributes rule changes only (#85).
+        const reflectedDeltas =
+          forceFull && previouslyGraded
+            ? reflectResult.deltas.filter((d) => d.type !== "helpful" && d.type !== "harmful")
+            : reflectResult.deltas;
+
         // Validation
         const validatedDeltas: PlaybookDelta[] = [];
-        for (const delta of reflectResult.deltas) {
+        for (const delta of reflectedDeltas) {
           const validation = await validateDelta(delta, config);
           if (validation.valid) {
             // Apply LLM refinement if suggested
@@ -300,6 +506,23 @@ export async function orchestrateReflection(
               delta.bullet.content = validation.result.refinedRule;
             }
             validatedDeltas.push(delta);
+          }
+        }
+
+        // #81: pin workspace-scoped rules to the session's project. The model
+        // never supplies the path; a rule whose project is unknown would match
+        // no workspace at all, so it stays global instead of vanishing.
+        for (const delta of validatedDeltas) {
+          if (delta.type !== "add" || delta.bullet.scope !== "workspace") continue;
+          if (!projectRoot) {
+            delta.bullet.scope = "global";
+            delete delta.bullet.workspace;
+            continue;
+          }
+          delta.bullet.workspace = projectRoot;
+          if (routing === "repo") {
+            const playbookPath = repoPlaybookTargetFor(projectRoot);
+            if (playbookPath) projectTargets.set(delta, { playbookPath, projectRoot });
           }
         }
 
@@ -319,7 +542,7 @@ export async function orchestrateReflection(
         // corrupted playbooks in #76 — if the skip is ever narrowed, or a
         // future caller reaches the auto-outcome block another way, cm's own
         // prompts must still be unable to award themselves helpful counts.
-        const gradableContent = stripCmSubprocessPayloads(content);
+        const gradableContent = stripCmSubprocessPayloads(gradingSource);
         if (gradableContent) {
           // Parse inline feedback comments (// [cass: helpful b-xyz] - reason)
           const inlineFeedback = parseInlineFeedback(gradableContent);
@@ -366,6 +589,8 @@ export async function orchestrateReflection(
           processedAt: now(),
           diaryId: diary.id,
           deltasGenerated: validatedDeltas.length,
+          ...watermarkFields,
+          ...growthSignals,
         });
         sessionsProcessed++;
 
@@ -379,6 +604,21 @@ export async function orchestrateReflection(
       } catch (err: any) {
         const message = err?.message || String(err);
         errors.push(`Failed to process ${sessionPath}: ${message}`);
+        // Bounded retry (#85): remember the failure, keeping any watermark from
+        // an earlier successful pass, so discovery can back off. A processed
+        // session without a watermark (only reachable via --force) keeps its
+        // processed entry: marking it failed would let discovery reflect the
+        // whole transcript again and re-count its feedback.
+        if (!priorDone || watermark !== undefined) pendingFailureEntries.push({
+          ...(prior ?? {}),
+          sessionPath,
+          processedAt: prior?.processedAt ?? now(),
+          deltasGenerated: prior?.deltasGenerated ?? 0,
+          status: "failed",
+          failures: (prior?.status === "failed" ? (prior.failures ?? 1) : 0) + 1,
+          lastFailureAt: now(),
+          lastError: message.slice(0, 500),
+        });
         options.onProgress?.({
           phase: "session_error",
           index: i + 1,
@@ -399,7 +639,10 @@ export async function orchestrateReflection(
     }
 
     if (allDeltas.length === 0 && pendingProcessedEntries.length === 0) {
-      // Every session failed: nothing to persist, nothing to count.
+      // Nothing reflected (every session failed or had nothing new): no
+      // playbook change and nothing to count, but retry state and refreshed
+      // growth signals are still recorded.
+      await processedLog.appendBatch([...pendingRefreshEntries, ...pendingFailureEntries]);
       return { sessionsProcessed, deltasGenerated: 0, errors };
     }
 
@@ -413,6 +656,7 @@ export async function orchestrateReflection(
     // We lock Global first, then Repo (if exists) to prevent deadlocks.
     let globalResult: CurationResult | undefined;
     let repoResult: CurationResult | undefined;
+    const projectResults: Array<{ playbookPath: string; result: CurationResult }> = [];
 
     const performMerge = async () => {
       // Reload fresh playbooks under lock
@@ -502,8 +746,26 @@ export async function orchestrateReflection(
       const globalDeltas: PlaybookDelta[] = [];
       const repoDeltas: PlaybookDelta[] = [];
 
+      // "repo" routing (#81): project rules for another repository.
+      const externalRepoDeltas = new Map<string, PlaybookDelta[]>();
+
       for (const delta of processedDeltas) {
         let routed = false;
+
+        const target = projectTargets.get(delta);
+        if (target && delta.type === "add") {
+          if (repoPlaybook && repoPath && samePlaybookPath(target.playbookPath, repoPath)) {
+            // A repo playbook is implicitly scoped to its repository; keeping
+            // an absolute path would break the rule in other clones.
+            delete delta.bullet.workspace;
+            repoDeltas.push(delta);
+          } else {
+            const list = externalRepoDeltas.get(target.playbookPath) ?? [];
+            list.push(delta);
+            externalRepoDeltas.set(target.playbookPath, list);
+          }
+          continue;
+        }
 
         // Feedback/Replace/Delete: Must target existing ID
         if ("bulletId" in delta && delta.bulletId) {
@@ -519,6 +781,37 @@ export async function orchestrateReflection(
         // New rules or orphans default to Global
         if (!routed) {
           globalDeltas.push(delta);
+        }
+      }
+
+      // Other repositories first, so a repo that cannot be written falls back
+      // to the global playbook (still workspace-scoped) in this same merge.
+      // Lock order is always global -> cwd repo -> other repos (sorted), and
+      // nothing takes a repo lock before the global one, so this cannot deadlock.
+      for (const playbookPath of [...externalRepoDeltas.keys()].sort()) {
+        const deltas = externalRepoDeltas.get(playbookPath)!;
+        try {
+          await withLock(playbookPath, async () => {
+            const targetPlaybook = await loadPlaybook(playbookPath);
+            const portable = deltas.map((d) => {
+              if (d.type !== "add") return d;
+              const { workspace: _workspace, ...bullet } = d.bullet;
+              return { ...d, bullet };
+            });
+            const result = curatePlaybook(
+              targetPlaybook,
+              portable,
+              config,
+              mergePlaybooks(globalPlaybook, targetPlaybook),
+            );
+            await savePlaybook(result.playbook, playbookPath, { updateLastReflection: true });
+            projectResults.push({ playbookPath, result });
+          });
+        } catch (err: any) {
+          errors.push(
+            `Could not write project rules to ${playbookPath} (${err?.message || String(err)}); kept them in the global playbook, scoped to the project`,
+          );
+          globalDeltas.push(...deltas);
         }
       }
 
@@ -549,9 +842,11 @@ export async function orchestrateReflection(
     });
 
     // Final log save - only mark processed AFTER rules are persisted
-    if (pendingProcessedEntries.length > 0) {
-      await processedLog.appendBatch(pendingProcessedEntries);
-    }
+    await processedLog.appendBatch([
+      ...pendingProcessedEntries,
+      ...pendingRefreshEntries,
+      ...pendingFailureEntries,
+    ]);
 
     // 6. Auto-record rule outcomes (post-merge, best-effort)
     let autoOutcome: ReflectionOutcome["autoOutcome"] | undefined;
@@ -596,6 +891,7 @@ export async function orchestrateReflection(
       deltasGenerated: allDeltas.length,
       globalResult,
       repoResult,
+      ...(projectResults.length > 0 ? { projectResults } : {}),
       errors,
       autoOutcome,
     };

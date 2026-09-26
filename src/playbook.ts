@@ -3,6 +3,7 @@ import path from "node:path";
 import yaml from "yaml";
 import type { z } from "zod";
 import { withLock } from "./lock.js";
+import { normalizeWorkspacePath, resolveProjectRoot } from "./workspace.js";
 import { formatMaturityIcon, iconPrefix } from "./output.js";
 import { getEffectiveScore, isStale } from "./scoring.js";
 import {
@@ -369,17 +370,61 @@ export function mergePlaybooks(global: Playbook, repo: Playbook | null): Playboo
   return merged;
 }
 
-export async function loadMergedPlaybook(config: Config): Promise<Playbook> {
+export interface MergedPlaybookWithSources {
+  playbook: Playbook;
+  /** Git root whose `.cass/playbook.yaml` was merged in, or null when none was. */
+  repoRoot: string | null;
+  /**
+   * Ids of bullets that came from the repo playbook. A repo playbook is
+   * implicitly scoped to its repository, so its `scope: workspace` bullets may
+   * omit `workspace` (portable across clones) and still apply there (#81).
+   */
+  repoBulletIds: Set<string>;
+}
+
+export async function loadMergedPlaybook(
+  config: Config,
+  options: { cwd?: string } = {},
+): Promise<Playbook> {
+  return (await loadMergedPlaybookWithSources(config, options)).playbook;
+}
+
+/**
+ * Load the global playbook merged with the repo playbook of the git checkout
+ * containing `options.cwd` (default: the process cwd), and report which
+ * bullets came from the repo playbook.
+ */
+export async function loadMergedPlaybookWithSources(
+  config: Config,
+  options: { cwd?: string } = {},
+): Promise<MergedPlaybookWithSources> {
   const globalPlaybook = await loadPlaybook(config.playbookPath);
 
   let repoPlaybook: Playbook | null = null;
 
-  const repoDir = await resolveRepoDir();
-  const repoPath = repoDir ? path.join(repoDir, "playbook.yaml") : null;
+  let repoDir = await resolveRepoDir(options.cwd);
+  let repoPath = repoDir ? path.join(repoDir, "playbook.yaml") : null;
+
+  // A linked worktree without its own `.cass/playbook.yaml` (e.g. the file is
+  // not committed) uses the main worktree's repo playbook (#81).
+  if (repoDir && repoPath && !(await fileExists(repoPath))) {
+    const gitRoot = path.dirname(repoDir);
+    const mainRoot = resolveProjectRoot(gitRoot);
+    if (mainRoot !== normalizeWorkspacePath(gitRoot)) {
+      const mainRepoPath = path.join(mainRoot, ".cass", "playbook.yaml");
+      if (await fileExists(mainRepoPath)) {
+        repoDir = path.join(mainRoot, ".cass");
+        repoPath = mainRepoPath;
+      }
+    }
+  }
 
   if (repoPath && (await fileExists(repoPath))) {
     repoPlaybook = await loadPlaybook(repoPath);
   }
+
+  const repoRoot = repoPlaybook && repoDir ? path.dirname(repoDir) : null;
+  const repoBulletIds = new Set(repoPlaybook ? repoPlaybook.bullets.map((b) => b.id) : []);
 
   const merged = mergePlaybooks(globalPlaybook, repoPlaybook);
 
@@ -454,7 +499,7 @@ export async function loadMergedPlaybook(config: Config): Promise<Playbook> {
     }
   }
 
-  return merged;
+  return { playbook: merged, repoRoot, repoBulletIds };
 }
 
 // --- Bullet Management ---

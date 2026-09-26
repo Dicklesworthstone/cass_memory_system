@@ -382,7 +382,7 @@ describe("cass.ts core functions (runner stubbed)", () => {
     const result = await findUnprocessedSessions(processed, {}, "cass", runner);
 
     expect(result).toHaveLength(1);
-    expect(result[0]).toEqual({ path: "s2.jsonl", agent: "claude" });
+    expect(result[0]).toMatchObject({ path: "s2.jsonl", agent: "claude" });
   });
 
   // #85: cass 0.8 emits `groups` from a HashMap (key order differs per run) and
@@ -512,11 +512,13 @@ describe("cass.ts core functions (runner stubbed)", () => {
     const runner = createCassRunnerStub({ execStdout: { timeline: output } });
     const result = await findUnprocessedSessions(new Set(), {}, "cass", runner);
 
-    expect(result).toEqual([
+    expect(result.map((s) => ({ path: s.path, agent: s.agent }))).toEqual([
       { path: "/home/u/.omp/agent/sessions/ws/s1.jsonl", agent: "omp" },
       { path: "/home/u/.claude/projects/p/s2.jsonl", agent: "claude_code" },
       { path: "/home/u/somewhere/s3.jsonl", agent: "unknown" },
     ]);
+    // Growth signals ride along for incremental reflection (#85).
+    expect(result[0]).toMatchObject({ messageCount: 10, endedAt: "11:00" });
   });
 
   it("findUnprocessedSessions agent filter folds aliases (claude matches cass's claude_code)", async () => {

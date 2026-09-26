@@ -616,7 +616,7 @@ Respond with JSON matching this schema:
 </cass_history>
 
 {iterationNote}
-
+{workspaceNote}
 INSTRUCTIONS:
 Extract playbook deltas (changes) from this session. Each delta should be:
 - SPECIFIC: Bad: "Write tests". Good: "For React hooks, test effects separately with renderHook"
@@ -1230,8 +1230,22 @@ export async function runReflector<T>(
     }
   }
 
+  // Project-aware reflection (#81): when enabled, tell the reflector which
+  // project the session ran in so it can tag project-only knowledge. The
+  // system, not the model, decides the stored workspace path.
+  const projectAware = (config.projectRuleRouting ?? "off") !== "off" && !!diary.workspace;
+  const workspaceNote = projectAware
+    ? `PROJECT SCOPE:
+This session ran in the project at ${diary.workspace}.
+For an "add" delta whose rule only makes sense inside this project (its build or
+migration commands, file layout, module names, conventions, local tooling), set
+"scope": "workspace" and "workspace": null — the system records the project.
+Rules that would help in any repository use "scope": "global" (or null).
+`
+    : "";
+
   const diaryText = `
-Status: ${diary.status}
+${projectAware ? `Workspace: ${diary.workspace}\n` : ""}Status: ${diary.status}
 Accomplishments: ${diary.accomplishments.join("\n- ")}
 Decisions: ${diary.decisions.join("\n- ")}
 Challenges: ${diary.challenges.join("\n- ")}
@@ -1252,6 +1266,7 @@ Key Learnings: ${diary.keyLearnings.join("\n- ")}
     diary: diaryText,
     cassHistory: safeCassHistory,
     iterationNote,
+    workspaceNote,
   });
 
   return llmWithRetry(

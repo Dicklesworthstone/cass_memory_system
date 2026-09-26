@@ -8,7 +8,7 @@
  * - Pointing `config.cassPath` at a non-existent binary so `cassExport` uses fallback parsing
  */
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import yaml from "yaml";
 
@@ -753,16 +753,427 @@ describe("orchestrateReflection reflector failures (#78)", () => {
             expect(outcome.errors[0]).toContain(sessionPath);
             expect(outcome.errors[0]).toContain("Reflector failed");
 
-            let logContent = "";
-            try {
-              logContent = readFileSync(expandPath(getProcessedLogPath()), "utf-8");
-            } catch {
-              // No log written at all is also "not marked processed".
-            }
-            expect(logContent).not.toContain(sessionPath);
+            // Not processed; the failure is recorded for bounded retry (#85).
+            const log = new ProcessedLog(expandPath(getProcessedLogPath()));
+            await log.load();
+            expect(log.has(sessionPath)).toBe(false);
+            expect(log.getProcessedPaths().has(sessionPath)).toBe(false);
+            expect(log.get(sessionPath)).toMatchObject({ status: "failed", failures: 1 });
           },
         );
       });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #85: incremental re-reflection of grown sessions, bounded retry, --force
+// #81: project-scoped rules from the session's workspace
+// ---------------------------------------------------------------------------
+
+function appendJsonl(sessionPath: string, lines: Array<Record<string, unknown>>): void {
+  const existing = readFileSync(sessionPath, "utf-8");
+  writeFileSync(sessionPath, existing + lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+}
+
+function feedbackDeltas(deltas: any[] | undefined): string[] {
+  return (deltas || [])
+    .filter((d) => d.type === "helpful" || d.type === "harmful")
+    .map((d) => `${d.type}:${d.bulletId}`)
+    .sort();
+}
+
+describe("orchestrateReflection incremental sessions (#85)", () => {
+  test("a grown session reflects only the new turns; earlier feedback is not counted again", async () => {
+    await withIsolatedHome(async (env) => {
+      writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])), "utf-8");
+      const sessionPath = path.join(env.home, "sessions", "grows.jsonl");
+      writeJsonlSession(sessionPath, [
+        { role: "user", content: "OLDTURN please refactor the parser module carefully." },
+        {
+          role: "assistant",
+          content: "Done. // [cass: helpful b-old1] - followed the parser rule",
+        },
+      ]);
+      const config = createTestConfig({
+        playbookPath: env.playbookPath,
+        diaryDir: env.diaryDir,
+        cassPath: "/__missing__/cass",
+        validationEnabled: false,
+      });
+
+      const prompts: string[] = [];
+      await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
+        await withLlmShim(
+          {
+            reflector: (prompt: string) => {
+              prompts.push(prompt);
+              return { deltas: [] };
+            },
+          },
+          async (io) => {
+            const first = await orchestrateReflection(config, { session: sessionPath, io });
+            expect(first.errors).toEqual([]);
+            expect(first.sessionsProcessed).toBe(1);
+
+            const log = new ProcessedLog(expandPath(getProcessedLogPath()));
+            await log.load();
+            expect(log.get(sessionPath)?.recordCount).toBe(2);
+
+            // Nothing new: an explicit re-run is a no-op.
+            const again = await orchestrateReflection(config, {
+              session: sessionPath,
+              io,
+              dryRun: true,
+            });
+            expect(again.sessionsProcessed).toBe(0);
+            expect(again.deltasGenerated).toBe(0);
+
+            appendJsonl(sessionPath, [
+              { role: "user", content: "NEWTURN now add tests for the tokenizer edge cases." },
+              {
+                role: "assistant",
+                content: "Added. // [cass: harmful b-new1] - rule was outdated here",
+              },
+            ]);
+
+            prompts.length = 0;
+            const second = await orchestrateReflection(config, {
+              session: sessionPath,
+              io,
+              dryRun: true,
+            });
+            expect(second.errors).toEqual([]);
+            expect(second.sessionsProcessed).toBe(1);
+            // Only the new turn's inline feedback; b-old1 is not re-counted.
+            expect(feedbackDeltas(second.dryRunDeltas)).toEqual(["harmful:b-new1"]);
+            expect(prompts.length).toBeGreaterThan(0);
+            expect(prompts.join("\n")).not.toContain("OLDTURN");
+
+            // Committed for real, the watermark advances to the new end.
+            const committed = await orchestrateReflection(config, { session: sessionPath, io });
+            expect(committed.sessionsProcessed).toBe(1);
+            const log2 = new ProcessedLog(expandPath(getProcessedLogPath()));
+            await log2.load();
+            expect(log2.get(sessionPath)?.recordCount).toBe(4);
+          },
+        );
+      });
+    });
+  });
+
+  test("a rewritten transcript is not re-reflected (no double counting)", async () => {
+    await withIsolatedHome(async (env) => {
+      writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])), "utf-8");
+      const sessionPath = path.join(env.home, "sessions", "rewritten.jsonl");
+      writeJsonlSession(sessionPath, [
+        { role: "user", content: "First version of this session with enough content to reflect." },
+        { role: "assistant", content: "// [cass: helpful b-old1] - fine" },
+      ]);
+      const config = createTestConfig({
+        playbookPath: env.playbookPath,
+        diaryDir: env.diaryDir,
+        cassPath: "/__missing__/cass",
+        validationEnabled: false,
+      });
+      await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
+        await withLlmShim({ reflector: { deltas: [] } }, async (io) => {
+          await orchestrateReflection(config, { session: sessionPath, io });
+          writeJsonlSession(sessionPath, [
+            { role: "user", content: "Completely different history after a compaction rewrite." },
+            { role: "assistant", content: "// [cass: helpful b-old1] - fine" },
+            { role: "user", content: "and one more turn" },
+          ]);
+          const outcome = await orchestrateReflection(config, {
+            session: sessionPath,
+            io,
+            dryRun: true,
+          });
+          expect(outcome.sessionsProcessed).toBe(0);
+          expect(feedbackDeltas(outcome.dryRunDeltas)).toEqual([]);
+        });
+      });
+    });
+  });
+
+  test("--force re-reflects the whole transcript but grades only turns not graded before", async () => {
+    await withIsolatedHome(async (env) => {
+      writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])), "utf-8");
+      const sessionPath = path.join(env.home, "sessions", "forced.jsonl");
+      writeJsonlSession(sessionPath, [
+        { role: "user", content: "OLDTURN a long enough request to be worth reflecting on." },
+        { role: "assistant", content: "// [cass: helpful b-old1] - fine" },
+      ]);
+      const config = createTestConfig({
+        playbookPath: env.playbookPath,
+        diaryDir: env.diaryDir,
+        cassPath: "/__missing__/cass",
+        validationEnabled: false,
+      });
+      await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
+        await withLlmShim(
+          { reflector: { deltas: [{ type: "helpful", bulletId: "b-fromreflector" }] } },
+          async (io) => {
+            await orchestrateReflection(config, { session: sessionPath, io });
+            const forced = await orchestrateReflection(config, {
+              session: sessionPath,
+              io,
+              force: true,
+              dryRun: true,
+            });
+            expect(forced.sessionsProcessed).toBe(1);
+            // Neither the old inline feedback nor reflector feedback is re-counted.
+            expect(feedbackDeltas(forced.dryRunDeltas)).toEqual([]);
+          },
+        );
+      });
+    });
+  });
+
+  test("failures are recorded and counted; a success clears them", async () => {
+    await withIsolatedHome(async (env) => {
+      writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])), "utf-8");
+      const sessionPath = path.join(env.home, "sessions", "flaky.jsonl");
+      writeJsonlSession(sessionPath, [
+        { role: "user", content: "A session long enough to reach the reflector call path." },
+        { role: "assistant", content: "Some answer text." },
+      ]);
+      const config = createTestConfig({
+        playbookPath: env.playbookPath,
+        diaryDir: env.diaryDir,
+        cassPath: "/__missing__/cass",
+        validationEnabled: false,
+      });
+      const readEntry = async () => {
+        const log = new ProcessedLog(expandPath(getProcessedLogPath()));
+        await log.load();
+        return log.get(sessionPath);
+      };
+      await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
+        await withLlmShim({ errors: { reflector: new Error("provider down") } }, async (io) => {
+          await orchestrateReflection(config, { session: sessionPath, io });
+          await orchestrateReflection(config, { session: sessionPath, io });
+        });
+        expect(await readEntry()).toMatchObject({ status: "failed", failures: 2 });
+        expect((await readEntry())?.lastError).toContain("provider down");
+
+        await withLlmShim({ reflector: { deltas: [] } }, async (io) => {
+          const ok = await orchestrateReflection(config, { session: sessionPath, io });
+          expect(ok.sessionsProcessed).toBe(1);
+        });
+        const entry = await readEntry();
+        expect(entry?.status).toBeUndefined();
+        expect(entry?.failures).toBeUndefined();
+        expect(entry?.recordCount).toBe(2);
+      });
+    });
+  });
+});
+
+describe("orchestrateReflection --force on a legacy entry (#85)", () => {
+  test("a failed forced pass does not turn a processed legacy session into a retry", async () => {
+    await withIsolatedHome(async (env) => {
+      writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])), "utf-8");
+      const sessionPath = path.join(env.home, "sessions", "legacy.jsonl");
+      writeJsonlSession(sessionPath, [
+        { role: "user", content: "Legacy session content long enough to reach the reflector." },
+        { role: "assistant", content: "// [cass: helpful b-old1] - fine" },
+      ]);
+      const logPath = expandPath(getProcessedLogPath());
+      await new ProcessedLog(logPath).append({ sessionPath, processedAt: now(), deltasGenerated: 0 });
+      const config = createTestConfig({
+        playbookPath: env.playbookPath,
+        diaryDir: env.diaryDir,
+        cassPath: "/__missing__/cass",
+        validationEnabled: false,
+      });
+      await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
+        await withLlmShim({ errors: { reflector: new Error("provider down") } }, async (io) => {
+          const outcome = await orchestrateReflection(config, {
+            session: sessionPath,
+            io,
+            force: true,
+          });
+          expect(outcome.errors).toHaveLength(1);
+        });
+      });
+      const log = new ProcessedLog(logPath);
+      await log.load();
+      expect(log.has(sessionPath)).toBe(true);
+      expect(log.get(sessionPath)?.status).toBeUndefined();
+    });
+  });
+});
+
+describe("orchestrateReflection project-scoped rules (#81)", () => {
+  function makeGitRepo(dir: string): string {
+    mkdirSync(path.join(dir, ".git"), { recursive: true });
+    return realpathSync(dir);
+  }
+
+  test("workspace-scoped adds are pinned to the session's project root", async () => {
+    await withIsolatedHome(async (env) => {
+      writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])), "utf-8");
+      const repo = makeGitRepo(path.join(env.home, "proj"));
+      mkdirSync(path.join(repo, "pkg"), { recursive: true });
+      const sessionPath = path.join(env.home, "sessions", "proj.jsonl");
+      writeJsonlSession(sessionPath, [
+        { role: "user", content: "Run the migrations for this project please, all of them." },
+        { role: "assistant", content: "Ran make db-migrate successfully." },
+      ]);
+      // Claude Code stamps the session cwd on each record.
+      writeFileSync(
+        sessionPath,
+        readFileSync(sessionPath, "utf-8")
+          .trim()
+          .split("\n")
+          .map((l) => JSON.stringify({ ...JSON.parse(l), cwd: path.join(repo, "pkg") }))
+          .join("\n") + "\n",
+      );
+      const config = createTestConfig({
+        playbookPath: env.playbookPath,
+        diaryDir: env.diaryDir,
+        cassPath: "/__missing__/cass",
+        validationEnabled: false,
+        projectRuleRouting: "scoped",
+      });
+      const prompts: string[] = [];
+      await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
+        await withLlmShim(
+          {
+            reflector: (prompt: string) => {
+              prompts.push(prompt);
+              return {
+                deltas: [
+                  {
+                    type: "add",
+                    bullet: {
+                      content: "Run database migrations with make db-migrate.",
+                      category: "workflow",
+                      scope: "workspace",
+                    },
+                  } as any,
+                  {
+                    type: "add",
+                    bullet: {
+                      content: "Prefer small focused commits in any repository.",
+                      category: "git",
+                    },
+                  } as any,
+                ],
+              };
+            },
+          },
+          async (io) => {
+            const outcome = await orchestrateReflection(config, { session: sessionPath, io });
+            expect(outcome.errors).toEqual([]);
+          },
+        );
+      });
+      expect(prompts.join("\n")).toContain(`This session ran in the project at ${path.join(repo, "pkg")}`);
+      const saved = readPlaybook(env.playbookPath);
+      const migrate = saved.bullets.find((b: any) => b.content.includes("db-migrate"));
+      expect(migrate.scope).toBe("workspace");
+      expect(migrate.workspace).toBe(repo);
+      const commits = saved.bullets.find((b: any) => b.content.includes("focused commits"));
+      expect(commits.scope).toBe("global");
+      expect(commits.workspace).toBeUndefined();
+    });
+  });
+
+  test('"repo" routing writes project rules to the project\'s .cass/playbook.yaml', async () => {
+    await withIsolatedHome(async (env) => {
+      writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])), "utf-8");
+      const repo = makeGitRepo(path.join(env.home, "proj"));
+      mkdirSync(path.join(repo, ".cass"), { recursive: true });
+      const sessionPath = path.join(env.home, "sessions", "proj.jsonl");
+      mkdirSync(path.dirname(sessionPath), { recursive: true });
+      writeFileSync(
+        sessionPath,
+        [
+          { role: "user", content: "Run the migrations for this project please.", cwd: repo },
+          { role: "assistant", content: "Ran make db-migrate successfully.", cwd: repo },
+        ]
+          .map((l) => JSON.stringify(l))
+          .join("\n") + "\n",
+      );
+      const config = createTestConfig({
+        playbookPath: env.playbookPath,
+        diaryDir: env.diaryDir,
+        cassPath: "/__missing__/cass",
+        validationEnabled: false,
+        projectRuleRouting: "repo",
+      });
+      await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
+        await withLlmShim(
+          {
+            reflector: {
+              deltas: [
+                {
+                  type: "add",
+                  bullet: {
+                    content: "Run database migrations with make db-migrate.",
+                    category: "workflow",
+                    scope: "workspace",
+                  },
+                } as any,
+              ],
+            },
+          },
+          async (io) => {
+            const outcome = await orchestrateReflection(config, { session: sessionPath, io });
+            expect(outcome.errors).toEqual([]);
+            expect(outcome.projectResults?.[0]?.playbookPath).toBe(
+              path.join(repo, ".cass", "playbook.yaml"),
+            );
+          },
+        );
+      });
+      const globalSaved = readPlaybook(env.playbookPath);
+      expect((globalSaved.bullets || []).some((b: any) => b.content.includes("db-migrate"))).toBe(
+        false,
+      );
+      const repoSaved = readPlaybook(path.join(repo, ".cass", "playbook.yaml"));
+      const rule = repoSaved.bullets.find((b: any) => b.content.includes("db-migrate"));
+      expect(rule.scope).toBe("workspace");
+      expect(rule.workspace).toBeUndefined();
+    });
+  });
+
+  test("a workspace-scoped add with no known project stays visible as a global rule", async () => {
+    await withIsolatedHome(async (env) => {
+      writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])), "utf-8");
+      const sessionPath = path.join(env.home, "sessions", "nocwd.jsonl");
+      writeJsonlSession(sessionPath, [
+        { role: "user", content: "A session without any recorded working directory at all." },
+        { role: "assistant", content: "Understood, proceeding." },
+      ]);
+      const config = createTestConfig({
+        playbookPath: env.playbookPath,
+        diaryDir: env.diaryDir,
+        cassPath: "/__missing__/cass",
+        validationEnabled: false,
+      });
+      await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
+        await withLlmShim(
+          {
+            reflector: {
+              deltas: [
+                {
+                  type: "add",
+                  bullet: { content: "Use the project task runner.", category: "x", scope: "workspace" },
+                } as any,
+              ],
+            },
+          },
+          async (io) => {
+            await orchestrateReflection(config, { session: sessionPath, io });
+          },
+        );
+      });
+      const saved = readPlaybook(env.playbookPath);
+      const rule = saved.bullets.find((b: any) => b.content.includes("task runner"));
+      expect(rule.scope).toBe("global");
     });
   });
 });
