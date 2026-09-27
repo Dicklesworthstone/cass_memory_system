@@ -7,7 +7,7 @@ import { contextCommand } from "../src/commands/context.js";
 import { doctorCommand } from "../src/commands/doctor.js";
 import { playbookCommand } from "../src/commands/playbook.js";
 import { statsCommand } from "../src/commands/stats.js";
-import { isToonAvailable } from "../src/utils.js";
+import { findToonRustBinary } from "../src/utils.js";
 import { type TestEnv, withTempCassHome } from "./helpers/temp.js";
 
 const envKeys = [
@@ -174,18 +174,18 @@ async function captureOutput<T>(
   }
 }
 
-function decodeToJson(toon: string): any {
-  const decoded = spawnSync("tru", ["--decode"], { input: toon, encoding: "utf8" });
+function decodeToJson(toonBin: string, toon: string): any {
+  const decoded = spawnSync(toonBin, ["--decode"], { input: toon, encoding: "utf8" });
   if (decoded.error || decoded.status !== 0) {
     const message = decoded.error?.message || decoded.stderr || "unknown error";
-    throw new Error(`tru --decode failed: ${message}`);
+    throw new Error(`${toonBin} --decode failed: ${message}`);
   }
   const output = String(decoded.stdout ?? "").trim();
   return JSON.parse(output);
 }
 
 describe("TOON output (CLI commands)", () => {
-  describe("Fallback to JSON when tru is missing", () => {
+  describe("Fallback to JSON when toon_rust is missing", () => {
     it("context --format toon falls back to JSON", async () => {
       await withTempCassHome(async (env) => {
         await seedCassHome(env);
@@ -200,7 +200,7 @@ describe("TOON output (CLI commands)", () => {
             contextCommand("test task", { format: "toon" }),
           );
 
-          expect(stderr).toContain("tru binary not found");
+          expect(stderr).toContain("toon_rust binary (toon) not found");
           expect(() => JSON.parse(stdout)).not.toThrow();
           const payload = JSON.parse(stdout);
           expect(payload.command).toBe("context");
@@ -221,7 +221,7 @@ describe("TOON output (CLI commands)", () => {
         try {
           const { stdout, stderr } = await captureOutput(() => statsCommand({ format: "toon" }));
 
-          expect(stderr).toContain("tru binary not found");
+          expect(stderr).toContain("toon_rust binary (toon) not found");
           expect(() => JSON.parse(stdout)).not.toThrow();
           const payload = JSON.parse(stdout);
           expect(payload.command).toBe("stats");
@@ -244,7 +244,7 @@ describe("TOON output (CLI commands)", () => {
             playbookCommand("list", [], { format: "toon" }),
           );
 
-          expect(stderr).toContain("tru binary not found");
+          expect(stderr).toContain("toon_rust binary (toon) not found");
           expect(() => JSON.parse(stdout)).not.toThrow();
           const payload = JSON.parse(stdout);
           expect(payload.command).toBe("playbook:list");
@@ -265,7 +265,7 @@ describe("TOON output (CLI commands)", () => {
         try {
           const { stdout, stderr } = await captureOutput(() => doctorCommand({ format: "toon" }));
 
-          expect(stderr).toContain("tru binary not found");
+          expect(stderr).toContain("toon_rust binary (toon) not found");
           expect(() => JSON.parse(stdout)).not.toThrow();
           const payload = JSON.parse(stdout);
           expect(payload.command).toBe("doctor");
@@ -276,36 +276,37 @@ describe("TOON output (CLI commands)", () => {
     });
   });
 
-  describe("Roundtrip decode when tru is available", () => {
+  describe("Roundtrip decode when toon_rust is available", () => {
     it("decodes TOON for context, stats, playbook, and doctor", async () => {
-      if (!isToonAvailable()) {
-        console.log("Skipping TOON roundtrip tests - tru not installed");
+      const toonBin = findToonRustBinary();
+      if (!toonBin) {
+        console.log("Skipping TOON roundtrip tests - toon_rust (toon) not installed");
         return;
       }
 
       await withTempCassHome(async (env) => {
         await seedCassHome(env);
         process.env.CASS_PATH = "/__missing__/cass";
-        process.env.TOON_TRU_BIN = "tru";
+        process.env.TOON_TRU_BIN = toonBin;
 
         const contextOut = await captureOutput(() =>
           contextCommand("test task", { format: "toon" }),
         );
-        const contextPayload = decodeToJson(contextOut.stdout);
+        const contextPayload = decodeToJson(toonBin, contextOut.stdout);
         expect(contextPayload.command).toBe("context");
 
         const statsOut = await captureOutput(() => statsCommand({ format: "toon" }));
-        const statsPayload = decodeToJson(statsOut.stdout);
+        const statsPayload = decodeToJson(toonBin, statsOut.stdout);
         expect(statsPayload.command).toBe("stats");
 
         const playbookOut = await captureOutput(() =>
           playbookCommand("list", [], { format: "toon" }),
         );
-        const playbookPayload = decodeToJson(playbookOut.stdout);
+        const playbookPayload = decodeToJson(toonBin, playbookOut.stdout);
         expect(playbookPayload.command).toBe("playbook:list");
 
         const doctorOut = await captureOutput(() => doctorCommand({ format: "toon" }));
-        const doctorPayload = decodeToJson(doctorOut.stdout);
+        const doctorPayload = decodeToJson(toonBin, doctorOut.stdout);
         expect(doctorPayload.command).toBe("doctor");
       });
     });

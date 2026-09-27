@@ -2380,18 +2380,27 @@ export function isToonOutput(options?: { json?: boolean; format?: string }): boo
   return false;
 }
 
+/**
+ * Decide whether `pathOrCmd` is toon_rust (its binary is `toon` since v0.2.0, `tru` before).
+ *
+ * The name proves nothing either way: other CLIs install a `toon` too (e.g. npm
+ * `@toon-format/cli`). So identify toon_rust by content: its `--help` carries the crate
+ * description "TOON reference implementation in Rust", and older builds print
+ * `tru <version>` / `toon_rust <version>` for `--version`. A bare `toon <version>` is not
+ * accepted on its own, because another `toon` CLI could print exactly that.
+ */
 function isToonRustBinary(pathOrCmd: string): boolean {
   const { spawnSync } = require("child_process");
-  const base = pathOrCmd.split(/[\\/]/).pop()?.toLowerCase() ?? pathOrCmd.toLowerCase();
-  if (base === "toon" || base === "toon.exe") return false;
+  // A candidate that hangs must not stall cm's output path.
+  const probe = { encoding: "utf8", timeout: 5000 } as const;
 
   try {
-    const help = spawnSync(pathOrCmd, ["--help"], { encoding: "utf8" });
+    const help = spawnSync(pathOrCmd, ["--help"], probe);
     if (help.error) return false;
     const helpOut = `${help.stdout ?? ""}${help.stderr ?? ""}`.toLowerCase();
     if (helpOut.includes("reference implementation in rust")) return true;
 
-    const ver = spawnSync(pathOrCmd, ["--version"], { encoding: "utf8" });
+    const ver = spawnSync(pathOrCmd, ["--version"], probe);
     if (ver.error) return false;
     const verOut = `${ver.stdout ?? ""}${ver.stderr ?? ""}`.trim().toLowerCase();
     return /^(tru|toon_rust)\s+[0-9]/.test(verOut);
@@ -2400,13 +2409,16 @@ function isToonRustBinary(pathOrCmd: string): boolean {
   }
 }
 
+/** Names toon_rust has shipped its binary under: `toon` (v0.2.0+), then `tru` (older installs). */
+const TOON_RUST_BIN_NAMES = ["toon", "tru"] as const;
+
 /**
- * Find the tru binary for TOON encoding.
- * Checks TOON_TRU_BIN, TOON_BIN env vars, then PATH.
+ * Find the toon_rust binary for TOON encoding.
+ * Checks TOON_TRU_BIN, TOON_BIN env vars, then `toon` / `tru` on PATH, then common locations.
  *
- * @returns Path/command for tru binary, or null if not found
+ * @returns Path/command for the toon_rust binary, or null if not found
  */
-function findTruBinary(): string | null {
+export function findToonRustBinary(): string | null {
   const fs = require("fs");
 
   const envCandidates = [
@@ -2422,25 +2434,32 @@ function findTruBinary(): string | null {
       return candidate;
     }
     console.error(
-      `[cm] Warning: ${name}=${JSON.stringify(candidate)} does not look like toon_rust (expected tru); ignoring`,
+      `[cm] Warning: ${name}=${JSON.stringify(candidate)} does not look like toon_rust (expected its toon or tru binary); ignoring`,
     );
   }
 
   // Check PATH
-  if (isToonRustBinary("tru")) {
-    return "tru";
+  for (const name of TOON_RUST_BIN_NAMES) {
+    if (isToonRustBinary(name)) {
+      return name;
+    }
   }
 
-  // Check common locations
-  const commonPaths = [
-    "/usr/local/bin/tru",
-    "/usr/bin/tru",
-    "/data/tmp/cargo-target/release/tru",
-    "/data/tmp/cargo-target/debug/tru",
+  // Check common locations (for callers whose PATH is minimal, e.g. hooks)
+  const commonDirs = [
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/usr/bin",
+    path.join(os.homedir(), ".cargo", "bin"),
+    "/data/tmp/cargo-target/release",
+    "/data/tmp/cargo-target/debug",
   ];
-  for (const p of commonPaths) {
-    if (fs.existsSync(p) && isToonRustBinary(p)) {
-      return p;
+  for (const dir of commonDirs) {
+    for (const name of TOON_RUST_BIN_NAMES) {
+      const p = path.join(dir, name);
+      if (fs.existsSync(p) && isToonRustBinary(p)) {
+        return p;
+      }
     }
   }
 
@@ -2448,12 +2467,12 @@ function findTruBinary(): string | null {
 }
 
 /**
- * Check if TOON encoding is available (tru binary found).
+ * Check if TOON encoding is available (toon_rust binary found).
  *
- * @returns true if tru binary is available
+ * @returns true if the toon_rust binary is available
  */
 export function isToonAvailable(): boolean {
-  return findTruBinary() !== null;
+  return findToonRustBinary() !== null;
 }
 
 function estimateTokensApprox(text: string): number {
@@ -2469,7 +2488,7 @@ function shouldPrintToonStats(options?: { stats?: boolean }): boolean {
 }
 
 /**
- * Print value as TOON format, with graceful fallback to JSON if tru is unavailable.
+ * Print value as TOON format, with graceful fallback to JSON if toon_rust is unavailable.
  *
  * @param value - Value to encode and print
  * @param options - Optional settings
@@ -2478,17 +2497,17 @@ export function printToon(
   value: unknown,
   options?: { fallbackToJson?: boolean; stats?: boolean },
 ): void {
-  const truBin = findTruBinary();
+  const toonBin = findToonRustBinary();
 
-  if (!truBin) {
+  if (!toonBin) {
     if (options?.fallbackToJson !== false) {
       // Graceful fallback to JSON
-      console.error("[cm] Warning: tru binary not found, falling back to JSON output");
+      console.error("[cm] Warning: toon_rust binary (toon) not found, falling back to JSON output");
       printJson(value);
       return;
     }
     throw new Error(
-      "TOON encoding unavailable: tru binary not found. Install via: brew install dicklesworthstone/tap/tru",
+      "TOON encoding unavailable: toon_rust binary (toon) not found. Install via: brew install dicklesworthstone/tap/tru (installs `toon`)",
     );
   }
 
@@ -2497,7 +2516,7 @@ export function printToon(
   const showStats = shouldPrintToonStats(options);
   const jsonPrintable = showStats ? JSON.stringify(value, null, 2) : "";
 
-  const result = spawnSync(truBin, ["--encode"], {
+  const result = spawnSync(toonBin, ["--encode"], {
     input: jsonForEncode,
     encoding: "utf8",
     maxBuffer: 50 * 1024 * 1024, // 50MB buffer
@@ -2507,7 +2526,7 @@ export function printToon(
   if (result.error || result.status !== 0) {
     const errorMsg = result.error?.message || result.stderr?.trim() || "unknown error";
     if (options?.fallbackToJson !== false) {
-      console.error(`[cm] Warning: tru encode failed (${errorMsg}), falling back to JSON`);
+      console.error(`[cm] Warning: toon encode failed (${errorMsg}), falling back to JSON`);
       printJson(value);
       return;
     }
@@ -3003,7 +3022,7 @@ export function reportError(
   const payload = buildJsonErrorPayload(err, options);
   if (isJsonOutput(options) || isToonOutput(options)) {
     // Preserve requested structured output mode (JSON or TOON). Errors are rare; if TOON is
-    // requested but `tru` is unavailable, we gracefully fall back to JSON.
+    // requested but toon_rust is unavailable, we gracefully fall back to JSON.
     printStructuredOutput(payload, options);
   } else {
     printHumanErrorPayload(payload);
