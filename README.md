@@ -735,6 +735,7 @@ curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/cass_memory_syst
 
 **Direct Downloads:**
 - [Linux x64](https://github.com/Dicklesworthstone/cass_memory_system/releases/latest/download/cass-memory-linux-x64)
+- [Linux ARM64](https://github.com/Dicklesworthstone/cass_memory_system/releases/latest/download/cass-memory-linux-arm64) (releases after v0.2.14; e.g. Linux containers on Apple Silicon, Graviton)
 - [macOS Apple Silicon](https://github.com/Dicklesworthstone/cass_memory_system/releases/latest/download/cass-memory-macos-arm64)
 - [macOS Intel](https://github.com/Dicklesworthstone/cass_memory_system/releases/latest/download/cass-memory-macos-x64)
 - [Windows x64](https://github.com/Dicklesworthstone/cass_memory_system/releases/latest/download/cass-memory-windows-x64.exe)
@@ -2945,6 +2946,7 @@ Coverage targets: ~80% lines, 80% functions, 70% branches.
 | Platform | Output |
 |----------|--------|
 | Linux x64 | `dist/cass-memory-linux-x64` |
+| Linux ARM64 | `dist/cass-memory-linux-arm64` |
 | macOS ARM64 | `dist/cass-memory-macos-arm64` |
 | macOS x64 | `dist/cass-memory-macos-x64` |
 | Windows x64 | `dist/cass-memory-windows-x64.exe` |

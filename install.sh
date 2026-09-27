@@ -179,6 +179,9 @@ esac
 ARTIFACT=""
 case "${OS}-${ARCH}" in
   linux-x64) ARTIFACT="cass-memory-linux-x64" ;;
+  # Published from the release after v0.2.14; for older VERSIONs the download 404s and the
+  # installer falls back to a source build, exactly as it did before this entry existed.
+  linux-arm64) ARTIFACT="cass-memory-linux-arm64" ;;
   darwin-x64) ARTIFACT="cass-memory-macos-x64" ;;
   darwin-arm64) ARTIFACT="cass-memory-macos-arm64" ;;
   *) :;;

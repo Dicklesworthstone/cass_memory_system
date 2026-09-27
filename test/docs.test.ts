@@ -85,6 +85,7 @@ describe("README Docs Sync", () => {
       // Required platforms
       const requiredPatterns = [
         /cass-memory-linux-x64/,
+        /cass-memory-linux-arm64/,
         /cass-memory-macos-arm64/,
         /cass-memory-macos-x64/,
         /cass-memory-windows.*\.exe/,

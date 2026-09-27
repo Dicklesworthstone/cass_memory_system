@@ -44,7 +44,7 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Build Linux x64 and Windows x64
+      - name: Build Linux x64, Linux arm64 and Windows x64
         run: |
           # GitHub-hosted jobs start from a fresh checkout. Upload the explicit
           # artifact paths below so unrelated dist files can never leak into a
@@ -55,6 +55,10 @@ jobs:
           # Without -baseline, the binary uses AVX2 which crashes with "Illegal
           # instruction" on older CPUs (see issue #40).
           bun build src/cm.ts --compile --target=bun-linux-x64-baseline --outfile dist/cass-memory-linux-x64
+
+          # Linux arm64 — cross-compiled (Linux containers on Apple Silicon,
+          # Graviton/Ampere, Raspberry Pi). Bun has no arm64 baseline variant.
+          bun build src/cm.ts --compile --target=bun-linux-arm64 --outfile dist/cass-memory-linux-arm64
 
           # Windows x64 — use baseline target for maximum CPU compatibility
           bun build src/cm.ts --compile --target=bun-windows-x64-baseline --outfile dist/cass-memory-windows-x64.exe
@@ -78,7 +82,7 @@ jobs:
           # Capture matches into a variable instead of using `if pipe | head`
           # — `head -5` always exits 0 regardless of grep's match status, so
           # the naive `if` form is a constant-true guard.
-          for bin in dist/cass-memory-linux-x64 dist/cass-memory-windows-x64.exe; do
+          for bin in dist/cass-memory-linux-x64 dist/cass-memory-linux-arm64 dist/cass-memory-windows-x64.exe; do
             echo "Scanning $bin for mangled trauma-guard emoji..."
             matches="$(strings "$bin" | grep -E '\\u\{[0-9a-fA-F]+\} ?HOT STOVE|HOT STOVE ?\\u\{[0-9a-fA-F]+\}' | head -5 || true)"
             if [ -n "$matches" ]; then
@@ -97,6 +101,7 @@ jobs:
           name: linux-windows-binaries
           path: |
             dist/cass-memory-linux-x64
+            dist/cass-memory-linux-arm64
             dist/cass-memory-windows-x64.exe
           if-no-files-found: error
 
@@ -213,6 +218,7 @@ jobs:
         run: |
           cd release
           sha256sum cass-memory-linux-x64 > cass-memory-linux-x64.sha256
+          sha256sum cass-memory-linux-arm64 > cass-memory-linux-arm64.sha256
           sha256sum cass-memory-macos-arm64 > cass-memory-macos-arm64.sha256
           sha256sum cass-memory-macos-x64 > cass-memory-macos-x64.sha256
           sha256sum cass-memory-windows-x64.exe > cass-memory-windows-x64.exe.sha256
