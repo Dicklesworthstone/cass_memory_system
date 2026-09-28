@@ -8,6 +8,45 @@ All notable changes to **cass-memory** (`cm`) are documented in this file.
 
 ---
 
+## [0.3.0] -- 2026-09-28
+
+Everything on `main` since [0.2.14](https://github.com/Dicklesworthstone/cass_memory_system/releases/tag/v0.2.14). This release adds commands and changes some defaults (semantic search can now turn itself on; project rules can stay with their project), so it is a minor bump.
+
+### Added
+
+- `cm update` (alias `cm upgrade`) checks for a newer release. `--check` only reports (exit 1 when an update exists) and `--json` prints the versions and the install command. It re-runs the documented installer instead of replacing its own binary, and never runs the installer from a non-interactive or JSON session ([`324b2a4`](https://github.com/Dicklesworthstone/cass_memory_system/commit/324b2a4), #70).
+- Project-scoped rules. `cm context` applies a rule written for a project inside that project and its linked worktrees, but not in nested separate repos. `reflect` learns which project each session belongs to, and the new `projectRuleRouting` setting (default `off`) can tag project-only rules to their project (`scoped`) or also write them to the project's `.cass/playbook.yaml` (`repo`). `cm playbook add --repo` is now a real option ([`7423ed5`](https://github.com/Dicklesworthstone/cass_memory_system/commit/7423ed5), #81, #85).
+- A prebuilt `cass-memory-linux-arm64` binary for Linux containers on Apple Silicon, Graviton and Raspberry Pi; `install.sh` uses it ([`670ee2b`](https://github.com/Dicklesworthstone/cass_memory_system/commit/670ee2b), #87).
+- `cm doctor` tells "cass is not installed" apart from "cass is installed but its index is unavailable", and says how to fix each ([`becf6b1`](https://github.com/Dicklesworthstone/cass_memory_system/commit/becf6b1), #71).
+- The cass time budgets are configurable: `cassHistoryTimeoutSeconds` (default 20s, was a fixed 8s) for `cm context` and `cassTimelineTimeoutSeconds` (default 120s, was 30s) for `cm reflect` ([`4e54603`](https://github.com/Dicklesworthstone/cass_memory_system/commit/4e54603)).
+
+### Changed
+
+- Semantic search is on automatically when it can work offline. If `semanticSearchEnabled` is not set, cm uses embeddings when a local model is already cached or an Ollama daemon answers, and otherwise stays keyword-only and says so. An explicit `true` or `false` still wins. `cm doctor --fix` can enable it after checking the backend works ([`d339dbe`](https://github.com/Dicklesworthstone/cass_memory_system/commit/d339dbe), [`b4453df`](https://github.com/Dicklesworthstone/cass_memory_system/commit/b4453df), #75).
+- The global `~/.cass-memory/config.yaml` is now read; before, only `config.json` was. If both exist, JSON wins and cm warns once ([`3af81dd`](https://github.com/Dicklesworthstone/cass_memory_system/commit/3af81dd), #75).
+
+### Fixed
+
+- `--format toon` works again with current toon_rust, whose binary is now called `toon` instead of `tru` ([`30bbede`](https://github.com/Dicklesworthstone/cass_memory_system/commit/30bbede), #86).
+- `install.sh` builds from source on musl Linux (Alpine) instead of installing a glibc binary that cannot start ([`fadd729`](https://github.com/Dicklesworthstone/cass_memory_system/commit/fadd729)).
+- The trauma guard and git pre-commit hook read global traumas from the same place `cm trauma add` writes them when `CASS_MEMORY_HOME` or `XDG_DATA_HOME` is set. Before, they only looked in `~/.cass-memory` and let every command through. Re-run `cm guard --install` (and `--git`) to refresh installed hooks; `cm doctor` warns when they are out of date ([`c6b9028`](https://github.com/Dicklesworthstone/cass_memory_system/commit/c6b9028), [`3e4c814`](https://github.com/Dicklesworthstone/cass_memory_system/commit/3e4c814), #82).
+- `cm audit --trauma` checks the commands agents actually ran, not only commands quoted in chat text ([`1f26a97`](https://github.com/Dicklesworthstone/cass_memory_system/commit/1f26a97), #83).
+- `reflect` no longer learns from cm's own LLM calls. With `provider: cli`, those calls were saved as agent sessions and fed back in as if they were real work ([`6156150`](https://github.com/Dicklesworthstone/cass_memory_system/commit/6156150)).
+- `reflect` reads cass 0.8's timeline correctly (order and times), skips empty sessions before spending an LLM call on them, and reports a failed cass timeline or reflector run as an error instead of "nothing new" ([`1f26a97`](https://github.com/Dicklesworthstone/cass_memory_system/commit/1f26a97), [`14385b2`](https://github.com/Dicklesworthstone/cass_memory_system/commit/14385b2), [`4e54603`](https://github.com/Dicklesworthstone/cass_memory_system/commit/4e54603), #85).
+- The playbook's reflection counters now go up ([`d0620ce`](https://github.com/Dicklesworthstone/cass_memory_system/commit/d0620ce), #72).
+- The reflector, validator and context calls honour `llmTimeoutMs` / `llmTotalTimeoutMs` ([`4e54603`](https://github.com/Dicklesworthstone/cass_memory_system/commit/4e54603)).
+
+### Gate
+
+- `tsc --noEmit`: clean
+- `bun test --timeout 60000 --isolate`: **2804 passed, 4 skipped, 0 failed** across 146 files
+
+### Artifacts
+
+`cass-memory-linux-x64`, `cass-memory-linux-arm64` (new), `cass-memory-macos-arm64`, `cass-memory-macos-x64`, `cass-memory-windows-x64.exe`, each with a `.sha256` sidecar, plus `install.sh.sha256`.
+
+---
+
 ## [0.2.14] -- 2026-08-25
 
 Maintenance release. Everything on `main` since [0.2.13](https://github.com/Dicklesworthstone/cass_memory_system/releases/tag/v0.2.13) (2026-07-28): four user-facing fixes, no new features and no behaviour changes to existing commands, so this is a patch bump.
