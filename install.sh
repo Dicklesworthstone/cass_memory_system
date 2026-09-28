@@ -187,6 +187,26 @@ case "${OS}-${ARCH}" in
   *) :;;
 esac
 
+# The prebuilt Linux binaries are glibc builds and cannot start on musl systems
+# such as Alpine, so build from source there (Bun builds a native musl binary).
+# An explicit --artifact-url is still honoured.
+is_musl() {
+  [ "$OS" = "linux" ] || return 1
+  if ls /lib/ld-musl-*.so.1 >/dev/null 2>&1; then return 0; fi
+  if command -v ldd >/dev/null 2>&1; then
+    # musl's ldd exits non-zero for --version, so match on captured output.
+    case "$(ldd --version 2>&1 || true)" in
+      *musl*) return 0 ;;
+    esac
+  fi
+  return 1
+}
+
+if [ "$FROM_SOURCE" -eq 0 ] && [ -z "$ARTIFACT_URL" ] && [ -n "$ARTIFACT" ] && is_musl; then
+  warn "musl libc detected; the prebuilt ${OS}/${ARCH} binary needs glibc, so building from source"
+  FROM_SOURCE=1
+fi
+
 URL=""
 if [ "$FROM_SOURCE" -eq 0 ]; then
   if [ -n "$ARTIFACT_URL" ]; then
