@@ -254,3 +254,57 @@ describe("utils.scanTruncatedMiddle (#88)", () => {
     expect(clipped?.length).toBe(300);
   });
 });
+
+describe("utils.scanTruncatedMiddle transcript formats (review of 30a148f)", () => {
+  // `cm reflect` feeds the diary `cass export --format text` output on a
+  // session's first pass (`=== USER ===` on its own line), and `cm diary`
+  // feeds `--format markdown` output (`## 👤 User`). Both must be read as
+  // turn starts, or user corrections never rank first.
+  it("reads cass text-export turn headers", () => {
+    const middle = [
+      "=== ASSISTANT ===",
+      "",
+      "Running the suite.",
+      "error: 3 tests failed",
+      "",
+      "=== USER ===",
+      "",
+      "please check the fixtures directory",
+      "and don't touch the migrations folder",
+      "",
+      "=== ASSISTANT ===",
+      "",
+      "Plan: don't touch anything else.",
+    ].join("\n");
+    expect(scanTruncatedMiddle(middle, 8_000)).toEqual([
+      "error: 3 tests failed",
+      "please check the fixtures directory",
+      "and don't touch the migrations folder",
+    ]);
+  });
+
+  it("reads cass markdown-export turn headers", () => {
+    const middle = [
+      "## 🤖 Assistant",
+      "",
+      "Build failed with exit code 2",
+      "",
+      "## 👤 User",
+      "",
+      "use the v2 importer instead",
+      "",
+      "## 🤖 Assistant",
+      "",
+      "Sure, instead of v1 I will use v2.",
+    ].join("\n");
+    expect(scanTruncatedMiddle(middle, 8_000)).toEqual([
+      "Build failed with exit code 2",
+      "use the v2 importer instead",
+    ]);
+  });
+
+  it("does not treat a markdown heading inside a user turn as a new speaker", () => {
+    const middle = ["[user] here is my plan", "## Notes", "don't rename the table"].join("\n");
+    expect(scanTruncatedMiddle(middle, 8_000)).toEqual(["don't rename the table"]);
+  });
+});

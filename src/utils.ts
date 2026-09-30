@@ -1824,8 +1824,33 @@ const DIARY_CORRECTION_SIGNAL =
 const DIARY_USER_CORRECTION_SIGNAL =
   /(?:^|[\s"'(\]])(?:don't\b|do not\b|stop\b|undo\b|instead\b|should have\b|why did you\b)/i;
 
-/** A transcript line that opens a new turn: `[user] …`, `## User`, `**User:**`. */
-const DIARY_TURN_START = /^\s*(?:\[([A-Za-z_-]+)\]|#{1,6}\s*([A-Za-z_-]+)\b|\*\*([A-Za-z_-]+):?\*\*)/;
+/**
+ * A line that opens a new turn and carries its first text: `[user] …`
+ * (cm's record formatter) or `**user**: …` / `**User:** …` (raw-session
+ * fallback). Any speaker name counts.
+ */
+const DIARY_TURN_TAGGED = /^\s*(?:\[([A-Za-z_-]+)\]|\*\*([A-Za-z_-]+):?\*\*)/;
+
+/**
+ * A header-only line that opens a new turn, as cass writes them:
+ * `=== USER ===` (`cass export --format text`, what `cm reflect` reads) and
+ * `## 👤 User` (`--format markdown`, what `cm diary` reads). Only role names
+ * count, so an ordinary markdown heading inside a turn keeps its speaker.
+ */
+const DIARY_TURN_HEADER =
+  /^\s*(?:={2,}\s*([A-Za-z_-]+)\s*={2,}|#{1,6}\s+(?:[^\sA-Za-z]+\s+)?([A-Za-z_-]+):?)\s*$/;
+
+const DIARY_ROLE_NAMES = new Set([
+  "user",
+  "human",
+  "assistant",
+  "system",
+  "tool",
+  "unknown",
+  "developer",
+  "model",
+  "ai",
+]);
 
 /** Longest single excerpt taken from the middle; long lines are clipped. */
 const DIARY_MIDDLE_LINE_MAX = 300;
@@ -1854,6 +1879,9 @@ export function scanTruncatedMiddle(middle: string, budget: number): string[] {
   const seen = new Set<string>();
   let speaker = "";
   let errorPending = false;
+  // A header-only turn start (`=== USER ===`) leaves its first text line to
+  // the next non-empty line.
+  let headerOpened = false;
 
   const lines = middle.split("\n");
   for (let i = 0; i < lines.length; i++) {
@@ -1861,9 +1889,18 @@ export function scanTruncatedMiddle(middle: string, budget: number): string[] {
     const line = raw.trim();
     if (!line) continue;
 
-    const turn = DIARY_TURN_START.exec(line);
-    const opensTurn = turn !== null;
-    if (turn) speaker = (turn[1] ?? turn[2] ?? turn[3] ?? "").toLowerCase();
+    const header = DIARY_TURN_HEADER.exec(line);
+    const headerRole = header ? (header[1] ?? header[2] ?? "").toLowerCase() : "";
+    if (header && DIARY_ROLE_NAMES.has(headerRole)) {
+      speaker = headerRole;
+      headerOpened = true;
+      continue;
+    }
+
+    const turn = DIARY_TURN_TAGGED.exec(line);
+    const opensTurn = turn !== null || headerOpened;
+    headerOpened = false;
+    if (turn) speaker = (turn[1] ?? turn[2] ?? "").toLowerCase();
     const isUser = speaker === "user" || speaker === "human";
 
     const isError = DIARY_ERROR_SIGNAL.test(line);
