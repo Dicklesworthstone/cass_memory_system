@@ -835,6 +835,10 @@ For Claude Code users, add a post-session hook in `.claude/hooks.json`:
 }
 ```
 
+**Long sessions: reflect often.** The diary step reads at most `diaryMaxInputChars` (default 50,000) characters of a transcript: the start, the end, and error/correction lines picked from the middle (see [Reflection Settings](#reflection-settings)). A session that goes on for hours can be much longer than that. `cm reflect` remembers how far into each session it got, and when a session has grown it reflects only the new part. Running it often (from a hook, or cron every 30–60 minutes) therefore keeps each new part small enough to be read in full. Raising `diaryMaxInputChars` is the other option when your model has the context for it.
+
+**Should agents write their own lessons?** They don't need to. cm is built so that a separate reflection step pulls lessons out of the transcript, and the working agent can just finish its task. If your agents do end with a list such as `Lessons for memory: ...`, that is fine input: the diary step reads it like any other text in the transcript, as long as it falls inside the window above (the end of a session always does). Treat such lists as hints for the diary, not as rules: cm still checks candidate rules against history and feedback before trusting them.
+
 ---
 
 ## 🛠️ CLI Reference
@@ -1539,6 +1543,14 @@ back to whichever file is active, in its own format.
 | `minRelevanceScore` | `0.1` | Min relevance to include a bullet |
 | `cassHistoryTimeoutSeconds` | `20` | Budget for the `cass search` behind `cm context` history snippets; raise it on large archives (env: `CM_CASS_HISTORY_TIMEOUT_SECONDS`) |
 | `cassTimelineTimeoutSeconds` | `120` | Budget for the `cass timeline` session discovery behind `cm reflect` (env: `CM_CASS_TIMELINE_TIMEOUT_SECONDS`) |
+
+#### Reflection Settings
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `diaryMaxInputChars` | `50000` | How much of a session's transcript the diary step reads (10,000 to 2,000,000). A longer transcript keeps its first 60% and last 40% of this budget. Raise it if your reflection model has a large context window; the cost of each diary call grows with it. |
+| `diaryMiddleScanChars` | `8000` | Extra room (0 to 200,000; 0 turns it off) for lines from the cut middle of a long transcript that report errors or corrections: tool errors, failed tests, "actually", "no, ...", "wrong", reverts, and the user turn that follows an error. They are found by a plain text scan, not an LLM call, and are passed to the diary step as marked excerpts. |
+| `maxReflectorIterations` | `3` | Reflector passes per session diary |
 
 #### Privacy Settings
 

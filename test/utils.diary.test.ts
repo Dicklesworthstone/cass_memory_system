@@ -2,7 +2,13 @@ import { describe, expect, it } from "bun:test";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { findDiaryBySession } from "../src/diary.js";
-import { canonicalAgentName, extractAgentFromPath, generateDiaryId } from "../src/utils.js";
+import {
+  buildDiaryInput,
+  canonicalAgentName,
+  extractAgentFromPath,
+  generateDiaryId,
+  scanTruncatedMiddle,
+} from "../src/utils.js";
 import { createTestDiary } from "./helpers/factories.js";
 import { withTempDir } from "./helpers/temp.js";
 
@@ -145,5 +151,106 @@ describe("utils.canonicalAgentName", () => {
     expect(canonicalAgentName("   ")).toBe("");
     expect(canonicalAgentName(undefined)).toBe("");
     expect(canonicalAgentName(null)).toBe("");
+  });
+});
+
+// A filler line of ordinary agent prose with no error/correction wording.
+function filler(n: number): string {
+  const out: string[] = [];
+  for (let i = 0; i < n; i++) {
+    out.push(`[assistant] Reading module ${i} and noting how the parser hands tokens to the emitter.`);
+  }
+  return out.join("\n");
+}
+
+describe("utils.buildDiaryInput (#88)", () => {
+  it("returns a transcript within the budget unchanged", () => {
+    const text = "[user] fix the build\n[assistant] done";
+    expect(buildDiaryInput(text, { maxChars: 50_000, middleScanChars: 8_000 })).toBe(text);
+  });
+
+  it("keeps head and tail and pulls signal lines from the dropped middle", () => {
+    const head = `[user] HEAD-TASK: migrate the importer\n${filler(200)}`;
+    const middle = [
+      filler(300),
+      "[assistant] Running bun test now.",
+      "[tool] error: Cannot find module './legacy-importer' from src/index.ts",
+      "[user] no, the legacy importer was removed last week; use src/import/v2.ts",
+      filler(300),
+      "[user] MIDDLE-OPENER-AFTER-ERROR please look again",
+      filler(300),
+    ].join("\n");
+    const tail = `${filler(200)}\n[assistant] TAIL-SUMMARY: all tests pass`;
+    const text = `${head}\n${middle}\n${tail}`;
+    expect(text.length).toBeGreaterThan(100_000);
+
+    const out = buildDiaryInput(text, { maxChars: 20_000, middleScanChars: 2_000 });
+    expect(out).toContain("HEAD-TASK");
+    expect(out).toContain("TAIL-SUMMARY");
+    expect(out).toContain("Cannot find module './legacy-importer'");
+    expect(out).toContain("[user] no, the legacy importer was removed");
+    expect(out).toContain("excerpts from that part");
+    // Head/tail budget plus the scan budget plus the fixed markers.
+    expect(out.length).toBeLessThanOrEqual(20_000 + 2_000 + 400);
+    // Excerpts appear in transcript order.
+    expect(out.indexOf("Cannot find module")).toBeLessThan(out.indexOf("[user] no, the legacy"));
+  });
+
+  it("with middleScanChars 0 behaves as a plain head/tail cut", () => {
+    const text = `${filler(500)}\n[tool] error: boom\n${filler(500)}`;
+    const out = buildDiaryInput(text, { maxChars: 10_000, middleScanChars: 0 });
+    expect(out).not.toContain("error: boom");
+    expect(out).toContain("[...truncated:");
+    expect(out.length).toBeLessThanOrEqual(10_000 + 200);
+  });
+
+  it("scales the window with maxChars", () => {
+    const text = filler(3000);
+    const small = buildDiaryInput(text, { maxChars: 10_000, middleScanChars: 0 });
+    const large = buildDiaryInput(text, { maxChars: 100_000, middleScanChars: 0 });
+    expect(large.length).toBeGreaterThan(small.length * 5);
+    expect(large.length).toBeLessThanOrEqual(100_000 + 200);
+  });
+});
+
+describe("utils.scanTruncatedMiddle (#88)", () => {
+  it("returns nothing for plain prose or a zero budget", () => {
+    expect(scanTruncatedMiddle(filler(50), 8_000)).toEqual([]);
+    expect(scanTruncatedMiddle("[tool] error: x", 0)).toEqual([]);
+  });
+
+  it("ranks user corrections above agent-side errors when the budget is tight", () => {
+    const errors = Array.from({ length: 40 }, (_, i) => `[tool] error: failure number ${i} in step ${i}`);
+    const middle = [...errors, "[user] actually the config lives in .cass/config.yaml"].join("\n");
+    const picked = scanTruncatedMiddle(middle, 200);
+    expect(picked).toContain("[user] actually the config lives in .cass/config.yaml");
+    expect(picked.join("\n").length + picked.length).toBeLessThanOrEqual(200);
+  });
+
+  it("includes the user turn that follows an error, even without signal words", () => {
+    const middle = [
+      "[tool] tests failed: 3 of 40",
+      "[user] please check the fixtures directory",
+      "[user] and the snapshot files",
+    ].join("\n");
+    const picked = scanTruncatedMiddle(middle, 8_000);
+    expect(picked).toEqual(["[tool] tests failed: 3 of 40", "[user] please check the fixtures directory"]);
+  });
+
+  it("tracks the speaker across continuation lines of a multi-line user turn", () => {
+    const middle = ["[user] one more thing:", "don't touch the migrations folder"].join("\n");
+    expect(scanTruncatedMiddle(middle, 8_000)).toEqual(["don't touch the migrations folder"]);
+    // The same soft wording from the agent is not a signal.
+    const agent = ["[assistant] plan:", "don't touch the migrations folder"].join("\n");
+    expect(scanTruncatedMiddle(agent, 8_000)).toEqual([]);
+  });
+
+  it("keeps a repeated error line once and clips very long lines", () => {
+    const long = `[tool] error: ${"x".repeat(1000)}`;
+    const middle = ["[tool] error: E0308 mismatched types", "[tool] error: E0308 mismatched types", long].join("\n");
+    const picked = scanTruncatedMiddle(middle, 8_000);
+    expect(picked.filter((l) => l.includes("E0308"))).toHaveLength(1);
+    const clipped = picked.find((l) => l.startsWith("[tool] error: xxx"));
+    expect(clipped?.length).toBe(300);
   });
 });

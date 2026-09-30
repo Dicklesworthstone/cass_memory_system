@@ -55,6 +55,58 @@ describe("LLM flows with injected generateObject", () => {
     expect(prompt).toContain("session content body");
   });
 
+  it("extractDiary sizes the session window from config and keeps middle error lines (#88)", async () => {
+    const prompts: string[] = [];
+    const io: LLMIO = {
+      generateObject: async <T>(options: any) => {
+        prompts.push(options.prompt as string);
+        return { object: { status: "mixed" } as T };
+      },
+    };
+    const schema = z.object({ status: z.string() });
+    const prose = (tag: string) =>
+      Array.from({ length: 1500 }, (_, i) => `[assistant] ${tag} step ${i}: reading files and taking notes.`).join("\n");
+    const session = [
+      "[user] START-OF-SESSION",
+      prose("early"),
+      "[tool] error: MIDDLE-ERROR relation \"users\" does not exist",
+      prose("late"),
+      "[assistant] END-OF-SESSION",
+    ].join("\n");
+    expect(session.length).toBeGreaterThan(150_000);
+    const meta = { sessionPath: "/tmp/long.jsonl", agent: "claude" };
+
+    await extractDiary(schema, session, meta, createTestConfig({ apiKey: "sk-ant-test-0000000000000000" }), io);
+    await extractDiary(
+      schema,
+      session,
+      meta,
+      createTestConfig({ apiKey: "sk-ant-test-0000000000000000", diaryMaxInputChars: 400_000 }),
+      io,
+    );
+    await extractDiary(
+      schema,
+      session,
+      meta,
+      createTestConfig({ apiKey: "sk-ant-test-0000000000000000", diaryMiddleScanChars: 0 }),
+      io,
+    );
+
+    const [byDefault, wide, noScan] = prompts;
+    for (const p of prompts) {
+      expect(p).toContain("START-OF-SESSION");
+      expect(p).toContain("END-OF-SESSION");
+    }
+    // Default 50k window: the middle is cut, but its error line is scanned in.
+    expect(byDefault.length).toBeLessThan(65_000);
+    expect(byDefault).toContain("MIDDLE-ERROR");
+    expect(byDefault).toContain("excerpts from that part");
+    // A window larger than the session sends it whole.
+    expect(wide).toContain(session);
+    // Scan disabled: plain head/tail.
+    expect(noScan).not.toContain("MIDDLE-ERROR");
+  });
+
   it("runReflector generates deltas and includes diary/context details in the prompt", async () => {
     let lastOptions: any = null;
     const io: LLMIO = {

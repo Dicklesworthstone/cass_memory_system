@@ -18,7 +18,7 @@ import {
 } from "./subprocess-tag.js";
 import type { Config, DiaryEntry, LLMProvider } from "./types.js";
 import { DEFAULT_ANTHROPIC_MODEL } from "./types.js";
-import { truncateForContext, warn } from "./utils.js";
+import { buildDiaryInput, truncateForContext, warn } from "./utils.js";
 
 // Re-export LLMProvider from types.ts (single source of truth)
 export type { LLMProvider } from "./types.js";
@@ -1191,7 +1191,12 @@ export async function extractDiary<T>(
   config: Config,
   io: LLMIO = DEFAULT_LLM_IO,
 ): Promise<T> {
-  const truncatedContent = truncateForContext(sessionContent, { maxChars: 50000 });
+  // Long sessions keep their head and tail plus error/correction lines from
+  // the dropped middle, within configurable budgets (#88).
+  const truncatedContent = buildDiaryInput(sessionContent, {
+    maxChars: config.diaryMaxInputChars ?? 50_000,
+    middleScanChars: config.diaryMiddleScanChars ?? 8_000,
+  });
 
   const prompt = fillPrompt(PROMPTS.diary, {
     sessionPath: metadata.sessionPath,

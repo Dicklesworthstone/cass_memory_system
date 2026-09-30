@@ -1329,3 +1329,37 @@ describe("cass subprocess timeout config (#78)", () => {
     expect(config.cassTimelineTimeoutSeconds).toBe(DEFAULT_CONFIG.cassTimelineTimeoutSeconds);
   });
 });
+
+describe("diary input window config (#88)", () => {
+  test("defaults keep the 50k head/tail window and an 8k middle scan", () => {
+    expect(DEFAULT_CONFIG.diaryMaxInputChars).toBe(50_000);
+    expect(DEFAULT_CONFIG.diaryMiddleScanChars).toBe(8_000);
+  });
+
+  test("a global config file sets both keys", async () => {
+    await withTempCassHome(async (env) => {
+      await writeFile(
+        env.configPath,
+        JSON.stringify({ diaryMaxInputChars: 200_000, diaryMiddleScanChars: 0 }),
+      );
+      const config = await loadConfig();
+      expect(config.diaryMaxInputChars).toBe(200_000);
+      expect(config.diaryMiddleScanChars).toBe(0);
+    });
+  });
+
+  test("out-of-range values fail validation", async () => {
+    await expect(loadConfig({ diaryMaxInputChars: 500 })).rejects.toThrow(
+      /Configuration validation failed/,
+    );
+    await expect(loadConfig({ diaryMaxInputChars: 10_000_000 })).rejects.toThrow(
+      /Configuration validation failed/,
+    );
+    await expect(loadConfig({ diaryMaxInputChars: 60_000.5 })).rejects.toThrow(
+      /Configuration validation failed/,
+    );
+    await expect(loadConfig({ diaryMiddleScanChars: -1 })).rejects.toThrow(
+      /Configuration validation failed/,
+    );
+  });
+});

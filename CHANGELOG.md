@@ -8,6 +8,12 @@ All notable changes to **cass-memory** (`cm`) are documented in this file.
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- The diary step's transcript window is configurable: `diaryMaxInputChars` (default 50,000, was a fixed 50,000) sets how much of a long session is read, still split 60/40 between its start and end. Lines from the cut middle that report errors or corrections (tool errors, failed tests, "actually", "no, ...", reverts, the user turn after an error) are now kept in an extra `diaryMiddleScanChars` window (default 8,000; 0 turns it off), found by a text scan with no extra LLM call. The README explains how to reflect long sessions (#88).
+
 ## [0.3.0] -- 2026-09-28
 
 Everything on `main` since [0.2.14](https://github.com/Dicklesworthstone/cass_memory_system/releases/tag/v0.2.14). This release adds commands and changes some defaults (semantic search can now turn itself on; project rules can stay with their project), so it is a minor bump.

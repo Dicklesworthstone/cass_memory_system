@@ -1810,6 +1810,134 @@ function truncateMiddle(
   return headPart + marker + tailPart;
 }
 
+// --- Diary input window (#88) ---
+
+/** Lines that report a failure: tool errors, failing tests, exceptions, reverts. */
+const DIARY_ERROR_SIGNAL =
+  /\b(?:errors?|failed|failures?|fails|failing|exception|traceback|panicked|panic|fatal|crash(?:ed|es)?|broken|revert(?:ed|ing)?|rolled back|exit (?:code|status) [1-9]\d*|not found|permission denied|timed? ?out)\b/i;
+
+/** Wording that corrects a previous step or belief, from any speaker. */
+const DIARY_CORRECTION_SIGNAL =
+  /(?:^|[\s"'(\]])(?:no,|nope\b|wrong\b|incorrect\b|actually\b|mistaken?\b|that's not\b|that is not\b|doesn't work\b|does not work\b|didn't work\b|did not work\b|not working\b)/i;
+
+/** Softer correction wording, too common in agent prose to count unless a user says it. */
+const DIARY_USER_CORRECTION_SIGNAL =
+  /(?:^|[\s"'(\]])(?:don't\b|do not\b|stop\b|undo\b|instead\b|should have\b|why did you\b)/i;
+
+/** A transcript line that opens a new turn: `[user] …`, `## User`, `**User:**`. */
+const DIARY_TURN_START = /^\s*(?:\[([A-Za-z_-]+)\]|#{1,6}\s*([A-Za-z_-]+)\b|\*\*([A-Za-z_-]+):?\*\*)/;
+
+/** Longest single excerpt taken from the middle; long lines are clipped. */
+const DIARY_MIDDLE_LINE_MAX = 300;
+
+export interface DiaryInputOptions {
+  /** Head+tail budget for a long transcript (head gets 60%, tail 40%). */
+  maxChars: number;
+  /** Extra budget for signal lines pulled from the dropped middle. 0 disables. */
+  middleScanChars: number;
+}
+
+/**
+ * Pick the most informative lines from the part of a transcript that the
+ * head/tail window drops: lines reporting errors or failures, lines that
+ * correct a previous step ("no, …", "actually", "wrong", reverts), and the
+ * first line of the user turn that follows an error. A user turn that carries
+ * a signal ranks above the rest. Duplicate lines (a repeated compiler error,
+ * say) are kept once. The picked lines come back in transcript order, each
+ * clipped to DIARY_MIDDLE_LINE_MAX chars, together at most `budget` chars.
+ */
+export function scanTruncatedMiddle(middle: string, budget: number): string[] {
+  if (budget <= 0 || !middle) return [];
+
+  type Pick = { index: number; priority: number; text: string };
+  const picks: Pick[] = [];
+  const seen = new Set<string>();
+  let speaker = "";
+  let errorPending = false;
+
+  const lines = middle.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const line = raw.trim();
+    if (!line) continue;
+
+    const turn = DIARY_TURN_START.exec(line);
+    const opensTurn = turn !== null;
+    if (turn) speaker = (turn[1] ?? turn[2] ?? turn[3] ?? "").toLowerCase();
+    const isUser = speaker === "user" || speaker === "human";
+
+    const isError = DIARY_ERROR_SIGNAL.test(line);
+    const isCorrection =
+      DIARY_CORRECTION_SIGNAL.test(line) || (isUser && DIARY_USER_CORRECTION_SIGNAL.test(line));
+
+    let priority = 0;
+    if (isUser && (isCorrection || isError)) priority = 3;
+    else if (isUser && opensTurn && errorPending) priority = 2;
+    else if (isError || isCorrection) priority = 1;
+
+    if (isError) errorPending = true;
+    else if (opensTurn && isUser) errorPending = false;
+
+    if (priority === 0) continue;
+
+    const text = line.length > DIARY_MIDDLE_LINE_MAX ? `${line.slice(0, DIARY_MIDDLE_LINE_MAX - 1)}…` : line;
+    const key = text.toLowerCase().replace(/\s+/g, " ");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    picks.push({ index: i, priority, text });
+  }
+
+  // Highest priority first, earlier lines first within a priority; then
+  // restore transcript order for the chosen set.
+  const ranked = [...picks].sort((a, b) => b.priority - a.priority || a.index - b.index);
+  const chosen: Pick[] = [];
+  let used = 0;
+  for (const p of ranked) {
+    const cost = p.text.length + 1; // + newline
+    if (used + cost > budget) continue;
+    chosen.push(p);
+    used += cost;
+  }
+  chosen.sort((a, b) => a.index - b.index);
+  return chosen.map((p) => p.text);
+}
+
+/**
+ * Build the transcript text sent to the diary LLM call (#88).
+ *
+ * A transcript within `maxChars` is returned unchanged. A longer one keeps its
+ * head (60% of `maxChars`) and tail (40%), and — unless `middleScanChars` is 0
+ * — up to `middleScanChars` more characters of signal lines from the dropped
+ * middle (see scanTruncatedMiddle), between clearly labelled markers.
+ */
+export function buildDiaryInput(text: string, options: DiaryInputOptions): string {
+  if (!text) return "";
+  const { maxChars, middleScanChars } = options;
+  if (text.length <= maxChars) return text;
+
+  const headPart = truncateHead(text, Math.floor(maxChars * 0.6), true);
+  const tailPart = truncateTail(text, maxChars - Math.floor(maxChars * 0.6), true);
+  // truncateHead returns a (right-trimmed) prefix and truncateTail a
+  // (left-trimmed) suffix, so their lengths locate the dropped middle.
+  const middleStart = headPart.length;
+  const middleEnd = Math.max(middleStart, text.length - tailPart.length);
+  const middle = text.slice(middleStart, middleEnd);
+
+  const excerpts = scanTruncatedMiddle(middle, middleScanChars);
+  if (excerpts.length === 0) {
+    return `${headPart}\n\n[...truncated: ${middle.length} characters of the middle of this session omitted...]\n\n${tailPart}`;
+  }
+  return (
+    `${headPart}\n\n` +
+    `[...truncated: ${middle.length} characters of the middle of this session omitted. ` +
+    `The ${excerpts.length} lines below are excerpts from that part, chosen because they report ` +
+    `errors or corrections; they are not contiguous...]\n` +
+    `${excerpts.join("\n")}\n` +
+    `[...end of middle excerpts; the session continues below...]\n\n` +
+    tailPart
+  );
+}
+
 // --- Deprecated pattern detection ---
 
 function buildDeprecatedMatcher(pattern: string): (text: string) => boolean {

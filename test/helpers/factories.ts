@@ -47,6 +47,8 @@ export function createTestConfig(overrides: Partial<Config> = {}): Config {
     sessionRetryMaxFailures: 3,
     sessionRetryCooldownHours: 24,
     projectRuleRouting: "off",
+    diaryMaxInputChars: 50_000,
+    diaryMiddleScanChars: 8_000,
     cliSubprocessCwd: DEFAULT_CLI_SUBPROCESS_CWD,
     dedupSimilarityThreshold: 0.85,
     pruneHarmfulThreshold: 3,

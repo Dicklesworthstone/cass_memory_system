@@ -480,6 +480,14 @@ export const ConfigSchema = z.object({
   // project root (or made global when the project is unknown), never left
   // with a missing/LLM-invented workspace that would hide it everywhere.
   projectRuleRouting: z.enum(["off", "scoped", "repo"]).default("off"),
+  // Diary input window (#88). A session longer than `diaryMaxInputChars` is cut
+  // to its head (60%) and tail (40%) before the diary LLM call. Up to
+  // `diaryMiddleScanChars` more characters are then filled with lines from the
+  // dropped middle that carry error/correction signals (errors, failures,
+  // "actually", "no, …", reverts, the user turn after an error), found by a
+  // plain text scan with no extra LLM call. 0 disables the middle scan.
+  diaryMaxInputChars: z.number().int().min(10_000).max(2_000_000).default(50_000),
+  diaryMiddleScanChars: z.number().int().min(0).max(200_000).default(8_000),
   dedupSimilarityThreshold: z.number().default(0.85),
   pruneHarmfulThreshold: z.number().default(3),
   defaultDecayHalfLife: z.number().default(90),
