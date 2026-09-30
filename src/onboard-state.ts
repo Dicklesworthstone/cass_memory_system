@@ -193,13 +193,16 @@ export async function resetOnboardState(): Promise<void> {
 /**
  * Get a summary of onboarding progress
  */
-export interface OnboardProgress {
-  sessionsProcessed: number;
-  rulesExtracted: number;
-  startedAt: string | null;
-  lastActivity: string | null;
-  hasStarted: boolean;
-}
+export const OnboardProgressSchema = z
+  .object({
+    sessionsProcessed: z.number().int().min(0),
+    rulesExtracted: z.number().int().min(0),
+    startedAt: z.string().nullable(),
+    lastActivity: z.string().nullable(),
+    hasStarted: z.boolean(),
+  })
+  .strict();
+export type OnboardProgress = z.infer<typeof OnboardProgressSchema>;
 
 export async function getOnboardProgress(): Promise<OnboardProgress> {
   const state = await loadOnboardState();

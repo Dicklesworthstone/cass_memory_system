@@ -9,13 +9,13 @@ export interface ExamplesOptions {
   json?: boolean;
 }
 
-interface ExampleWorkflow {
+export interface ExampleWorkflow {
   title: string;
   description: string;
   commands: string[];
 }
 
-function getWorkflows(): ExampleWorkflow[] {
+export function getWorkflows(): ExampleWorkflow[] {
   const cli = getCliName();
   return [
     {

@@ -10,7 +10,35 @@
  */
 
 import chalk from "chalk";
+import { z } from "zod";
 import { getCliName, printJsonResult } from "../utils.js";
+
+/** Shape of `cm quickstart --json` `data` (also published by `cm robot-docs schemas`). */
+export const QuickstartResultSchema = z
+  .object({
+    summary: z.string(),
+    oneCommand: z.string(),
+    expectations: z
+      .object({ degradedMode: z.string(), privacy: z.string(), remoteHistory: z.string() })
+      .strict(),
+    whatItReturns: z.array(z.string()),
+    doNotDo: z.array(z.string()),
+    operatorNote: z.object({ automation: z.string(), health: z.string() }).strict(),
+    soloUser: z
+      .object({
+        description: z.string(),
+        manualReflection: z.array(z.string()),
+        onboarding: z.array(z.string()),
+      })
+      .strict(),
+    inlineFeedbackFormat: z.object({ helpful: z.string(), harmful: z.string() }).strict(),
+    protocol: z
+      .object({ start: z.string(), work: z.string(), feedback: z.string(), end: z.string() })
+      .strict(),
+    examples: z.array(z.string()),
+  })
+  .strict();
+export type QuickstartResult = z.infer<typeof QuickstartResultSchema>;
 
 function getQuickstartText(cli: string): string {
   return `
@@ -114,7 +142,7 @@ For operator documentation: https://github.com/Dicklesworthstone/cass_memory_sys
 `.trim();
 }
 
-function getQuickstartJson(cli: string) {
+export function getQuickstartJson(cli: string): QuickstartResult {
   return {
     summary: "Procedural memory system for AI coding agents",
     oneCommand: `${cli} context "<task>" --json`,

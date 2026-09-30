@@ -849,6 +849,7 @@ For Claude Code users, add a post-session hook in `.claude/hooks.json`:
 |---------|---------|-----------|
 | `cm context "<task>" --json` | Get rules + history for task | **Primary** |
 | `cm quickstart --json` | Self-documentation | Setup |
+| `cm robot-docs [topic]` | Machine-readable docs: commands, examples, exit codes, JSON schemas | Integration |
 | `cm doctor --json` | System health check | Diagnostics |
 | `cm playbook list` | Show all rules | Inspection |
 | `cm similar "<query>"` | Find similar rules | Search |
@@ -895,7 +896,14 @@ cm quickstart --json
 
 # Find rules similar to a query
 cm similar "error handling best practices"
+
+# Machine-readable CLI docs (JSON): all topics, or one of
+# guide | commands | examples | exit-codes | schemas
+cm robot-docs
+cm robot-docs schemas
 ```
+
+`cm robot-docs` always prints one JSON document to stdout (`data.schemaVersion`, `data.version`, `data.topics`). `commands` is read from the live CLI definition, so it lists exactly the commands, arguments and options this build accepts. `schemas` gives JSON Schema (draft-07) for the JSON envelope (success and error) and for the `data` of `context`, `quickstart` and `onboard status`; the schemas are open, so ignore fields you don't know.
 
 ### Playbook Commands (Inspect & Manage Rules)
 

@@ -1067,18 +1067,8 @@ export const AuditResultSchema = z.object({
 });
 export type AuditResult = z.infer<typeof AuditResultSchema>;
 
-export const EXIT_CODES = {
-  SUCCESS: 0,
-  GENERAL_ERROR: 1,
-  INVALID_ARGS: 2,
-  CONFIG_ERROR: 3,
-  CASS_ERROR: 4,
-  LLM_ERROR: 5,
-  FILE_ERROR: 6,
-  PERMISSION_ERROR: 7,
-  BUDGET_EXCEEDED: 8,
-} as const;
-export type ExitCode = (typeof EXIT_CODES)[keyof typeof EXIT_CODES];
+// Process exit codes live in utils.ts (ERROR_CATEGORY_EXIT_CODES) and are
+// published by `cm robot-docs exit-codes`.
 
 export const Schemas = {
   FeedbackEvent: FeedbackEventSchema,

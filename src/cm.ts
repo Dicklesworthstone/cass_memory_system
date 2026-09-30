@@ -13,6 +13,7 @@ import { playbookCommand } from "./commands/playbook.js";
 import { privacyCommand } from "./commands/privacy.js";
 import { projectCommand } from "./commands/project.js";
 import { quickstartCommand } from "./commands/quickstart.js";
+import { robotDocsCommand } from "./commands/robot-docs.js";
 import { reflectCommand } from "./commands/reflect.js";
 import { serveCommand } from "./commands/serve.js";
 import { similarCommand } from "./commands/similar.js";
@@ -616,6 +617,23 @@ export function createProgram(argv: string[] = process.argv): Command {
     )
     .action(async (opts: any) => await quickstartCommand(opts));
 
+  // --- Robot docs (machine-readable CLI documentation) ---
+  program
+    .command("robot-docs")
+    .description(
+      "Machine-readable CLI docs as JSON: guide, commands, examples, exit-codes, schemas",
+    )
+    .argument("[topic]", "One topic (guide|commands|examples|exit-codes|schemas); omit for all")
+    .option("-j, --json", "Output JSON (always on; accepted for consistency)")
+    .addHelpText("after", () =>
+      formatCommandExamples([
+        "robot-docs",
+        "robot-docs commands",
+        "robot-docs schemas | jq '.data.topics.schemas.commands.context'",
+      ]),
+    )
+    .action(async (topic: string | undefined) => await robotDocsCommand(topic, program));
+
   // --- Privacy ---
   const privacy = program
     .command("privacy")
@@ -1140,7 +1158,7 @@ Global options:
   --verbose        Enable verbose diagnostics
 
 Command groups:
-  Agent workflow: context, quickstart, similar
+  Agent workflow: context, quickstart, similar, robot-docs
   Operator/maintenance: init, doctor, reflect, playbook, stats, project, privacy, starters
   Advanced/rare: serve, outcome, outcome-apply, audit, validate
 

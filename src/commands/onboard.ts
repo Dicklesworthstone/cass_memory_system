@@ -10,6 +10,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import chalk from "chalk";
+import { z } from "zod";
 import {
   type CassSearchOptions,
   cassExport,
@@ -60,15 +61,19 @@ import {
   validatePositiveInt,
 } from "../utils.js";
 
-interface OnboardStatus {
-  cassAvailable: boolean;
-  totalConversations: number;
-  totalMessages: number;
-  playbookRules: number;
-  needsOnboarding: boolean;
-  onboardingRatio: number; // rules per 100 conversations
-  recommendation: string;
-}
+// Also published by `cm robot-docs schemas` as part of `onboard status` output.
+export const OnboardStatusSchema = z
+  .object({
+    cassAvailable: z.boolean(),
+    totalConversations: z.number().int().min(0),
+    totalMessages: z.number().int().min(0),
+    playbookRules: z.number().int().min(0),
+    needsOnboarding: z.boolean(),
+    onboardingRatio: z.number(), // rules per 100 conversations
+    recommendation: z.string(),
+  })
+  .strict();
+type OnboardStatus = z.infer<typeof OnboardStatusSchema>;
 
 interface SessionSample {
   path: string;

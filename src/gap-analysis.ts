@@ -5,6 +5,7 @@
  * and provides guidance for targeted rule extraction.
  */
 
+import { z } from "zod";
 import { getActiveBullets } from "./playbook.js";
 import { type Playbook, PlaybookBullet } from "./types.js";
 
@@ -181,7 +182,13 @@ export const CATEGORY_KEYWORDS: Record<RuleCategory, string[]> = {
 /**
  * Category status based on rule count
  */
-export type CategoryStatus = "critical" | "underrepresented" | "adequate" | "well-covered";
+export const CategoryStatusSchema = z.enum([
+  "critical",
+  "underrepresented",
+  "adequate",
+  "well-covered",
+]);
+export type CategoryStatus = z.infer<typeof CategoryStatusSchema>;
 
 /**
  * Thresholds for category status
@@ -193,22 +200,31 @@ const STATUS_THRESHOLDS = {
   // well-covered: > 10 rules
 };
 
-export interface CategoryAnalysis {
-  count: number;
-  status: CategoryStatus;
-  percentage: number;
-}
+export const CategoryAnalysisSchema = z
+  .object({
+    count: z.number().int().min(0),
+    status: CategoryStatusSchema,
+    percentage: z.number(),
+  })
+  .strict();
+export type CategoryAnalysis = z.infer<typeof CategoryAnalysisSchema>;
 
-export interface PlaybookGapAnalysis {
-  totalRules: number;
-  byCategory: Record<string, CategoryAnalysis>;
-  gaps: {
-    critical: string[];
-    underrepresented: string[];
-  };
-  wellCovered: string[];
-  suggestions: string;
-}
+// Also published as part of `cm robot-docs schemas` (onboard status/gaps output).
+export const PlaybookGapAnalysisSchema = z
+  .object({
+    totalRules: z.number().int().min(0),
+    byCategory: z.record(CategoryAnalysisSchema),
+    gaps: z
+      .object({
+        critical: z.array(z.string()),
+        underrepresented: z.array(z.string()),
+      })
+      .strict(),
+    wellCovered: z.array(z.string()),
+    suggestions: z.string(),
+  })
+  .strict();
+export type PlaybookGapAnalysis = z.infer<typeof PlaybookGapAnalysisSchema>;
 
 /**
  * Get the status for a category based on rule count
