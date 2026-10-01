@@ -10,10 +10,29 @@ All notable changes to **cass-memory** (`cm`) are documented in this file.
 
 ## [Unreleased]
 
+## [0.4.0] -- 2026-09-30
+
+Everything on `main` since [0.3.0](https://github.com/Dicklesworthstone/cass_memory_system/releases/tag/v0.3.0). Two new features (two config keys and a command), no changed defaults, so it is a minor bump.
+
 ### Added
 
-- The diary step's transcript window is configurable: `diaryMaxInputChars` (default 50,000, was a fixed 50,000) sets how much of a long session is read, still split 60/40 between its start and end. Lines from the cut middle that report errors or corrections (tool errors, failed tests, "actually", "no, ...", reverts, the user turn after an error) are now kept in an extra `diaryMiddleScanChars` window (default 8,000; 0 turns it off), found by a text scan with no extra LLM call. The README explains how to reflect long sessions (#88).
-- `cm robot-docs [topic]` prints machine-readable docs as one JSON document: `guide` (the quickstart), `commands` (every command, argument and option, read from the live CLI), `examples`, `exit-codes`, and `schemas` (JSON Schema for the JSON envelope and for the `data` of `context`, `quickstart` and `onboard status`). Tests check the schemas against real command output and every example against the real CLI.
+- The diary step's transcript window is configurable: `diaryMaxInputChars` (default 50,000, was a fixed 50,000) sets how much of a long session is read, still split 60/40 between its start and end. Lines from the cut middle that report errors or corrections (tool errors, failed tests, "actually", "no, ...", reverts, the user turn after an error) are now kept in an extra `diaryMiddleScanChars` window (default 8,000; 0 turns it off), found by a text scan with no extra LLM call. The README explains how to reflect long sessions ([`30a148f`](https://github.com/Dicklesworthstone/cass_memory_system/commit/30a148f), [`1de9e5e`](https://github.com/Dicklesworthstone/cass_memory_system/commit/1de9e5e), #88).
+- `cm robot-docs [topic]` prints machine-readable docs as one JSON document: `guide` (the quickstart), `commands` (every command, argument and option, read from the live CLI), `examples`, `exit-codes`, and `schemas` (JSON Schema for the JSON envelope and for the `data` of `context`, `quickstart` and `onboard status`). Tests check the schemas against real command output and every example against the real CLI ([`c427de7`](https://github.com/Dicklesworthstone/cass_memory_system/commit/c427de7)).
+
+### Fixed
+
+- The middle scan recognises the turn headers cass actually writes (`=== USER ===` from `cm reflect`'s text export, `## 👤 User` from `cm diary`'s markdown export), so user corrections are ranked first and the user turn after an error is kept. Before this fix only `[user]`-style transcripts were read correctly ([`1de9e5e`](https://github.com/Dicklesworthstone/cass_memory_system/commit/1de9e5e), #88).
+
+### Gate
+
+- `tsc --noEmit`: clean
+- `bun test --timeout 60000 --isolate`: **2829 passed, 4 skipped, 0 failed** across 147 files
+
+### Artifacts
+
+`cass-memory-linux-x64`, `cass-memory-linux-arm64`, `cass-memory-macos-arm64`, `cass-memory-macos-x64`, `cass-memory-windows-x64.exe`, each with a `.sha256` sidecar, plus `install.sh.sha256`. `install.sh` is unchanged since 0.3.0.
+
+---
 
 ## [0.3.0] -- 2026-09-28
 
