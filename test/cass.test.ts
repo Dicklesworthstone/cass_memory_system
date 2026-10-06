@@ -771,3 +771,75 @@ describe("findUnprocessedSessions discovery failures (#78)", () => {
     expect(capturedTimeout).toBe(45 * 1000);
   });
 });
+
+describe("findUnprocessedSessions agent list and workspace filter", () => {
+  const timeline = (sessions: Array<{ path: string; agent: string }>) =>
+    JSON.stringify({
+      groups: [
+        {
+          date: "2025-01-01",
+          sessions: sessions.map((s) => ({ ...s, messageCount: 3, startTime: "10:00", endTime: "11:00" })),
+        },
+      ],
+    });
+
+  it("accepts a comma-separated agent list matched on canonical names", async () => {
+    const runner = createCassRunnerStub({
+      execStdout: {
+        timeline: timeline([
+          { path: "a.jsonl", agent: "claude_code" },
+          { path: "b.jsonl", agent: "codex" },
+          { path: "c.jsonl", agent: "cursor" },
+        ]),
+      },
+    });
+    const result = await findUnprocessedSessions(new Set(), { agent: "claude, codex" }, "cass", runner);
+    expect(result.map((s) => s.path).sort()).toEqual(["a.jsonl", "b.jsonl"]);
+  });
+
+  it("keeps only sessions that ran in the workspace (slug folder or transcript cwd)", async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, realpathSync } = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const { slugifyProjectDir } = await import("../src/subprocess-tag.js");
+    const base = realpathSync(mkdtempSync(path.join(os.tmpdir(), "cm-ws-")));
+    const project = path.join(base, "proj");
+    const other = path.join(base, "other");
+    mkdirSync(project, { recursive: true });
+    mkdirSync(other, { recursive: true });
+
+    // Claude layout: the transcript folder is the slugged cwd.
+    const claudeDir = path.join(base, ".claude", "projects", slugifyProjectDir(project));
+    mkdirSync(claudeDir, { recursive: true });
+    const inSlug = path.join(claudeDir, "s1.jsonl");
+    writeFileSync(inSlug, "{}\n");
+    // Codex layout: cwd stamped in the first record.
+    const codexIn = path.join(base, "codex-in.jsonl");
+    writeFileSync(codexIn, `${JSON.stringify({ type: "session_meta", payload: { cwd: path.join(project, "sub") } })}\n`);
+    const codexOut = path.join(base, "codex-out.jsonl");
+    writeFileSync(codexOut, `${JSON.stringify({ type: "session_meta", payload: { cwd: other } })}\n`);
+    const unknown = path.join(base, "unknown.jsonl");
+    writeFileSync(unknown, "not json\n");
+
+    const runner = createCassRunnerStub({
+      execStdout: {
+        timeline: timeline([
+          { path: inSlug, agent: "claude" },
+          { path: codexIn, agent: "codex" },
+          { path: codexOut, agent: "codex" },
+          { path: unknown, agent: "codex" },
+        ]),
+      },
+    });
+    const result = await findUnprocessedSessions(new Set(), { workspace: project }, "cass", runner);
+    expect(result.map((s) => s.path).sort()).toEqual([codexIn, inSlug].sort());
+  });
+});
+
+describe("sessionInWorkspace", () => {
+  it("uses the workspace cass reported when present", async () => {
+    const { sessionInWorkspace } = await import("../src/cass.js");
+    expect(sessionInWorkspace({ path: "/x.jsonl", agent: "a", workspace: "/srv/app/api" }, "/srv/app")).toBe(true);
+    expect(sessionInWorkspace({ path: "/x.jsonl", agent: "a", workspace: "/srv/other" }, "/srv/app")).toBe(false);
+  });
+});

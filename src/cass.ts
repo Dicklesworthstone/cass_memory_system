@@ -1,10 +1,12 @@
 import { execFile, spawn, spawnSync } from "node:child_process";
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { getSanitizeConfig, loadConfig } from "./config.js";
 import { compileExtraPatterns, sanitize } from "./sanitize.js";
-import { isCmSubprocessTranscriptPath } from "./subprocess-tag.js";
+import { isCmSubprocessTranscriptPath, slugifyProjectDir } from "./subprocess-tag.js";
+import { canonicalWorkspacePath, workspaceMatches } from "./workspace.js";
 import {
   type CassHit,
   CassHitSchema,
@@ -1280,12 +1282,58 @@ export interface DiscoveredSession {
  */
 export type DiscoveryEligibility = "new" | "grown" | "retry" | "skip";
 
+/** Bytes read from a transcript's head when looking for its working directory. */
+const WORKSPACE_SNIFF_BYTES = 64 * 1024;
+
+/**
+ * Whether a discovered session ran inside `workspace` (the directory or a
+ * subdirectory of it). Tries, in order: the workspace cass reported; the
+ * Claude Code per-project transcript folder, whose name is the slugged cwd;
+ * the `cwd` stamped in the transcript's first records. Unknown -> false, so a
+ * workspace filter never lets other projects' sessions through.
+ */
+export function sessionInWorkspace(session: DiscoveredSession, workspace: string): boolean {
+  if (session.workspace) return workspaceMatches(workspace, session.workspace);
+  const root = canonicalWorkspacePath(workspace);
+  const slug = slugifyProjectDir(root);
+  const normalized = session.path.replace(/\\/g, "/");
+  if (slug && (normalized.includes(`/${slug}/`) || normalized.includes(`/${slug}-`))) return true;
+  try {
+    const fd = fsSync.openSync(session.path, "r");
+    let head: string;
+    try {
+      const buf = Buffer.alloc(WORKSPACE_SNIFF_BYTES);
+      const n = fsSync.readSync(fd, buf, 0, buf.length, 0);
+      head = buf.subarray(0, n).toString("utf-8");
+    } finally {
+      fsSync.closeSync(fd);
+    }
+    const records = head
+      .split("\n")
+      .map((line) => {
+        try {
+          return JSON.parse(line);
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+    const cwd = extractSessionWorkspace(records);
+    return cwd ? workspaceMatches(workspace, cwd) : false;
+  } catch {
+    return false;
+  }
+}
+
 export async function findUnprocessedSessions(
   processed: Set<string>,
   options: {
     days?: number;
     maxSessions?: number;
+    /** One agent or a comma-separated list (`claude,codex`); matched on canonical names. */
     agent?: string;
+    /** Keep only sessions that ran in this directory (or below it). */
+    workspace?: string;
     excludePatterns?: string[];
     includeAll?: boolean;
     /**
@@ -1316,8 +1364,15 @@ export async function findUnprocessedSessions(
   const maxSessions = maxSessionsCheck.ok ? (maxSessionsCheck.value ?? 20) : 20;
 
   // Canonicalize both sides so `--agent claude` matches cass's `claude_code`.
-  const agentFilter = typeof options.agent === "string" ? canonicalAgentName(options.agent) : "";
-  const agentNormalized = agentFilter ? agentFilter : undefined;
+  const agentSet = new Set(
+    (typeof options.agent === "string" ? options.agent.split(",") : [])
+      .map((a) => canonicalAgentName(a))
+      .filter((a) => a !== ""),
+  );
+  const workspaceFilter =
+    typeof options.workspace === "string" && options.workspace.trim()
+      ? options.workspace.trim()
+      : undefined;
 
   // Session type exclusion filtering
   const excludePatterns = options.excludePatterns ?? [];
@@ -1413,7 +1468,8 @@ export async function findUnprocessedSessions(
 
   const candidates = allSessions
     .filter((s) => !isOwnSubprocess(s.path))
-    .filter((s) => !agentNormalized || canonicalAgentName(s.agent) === agentNormalized)
+    .filter((s) => agentSet.size === 0 || agentSet.has(canonicalAgentName(s.agent)))
+    .filter((s) => !workspaceFilter || sessionInWorkspace(s, workspaceFilter))
     .filter((s) => !matchesExcludePattern(s.path))
     .map((s) => ({ ...s, agent: s.agent || "unknown" }));
 

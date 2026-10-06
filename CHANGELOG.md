@@ -23,6 +23,21 @@ All notable changes to **cass-memory** (`cm`) are documented in this file.
 - `cm diary <session>` is registered. It was implemented but unreachable.
 - Team playbook merge: `cm playbook import` matches rules by content as well as id. A teammate's copy of a rule (same text under another id, near-identical wording, or same id and text) merges into the existing rule. Feedback events are unioned without double counting, sources and tags are combined, and counts and maturity are recomputed. Imported rules that contradict existing ones are reported in `conflicts`.
 
+- `cm doctor` Memory Quality checks: contradicting rules, feedback from cm's own LLM subprocess transcripts, and whether auto-reflection is installed, each pointing at the command that fixes it.
+- MCP tools `cm_why` and `cm_conflicts`. `memory_reflect` takes `agent`.
+- `cm reflect --agent claude,codex`: the option was missing from the CLI, and it now takes a comma list.
+
+### Fixed
+
+- `cm reflect --workspace` (and MCP `memory_reflect` `workspace`) now filters which sessions are reflected. It used to only choose the processed-log file, so every project's sessions were reflected. A session belongs to the workspace when cass reports it there, its Claude Code transcript folder is that directory's slug, or its transcript's first records carry a `cwd` inside it.
+- `cm hook install --global` and doctor's Claude Code detection resolve `~` through `HOME`, as the rest of cm does. `os.homedir()` ignores later `HOME` changes under Bun.
+- Inline `// [cass: harmful b-x] - reason` feedback from the shared converter put free text in the harmful-reason enum. It now goes in `context`, and the reflect pipeline uses that one converter.
+- Tests are hermetic against ambient AWS/Ollama credentials and a missing `cass` binary.
+
+### Removed
+
+- Deprecated aliases `loadToxicLog`, `appendToxicLog`, `isSemanticallyToxic`.
+
 ### Changed
 
 - Context ranking (#89). Keyword relevance is BM25 over the playbook (IDF-weighted query coverage, light stemming, prefix matches). Feedback is a bounded multiplier in `[1 - feedbackWeight, 1 + feedbackWeight]` (default 0.25), damped while marks are few. Before, relevance was multiplied by the raw effective score, so an unmarked rule got ×0.1 and a well-marked one ×10 or more. A relative relevance floor `minRelativeRelevance` (default 0.2 × the best match) drops the long tail.

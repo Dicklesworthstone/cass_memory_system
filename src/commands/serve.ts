@@ -386,7 +386,14 @@ const TOOL_DEFS = [
           description: "If true, return proposed changes without applying",
           default: false,
         },
-        workspace: { type: "string", description: "Workspace path to limit session search" },
+        workspace: {
+          type: "string",
+          description: "Only reflect sessions that ran in this directory (or below)",
+        },
+        agent: {
+          type: "string",
+          description: "Only reflect sessions from these agents (comma-separated, e.g. claude,codex)",
+        },
         session: { type: "string", description: "Specific session path to reflect on" },
       },
     },
@@ -777,6 +784,8 @@ async function handleToolCall(name: string, args: any): Promise<any> {
         allowUndefined: true,
       });
       if (!sessionCheck.ok) throw new Error(sessionCheck.message);
+      const agentCheck = validateNonEmptyString(args?.agent, "agent", { allowUndefined: true });
+      if (!agentCheck.ok) throw new Error(agentCheck.message);
       const workspace = workspaceCheck.value;
       const session = sessionCheck.value;
 
@@ -788,6 +797,7 @@ async function handleToolCall(name: string, args: any): Promise<any> {
             maxSessions,
             dryRun,
             workspace,
+            ...(agentCheck.value ? { agent: agentCheck.value } : {}),
             session,
           }),
         ),

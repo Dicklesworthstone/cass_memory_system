@@ -248,6 +248,7 @@ export async function orchestrateReflection(
             days: options.days || config.sessionLookbackDays,
             maxSessions: options.maxSessions || 5,
             agent: options.agent,
+            workspace: options.workspace,
             excludePatterns: config.sessionExcludePatterns,
             includeAll: config.sessionIncludeAll,
             cliSubprocessCwd: config.cliSubprocessCwd,

@@ -630,7 +630,8 @@ export function createProgram(argv: string[] = process.argv): Command {
     .option("--days <n>", "Lookback days", toInt)
     .option("--max-sessions <n>", "Max sessions to process", toInt)
     .option("--dry-run", "Show proposed changes without applying")
-    .option("--workspace <path>", "Filter by workspace")
+    .option("--workspace <path>", "Only reflect sessions that ran in this directory (or below)")
+    .option("--agent <names>", "Only reflect sessions from these agents (comma-separated: claude,codex)")
     .option("-j, --json", "Output JSON")
     .option("--session <path>", "Process specific session file")
     .option(
@@ -640,6 +641,7 @@ export function createProgram(argv: string[] = process.argv): Command {
     .addHelpText("after", () =>
       formatCommandExamples([
         "reflect --days 7 --json",
+        "reflect --agent claude,codex --workspace . --json",
         "reflect --session /path/to/session.jsonl --json",
         "reflect --session /path/to/session.jsonl --force --json",
         "reflect --dry-run --json",
