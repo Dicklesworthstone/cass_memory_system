@@ -590,3 +590,37 @@ describe("E2E: CLI context command", () => {
     });
   });
 });
+
+describe("E2E: cm context reads the task from stdin", () => {
+  async function runWithStdin(home: string, args: string[], input: string) {
+    const proc = Bun.spawn(["bun", "run", path.resolve(import.meta.dir, "../src/cm.ts"), ...args], {
+      cwd: home,
+      env: { ...process.env, HOME: home, NO_COLOR: "1", CASS_PATH: "/nonexistent/cass" },
+      stdin: new TextEncoder().encode(input),
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const stdout = await new Response(proc.stdout).text();
+    await proc.exited;
+    return { exitCode: proc.exitCode, stdout };
+  }
+
+  it("uses piped stdin when the task argument is omitted or '-'", async () => {
+    await withTempCassHome(async (env) => {
+      for (const args of [["context", "--json"], ["context", "-", "--json"]]) {
+        const { stdout } = await runWithStdin(env.home, args, "fix the CORS headers\n");
+        const parsed = JSON.parse(stdout);
+        expect(parsed.success).toBe(true);
+        expect(parsed.data.task).toBe("fix the CORS headers");
+      }
+    });
+  }, 30000);
+
+  it("reports a validation error when stdin is empty", async () => {
+    await withTempCassHome(async (env) => {
+      const { stdout, exitCode } = await runWithStdin(env.home, ["context", "--json"], "");
+      expect(JSON.parse(stdout).success).toBe(false);
+      expect(exitCode).not.toBe(0);
+    });
+  }, 30000);
+});

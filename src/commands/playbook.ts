@@ -53,6 +53,7 @@ import {
   now,
   printJsonResult,
   printStructuredResult,
+  readStdinText,
   reportError,
   resolveRepoDir,
   truncate,
@@ -268,12 +269,7 @@ async function handleBatchAdd(
   let rawInput: string;
   try {
     if (flags.file === "-") {
-      // Read from stdin
-      const chunks: Buffer[] = [];
-      for await (const chunk of process.stdin) {
-        chunks.push(chunk);
-      }
-      rawInput = Buffer.concat(chunks).toString("utf-8");
+      rawInput = await readStdinText();
     } else {
       // Read from file
       rawInput = await readFile(expandPath(flags.file!), "utf-8");

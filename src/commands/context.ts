@@ -48,6 +48,7 @@ import {
   isJsonOutput,
   isToonOutput,
   printStructuredResult,
+  readStdinText,
   reportError,
   resolveGlobalDir,
   resolveRepoDir,
@@ -658,7 +659,7 @@ export async function generateContextResult(
     cassQuery,
     {
       limit: flags.history ?? config.maxHistoryInContext,
-      days: flags.days ?? config.sessionLookbackDays,
+      days: flags.days ?? config.historyLookbackDays,
       workspace: flags.workspace,
       timeout: config.cassHistoryTimeoutSeconds ?? DEFAULT_CASS_HISTORY_TIMEOUT_SECONDS,
     },
@@ -856,11 +857,21 @@ export async function getContext(task: string, flags: ContextFlags = {}) {
   return { result, rules, antiPatterns, cassHits, warnings, suggestedQueries };
 }
 
-export async function contextCommand(task: string, flags: ContextFlags) {
+export async function contextCommand(task: string | undefined, flags: ContextFlags) {
   const startedAtMs = Date.now();
   const command = "context";
   const cli = getCliName();
   const wantsJsonForErrors = isJsonOutput(flags);
+
+  // `echo "fix CORS" | cm context --json` and `cm context - --json`: the task
+  // comes from stdin when it is not given (or is "-") and stdin is piped.
+  if ((task === undefined || task.trim() === "" || task === "-") && !process.stdin.isTTY) {
+    try {
+      task = await readStdinText();
+    } catch {
+      task = "";
+    }
+  }
 
   const taskCheck = validateNonEmptyString(task, "task", { trim: true });
   if (!taskCheck.ok) {

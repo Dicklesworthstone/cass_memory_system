@@ -1566,7 +1566,8 @@ back to whichever file is active, in its own format.
 | `minRelativeRelevance` | `0.2` | Drop rules whose relevance is below this fraction of the best match for the same task; `0` disables |
 | `feedbackWeight` | `0.25` | How far helpful/harmful marks can move a rule's rank: a bounded multiplier in `[1 - w, 1 + w]`, damped while a rule has few marks. Relevance decides what is retrieved; feedback only reorders it. `0` ignores feedback for ranking |
 | `maxHistoryInContext` | `10` | Max history snippets to return |
-| `sessionLookbackDays` | `7` | Days to search for related sessions |
+| `sessionLookbackDays` | `7` | Days of sessions `cm reflect` discovers and diaries enrich from |
+| `historyLookbackDays` | `90` | Days of cass history `cm context` searches for history snippets (`--days` overrides) |
 | `minRelevanceScore` | `0.1` | Min relevance to include a bullet |
 | `cassHistoryTimeoutSeconds` | `20` | Budget for the `cass search` behind `cm context` history snippets; raise it on large archives (env: `CM_CASS_HISTORY_TIMEOUT_SECONDS`) |
 | `cassTimelineTimeoutSeconds` | `120` | Budget for the `cass timeline` session discovery behind `cm reflect` (env: `CM_CASS_TIMELINE_TIMEOUT_SECONDS`) |

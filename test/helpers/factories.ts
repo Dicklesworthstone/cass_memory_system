@@ -54,6 +54,7 @@ export function createTestConfig(overrides: Partial<Config> = {}): Config {
     pruneHarmfulThreshold: 3,
     defaultDecayHalfLife: 90,
     maxBulletsInContext: 10,
+    historyLookbackDays: 90,
     contextTokenBudget: 4000,
     minRelativeRelevance: 0.2,
     feedbackWeight: 0.25,

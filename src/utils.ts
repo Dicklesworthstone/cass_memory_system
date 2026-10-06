@@ -2211,6 +2211,15 @@ export function canonicalAgentName(agent: string | undefined | null): string {
   return Object.hasOwn(AGENT_ALIASES, key) ? AGENT_ALIASES[key]! : key;
 }
 
+/** Read all of stdin as UTF-8 text (for `-` / piped input). */
+export async function readStdinText(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+  }
+  return Buffer.concat(chunks).toString("utf-8");
+}
+
 /**
  * Ordered path markers for each agent's on-disk session store. Matched
  * against a lower-cased path with separators normalized to "/" and a leading

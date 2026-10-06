@@ -509,6 +509,11 @@ export const ConfigSchema = z.object({
   feedbackWeight: z.number().min(0).max(0.9).default(0.25),
   maxHistoryInContext: z.number().default(10),
   sessionLookbackDays: z.number().default(7),
+  // How far back `cm context` searches cass for history snippets (`--days`
+  // overrides). Separate from sessionLookbackDays, which scopes reflection
+  // discovery: a week is right for "what is new to learn from", far too short
+  // for "has anyone solved this before" (#89).
+  historyLookbackDays: z.number().int().min(1).default(90),
   validationLookbackDays: z.number().default(90),
   relatedSessionsDays: z.number().default(30),
   minRelevanceScore: z.number().default(0.1),

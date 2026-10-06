@@ -2,6 +2,7 @@
 import { Command } from "commander";
 import { auditCommand } from "./commands/audit.js";
 import { contextCommand } from "./commands/context.js";
+import { diaryCommand } from "./commands/diary.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { forgetCommand } from "./commands/forget.js";
 import { guardCommand } from "./commands/guard.js";
@@ -98,7 +99,7 @@ export function createProgram(argv: string[] = process.argv): Command {
     .command("context")
     .alias("ctx")
     .description("Get relevant rules and history for a task")
-    .argument("<task>", "Description of the task to perform")
+    .argument("[task]", "Description of the task to perform ('-' or omitted: read from stdin)")
     .option("-j, --json", "Output JSON")
     .option("--workspace <path>", "Filter by workspace")
     .option("--limit <n>", "Number of rules to show", toInt)
@@ -124,9 +125,10 @@ export function createProgram(argv: string[] = process.argv): Command {
         'context "refactor utils" --workspace . --json',
         'context "write tests" --format markdown',
         'context "summarize prior decisions" --format toon --stats',
+        'echo "fix CORS headers" | context --json',
       ]),
     )
-    .action(async (task: string, opts: any) => await contextCommand(task, opts));
+    .action(async (task: string | undefined, opts: any) => await contextCommand(task, opts));
 
   // --- Similar ---
   program
@@ -545,6 +547,23 @@ export function createProgram(argv: string[] = process.argv): Command {
       ]),
     )
     .action(async (opts: any) => await updateCommand(opts));
+
+  // --- Diary ---
+  program
+    .command("diary")
+    .description("Generate a structured diary entry (working memory) from one session file")
+    .argument("<session>", "Path to the session file (.jsonl, .json, .md)")
+    .option("--save", "Save to the diary directory instead of only printing")
+    .option("--raw", "Read the file directly instead of exporting it through cass")
+    .option("-j, --json", "Output JSON")
+    .addHelpText("after", () =>
+      formatCommandExamples([
+        "diary ~/.claude/projects/myapp/session.jsonl --json",
+        "diary ./session.jsonl --save",
+        "diary ./transcript.md --raw --json",
+      ]),
+    )
+    .action(async (session: string, opts: any) => await diaryCommand(session, opts));
 
   // --- Reflect ---
   program
@@ -1054,6 +1073,7 @@ export function hasJsonFlag(argv: string[] = process.argv): boolean {
     "validate",
     "doctor",
     "reflect",
+    "diary",
     "forget",
     "audit",
     "project",
