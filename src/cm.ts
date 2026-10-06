@@ -301,6 +301,35 @@ export function createProgram(argv: string[] = process.argv): Command {
     )
     .action(async (file: string, opts: any) => await playbookCommand("import", [file], opts));
 
+  playbook
+    .command("scrub")
+    .description(
+      "Remove feedback events and source references from matching sessions, then rescore (backs up first)",
+    )
+    .option(
+      "--from-sessions <pattern>",
+      "Session path substring, or glob with '*' (repeatable)",
+      (value: string, previous: string[] = []) => [...previous, value],
+    )
+    .option(
+      "--cm-subprocess-calls",
+      "Match transcripts of cm's own LLM subprocess calls (cliSubprocessCwd folder)",
+    )
+    .option(
+      "--deprecate-orphans",
+      "Also deprecate bullets left with no remaining feedback or sources (reversible)",
+    )
+    .option("--dry-run", "Report what would change without writing")
+    .option("-j, --json", "Output JSON")
+    .addHelpText("after", () =>
+      formatCommandExamples([
+        "playbook scrub --cm-subprocess-calls --dry-run --json",
+        'playbook scrub --from-sessions "*/llm-subprocess-cwd/*" --json',
+        "playbook scrub --cm-subprocess-calls --deprecate-orphans",
+      ]),
+    )
+    .action(async (opts: any) => await playbookCommand("scrub", [], opts));
+
   // --- Common Aliases (top-level shortcuts) ---
   program
     .command("ls")

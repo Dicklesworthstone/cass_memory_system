@@ -926,6 +926,13 @@ cm playbook export > playbook-backup.yaml
 # Import playbook from file
 cm playbook import shared-playbook.yaml
 
+# Strip feedback that came from cm's own LLM subprocess transcripts (or any
+# session path pattern), recount helpful/harmful, re-derive maturity.
+# Backs up each playbook first; bullets left without genuine support are
+# reported, and deprecated only with --deprecate-orphans.
+cm playbook scrub --cm-subprocess-calls --dry-run --json
+cm playbook scrub --from-sessions "*/old-project/*" --deprecate-orphans
+
 # Show top N most effective rules
 cm top 10
 

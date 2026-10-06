@@ -1,4 +1,4 @@
-import { mkdir, readFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import chalk from "chalk";
 import yaml from "yaml";
@@ -21,7 +21,10 @@ import {
   getActiveBullets,
   loadMergedPlaybook,
   loadPlaybook,
+  type ScrubResult,
   savePlaybook,
+  scrubFeedbackFromSessions,
+  sessionPathMatcher,
 } from "../playbook.js";
 import { createProgress, type ProgressReporter } from "../progress.js";
 import {
@@ -32,6 +35,7 @@ import {
 } from "../rule-validation.js";
 import { getDecayedCounts, getEffectiveScore } from "../scoring.js";
 import { resolveSemanticEnabled } from "../semantic.js";
+import { isCmSubprocessTranscriptPath } from "../subprocess-tag.js";
 import {
   ErrorCode,
   Playbook,
@@ -403,7 +407,7 @@ async function handleBatchAdd(
 }
 
 export async function playbookCommand(
-  action: "list" | "add" | "remove" | "get" | "export" | "import",
+  action: "list" | "add" | "remove" | "get" | "export" | "import" | "scrub",
   args: string[],
   flags: {
     category?: string;
@@ -422,11 +426,19 @@ export async function playbookCommand(
     check?: boolean;
     strict?: boolean;
     repo?: boolean;
+    fromSessions?: string[];
+    cmSubprocessCalls?: boolean;
+    deprecateOrphans?: boolean;
   },
 ) {
   const startedAtMs = Date.now();
   const command = `playbook:${action}`;
   const config = await loadConfig();
+
+  if (action === "scrub") {
+    await handleScrub(config, flags, command, startedAtMs);
+    return;
+  }
 
   if (action === "export") {
     const progressFormat = flags.json ? "json" : "text";
@@ -1217,5 +1229,167 @@ export async function playbookCommand(
         );
       }
     });
+  }
+}
+
+// --- scrub (#77) ---
+
+interface ScrubTargetReport extends ScrubResult {
+  path: string;
+  scope: "global" | "repo";
+  backupPath: string | null;
+  deprecated: string[];
+}
+
+async function handleScrub(
+  config: Awaited<ReturnType<typeof loadConfig>>,
+  flags: {
+    json?: boolean;
+    dryRun?: boolean;
+    fromSessions?: string[];
+    cmSubprocessCalls?: boolean;
+    deprecateOrphans?: boolean;
+  },
+  command: string,
+  startedAtMs: number,
+): Promise<void> {
+  const cli = getCliName();
+  const patterns = (flags.fromSessions ?? []).map((p) => p.trim()).filter((p) => p !== "");
+  if (patterns.length === 0 && !flags.cmSubprocessCalls) {
+    reportError("Nothing to scrub: pass --from-sessions <pattern> and/or --cm-subprocess-calls", {
+      code: ErrorCode.MISSING_REQUIRED,
+      hint: `${cli} playbook scrub --cm-subprocess-calls --dry-run --json`,
+      details: { usage: "cm playbook scrub (--from-sessions <pattern>... | --cm-subprocess-calls)" },
+      json: flags.json,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+
+  const matchers = patterns.map(sessionPathMatcher);
+  if (flags.cmSubprocessCalls) {
+    matchers.push((p) => isCmSubprocessTranscriptPath(p, config.cliSubprocessCwd));
+  }
+  const matches = (p: string) => matchers.some((m) => m(p));
+
+  const targets: Array<{ path: string; scope: "global" | "repo" }> = [];
+  const globalPath = expandPath(config.playbookPath);
+  if (await fileExists(globalPath)) targets.push({ path: globalPath, scope: "global" });
+  const repoDir = await resolveRepoDir();
+  const repoPath = repoDir ? path.join(repoDir, "playbook.yaml") : null;
+  if (repoPath && repoPath !== globalPath && (await fileExists(repoPath))) {
+    targets.push({ path: repoPath, scope: "repo" });
+  }
+
+  const reports: ScrubTargetReport[] = [];
+  try {
+    for (const target of targets) {
+      const report = await withLock(target.path, async () => {
+        const playbook = await loadPlaybook(target.path);
+        const scrub = scrubFeedbackFromSessions(playbook, matches, config);
+        const deprecated: string[] = [];
+        if (flags.deprecateOrphans) {
+          for (const b of scrub.bullets) {
+            if (!(b.noRemainingFeedback || b.noRemainingSources)) continue;
+            const bullet = findBullet(playbook, b.id);
+            if (!bullet || bullet.deprecated || bullet.pinned) continue;
+            deprecateBullet(playbook, b.id, "Scrubbed: no genuine support left after cm playbook scrub");
+            b.maturity.after = "deprecated";
+            deprecated.push(b.id);
+          }
+        }
+
+        let backupPath: string | null = null;
+        if (!flags.dryRun && scrub.bulletsTouched > 0) {
+          const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+          backupPath = `${target.path}.backup.${timestamp}`;
+          await copyFile(target.path, backupPath);
+          await savePlaybook(playbook, target.path);
+        }
+        return { ...scrub, path: target.path, scope: target.scope, backupPath, deprecated };
+      });
+      reports.push(report);
+    }
+  } catch (err: any) {
+    reportError(err instanceof Error ? err : String(err), {
+      code: ErrorCode.PLAYBOOK_CORRUPT,
+      json: flags.json,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+
+  const all = reports.flatMap((r) => r.bullets);
+  const noRemainingFeedback = all.filter((b) => b.noRemainingFeedback).map((b) => b.id);
+  const noRemainingSources = all.filter((b) => b.noRemainingSources).map((b) => b.id);
+  const summary = {
+    dryRun: Boolean(flags.dryRun),
+    patterns,
+    cmSubprocessCalls: Boolean(flags.cmSubprocessCalls),
+    bulletsTouched: reports.reduce((n, r) => n + r.bulletsTouched, 0),
+    eventsRemoved: reports.reduce((n, r) => n + r.eventsRemoved, 0),
+    sourcesRemoved: reports.reduce((n, r) => n + r.sourcesRemoved, 0),
+    // Candidates for removal: reported, never deleted implicitly.
+    noRemainingFeedback,
+    noRemainingSources,
+    deprecated: reports.flatMap((r) => r.deprecated),
+    playbooks: reports,
+  };
+
+  if (flags.json) {
+    printJsonResult(command, summary, { startedAtMs });
+    return;
+  }
+
+  const style = getOutputStyle();
+  console.log(
+    chalk.bold(flags.dryRun ? "PLAYBOOK SCRUB (dry run - no changes written)" : "PLAYBOOK SCRUB"),
+  );
+  console.log(chalk.gray(formatRule("─", { maxWidth: style.width })));
+  if (targets.length === 0) {
+    console.log(chalk.gray("No playbook files found."));
+    return;
+  }
+  for (const r of reports) {
+    console.log(
+      `${r.scope === "repo" ? "Repo" : "Global"} playbook ${chalk.gray(r.path)}: ` +
+        `${r.eventsRemoved} feedback event(s) and ${r.sourcesRemoved} source session(s) removed from ${r.bulletsTouched} bullet(s)`,
+    );
+    if (r.backupPath) console.log(chalk.gray(`  Backup: ${r.backupPath}`));
+    for (const b of r.bullets) {
+      const maturity =
+        b.maturity.before === b.maturity.after
+          ? b.maturity.after
+          : `${b.maturity.before} -> ${b.maturity.after}`;
+      console.log(
+        `  ${chalk.cyan(b.id)} -${b.removedEvents} events, ` +
+          `${b.helpfulCount.before}+/${b.harmfulCount.before}- -> ${b.helpfulCount.after}+/${b.harmfulCount.after}-, ${maturity}`,
+      );
+    }
+  }
+  if (noRemainingFeedback.length > 0 || noRemainingSources.length > 0) {
+    console.log();
+    const orphans = Array.from(new Set([...noRemainingFeedback, ...noRemainingSources]));
+    console.log(
+      chalk.yellow(
+        `${orphans.length} bullet(s) have no genuine support left (no remaining feedback or sources):`,
+      ),
+    );
+    console.log(`  ${orphans.join(" ")}`);
+    if (summary.deprecated.length > 0) {
+      console.log(chalk.green(`  Deprecated ${summary.deprecated.length} (--deprecate-orphans).`));
+    } else {
+      console.log(
+        chalk.gray(
+          `  Review with '${cli} playbook get <id>'; remove with '${cli} playbook remove <id>' or re-run with --deprecate-orphans.`,
+        ),
+      );
+    }
+  }
+  if (flags.dryRun && summary.bulletsTouched > 0) {
+    console.log();
+    console.log(chalk.gray("Re-run without --dry-run to apply (playbooks are backed up first)."));
   }
 }

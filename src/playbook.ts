@@ -5,7 +5,7 @@ import type { z } from "zod";
 import { withLock } from "./lock.js";
 import { normalizeWorkspacePath, resolveProjectRoot } from "./workspace.js";
 import { formatMaturityIcon, iconPrefix } from "./output.js";
-import { getEffectiveScore, isStale } from "./scoring.js";
+import { calculateMaturityState, getEffectiveScore, isStale } from "./scoring.js";
 import {
   BulletMaturity,
   type Config,
@@ -28,6 +28,7 @@ import {
   log,
   error as logError,
   now,
+  truncate,
   resolveGlobalDir,
   resolveRepoDir,
   tokenize,
@@ -575,6 +576,125 @@ export function deprecateBullet(
   bullet.updatedAt = now();
 
   return true;
+}
+
+// --- Feedback Scrubbing (#77) ---
+
+/**
+ * Build a session-path matcher from a user pattern. A pattern with `*` is a
+ * glob over the whole path (`*` matches any run of characters, including
+ * `/`); anything else matches as a plain substring. Windows separators are
+ * normalised to `/` on both sides, so one pattern covers both shapes.
+ */
+export function sessionPathMatcher(pattern: string): (sessionPath: string) => boolean {
+  const normalizedPattern = pattern.replace(/\\/g, "/");
+  if (!normalizedPattern.includes("*")) {
+    return (p) => p.replace(/\\/g, "/").includes(normalizedPattern);
+  }
+  const escaped = normalizedPattern
+    .split("*")
+    .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"))
+    .join(".*");
+  const re = new RegExp(`^${escaped}$`);
+  return (p) => re.test(p.replace(/\\/g, "/"));
+}
+
+const MATURITY_RANK: Record<BulletMaturity, number> = {
+  deprecated: 0,
+  candidate: 1,
+  established: 2,
+  proven: 3,
+};
+
+export interface ScrubbedBulletReport {
+  id: string;
+  preview: string;
+  removedEvents: number;
+  removedSources: number;
+  remainingEvents: number;
+  helpfulCount: { before: number; after: number };
+  harmfulCount: { before: number; after: number };
+  maturity: { before: BulletMaturity; after: BulletMaturity };
+  effectiveScore: { before: number; after: number };
+  /** Every feedback event this bullet had came from matching sessions. */
+  noRemainingFeedback: boolean;
+  /** The bullet was learned only from matching sessions (all its sources were scrubbed). */
+  noRemainingSources: boolean;
+}
+
+export interface ScrubResult {
+  bulletsTouched: number;
+  eventsRemoved: number;
+  sourcesRemoved: number;
+  bullets: ScrubbedBulletReport[];
+}
+
+/**
+ * Remove feedback events and source-session references whose session path
+ * matches, then re-derive what those events determined: helpful/harmful
+ * counts and maturity (#77). Mutates `playbook` in place.
+ *
+ * Bullets left with no feedback, or learned only from matching sessions, are
+ * reported (`noRemainingFeedback` / `noRemainingSources`) but never removed
+ * here; deprecating them is the caller's explicit choice. Maturity is
+ * recomputed but never raised, and pinned and deprecated bullets keep theirs
+ * (calculateMaturityState respects both).
+ */
+export function scrubFeedbackFromSessions(
+  playbook: Playbook,
+  matches: (sessionPath: string) => boolean,
+  config: Config,
+): ScrubResult {
+  const result: ScrubResult = { bulletsTouched: 0, eventsRemoved: 0, sourcesRemoved: 0, bullets: [] };
+
+  for (const bullet of playbook.bullets) {
+    const events = bullet.feedbackEvents || [];
+    const sources = bullet.sourceSessions || [];
+    const keptEvents = events.filter((e) => !(e.sessionPath && matches(e.sessionPath)));
+    const keptSources = sources.filter((s) => !matches(s));
+    const removedEvents = events.length - keptEvents.length;
+    const removedSources = sources.length - keptSources.length;
+    if (removedEvents === 0 && removedSources === 0) continue;
+
+    const before = {
+      helpful: bullet.helpfulCount || 0,
+      harmful: bullet.harmfulCount || 0,
+      maturity: bullet.maturity,
+      score: getEffectiveScore(bullet, config),
+    };
+
+    bullet.feedbackEvents = keptEvents;
+    bullet.sourceSessions = keptSources;
+    if (removedEvents > 0) {
+      bullet.helpfulCount = keptEvents.filter((e) => e.type === "helpful").length;
+      bullet.harmfulCount = keptEvents.filter((e) => e.type === "harmful").length;
+      // Re-derive from what is left, but never promote: removing evidence
+      // can only keep or lower a bullet's standing.
+      const recomputed = calculateMaturityState(bullet, config);
+      bullet.maturity =
+        MATURITY_RANK[recomputed] < MATURITY_RANK[before.maturity] ? recomputed : before.maturity;
+    }
+    bullet.updatedAt = now();
+
+    result.bulletsTouched++;
+    result.eventsRemoved += removedEvents;
+    result.sourcesRemoved += removedSources;
+    result.bullets.push({
+      id: bullet.id,
+      preview: truncate(bullet.content.trim().replace(/\s+/g, " "), 100),
+      removedEvents,
+      removedSources,
+      remainingEvents: keptEvents.length,
+      helpfulCount: { before: before.helpful, after: bullet.helpfulCount || 0 },
+      harmfulCount: { before: before.harmful, after: bullet.harmfulCount || 0 },
+      maturity: { before: before.maturity, after: bullet.maturity },
+      effectiveScore: { before: before.score, after: getEffectiveScore(bullet, config) },
+      noRemainingFeedback: removedEvents > 0 && keptEvents.length === 0,
+      noRemainingSources: removedSources > 0 && keptSources.length === 0,
+    });
+  }
+
+  return result;
 }
 
 export function getActiveBullets(playbook: Playbook): PlaybookBullet[] {
