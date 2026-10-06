@@ -510,7 +510,7 @@ export const ConfigSchema = z.object({
   // bounded multiplier in [1 - w, 1 + w] damped while marks are few (#89).
   // Relevance decides what is retrieved; feedback only reorders it. 0 ignores
   // feedback for ranking entirely.
-  feedbackWeight: z.number().min(0).max(0.9).default(0.25),
+  feedbackWeight: z.number().min(0).max(0.9).default(0.1),
   maxHistoryInContext: z.number().default(10),
   sessionLookbackDays: z.number().default(7),
   // How far back `cm context` searches cass for history snippets (`--days`

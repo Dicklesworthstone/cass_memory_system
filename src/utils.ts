@@ -1555,6 +1555,10 @@ export const STOP_WORDS: ReadonlySet<string> = new Set([
   "her",
   "us",
   "them",
+  // Remaining NLTK English stop words (standard list): pronouns, determiners,
+  // prepositions and adverbs carry no topic and otherwise match unrelated
+  // rules ("their", "out", "under", "too").
+  "my", "myself", "our", "ours", "ourselves", "your", "yours", "yourself", "yourselves", "his", "himself", "hers", "herself", "its", "itself", "their", "theirs", "themselves", "whom", "am", "being", "having", "doing", "because", "until", "while", "about", "against", "between", "above", "below", "up", "down", "out", "off", "over", "under", "again", "further", "then", "once", "all", "any", "both", "each", "few", "more", "most", "other", "some", "such", "no", "nor", "not", "only", "own", "same", "so", "than", "too", "very", "just", "don", "now",
   // Programming syntax keywords (purely syntactic, no semantic meaning)
   "const",
   "var",

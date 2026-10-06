@@ -46,7 +46,7 @@ All notable changes to **cass-memory** (`cm`) are documented in this file.
 
 ### Changed
 
-- Context ranking (#89). Keyword relevance is BM25 over the playbook (IDF-weighted query coverage, light stemming, prefix matches). Feedback is a bounded multiplier in `[1 - feedbackWeight, 1 + feedbackWeight]` (default 0.25), damped while marks are few. Before, relevance was multiplied by the raw effective score, so an unmarked rule got ×0.1 and a well-marked one ×10 or more. A relative relevance floor `minRelativeRelevance` (default 0.2 × the best match) drops the long tail.
+- Context ranking (#89). Keyword relevance is BM25 over the playbook (IDF-weighted query coverage, light stemming, prefix matches). Feedback is a bounded multiplier in `[1 - feedbackWeight, 1 + feedbackWeight]` (default 0.1, a tiebreak among near-equally relevant rules), damped while marks are few. Measured on the retrieval benchmark (test/context-retrieval-benchmark.test.ts) against the old ranker run on the same data. Before, relevance was multiplied by the raw effective score, so an unmarked rule got ×0.1 and a well-marked one ×10 or more. A relative relevance floor `minRelativeRelevance` (default 0.2 × the best match) drops the long tail.
 - `maxBulletsInContext` default 50 → 10 (#89).
 - Bullets in `cm context` output are a compact projection: no feedback-event log, source-session list or embedding (`cm playbook get <id>` has the full record).
 - `cm context` history searches `historyLookbackDays` (default 90) instead of `sessionLookbackDays` (7).

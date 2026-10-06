@@ -58,7 +58,7 @@ export function createTestConfig(overrides: Partial<Config> = {}): Config {
     historyLookbackDays: 90,
     contextTokenBudget: 4000,
     minRelativeRelevance: 0.2,
-    feedbackWeight: 0.25,
+    feedbackWeight: 0.1,
     maxHistoryInContext: 10,
     sessionLookbackDays: 7,
     validationLookbackDays: 90,

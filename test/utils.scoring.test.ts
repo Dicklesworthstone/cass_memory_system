@@ -137,9 +137,9 @@ describe("getFeedbackMultiplier", () => {
       config,
     );
     expect(good).toBeGreaterThan(1);
-    expect(good).toBeLessThanOrEqual(1.25);
+    expect(good).toBeLessThanOrEqual(1.1);
     expect(bad).toBeLessThan(1);
-    expect(bad).toBeGreaterThanOrEqual(0.75);
+    expect(bad).toBeGreaterThanOrEqual(0.9);
   });
 
   test("few marks move it less than many marks (damping)", () => {
@@ -158,7 +158,7 @@ describe("getFeedbackMultiplier", () => {
     expect(
       getFeedbackMultiplier(createTestBullet({ feedbackEvents: events("harmful", 9) }), zero),
     ).toBe(1);
-    expect(getFeedbackMultiplier(createTestBullet({ pinned: true }), config)).toBe(1.25);
+    expect(getFeedbackMultiplier(createTestBullet({ pinned: true }), config)).toBe(1.1);
   });
 });
 

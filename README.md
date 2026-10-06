@@ -1096,7 +1096,7 @@ async function generateContext(task: string): Promise<ContextResult> {
   const scored = bullets.map(b => {
     const relevanceScore = blend(lexical.get(b.id), cosine(taskEmbedding, b.embedding) * 10);
     // 3. Track record only reorders within a bounded band: [1 - w, 1 + w],
-    //    damped while a bullet has few marks (feedbackWeight, default 0.25)
+    //    damped while a bullet has few marks (feedbackWeight, default 0.1)
     return { ...b, relevanceScore, finalScore: relevanceScore * getFeedbackMultiplier(b) };
   }).sort(byFinalScore);
 
@@ -1519,7 +1519,7 @@ back to whichever file is active, in its own format.
   "maxBulletsInContext": 10,
   "contextTokenBudget": 4000,
   "minRelativeRelevance": 0.2,
-  "feedbackWeight": 0.25,
+  "feedbackWeight": 0.1,
   "maxHistoryInContext": 10,
   "sessionLookbackDays": 7,
   "minRelevanceScore": 0.1,
@@ -1582,7 +1582,7 @@ back to whichever file is active, in its own format.
 | `maxBulletsInContext` | `10` | Max rules to return in context (`--limit` overrides) |
 | `contextTokenBudget` | `4000` | Approximate token budget for the returned rules (~4 chars/token); ranked rules are added until the next would exceed it, the top rule is always kept. `--max-tokens` overrides; `0` = unlimited |
 | `minRelativeRelevance` | `0.2` | Drop rules whose relevance is below this fraction of the best match for the same task; `0` disables |
-| `feedbackWeight` | `0.25` | How far helpful/harmful marks can move a rule's rank: a bounded multiplier in `[1 - w, 1 + w]`, damped while a rule has few marks. Relevance decides what is retrieved; feedback only reorders it. `0` ignores feedback for ranking |
+| `feedbackWeight` | `0.1` | How far helpful/harmful marks can move a rule's rank: a bounded multiplier in `[1 - w, 1 + w]`, damped while a rule has few marks. Relevance decides what is retrieved; feedback only reorders it. `0` ignores feedback for ranking |
 | `maxHistoryInContext` | `10` | Max history snippets to return |
 | `sessionLookbackDays` | `7` | Days of sessions `cm reflect` discovers and diaries enrich from |
 | `historyLookbackDays` | `90` | Days of cass history `cm context` searches for history snippets (`--days` overrides) |
