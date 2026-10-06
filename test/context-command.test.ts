@@ -1414,3 +1414,41 @@ describe("getContext wrapper", () => {
     });
   });
 });
+
+describe("generateContextResult conflict surfacing", () => {
+  test("flags returned rules that contradict each other", async () => {
+    await withTempCassHome(async (env) => {
+      const bullets = [
+        createTestBullet({ id: "b-yes", content: "Always commit generated lockfiles to the repo" }),
+        createTestBullet({ id: "b-no", content: "Never commit generated lockfiles to the repo" }),
+        createTestBullet({ id: "b-other", content: "Prefer small focused pull requests" }),
+      ];
+      writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook(bullets)));
+      const capture = captureConsole();
+      try {
+        const { result } = await generateContextResult("commit generated lockfiles", {
+          json: true,
+        });
+        expect(result.conflicts).toHaveLength(1);
+        expect([...result.conflicts![0].ids].sort()).toEqual(["b-no", "b-yes"]);
+        expect(result.deprecatedWarnings.some((w) => w.includes("contradict"))).toBe(true);
+      } finally {
+        capture.restore();
+      }
+    });
+  });
+
+  test("omits the field when nothing conflicts", async () => {
+    await withTempCassHome(async (env) => {
+      const bullets = [createTestBullet({ id: "b-1", content: "Commit generated lockfiles" })];
+      writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook(bullets)));
+      const capture = captureConsole();
+      try {
+        const { result } = await generateContextResult("commit lockfiles", { json: true });
+        expect(result.conflicts).toBeUndefined();
+      } finally {
+        capture.restore();
+      }
+    });
+  });
+});

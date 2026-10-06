@@ -417,6 +417,7 @@ export async function reflectCommand(
           chalk.yellow(`  Inverted ${result.globalResult.inversions.length} harmful rules.`),
         );
       }
+      printConflictNote(result.globalResult.conflicts, cli);
     }
 
     if (result.repoResult) {
@@ -436,6 +437,7 @@ export async function reflectCommand(
           chalk.yellow(`  Inverted ${result.repoResult.inversions.length} harmful rules.`),
         );
       }
+      printConflictNote(result.repoResult.conflicts, cli);
     }
 
     if (result.autoOutcome) {
@@ -469,4 +471,17 @@ export async function reflectCommand(
   if (operationCost > 0) {
     console.log(chalk.dim(formatCostSummary(operationCost, statsAfter)));
   }
+}
+
+function printConflictNote(
+  conflicts: Array<{ conflictingBulletId: string; newBulletContent: string; reason: string }>,
+  cli: string,
+): void {
+  if (conflicts.length === 0) return;
+  console.log(
+    chalk.yellow(
+      `  ${conflicts.length} new rule(s) may contradict existing ones (e.g. ${conflicts[0].conflictingBulletId}: ${conflicts[0].reason}).`,
+    ),
+  );
+  console.log(chalk.gray(`  Review: ${cli} playbook conflicts`));
 }

@@ -1305,3 +1305,29 @@ describe("E2E: CLI playbook command", () => {
     });
   });
 });
+
+describe("E2E: cm playbook conflicts", () => {
+  it("lists contradicting pairs with a resolution suggestion", async () => {
+    await withTempCassHome(async (env) => {
+      const playbook = createTestPlaybook([
+        createTestBullet({ id: "b-yes", content: "Always commit generated lockfiles" }),
+        { ...createTestBullet({ id: "b-no", content: "Never commit generated lockfiles" }), pinned: true },
+        createTestBullet({ id: "b-x", content: "Prefer small pull requests" }),
+      ]);
+      await writeFile(env.playbookPath, yaml.stringify(playbook));
+      const capture = captureConsole();
+      try {
+        await playbookCommand("conflicts", [], { json: true });
+      } finally {
+        capture.restore();
+      }
+      const payload = JSON.parse(capture.logs.join("\n"));
+      expect(payload.data.bulletsChecked).toBeGreaterThanOrEqual(3);
+      const pair = payload.data.conflicts.find(
+        (c: any) => [c.a.id, c.b.id].sort().join() === "b-no,b-yes",
+      );
+      expect(pair).toBeDefined();
+      expect(pair.suggestion).toContain("retire b-yes");
+    });
+  });
+});

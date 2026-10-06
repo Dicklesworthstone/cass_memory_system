@@ -4,6 +4,7 @@ import chalk from "chalk";
 import yaml from "yaml";
 import { z } from "zod";
 import { loadConfig } from "../config.js";
+import { findBulletConflicts } from "../curate.js";
 import { withLock } from "../lock.js";
 import {
   formatKv,
@@ -403,7 +404,7 @@ async function handleBatchAdd(
 }
 
 export async function playbookCommand(
-  action: "list" | "add" | "remove" | "get" | "export" | "import" | "scrub",
+  action: "list" | "add" | "remove" | "get" | "export" | "import" | "scrub" | "conflicts",
   args: string[],
   flags: {
     category?: string;
@@ -433,6 +434,11 @@ export async function playbookCommand(
 
   if (action === "scrub") {
     await handleScrub(config, flags, command, startedAtMs);
+    return;
+  }
+
+  if (action === "conflicts") {
+    await handleConflicts(config, flags, command, startedAtMs);
     return;
   }
 
@@ -1389,3 +1395,92 @@ async function handleScrub(
     console.log(chalk.gray("Re-run without --dry-run to apply (playbooks are backed up first)."));
   }
 }
+
+// --- conflicts ---
+
+async function handleConflicts(
+  config: Awaited<ReturnType<typeof loadConfig>>,
+  flags: { json?: boolean; category?: string },
+  command: string,
+  startedAtMs: number,
+): Promise<void> {
+  const cli = getCliName();
+  let bullets: PlaybookBullet[];
+  try {
+    bullets = getActiveBullets(await loadMergedPlaybook(config));
+  } catch (err: any) {
+    reportError(err instanceof Error ? err : String(err), {
+      code: ErrorCode.PLAYBOOK_CORRUPT,
+      json: flags.json,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+  if (flags.category) bullets = bullets.filter((b) => b.category === flags.category);
+  const byId = new Map(bullets.map((b) => [b.id, b]));
+  const describe = (id: string) => {
+    const b = byId.get(id)!;
+    return {
+      id,
+      content: b.content,
+      category: b.category,
+      maturity: b.maturity,
+      pinned: Boolean(b.pinned),
+      helpfulCount: b.helpfulCount ?? 0,
+      harmfulCount: b.harmfulCount ?? 0,
+      effectiveScore: Math.round(getEffectiveScore(b, config) * 1000) / 1000,
+    };
+  };
+
+  const conflicts = findBulletConflicts(bullets).map((p) => {
+    const a = describe(p.a.id);
+    const b = describe(p.b.id);
+    // Suggest keeping the better-supported rule; pinned always wins. No suggestion on a tie.
+    const score = (x: typeof a) => (x.pinned ? Number.POSITIVE_INFINITY : x.effectiveScore);
+    const weaker = score(a) === score(b) ? null : score(a) < score(b) ? a : b;
+    return {
+      a,
+      b,
+      reason: p.reason,
+      ...(weaker
+        ? {
+            suggestion: `Keep ${weaker === a ? b.id : a.id} (better supported); retire ${weaker.id}: ${cli} playbook remove ${weaker.id} --reason "Contradicts ${weaker === a ? b.id : a.id}"`,
+          }
+        : {
+            suggestion: `Equal support: decide which applies, or merge them into one rule with an explicit exception`,
+          }),
+    };
+  });
+
+  if (flags.json) {
+    printJsonResult(
+      command,
+      { bulletsChecked: bullets.length, count: conflicts.length, conflicts },
+      { startedAtMs },
+    );
+    return;
+  }
+
+  const style = getOutputStyle();
+  console.log(chalk.bold(`PLAYBOOK CONFLICTS (${conflicts.length})`));
+  console.log(chalk.gray(formatRule("─", { maxWidth: style.width })));
+  if (conflicts.length === 0) {
+    console.log(chalk.green(`No contradicting rules among ${bullets.length} active bullet(s).`));
+    return;
+  }
+  const width = Math.max(40, style.width - 6);
+  for (const c of conflicts) {
+    console.log(chalk.yellow(c.reason));
+    for (const side of [c.a, c.b]) {
+      const lines = wrapText(side.content, width);
+      console.log(
+        `  ${chalk.cyan(side.id)} ${chalk.gray(`(${side.maturity}, score ${side.effectiveScore}${side.pinned ? ", pinned" : ""})`)}`,
+      );
+      for (const line of lines) console.log(`    ${line}`);
+    }
+    console.log(chalk.gray(`  ${c.suggestion}`));
+    console.log();
+  }
+}
+

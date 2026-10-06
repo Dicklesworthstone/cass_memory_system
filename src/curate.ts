@@ -15,6 +15,8 @@ import {
   jaccardSimilarity,
   jaccardSimilaritySets,
   log,
+  STOP_WORDS,
+  stemToken,
   now,
   tokenize,
 } from "./utils.js";
@@ -58,11 +60,25 @@ function findSimilarBulletFromMeta(
 }
 
 // --- Helper: Conflict Detection ---
+//
+// Rules are compared clause by clause. A rule such as "Set explicit timeouts on
+// HTTP calls; never rely on defaults" makes two directives with different
+// polarity, and judging the rule as one bag of words (any "never" anywhere ->
+// negative) flagged it against every timeout rule. Each clause gets its own
+// polarity and topic (content words minus stop words and directive markers);
+// two rules conflict only when an affirming and a negating clause, or an
+// "always" and an "except/unless" clause, share most of their topic.
 
 const NEGATIVE_MARKERS = [
   "never",
   "dont",
   "don't",
+  "do not",
+  "does not",
+  "must not",
+  "should not",
+  "shouldn't",
+  "mustn't",
   "avoid",
   "forbid",
   "forbidden",
@@ -70,9 +86,52 @@ const NEGATIVE_MARKERS = [
   "prevent",
   "stop",
   "skip",
+  "no longer",
 ];
-const POSITIVE_MARKERS = ["always", "must", "required", "ensure", "use", "enable"];
+const POSITIVE_MARKERS = ["always", "must", "required", "ensure", "use", "enable", "prefer"];
 const EXCEPTION_MARKERS = ["unless", "except", "only if", "only when", "except when"];
+
+/** Directive and filler words that say how strongly, not what about. */
+const DIRECTIVE_WORDS = new Set([
+  "always",
+  "never",
+  "must",
+  "should",
+  "shall",
+  "required",
+  "require",
+  "ensure",
+  "use",
+  "using",
+  "used",
+  "prefer",
+  "enable",
+  "disable",
+  "avoid",
+  "forbid",
+  "forbidden",
+  "prevent",
+  "stop",
+  "skip",
+  "dont",
+  "don",
+  "do",
+  "does",
+  "not",
+  "no",
+  "longer",
+  "unless",
+  "except",
+  "only",
+  "when",
+  "if",
+  "make",
+  "sure",
+]);
+
+/** Minimum shared topic words, and shared fraction of the smaller topic, for two clauses to be about the same thing. */
+const CONFLICT_MIN_SHARED = 2;
+const CONFLICT_MIN_OVERLAP = 0.5;
 
 function hasMarker(text: string, markers: string[]): boolean {
   // Use word boundaries to avoid substring matches (e.g., "use" matching "user")
@@ -80,22 +139,76 @@ function hasMarker(text: string, markers: string[]): boolean {
   return markers.some((m) => new RegExp(`\\b${m}\\b`, "i").test(lower));
 }
 
-// Optimized metadata structure for conflict detection
-interface ConflictMeta {
-  bullet: PlaybookBullet;
-  tokens: Set<string>;
-  neg: boolean;
-  pos: boolean;
-  exc: boolean;
+type ClausePolarity = "negative" | "positive" | "neutral";
+
+interface DirectiveClause {
+  polarity: ClausePolarity;
+  exception: boolean;
+  topic: Set<string>;
 }
 
-function computeConflictMeta(bullet: PlaybookBullet): ConflictMeta {
+/** Split a rule into directive clauses: sentence ends, semicolons, and "but"/"however". */
+export function splitDirectiveClauses(content: string): DirectiveClause[] {
+  return content
+    .split(/[;!?\n]+|\.(?=\s|$)|\s[-\u2013\u2014]\s|\bbut\b|\bhowever\b/i)
+    .map((c) => c.trim())
+    .filter((c) => c.length > 0)
+    .map((clause) => {
+      const negative = hasMarker(clause, NEGATIVE_MARKERS);
+      const positive = !negative && hasMarker(clause, POSITIVE_MARKERS);
+      const topic = new Set(
+        tokenize(clause)
+          .filter((t) => !STOP_WORDS.has(t) && !DIRECTIVE_WORDS.has(t))
+          .map(stemToken),
+      );
+      return {
+        polarity: negative ? "negative" : positive ? "positive" : "neutral",
+        exception: hasMarker(clause, EXCEPTION_MARKERS),
+        topic,
+      } as DirectiveClause;
+    })
+    .filter((c) => c.topic.size > 0);
+}
+
+function sameTopic(a: Set<string>, b: Set<string>): boolean {
+  let shared = 0;
+  for (const t of a) if (b.has(t)) shared++;
+  return shared >= CONFLICT_MIN_SHARED && shared / Math.min(a.size, b.size) >= CONFLICT_MIN_OVERLAP;
+}
+
+/** First conflicting clause pair between two rules, or null. */
+function clauseConflict(a: DirectiveClause[], b: DirectiveClause[]): string | null {
+  for (const ca of a) {
+    for (const cb of b) {
+      if (!sameTopic(ca.topic, cb.topic)) continue;
+      const aNeg = ca.polarity === "negative";
+      const bNeg = cb.polarity === "negative";
+      if (aNeg !== bNeg) {
+        return "Negation conflict: one rule says to do what the other says to avoid";
+      }
+      if (
+        (ca.polarity === "positive" && cb.exception && !ca.exception) ||
+        (cb.polarity === "positive" && ca.exception && !cb.exception)
+      ) {
+        return "Scope conflict: one rule says always, the other names an exception";
+      }
+    }
+  }
+  return null;
+}
+
+// Optimized metadata structure for conflict detection (and token-based dedup)
+export interface ConflictMeta {
+  bullet: PlaybookBullet;
+  tokens: Set<string>;
+  clauses: DirectiveClause[];
+}
+
+export function computeConflictMeta(bullet: PlaybookBullet): ConflictMeta {
   return {
     bullet,
     tokens: new Set(tokenize(bullet.content)),
-    neg: hasMarker(bullet.content, NEGATIVE_MARKERS),
-    pos: hasMarker(bullet.content, POSITIVE_MARKERS),
-    exc: hasMarker(bullet.content, EXCEPTION_MARKERS),
+    clauses: splitDirectiveClauses(bullet.content),
   };
 }
 
@@ -103,7 +216,6 @@ export function detectConflicts(
   newContent: string,
   existingBullets: PlaybookBullet[],
 ): { id: string; content: string; reason: string }[] {
-  // For tests/legacy calls: compute meta on the fly
   const meta = existingBullets.map(computeConflictMeta);
   return detectConflictsWithMeta(newContent, meta);
 }
@@ -113,77 +225,48 @@ export function detectConflictsWithMeta(
   existingMeta: ConflictMeta[],
 ): { id: string; content: string; reason: string }[] {
   const conflicts: { id: string; content: string; reason: string }[] = [];
-
-  // Pre-check markers in new content once
-  // Optimization: tokenize new content once
-  const newTokens = tokenize(newContent);
-  const newTokenSet = new Set(newTokens);
-
-  const newNeg = hasMarker(newContent, NEGATIVE_MARKERS);
-  const newPos = hasMarker(newContent, POSITIVE_MARKERS);
-  const newExc = hasMarker(newContent, EXCEPTION_MARKERS);
-
-  const hasNewMarkers = newNeg || newPos || newExc;
+  const newClauses = splitDirectiveClauses(newContent);
+  if (newClauses.length === 0) return conflicts;
 
   for (const m of existingMeta) {
     // Skip deprecated/retired bullets - consistent with isDeprecated helper
     if (m.bullet.deprecated || m.bullet.maturity === "deprecated" || m.bullet.state === "retired")
       continue;
-
-    // Optimization: Jaccard using pre-computed token sets
-    if (newTokens.length === 0 || m.tokens.size === 0) continue;
-
-    // Fast skip based on size difference
-    const maxSize = Math.max(newTokenSet.size, m.tokens.size);
-    const minSize = Math.min(newTokenSet.size, m.tokens.size);
-    // If sizes are too different, Jaccard can't be high.
-    // intersection <= minSize. union >= maxSize.
-    // Jaccard <= minSize / maxSize.
-    // If minSize / maxSize < 0.1, then Jaccard < 0.1.
-    // We need 0.1 or 0.2 overlap.
-    const hasDirectiveMarkers = hasNewMarkers || m.neg || m.pos || m.exc;
-    const minOverlap = hasDirectiveMarkers ? 0.1 : 0.2;
-
-    if (minSize / maxSize < minOverlap) continue;
-
-    const intersectionSize = [...newTokenSet].filter((x) => m.tokens.has(x)).length;
-    const unionSize = new Set([...newTokenSet, ...m.tokens]).size;
-    const overlap = intersectionSize / unionSize;
-
-    if (overlap < minOverlap) continue;
-
-    // Heuristic 1: Negation conflict (one negative, one affirmative)
-    if (overlap >= minOverlap && newNeg !== m.neg) {
-      conflicts.push({
-        id: m.bullet.id,
-        content: m.bullet.content,
-        reason:
-          "Possible negation conflict (one says do, the other says avoid) with high term overlap",
-      });
-      continue;
-    }
-
-    // Heuristic 2: Opposite sentiment (must vs avoid)
-    if (overlap >= minOverlap && ((newPos && m.neg) || (m.pos && newNeg))) {
-      conflicts.push({
-        id: m.bullet.id,
-        content: m.bullet.content,
-        reason: "Opposite directives (must vs avoid) on similar subject matter",
-      });
-      continue;
-    }
-
-    // Heuristic 3: Scope conflict (always vs exception)
-    if (overlap >= minOverlap && ((newPos && m.exc) || (m.pos && newExc))) {
-      conflicts.push({
-        id: m.bullet.id,
-        content: m.bullet.content,
-        reason: "Potential scope conflict (always vs exception) on overlapping topic",
-      });
-    }
+    const reason = clauseConflict(newClauses, m.clauses);
+    if (reason) conflicts.push({ id: m.bullet.id, content: m.bullet.content, reason });
   }
 
   return conflicts;
+}
+
+export interface BulletConflictPair {
+  a: { id: string; content: string };
+  b: { id: string; content: string };
+  reason: string;
+}
+
+/**
+ * Every conflicting pair among active bullets (deprecated/retired skipped),
+ * each pair reported once. O(n^2) clause comparisons on precomputed clauses;
+ * fine for playbooks of a few thousand rules.
+ */
+export function findBulletConflicts(bullets: PlaybookBullet[]): BulletConflictPair[] {
+  const active = bullets
+    .filter((b) => !(b.deprecated || b.maturity === "deprecated" || b.state === "retired"))
+    .map(computeConflictMeta);
+  const pairs: BulletConflictPair[] = [];
+  for (let i = 0; i < active.length; i++) {
+    for (let j = i + 1; j < active.length; j++) {
+      const reason = clauseConflict(active[i].clauses, active[j].clauses);
+      if (!reason) continue;
+      pairs.push({
+        a: { id: active[i].bullet.id, content: active[i].bullet.content },
+        b: { id: active[j].bullet.id, content: active[j].bullet.content },
+        reason,
+      });
+    }
+  }
+  return pairs;
 }
 
 // --- Helper: Decision Logging ---
@@ -487,14 +570,7 @@ export function curatePlaybook(
         bulletContentMap.set(hash, newBullet);
 
         // We reuse the already computed tokens for the new bullet metadata
-        const newMeta: ConflictMeta = {
-          bullet: newBullet,
-          tokens: newTokenSet,
-          neg: hasMarker(content, NEGATIVE_MARKERS),
-          pos: hasMarker(content, POSITIVE_MARKERS),
-          exc: hasMarker(content, EXCEPTION_MARKERS),
-        };
-        conflictMeta.push(newMeta);
+        conflictMeta.push(computeConflictMeta(newBullet));
 
         applied = true;
         logDecision(decisionLog, "add", "accepted", "New bullet added to playbook", {

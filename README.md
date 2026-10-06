@@ -936,6 +936,9 @@ cm playbook export > playbook-backup.yaml
 # Import playbook from file
 cm playbook import shared-playbook.yaml
 
+# Find rules that contradict each other (with a keep/retire suggestion)
+cm playbook conflicts --json
+
 # Strip feedback that came from cm's own LLM subprocess transcripts (or any
 # session path pattern), recount helpful/harmful, re-derive maturity.
 # Backs up each playbook first; bullets left without genuine support are

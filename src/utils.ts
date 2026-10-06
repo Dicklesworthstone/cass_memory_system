@@ -1490,7 +1490,7 @@ export function formatRelativeTime(isoDate: string): string {
 
 // --- Text & NLP ---
 
-const STOP_WORDS = new Set([
+export const STOP_WORDS: ReadonlySet<string> = new Set([
   "the",
   "a",
   "an",

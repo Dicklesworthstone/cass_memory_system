@@ -305,6 +305,16 @@ export function createProgram(argv: string[] = process.argv): Command {
     .action(async (file: string, opts: any) => await playbookCommand("import", [file], opts));
 
   playbook
+    .command("conflicts")
+    .description("List pairs of active rules that appear to contradict each other")
+    .option("--category <cat>", "Only check one category")
+    .option("-j, --json", "Output JSON")
+    .addHelpText("after", () =>
+      formatCommandExamples(["playbook conflicts", "playbook conflicts --json"]),
+    )
+    .action(async (opts: any) => await playbookCommand("conflicts", [], opts));
+
+  playbook
     .command("scrub")
     .description(
       "Remove feedback events and source references from matching sessions, then rescore (backs up first)",

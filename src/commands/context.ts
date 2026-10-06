@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import chalk from "chalk";
 import { safeCassSearchWithDegraded } from "../cass.js";
+import { findBulletConflicts } from "../curate.js";
 import { getSanitizeConfig, loadConfig } from "../config.js";
 import { withLock } from "../lock.js";
 import {
@@ -281,6 +282,19 @@ export function selectContextBullets(
       estimatedTokens,
     },
   };
+}
+
+/**
+ * Contradicting pairs among the bullets being returned together, so an agent
+ * is told when it is handed opposing advice instead of silently picking one.
+ */
+export function conflictsAmong(bullets: ScoredBullet[]): NonNullable<ContextResult["conflicts"]> {
+  return findBulletConflicts(bullets).map((p) => ({ ids: [p.a.id, p.b.id], reason: p.reason }));
+}
+
+function conflictWarning(c: { ids: string[]; reason: string }): string {
+  const cli = getCliName();
+  return `Rules ${c.ids[0]} and ${c.ids[1]} may contradict each other (${c.reason}). Follow the one that fits this task; resolve with '${cli} playbook conflicts'.`;
 }
 
 /**
@@ -678,6 +692,8 @@ export async function generateContextResult(
   const warnings: string[] = [];
   const historyWarnings = checkDeprecatedPatterns(cassHits, playbook.deprecatedPatterns);
   warnings.push(...historyWarnings);
+  const conflicts = conflictsAmong(topBullets);
+  warnings.push(...conflicts.map(conflictWarning));
 
   for (const pattern of playbook.deprecatedPatterns) {
     // Use safeDeprecatedPatternMatcher for ReDoS-safe regex matching
@@ -711,6 +727,7 @@ export async function generateContextResult(
     result.degraded = degraded;
   }
   result.retrieval = selectionStats;
+  if (conflicts.length > 0) result.conflicts = conflicts;
 
   // Surface which mode actually ran + why we degraded (if applicable).
   // This makes silent semantic-search fallback visible to agents consuming
@@ -816,6 +833,8 @@ export async function contextWithoutCass(
     const antiPatterns = topBullets.filter((b) => b.isNegative || b.kind === "anti_pattern");
 
     const warnings: string[] = ["Context generated without historical data (cass unavailable)"];
+    const conflicts = conflictsAmong(topBullets);
+    warnings.push(...conflicts.map(conflictWarning));
     for (const pattern of playbook.deprecatedPatterns) {
       // Use safeDeprecatedPatternMatcher for ReDoS-safe regex matching
       const matches = safeDeprecatedPatternMatcher(pattern.pattern);
@@ -836,6 +855,7 @@ export async function contextWithoutCass(
       deprecatedWarnings: warnings,
       suggestedCassQueries: [],
       retrieval: selectionStats,
+      ...(conflicts.length > 0 ? { conflicts } : {}),
     };
   } catch (err) {
     warn(`Playbook also unavailable: ${err}`);

@@ -745,6 +745,8 @@ export const ContextResultSchema = z.object({
    * fell below the relevance floors, the count limit, or the token budget.
    * Lets an agent tell "nothing relevant" from "budget too small".
    */
+  /** Pairs of returned bullets that appear to contradict each other. */
+  conflicts: z.array(z.object({ ids: z.array(z.string()), reason: z.string() })).optional(),
   retrieval: z
     .object({
       candidates: z.number(),
