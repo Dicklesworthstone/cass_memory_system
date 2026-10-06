@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import chalk from "chalk";
@@ -14,7 +15,10 @@ import {
 } from "../llm.js";
 import { withLock } from "../lock.js";
 import { formatCheckStatusBadge, formatSafetyBadge, icon, iconPrefix } from "../output.js";
-import { createEmptyPlaybook, loadPlaybook, savePlaybook } from "../playbook.js";
+import { findBulletConflicts } from "../curate.js";
+import { createEmptyPlaybook, loadMergedPlaybook, loadPlaybook, savePlaybook } from "../playbook.js";
+import { isCmSubprocessTranscriptPath } from "../subprocess-tag.js";
+import { getAutoReflectStatus } from "./hook.js";
 import { createProgress, type ProgressReporter } from "../progress.js";
 import { compileExtraPatterns, SECRET_PATTERNS } from "../sanitize.js";
 import {
@@ -23,7 +27,7 @@ import {
   warmupEmbeddings,
 } from "../semantic.js";
 import { loadTraumas } from "../trauma.js";
-import { type Config, ErrorCode, type Playbook } from "../types.js";
+import { type Config, ErrorCode, type Playbook, type PlaybookBullet } from "../types.js";
 import {
   atomicWrite,
   checkAbort,
@@ -339,6 +343,43 @@ function buildRecommendedActions(params: {
         `${why} The fix verifies the embedding backend first (the local model is a one-time ~23 MB ` +
         `download) and only then writes "semanticSearchEnabled": true to ${configPath}, pinning it on; ` +
         `you can also set it there by hand.`,
+      urgency: "low",
+    });
+  }
+
+  const conflictCheck = params.checks.find(
+    (c) => c.category === "Memory Quality" && c.item === "Conflicting rules",
+  );
+  if (conflictCheck?.status === "warn") {
+    actions.push({
+      label: "Resolve contradicting rules",
+      command: `${cli} playbook conflicts`,
+      reason: "Contradicting rules can hand an agent opposing advice for the same task.",
+      urgency: "medium",
+    });
+  }
+
+  const pollutionCheck = params.checks.find(
+    (c) => c.category === "Memory Quality" && c.item === "Self-generated feedback",
+  );
+  if (pollutionCheck?.status === "warn") {
+    actions.push({
+      label: "Remove feedback learned from cm's own LLM calls",
+      command: `${cli} playbook scrub --cm-subprocess-calls --dry-run`,
+      reason:
+        "Those events inflate rules that no real session supported; drop --dry-run to apply (playbooks are backed up first).",
+      urgency: "medium",
+    });
+  }
+
+  const autoReflectCheck = params.checks.find(
+    (c) => c.category === "Memory Quality" && c.item === "Auto-reflection",
+  );
+  if (autoReflectCheck && (autoReflectCheck.details as any)?.installed === false) {
+    actions.push({
+      label: "Learn from every finished session automatically (optional)",
+      command: `${cli} hook install`,
+      reason: "Installs a Claude Code SessionEnd hook that runs reflect in the background.",
       urgency: "low",
     });
   }
@@ -794,6 +835,82 @@ async function computeDoctorChecks(
             : "Guard installed in .claude/hooks and parses as valid Python",
       });
     }
+  }
+
+  // 7) Memory quality: things that quietly degrade what agents are told.
+  checks.push(...(await computeMemoryQualityChecks(config)));
+
+  return checks;
+}
+
+/**
+ * Contradicting rules, feedback learned from cm's own LLM subprocess calls
+ * (#76/#77), and whether finished sessions are reflected automatically.
+ */
+export async function computeMemoryQualityChecks(config: Config): Promise<HealthCheck[]> {
+  const checks: HealthCheck[] = [];
+  const cli = getCliName();
+  let bullets: PlaybookBullet[] = [];
+  try {
+    bullets = (await loadMergedPlaybook(config)).bullets;
+  } catch {
+    // Playbook problems are reported by the Playbook checks above.
+    return checks;
+  }
+  const active = bullets.filter((b) => !b.deprecated && b.maturity !== "deprecated");
+
+  const conflicts = findBulletConflicts(active);
+  checks.push({
+    category: "Memory Quality",
+    item: "Conflicting rules",
+    status: conflicts.length > 0 ? "warn" : "pass",
+    message:
+      conflicts.length > 0
+        ? `${conflicts.length} pair(s) of active rules contradict each other; agents may get opposing advice. Review with '${cli} playbook conflicts'.`
+        : `No contradicting rules among ${active.length} active rule(s)`,
+    details: {
+      count: conflicts.length,
+      pairs: conflicts.slice(0, 10).map((c) => [c.a.id, c.b.id]),
+    },
+  });
+
+  let pollutedEvents = 0;
+  const pollutedBullets = new Set<string>();
+  for (const b of bullets) {
+    for (const e of b.feedbackEvents || []) {
+      if (e.sessionPath && isCmSubprocessTranscriptPath(e.sessionPath, config.cliSubprocessCwd)) {
+        pollutedEvents++;
+        pollutedBullets.add(b.id);
+      }
+    }
+    for (const s of b.sourceSessions || []) {
+      if (isCmSubprocessTranscriptPath(s, config.cliSubprocessCwd)) pollutedBullets.add(b.id);
+    }
+  }
+  checks.push({
+    category: "Memory Quality",
+    item: "Self-generated feedback",
+    status: pollutedBullets.size > 0 ? "warn" : "pass",
+    message:
+      pollutedBullets.size > 0
+        ? `${pollutedBullets.size} rule(s) carry feedback or sources from cm's own LLM subprocess transcripts (${pollutedEvents} event(s)). Preview the cleanup: '${cli} playbook scrub --cm-subprocess-calls --dry-run'.`
+        : "No feedback from cm's own LLM subprocess transcripts",
+    details: { bullets: pollutedBullets.size, events: pollutedEvents },
+  });
+
+  const usesClaude = (await fileExists(".claude")) || (await fileExists(path.join(os.homedir(), ".claude")));
+  if (usesClaude) {
+    const hook = await getAutoReflectStatus();
+    checks.push({
+      category: "Memory Quality",
+      item: "Auto-reflection",
+      // Opt-in (it spends LLM budget), so a missing hook is never a warning.
+      status: "pass",
+      message: hook.autoReflect
+        ? `SessionEnd auto-reflect hook installed (${hook.scopes.filter((s) => s.installed).map((s) => s.scope).join(", ")})`
+        : `Not installed (optional): finished Claude Code sessions are only learned from when '${cli} reflect' runs. Enable with '${cli} hook install'.`,
+      details: { installed: hook.autoReflect },
+    });
   }
 
   return checks;

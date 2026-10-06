@@ -1194,3 +1194,56 @@ describe("doctorCommand - semantic search posture (#75)", () => {
     }
   });
 });
+
+describe("computeMemoryQualityChecks", () => {
+  async function checksFor(env: TestEnv, bullets: any[]) {
+    const { computeMemoryQualityChecks } = await import("../src/commands/doctor.js");
+    const { createTestPlaybook } = await import("./helpers/factories.js");
+    await writeFile(env.playbookPath, yaml.stringify(createTestPlaybook(bullets)));
+    const original = process.cwd();
+    process.chdir(env.home);
+    try {
+      return await computeMemoryQualityChecks(createTestConfig({ playbookPath: env.playbookPath }));
+    } finally {
+      process.chdir(original);
+    }
+  }
+
+  test("warns on contradicting rules and on feedback from cm's own subprocess transcripts", async () => {
+    await withTempCassHome(async (env) => {
+      const { createTestBullet } = await import("./helpers/factories.js");
+      const { resolveCliSubprocessCwd, slugifyProjectDir } = await import("../src/subprocess-tag.js");
+      const polluted = path.join(
+        env.home,
+        ".claude",
+        "projects",
+        slugifyProjectDir(resolveCliSubprocessCwd()!),
+        "s.jsonl",
+      );
+      const checks = await checksFor(env, [
+        createTestBullet({ id: "b-yes", content: "Always commit generated lockfiles" }),
+        createTestBullet({ id: "b-no", content: "Never commit generated lockfiles" }),
+        createTestBullet({
+          id: "b-self",
+          content: "Prefer small pull requests",
+          feedbackEvents: [{ type: "helpful", timestamp: new Date().toISOString(), sessionPath: polluted }],
+        }),
+      ]);
+      const conflict = checks.find((c) => c.item === "Conflicting rules")!;
+      expect(conflict.status).toBe("warn");
+      expect((conflict.details as any).pairs).toEqual([["b-yes", "b-no"]]);
+      const self = checks.find((c) => c.item === "Self-generated feedback")!;
+      expect(self.status).toBe("warn");
+      expect((self.details as any).events).toBe(1);
+    });
+  });
+
+  test("passes on a clean playbook", async () => {
+    await withTempCassHome(async (env) => {
+      const { createTestBullet } = await import("./helpers/factories.js");
+      const checks = await checksFor(env, [createTestBullet({ content: "Prefer small pull requests" })]);
+      expect(checks.find((c) => c.item === "Conflicting rules")!.status).toBe("pass");
+      expect(checks.find((c) => c.item === "Self-generated feedback")!.status).toBe("pass");
+    });
+  });
+});

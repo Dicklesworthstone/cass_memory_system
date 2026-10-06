@@ -325,35 +325,51 @@ async function uninstall(flags: HookFlags, startedAtMs: number): Promise<void> {
   );
 }
 
-async function status(flags: HookFlags, startedAtMs: number): Promise<void> {
-  const scopes: HookScope[] = ["project", "user"];
-  const entries = [];
-  for (const scope of scopes) {
+export interface AutoReflectScopeStatus {
+  scope: HookScope;
+  settingsPath: string;
+  installed: boolean;
+  hookCommand?: string;
+  error?: string;
+}
+
+/** Where cm's SessionEnd auto-reflect hook is installed (project and user scope). */
+export async function getAutoReflectStatus(): Promise<{
+  autoReflect: boolean;
+  scopes: AutoReflectScopeStatus[];
+}> {
+  const scopes: AutoReflectScopeStatus[] = [];
+  for (const scope of ["project", "user"] as HookScope[]) {
     const settingsPath = (await resolveSettingsPath(scope))!;
-    let installed = false;
-    let hookCommand: string | undefined;
-    let error: string | undefined;
+    const entry: AutoReflectScopeStatus = { scope, settingsPath, installed: false };
     try {
       const settings = await readSettings(settingsPath);
-      const entry = (Array.isArray(settings?.hooks?.SessionEnd) ? settings.hooks.SessionEnd : []).find(
+      const found = (Array.isArray(settings?.hooks?.SessionEnd) ? settings.hooks.SessionEnd : []).find(
         isCmHookEntry,
       );
-      installed = Boolean(entry);
-      hookCommand = entry?.hooks?.find((h: any) => h?.command?.includes(SESSION_END_HOOK_ARGS))
+      entry.installed = Boolean(found);
+      const command = found?.hooks?.find((h: any) => h?.command?.includes(SESSION_END_HOOK_ARGS))
         ?.command;
+      if (command) entry.hookCommand = command;
     } catch (err: any) {
-      error = err?.message ?? String(err);
+      entry.error = err?.message ?? String(err);
     }
-    entries.push({ scope, settingsPath, installed, ...(hookCommand ? { hookCommand } : {}), ...(error ? { error } : {}) });
+    scopes.push(entry);
   }
-  const result = { autoReflect: entries.some((e) => e.installed), scopes: entries, logPath: hookLogPath() };
+  return { autoReflect: scopes.some((e) => e.installed), scopes };
+}
+
+async function status(flags: HookFlags, startedAtMs: number): Promise<void> {
+  const result = { ...(await getAutoReflectStatus()), logPath: hookLogPath() };
   if (flags.json) {
     printJsonResult("hook", result, { startedAtMs });
     return;
   }
-  for (const e of entries) {
+  for (const e of result.scopes) {
     const mark = e.installed ? chalk.green("installed") : chalk.gray("not installed");
-    console.log(`${e.scope.padEnd(8)} ${mark}  ${chalk.gray(e.settingsPath)}${e.error ? chalk.red(` (${e.error})`) : ""}`);
+    console.log(
+      `${e.scope.padEnd(8)} ${mark}  ${chalk.gray(e.settingsPath)}${e.error ? chalk.red(` (${e.error})`) : ""}`,
+    );
   }
   if (!result.autoReflect) {
     console.log(chalk.gray(`\nEnable: ${getCliName()} hook install   (or --global for every project)`));
