@@ -2164,6 +2164,7 @@ const AGENT_ALIASES: Record<string, string> = {
   "aider-cli": "aider",
   gemini_cli: "gemini",
   "gemini-cli": "gemini",
+  "free-buff": "freebuff",
   "pi-agent": "pi_agent",
   piagent: "pi_agent",
   pi: "pi_agent",
@@ -2252,6 +2253,21 @@ const AGENT_PATH_MARKERS: ReadonlyArray<readonly [string, string]> = [
   ["/github.copilot-chat/", "github-copilot"],
   ["/.copilot/", "copilot_cli"],
   ["/shelley.db", "shelley"],
+  ["/.freebuff/", "freebuff"], // Freebuff (Codebuff fork): ~/.freebuff/ and project .freebuff/
+  ["/.config/freebuff/", "freebuff"],
+];
+
+/**
+ * Agents enabled by default when the user opts into cross-agent enrichment
+ * (`cm init` prompt, `cm privacy enable` with no list).
+ */
+export const DEFAULT_CROSS_AGENT_ALLOWLIST: readonly string[] = [
+  "claude",
+  "cursor",
+  "codex",
+  "aider",
+  "pi_agent",
+  "freebuff",
 ];
 
 /**

@@ -117,6 +117,14 @@ describe("utils.extractAgentFromPath", () => {
     expect(extractAgentFromPath("/home/u/.grok/sessions/s.json")).toBe("grok");
   });
 
+  it("recognizes Freebuff session stores (#69)", () => {
+    expect(extractAgentFromPath("/home/u/.freebuff/projects/app/chats/s.json")).toBe("freebuff");
+    expect(extractAgentFromPath("/data/projects/app/.freebuff/session.jsonl")).toBe("freebuff");
+    expect(extractAgentFromPath("/home/u/.config/freebuff/projects/x/s.json")).toBe("freebuff");
+    expect(extractAgentFromPath("C:\\Users\\u\\.freebuff\\chats\\s.json")).toBe("freebuff");
+    expect(canonicalAgentName("Free-Buff")).toBe("freebuff");
+  });
+
   it("falls back to unknown and is case-insensitive", () => {
     expect(extractAgentFromPath("/tmp/random/session.jsonl")).toBe("unknown");
     expect(extractAgentFromPath("")).toBe("unknown");

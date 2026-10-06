@@ -14,6 +14,7 @@ import { saveTrauma, scanForTraumas } from "../trauma.js";
 import { type Config, ErrorCode, type TraumaEntry } from "../types.js";
 import {
   atomicWrite,
+  DEFAULT_CROSS_AGENT_ALLOWLIST,
   ensureGlobalStructure,
   ensureRepoStructure,
   expandPath,
@@ -199,7 +200,7 @@ export async function initCommand(options: InitOptions) {
         consentGiven: true,
         consentDate: new Date().toISOString(),
         // Default to common known agents; user can refine via `cm privacy allow/deny`.
-        agents: ["claude", "cursor", "codex", "aider", "pi_agent"],
+        agents: [...DEFAULT_CROSS_AGENT_ALLOWLIST],
       };
       console.log(chalk.green(`\n${icon("success")} Cross-agent enrichment enabled.\n`));
     } else {

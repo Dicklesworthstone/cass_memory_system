@@ -6,6 +6,7 @@ import { icon } from "../output.js";
 import { type Config, ConfigSchema, ErrorCode } from "../types.js";
 import {
   canonicalAgentName,
+  DEFAULT_CROSS_AGENT_ALLOWLIST,
   ensureGlobalStructure,
   getCliName,
   now,
@@ -218,7 +219,7 @@ export async function privacyCommand(
             ? Array.from(new Set(requested)).sort()
             : discoveredAgents.length > 0
               ? discoveredAgents.sort()
-              : ["claude", "cursor", "codex", "aider", "pi_agent"];
+              : [...DEFAULT_CROSS_AGENT_ALLOWLIST];
 
         config.crossAgent = {
           ...config.crossAgent,

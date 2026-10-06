@@ -94,6 +94,7 @@ export function agentIcon(agent: string): string {
   if (key.includes("cursor")) return "🔵";
   if (key.includes("codex")) return "🟢";
   if (key.includes("aider")) return "🟡";
+  if (key.includes("freebuff")) return "🟤";
   return "";
 }
 

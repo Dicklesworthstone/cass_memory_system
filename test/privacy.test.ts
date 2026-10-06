@@ -117,6 +117,7 @@ describe("privacy command (unit)", () => {
         "codex",
         "aider",
         "pi_agent",
+        "freebuff",
       ]);
 
       const persisted = JSON.parse(await readFile(env.configPath, "utf-8"));
@@ -127,6 +128,7 @@ describe("privacy command (unit)", () => {
         "codex",
         "aider",
         "pi_agent",
+        "freebuff",
       ]);
     }, "privacy-enable-default");
   });
