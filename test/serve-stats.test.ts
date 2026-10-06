@@ -9,7 +9,7 @@ import {
   createTestPlaybook,
 } from "./helpers/factories.js";
 import { withTempGitRepo } from "./helpers/git.js";
-import { withTempCassHome } from "./helpers/temp.js";
+import { makeCassStub, withTempCassHome } from "./helpers/temp.js";
 
 function parseToolResult<T>(result: unknown): T {
   if (
@@ -730,8 +730,34 @@ describe("serve module tool calls", () => {
     }
   });
 
-  test("memory_reflect with dryRun returns proposed deltas", async () => {
+  test("memory_reflect reports a discovery error when cass is missing (#78)", async () => {
     await withTempCassHome(async () => {
+      const prevCassPath = process.env.CASS_PATH;
+      process.env.CASS_PATH = "/nonexistent/cass-binary";
+      try {
+        const response = await serveTest.routeRequest({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: "memory_reflect", arguments: { days: 7, dryRun: true } },
+        });
+        expect("error" in response).toBe(true);
+        if ("error" in response) expect(response.error.message).toContain("discovery failed");
+      } finally {
+        if (prevCassPath === undefined) delete process.env.CASS_PATH;
+        else process.env.CASS_PATH = prevCassPath;
+      }
+    });
+  });
+
+  test("memory_reflect with dryRun returns proposed deltas", async () => {
+    await withTempCassHome(async (env) => {
+      // Hermetic: a cass that finds no sessions (without one, discovery is an error, #78).
+      const prevCassPath = process.env.CASS_PATH;
+      process.env.CASS_PATH = await makeCassStub(env.home, {
+        search: "[]",
+        timeline: '{"groups":[]}',
+      });
       await withTempGitRepo(async (repoDir) => {
         const originalCwd = process.cwd();
         process.chdir(repoDir);
@@ -765,11 +791,19 @@ describe("serve module tool calls", () => {
           process.chdir(originalCwd);
         }
       });
+      if (prevCassPath === undefined) delete process.env.CASS_PATH;
+      else process.env.CASS_PATH = prevCassPath;
     });
   });
 
   test("memory_reflect without dryRun applies changes", async () => {
-    await withTempCassHome(async () => {
+    await withTempCassHome(async (env) => {
+      // Hermetic: a cass that finds no sessions (without one, discovery is an error, #78).
+      const prevCassPath = process.env.CASS_PATH;
+      process.env.CASS_PATH = await makeCassStub(env.home, {
+        search: "[]",
+        timeline: '{"groups":[]}',
+      });
       await withTempGitRepo(async (repoDir) => {
         const originalCwd = process.cwd();
         process.chdir(repoDir);
@@ -803,6 +837,8 @@ describe("serve module tool calls", () => {
           process.chdir(originalCwd);
         }
       });
+      if (prevCassPath === undefined) delete process.env.CASS_PATH;
+      else process.env.CASS_PATH = prevCassPath;
     });
   });
 

@@ -28,6 +28,22 @@ beforeAll(() => {
   originalEnv.GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
   originalEnv.GOOGLE_GENERATIVE_AI_API_KEY = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
 
+  // Hermeticity: ambient provider credentials on the host (AWS creds make
+  // Bedrock "available", OLLAMA_* makes Ollama available) would let key-less
+  // tests see a configured LLM. Tests that need a provider set it explicitly.
+  for (const key of [
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_PROFILE",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "OLLAMA_BASE_URL",
+    "OLLAMA_HOST",
+  ]) {
+    originalEnv[key] = process.env[key];
+    delete process.env[key];
+  }
+
   // Set test environment flags
   process.env.CASS_MEMORY_TEST = "1";
   process.env.CASS_MEMORY_VERBOSE = "0";
