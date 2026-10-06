@@ -379,19 +379,21 @@ export async function cliGenerateObject<T>(
     );
   }
 
-  // Build a schema hint for the prompt — uses zodToJsonSchema-like extraction
+  // Give the model the full JSON Schema (nested objects, enums, nullable
+  // fields), not just top-level field names: the reflector's delta union is
+  // unanswerable from `"deltas": ZodArray`. Falls back to field names if
+  // conversion fails.
   let schemaHint = "structured JSON object";
   try {
-    const schemaDef = (schema as any)?._def;
-    if (schemaDef?.typeName === "ZodObject" && schemaDef?.shape) {
-      const shape = typeof schemaDef.shape === "function" ? schemaDef.shape() : schemaDef.shape;
-      const fields = Object.entries(shape).map(
-        ([k, v]) => `"${k}": ${(v as any)?._def?.typeName || "unknown"}`,
-      );
-      schemaHint = `{ ${fields.join(", ")} }`;
-    }
+    schemaHint = JSON.stringify(zodSchema(schema as any).jsonSchema);
   } catch {
-    /* non-critical — use generic hint */
+    try {
+      const shape = (schema as any)?._def?.shape;
+      const fields = Object.keys(typeof shape === "function" ? shape() : (shape ?? {}));
+      if (fields.length > 0) schemaHint = `an object with fields: ${fields.join(", ")}`;
+    } catch {
+      /* non-critical — use generic hint */
+    }
   }
 
   // The caller's prompt is bracketed with cm's private payload markers (#76).
@@ -404,7 +406,7 @@ export async function cliGenerateObject<T>(
     tagCmSubprocessPrompt(prompt),
     "",
     "CRITICAL: You MUST respond with ONLY valid JSON (no markdown, no explanation, no prose).",
-    `The JSON must conform to this schema: ${schemaHint}`,
+    `The JSON must conform to this JSON Schema: ${schemaHint}`,
     "Output ONLY the JSON object, nothing else.",
   ].join("\n");
 

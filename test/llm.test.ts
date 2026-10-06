@@ -878,3 +878,31 @@ describe("LLM integration (skipped if no API keys)", () => {
     expect(model).toBeDefined();
   });
 });
+
+describe("cliGenerateObject schema hint", () => {
+  it("gives the CLI tool the full nested JSON Schema, not just top-level names", async () => {
+    const { mkdtempSync, writeFileSync, chmodSync, readFileSync } = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const { cliGenerateObject } = await import("../src/llm.js");
+    const dir = mkdtempSync(path.join(os.tmpdir(), "cm-cli-"));
+    const promptFile = path.join(dir, "prompt.txt");
+    const tool = path.join(dir, "fake-llm");
+    writeFileSync(
+      tool,
+      `#!/bin/sh\ncat > "${promptFile}"\necho '{"deltas":[{"kind":"add","rule":"r"}]}'\n`,
+    );
+    chmodSync(tool, 0o755);
+
+    const schema = z.object({
+      deltas: z.array(z.object({ kind: z.enum(["add", "drop"]), rule: z.string() })),
+    });
+    const result = await cliGenerateObject(schema, "extract rules", tool, 10_000, "");
+    expect(result.object.deltas[0].kind).toBe("add");
+
+    const prompt = readFileSync(promptFile, "utf-8");
+    expect(prompt).toContain("JSON Schema");
+    expect(prompt).toContain('"enum":["add","drop"]');
+    expect(prompt).toContain('"rule"');
+  });
+});
