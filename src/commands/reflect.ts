@@ -65,7 +65,6 @@ export async function reflectCommand(
     workspace?: string;
     dryRun?: boolean;
     json?: boolean;
-    llm?: boolean; // Ignored, always uses LLM if validation enabled
     session?: string;
     force?: boolean;
   } = {},

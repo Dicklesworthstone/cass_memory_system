@@ -7,7 +7,6 @@ import { evidenceCountGate } from "../validate.js";
 
 type ValidateOptions = {
   json?: boolean;
-  verbose?: boolean;
 };
 
 type ValidateDeps = {

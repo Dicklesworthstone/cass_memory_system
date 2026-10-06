@@ -277,7 +277,6 @@ export function createProgram(argv: string[] = process.argv): Command {
     .command("export")
     .description("Export playbook for sharing")
     .option("-j, --json", "Output as JSON (default: YAML)")
-    .option("--yaml", "Output as YAML")
     .option("--all", "Include deprecated bullets")
     .addHelpText("after", () =>
       formatCommandExamples([
@@ -349,6 +348,8 @@ export function createProgram(argv: string[] = process.argv): Command {
     .description("Alias for `cm playbook list`")
     .option("--category <cat>", "Filter by category")
     .option("-j, --json", "Output JSON")
+    .option("--format <json|toon>", "Output format: json or toon (overrides --json)")
+    .option("--stats", "Show token statistics on stderr (JSON vs TOON)")
     .addHelpText("after", () =>
       formatCommandExamples(["ls", "ls --category security", "ls --json"]),
     )
@@ -363,6 +364,7 @@ export function createProgram(argv: string[] = process.argv): Command {
     .option("--session <path>", "Session path to track in onboarding progress")
     .option("--check", "Show validation results before adding")
     .option("--strict", "With --check, fail on warnings instead of adding")
+    .option("--repo", "Add to the repo-level playbook (.cass/playbook.yaml) instead of global")
     .option("-j, --json", "Output JSON")
     .addHelpText("after", () =>
       formatCommandExamples([
@@ -504,12 +506,10 @@ export function createProgram(argv: string[] = process.argv): Command {
     .description("Scientifically validate a proposed rule against history")
     .argument("<rule>", "Proposed rule text")
     .option("-j, --json", "Output JSON")
-    .option("--verbose", "Verbose output")
     .addHelpText("after", () =>
       formatCommandExamples([
         'validate "Always check user input before processing"',
         'validate "Prefer atomic writes for config files" --json',
-        'validate "Avoid global mutable state" --verbose',
       ]),
     )
     .action(async (rule: string, opts: any) => await validateCommand(rule, opts));

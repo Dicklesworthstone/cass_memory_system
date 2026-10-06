@@ -34,7 +34,6 @@ export interface UndoFlags {
   yes?: boolean;
   dryRun?: boolean;
   json?: boolean;
-  reason?: string;
 }
 
 interface UndoResult {

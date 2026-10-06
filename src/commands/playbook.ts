@@ -424,7 +424,6 @@ export async function playbookCommand(
     reason?: string;
     all?: boolean;
     replace?: boolean;
-    yaml?: boolean;
     file?: string;
     session?: string;
     check?: boolean;
@@ -483,17 +482,10 @@ export async function playbookCommand(
 
     exportProgress.complete(`Export ready (${exportedBullets.length} bullets)`);
 
-    // Output in requested format
-    if (flags.json || (!flags.yaml && flags.json !== false)) {
-      // Default to JSON if --json specified or neither specified
-      if (flags.json) {
-        printJsonResult(command, exportData, { startedAtMs });
-      } else {
-        // Default: YAML (more human-readable)
-        console.log(yaml.stringify(exportData));
-      }
+    // JSON envelope with --json; YAML (more human-readable) otherwise.
+    if (flags.json) {
+      printJsonResult(command, exportData, { startedAtMs });
     } else {
-      // --yaml explicitly specified
       console.log(yaml.stringify(exportData));
     }
     return;
