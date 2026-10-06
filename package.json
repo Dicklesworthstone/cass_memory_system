@@ -37,27 +37,27 @@
   },
   "dependencies": {
     "@ai-sdk/amazon-bedrock": "^1.1.6",
-    "@ai-sdk/anthropic": "^1.0.0",
-    "@ai-sdk/google": "^1.0.0",
-    "@ai-sdk/openai": "^1.0.0",
+    "@ai-sdk/anthropic": "^1.2.12",
+    "@ai-sdk/google": "^1.2.22",
+    "@ai-sdk/openai": "^1.3.24",
     "@xenova/transformers": "^2.17.2",
-    "ai": "^4.0.0",
-    "chalk": "^5.3.0",
-    "commander": "^14.0.2",
+    "ai": "^4.3.19",
+    "chalk": "^5.6.2",
+    "commander": "^14.0.3",
     "ollama-ai-provider": "^1.2.0",
-    "yaml": "^2.8.3",
-    "zod": "^3.23.0"
+    "yaml": "^2.9.1",
+    "zod": "^3.25.76"
   },
   "overrides": {
     "@aws-sdk/xml-builder": "3.972.37",
     "protobufjs": "7.6.5"
   },
   "devDependencies": {
-    "@types/bun": "^1.3.4",
+    "@types/bun": "^1.4.2",
     "@types/diff-match-patch": "^1.0.36",
-    "@types/node": "^24.10.1",
-    "fast-check": "^4.4.0",
-    "typescript": "^5.0.0"
+    "@types/node": "^24.19.1",
+    "fast-check": "^4.10.2",
+    "typescript": "^5.9.3"
   },
   "engines": {
     "bun": ">=1.0.0"
