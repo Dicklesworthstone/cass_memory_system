@@ -55,6 +55,8 @@ Run this before starting any non-trivial task. It returns:
 - **antiPatterns**: Pitfalls to avoid
 - **historySnippets**: Past sessions that solved similar problems
 - **suggestedCassQueries**: Searches for deeper investigation
+- **conflicts** (when present): returned rules that contradict each other; follow the one that fits your task
+- **retrieval**: how many rules were dropped by relevance, limit or token budget (\`--max-tokens\`, \`--limit\`)
 
 ## What You Should Expect
 
@@ -156,6 +158,8 @@ export function getQuickstartJson(cli: string): QuickstartResult {
       "antiPatterns: Pitfalls to avoid",
       "historySnippets: Past solutions (local + optional remote; see origin.kind/origin.host)",
       "suggestedCassQueries: Deeper searches",
+      "conflicts: Returned rules that contradict each other (only when present)",
+      "retrieval: Candidates vs returned, and what relevance / limit / token budget dropped",
     ],
     doNotDo: [
       `Run ${cli} reflect manually (operators typically schedule it)`,

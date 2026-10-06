@@ -46,6 +46,8 @@ export function getWorkflows(): ExampleWorkflow[] {
         `${cli} playbook list --category testing  # Filter by category`,
         `${cli} playbook add "Always validate input" --category security`,
         `${cli} playbook export --json > backup.json`,
+        `${cli} playbook conflicts --json         # Rules that contradict each other`,
+        `${cli} playbook scrub --cm-subprocess-calls --dry-run  # Drop feedback from cm's own LLM calls`,
       ],
     },
     {
@@ -62,6 +64,7 @@ export function getWorkflows(): ExampleWorkflow[] {
       title: "Learning from History",
       description: "Reflect on past sessions to build knowledge",
       commands: [
+        `${cli} hook install                      # Auto-reflect every finished Claude Code session`,
         `${cli} reflect --days 7                  # Process recent sessions`,
         `${cli} reflect --dry-run --json          # Preview changes`,
         `${cli} stale --days 90                   # Find unused rules`,

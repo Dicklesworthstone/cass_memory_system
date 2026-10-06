@@ -10,6 +10,26 @@ All notable changes to **cass-memory** (`cm`) are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- `cm hook install|uninstall|status|session-end`: auto-reflection. A Claude Code `SessionEnd` hook reflects each finished session in the background (`cm reflect --session <transcript>`, detached, logged to `~/.cass-memory/hooks.log`). Transcripts of cm's own LLM subprocesses are skipped, and so are sessions that end inside a background reflect, so the hook cannot loop. Interactive `cm init` offers it. Other agents can call `cm hook session-end --transcript <path>`.
+- `cm playbook scrub --from-sessions <pattern>... | --cm-subprocess-calls [--deprecate-orphans] [--dry-run]` removes feedback events and source references by session path, recounts them and re-derives maturity (never raising it), and backs up each playbook first (#77).
+- `cm playbook conflicts`: pairs of active rules that contradict each other, with a keep/retire suggestion. `cm context` reports contradicting returned rules in `conflicts` and as a warning, and `cm reflect` notes new rules that contradict existing ones.
+- `cm context` takes the task from piped stdin (`echo "..." | cm context --json`, or `-`).
+- `cm context --max-tokens <n>` / MCP `maxTokens`, config `contextTokenBudget` (default 4000): a token budget for returned rules. Results carry `retrieval` stats.
+- `cm why` runs the rule's search pointer (or its text) against cass and returns matching sessions as evidence (`--no-history` skips this). The top rules' pointers lead `suggestedCassQueries`.
+- The curator detects reworded duplicates by embedding similarity (`semanticDedupThreshold`, default 0.9) when semantic search is on. Rules whose directives disagree are never merged.
+- Freebuff sessions are recognized (`.freebuff/`, `~/.config/freebuff/`) and included in the default cross-agent allowlist (#69).
+- `cm diary <session>` is registered. It was implemented but unreachable.
+
+### Changed
+
+- Context ranking (#89). Keyword relevance is BM25 over the playbook (IDF-weighted query coverage, light stemming, prefix matches). Feedback is a bounded multiplier in `[1 - feedbackWeight, 1 + feedbackWeight]` (default 0.25), damped while marks are few. Before, relevance was multiplied by the raw effective score, so an unmarked rule got ×0.1 and a well-marked one ×10 or more. A relative relevance floor `minRelativeRelevance` (default 0.2 × the best match) drops the long tail.
+- `maxBulletsInContext` default 50 → 10 (#89).
+- Bullets in `cm context` output are a compact projection: no feedback-event log, source-session list or embedding (`cm playbook get <id>` has the full record).
+- `cm context` history searches `historyLookbackDays` (default 90) instead of `sessionLookbackDays` (7).
+- Conflict detection works per clause, so a negation in an unrelated clause no longer flags a rule (the built-in starters went from 5 false positives to 0).
+
 ## [0.4.0] -- 2026-09-30
 
 Everything on `main` since [0.3.0](https://github.com/Dicklesworthstone/cass_memory_system/releases/tag/v0.3.0). Two new features (two config keys and a command), no changed defaults, so it is a minor bump.
