@@ -37,6 +37,7 @@ import {
 } from "../types.js";
 import {
   atomicWrite,
+  cassSearchCommand,
   checkDeprecatedPatterns,
   ensureDir,
   expandPath,
@@ -48,6 +49,7 @@ import {
   getCliName,
   isJsonOutput,
   isToonOutput,
+  normalizeSearchPointer,
   printStructuredResult,
   readStdinText,
   reportError,
@@ -707,9 +709,16 @@ export async function generateContextResult(
 
   // Keep suggestedCassQueries semantically pure: only search queries, no remediation
   // Remediation commands (cm doctor, cass health, etc.) are in degraded.cass.suggestedFix
-  const suggestedQueries = generateSuggestedQueries(task, keywords, {
-    maxSuggestions: 5,
-  });
+  // The top rules' search pointers lead straight to the sessions that taught
+  // them, so they come first; task-derived queries fill the rest.
+  const pointerQueries = topBullets
+    .map((b) => normalizeSearchPointer(b.searchPointer))
+    .filter((q) => q !== "")
+    .slice(0, 2)
+    .map((q) => cassSearchCommand(q, config.historyLookbackDays));
+  const suggestedQueries = Array.from(
+    new Set([...pointerQueries, ...generateSuggestedQueries(task, keywords, { maxSuggestions: 5 })]),
+  ).slice(0, 6);
 
   const result = buildContextResult(
     task,

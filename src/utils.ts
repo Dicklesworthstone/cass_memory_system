@@ -2455,6 +2455,25 @@ function shellEscapeForUserCommand(text: string): string {
  * //   ...
  * // ]
  */
+/**
+ * Turn a bullet's `searchPointer` into a plain cass query. The reflector's LLM
+ * writes these freely, so strip a leading `cass search`, surrounding quotes
+ * and any `--flags`; returns "" when nothing usable is left.
+ */
+export function normalizeSearchPointer(pointer: string | undefined | null): string {
+  if (!pointer) return "";
+  let q = pointer.trim();
+  q = q.replace(/^cass\s+search\s+/i, "");
+  q = q.replace(/\s--?[a-z][\w-]*(?:[ =](?!-)\S+)?/gi, " ");
+  q = q.replace(/^["'`]+|["'`]+$/g, "").replace(/["'`]/g, " ");
+  return q.replace(/\s+/g, " ").trim().slice(0, 200);
+}
+
+/** A ready-to-run `cass search` command for a query (shell-escaped). */
+export function cassSearchCommand(query: string, days: number): string {
+  return `cass search ${shellEscapeForUserCommand(query)} --days ${days}`;
+}
+
 export function generateSuggestedQueries(
   task: string,
   keywords: string[],

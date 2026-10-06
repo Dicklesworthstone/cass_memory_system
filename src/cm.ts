@@ -457,9 +457,14 @@ export function createProgram(argv: string[] = process.argv): Command {
     .description("Show bullet origin evidence and reasoning")
     .argument("<bulletId>", "ID of the bullet to explain")
     .option("--verbose", "Show full details including all sessions")
+    .option("--no-history", "Skip searching cass history for evidence")
     .option("-j, --json", "Output JSON")
     .addHelpText("after", () =>
-      formatCommandExamples(["why b-abc123", "why b-abc123 --json", "why b-abc --json"]),
+      formatCommandExamples([
+        "why b-abc123",
+        "why b-abc123 --json",
+        "why b-abc --no-history --json",
+      ]),
     )
     .action(async (id: string, opts: any) => await whyCommand(id, opts));
 

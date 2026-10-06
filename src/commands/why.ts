@@ -20,11 +20,39 @@ import {
 import { findBullet, loadMergedPlaybook } from "../playbook.js";
 import { getEffectiveScore } from "../scoring.js";
 import { type Config, type DiaryEntry, ErrorCode, type PlaybookBullet } from "../types.js";
-import { expandPath, getCliName, printJsonResult, reportError, truncate } from "../utils.js";
+import { safeCassSearchWithDegraded } from "../cass.js";
+import {
+  cassSearchCommand,
+  expandPath,
+  getCliName,
+  normalizeSearchPointer,
+  printJsonResult,
+  reportError,
+  truncate,
+} from "../utils.js";
+import { buildCassHistoryQuery } from "./context.js";
 
 export interface WhyFlags {
   verbose?: boolean;
   json?: boolean;
+  /** Search cass history for evidence (default true; `--no-history` skips it). */
+  history?: boolean;
+}
+
+interface WhyHistory {
+  /** What was searched: the rule's search pointer, or its own content when it has none. */
+  query: string;
+  source: "searchPointer" | "content";
+  command: string;
+  hits: Array<{
+    sessionPath: string;
+    line: number;
+    agent: string;
+    timestamp?: string;
+    snippet: string;
+  }>;
+  /** Why history could not be searched (cass missing, index missing, timeout). */
+  unavailable?: string;
 }
 
 interface WhyResult {
@@ -59,6 +87,46 @@ interface WhyResult {
     helpfulCount: number;
     harmfulCount: number;
     effectiveness: string;
+  };
+  history?: WhyHistory;
+}
+
+/**
+ * Run the rule's search pointer (written by the reflector as "the cass query
+ * that finds the evidence for this rule") against history. Falls back to the
+ * rule's own keywords so older rules without a pointer still get evidence.
+ */
+async function searchHistoryEvidence(
+  bullet: PlaybookBullet,
+  config: Config,
+  limit: number,
+): Promise<WhyHistory | undefined> {
+  const pointer = normalizeSearchPointer(bullet.searchPointer);
+  const source: WhyHistory["source"] = pointer ? "searchPointer" : "content";
+  const query = pointer || bullet.content;
+  const cassQuery = buildCassHistoryQuery(query);
+  if (!cassQuery) return undefined;
+  const days = config.validationLookbackDays;
+  const result = await safeCassSearchWithDegraded(
+    cassQuery,
+    { limit, days, timeout: config.cassHistoryTimeoutSeconds },
+    config.cassPath,
+    config,
+  );
+  return {
+    query,
+    source,
+    command: cassSearchCommand(query, days),
+    hits: result.hits.slice(0, limit).map((h) => ({
+      sessionPath: h.source_path,
+      line: h.line_number,
+      agent: h.agent,
+      ...(h.timestamp ? { timestamp: h.timestamp } : {}),
+      snippet: truncate(h.snippet.replace(/\s+/g, " ").trim(), 240),
+    })),
+    ...(result.degraded
+      ? { unavailable: result.degraded.message || result.degraded.reason }
+      : {}),
   };
 }
 
@@ -137,7 +205,7 @@ export async function whyCommand(bulletId: string, flags: WhyFlags = {}): Promis
     }
   }
 
-  const result = await buildWhyResult(bullet, config, flags.verbose);
+  const result = await buildWhyResult(bullet, config, flags.verbose, flags.history !== false);
 
   if (flags.json) {
     printJsonResult(command, result, { startedAtMs });
@@ -150,6 +218,7 @@ async function buildWhyResult(
   bullet: PlaybookBullet,
   config: Config,
   verbose?: boolean,
+  includeHistory = true,
 ): Promise<WhyResult> {
   const score = getEffectiveScore(bullet, config);
   const sourceSessions = bullet.sourceSessions || [];
@@ -225,7 +294,12 @@ async function buildWhyResult(
     evidence.push(...quotes.map((q) => q.replace(/"/g, "")));
   }
 
+  const history = includeHistory
+    ? await searchHistoryEvidence(bullet, config, verbose ? 10 : 5)
+    : undefined;
+
   return {
+    ...(history ? { history } : {}),
     bullet: {
       id: bullet.id,
       content: bullet.content,
@@ -334,6 +408,26 @@ function printWhyResult(result: WhyResult, verbose?: boolean): void {
         console.log(chalk.green(`  ${line}`));
       }
     }
+    console.log("");
+  }
+
+  if (result.history) {
+    const h = result.history;
+    const label = h.source === "searchPointer" ? "search pointer" : "rule text";
+    console.log(chalk.bold(`History evidence (${h.hits.length}, from ${label})`));
+    console.log(divider);
+    if (h.unavailable) {
+      console.log(chalk.yellow(`  History unavailable: ${h.unavailable}`));
+    } else if (h.hits.length === 0) {
+      console.log(chalk.dim("  No matching sessions in cass history."));
+    }
+    for (const hit of h.hits) {
+      console.log(chalk.cyan(`  ${hit.sessionPath}:${hit.line}`) + chalk.dim(` (${hit.agent})`));
+      for (const line of wrapText(truncate(hit.snippet, 200), wrapWidth - 2)) {
+        console.log(chalk.dim(`    ${line}`));
+      }
+    }
+    console.log(chalk.gray(`  ${h.command}`));
     console.log("");
   }
 

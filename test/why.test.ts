@@ -14,7 +14,8 @@ import { join } from "node:path";
 import yaml from "yaml";
 import { whyCommand } from "../src/commands/why.js";
 import type { DiaryEntry, Playbook, PlaybookBullet } from "../src/types.js";
-import { type TestEnv, withTempCassHome } from "./helpers/temp.js";
+import { normalizeSearchPointer } from "../src/utils.js";
+import { makeCassStub, type TestEnv, withTempCassHome } from "./helpers/temp.js";
 
 // Helper to create a test bullet with known properties
 function createTestBullet(overrides: Partial<PlaybookBullet> = {}): PlaybookBullet {
@@ -627,5 +628,102 @@ describe("why command - Unit Tests", () => {
         expect(Array.isArray(output.diaryEntries)).toBe(true);
       });
     });
+  });
+});
+
+describe("whyCommand history evidence (search pointers)", () => {
+  // CASS_PATH (env) outranks config.cassPath; pin it to the stub for the call.
+  async function runWhyJson(id: string, flags: Record<string, unknown> = {}, cassPath?: string) {
+    const prevCassPath = process.env.CASS_PATH;
+    if (cassPath) process.env.CASS_PATH = cassPath;
+    const logs: string[] = [];
+    const orig = console.log;
+    const origErr = console.error;
+    console.log = (...a: any[]) => logs.push(a.map(String).join(" "));
+    console.error = () => {};
+    try {
+      await whyCommand(id, { json: true, ...flags });
+    } finally {
+      console.log = orig;
+      console.error = origErr;
+      if (prevCassPath === undefined) delete process.env.CASS_PATH;
+      else process.env.CASS_PATH = prevCassPath;
+    }
+    return JSON.parse(logs.join("\n"));
+  }
+
+  function pointerPlaybook(searchPointer?: string): Playbook {
+    const now = new Date().toISOString();
+    return {
+      schema_version: 2,
+      name: "t",
+      description: "",
+      metadata: { createdAt: now, totalReflections: 0, totalSessionsProcessed: 0 },
+      deprecatedPatterns: [],
+      bullets: [
+        {
+          id: "b-ptr",
+          content: "Refresh JWT tokens before expiry",
+          category: "auth",
+          kind: "workflow_rule",
+          type: "rule",
+          isNegative: false,
+          scope: "global",
+          source: "learned",
+          state: "active",
+          maturity: "candidate",
+          createdAt: now,
+          updatedAt: now,
+          helpfulCount: 0,
+          harmfulCount: 0,
+          feedbackEvents: [],
+          confidenceDecayHalfLifeDays: 90,
+          deprecated: false,
+          pinned: false,
+          tags: [],
+          sourceSessions: [],
+          sourceAgents: [],
+          ...(searchPointer ? { searchPointer } : {}),
+        } as PlaybookBullet,
+      ],
+    };
+  }
+
+  test("runs the search pointer against cass and returns the hits", async () => {
+    await withTempCassHome(async (env) => {
+      const stub = await makeCassStub(env.home, {
+        search:
+          '[{"source_path":"/s/auth.jsonl","line_number":7,"agent":"claude","snippet":"token expired mid-request","score":0.9}]',
+      });
+      writeFileSync(env.configPath, JSON.stringify({ cassPath: stub }));
+      writeFileSync(env.playbookPath, yaml.stringify(pointerPlaybook("cass search 'jwt expiry' --days 30")));
+      const out = await runWhyJson("b-ptr", {}, stub);
+      expect(out.data.history.source).toBe("searchPointer");
+      expect(out.data.history.query).toBe("jwt expiry");
+      expect(out.data.history.hits[0]).toMatchObject({ sessionPath: "/s/auth.jsonl", line: 7 });
+    });
+  });
+
+  test("falls back to the rule text, and --no-history skips the search", async () => {
+    await withTempCassHome(async (env) => {
+      const stub = await makeCassStub(env.home, { search: "[]" });
+      writeFileSync(env.configPath, JSON.stringify({ cassPath: stub }));
+      writeFileSync(env.playbookPath, yaml.stringify(pointerPlaybook()));
+      const out = await runWhyJson("b-ptr", {}, stub);
+      expect(out.data.history.source).toBe("content");
+      expect(out.data.history.hits).toEqual([]);
+      const skipped = await runWhyJson("b-ptr", { history: false }, stub);
+      expect(skipped.data.history).toBeUndefined();
+    });
+  });
+});
+
+describe("normalizeSearchPointer", () => {
+  test("strips the cass command, quotes and flags", () => {
+    expect(normalizeSearchPointer("cass search 'jwt expiry' --days 30 --robot")).toBe("jwt expiry");
+    expect(normalizeSearchPointer('"oauth refresh token"')).toBe("oauth refresh token");
+    expect(normalizeSearchPointer("plain words")).toBe("plain words");
+    expect(normalizeSearchPointer("")).toBe("");
+    expect(normalizeSearchPointer(undefined)).toBe("");
   });
 });
