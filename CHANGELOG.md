@@ -29,10 +29,16 @@ All notable changes to **cass-memory** (`cm`) are documented in this file.
 
 ### Fixed
 
+- **LLMs now receive the output schema.** With ai 4 and the installed zod 3.25, the JSON schema sent to every provider was empty, so the reflector, validator, diary and audit models never saw the structure they had to produce, and only the post-hoc Zod check enforced it. After upgrading to ai 7 and zod 4, OpenAI gets strict `json_schema`, Anthropic gets native structured output where the model supports it, Google gets `responseJsonSchema`, and Ollama gets `format: <schema>`. The `cli` provider (claude/codex/gemini subprocess) now gets the full JSON Schema in its prompt instead of top-level field names.
+- OpenAI requests stay on Chat Completions (`.chat()`), because AI SDK 5+ defaults to the Responses API, which OpenAI-compatible gateways do not implement. `disableStructuredOutputs` sends `json_object` with the schema in the prompt and validates with Zod.
 - `cm reflect --workspace` (and MCP `memory_reflect` `workspace`) now filters which sessions are reflected. It used to only choose the processed-log file, so every project's sessions were reflected. A session belongs to the workspace when cass reports it there, its Claude Code transcript folder is that directory's slug, or its transcript's first records carry a `cwd` inside it.
 - `cm hook install --global` and doctor's Claude Code detection resolve `~` through `HOME`, as the rest of cm does. `os.homedir()` ignores later `HOME` changes under Bun.
 - Inline `// [cass: harmful b-x] - reason` feedback from the shared converter put free text in the harmful-reason enum. It now goes in `context`, and the reflect pipeline uses that one converter.
 - Tests are hermetic against ambient AWS/Ollama credentials and a missing `cass` binary.
+
+### Dependencies
+
+- ai 4 → 7, @ai-sdk/openai|anthropic|google 1 → 4, @ai-sdk/amazon-bedrock 1 → 5, ollama-ai-provider → ollama-ai-provider-v2, zod 3 → 4, typescript 5 → 7, chalk 5 → 6, commander 14 → 15.
 
 ### Removed
 
