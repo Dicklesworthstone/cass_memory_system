@@ -4,7 +4,7 @@ import chalk from "chalk";
 import yaml from "yaml";
 import { z } from "zod";
 import { loadConfig } from "../config.js";
-import { findBulletConflicts } from "../curate.js";
+import { directivesDisagree, findBulletConflicts, splitDirectiveClauses } from "../curate.js";
 import { withLock } from "../lock.js";
 import {
   formatKv,
@@ -706,7 +706,12 @@ export async function playbookCommand(
                   (b) =>
                     isActive(b) &&
                     tokenize(b.content).length >= MIN_TOKENS_FOR_SIMILAR_MERGE &&
-                    jaccardSimilarity(b.content, bullet.content) >= threshold,
+                    jaccardSimilarity(b.content, bullet.content) >= threshold &&
+                    // "Mock X" and "Never mock X" overlap almost entirely.
+                    !directivesDisagree(
+                      splitDirectiveClauses(b.content),
+                      splitDirectiveClauses(bullet.content),
+                    ),
                 )
               : undefined);
           if (similar) {

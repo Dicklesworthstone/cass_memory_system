@@ -51,7 +51,7 @@ export function createTestConfig(overrides: Partial<Config> = {}): Config {
     diaryMiddleScanChars: 8_000,
     cliSubprocessCwd: DEFAULT_CLI_SUBPROCESS_CWD,
     dedupSimilarityThreshold: 0.85,
-    semanticDedupThreshold: 0.9,
+    semanticDedupThreshold: 0.75,
     pruneHarmfulThreshold: 3,
     defaultDecayHalfLife: 90,
     maxBulletsInContext: 10,

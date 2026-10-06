@@ -1341,3 +1341,29 @@ describe("curatePlaybook semantic dedup polarity guard", () => {
     expect(result.playbook.bullets.find((b) => b.id === "b-yes")?.helpfulCount).toBe(0);
   });
 });
+
+describe("curatePlaybook lexical dedup polarity guard", () => {
+  it("does not merge 'Never X' into 'X' even with near-total word overlap", () => {
+    const existing = createTestBullet({ id: "b-mock", content: "Mock the database in unit tests" });
+    const playbook = createTestPlaybook([existing]);
+    const result = curatePlaybook(
+      playbook,
+      [
+        {
+          type: "add",
+          bullet: {
+            content: "Never mock the database in unit tests",
+            category: "testing",
+            scope: "global",
+            kind: "workflow_rule",
+          },
+          sourceSession: "/s.jsonl",
+          reason: "test",
+        },
+      ],
+      createTestConfig(),
+    );
+    expect(result.playbook.bullets).toHaveLength(2);
+    expect(result.playbook.bullets.find((b) => b.id === "b-mock")?.helpfulCount).toBe(0);
+  });
+});

@@ -26,11 +26,15 @@ function findSimilarBulletFromMeta(
   newTokens: Set<string>,
   metaList: ConflictMeta[],
   threshold: number,
+  newClauses: DirectiveClause[],
 ): PlaybookBullet | undefined {
   let bestDeprecated: PlaybookBullet | undefined;
 
   for (const meta of metaList) {
     const b = meta.bullet;
+    // "Mock the database in unit tests" and "Never mock the database in unit
+    // tests" share 6 of 7 tokens; word overlap alone would merge them.
+    if (directivesDisagree(newClauses, meta.clauses)) continue;
     const isDeprecated =
       Boolean(b.deprecated) || b.maturity === "deprecated" || b.state === "retired";
 
@@ -175,6 +179,18 @@ function sameTopic(a: Set<string>, b: Set<string>): boolean {
   let shared = 0;
   for (const t of a) if (b.has(t)) shared++;
   return shared >= CONFLICT_MIN_SHARED && shared / Math.min(a.size, b.size) >= CONFLICT_MIN_OVERLAP;
+}
+
+/**
+ * Whether two rules point opposite ways: a negating clause on one side only,
+ * or a clause-level conflict. Such rules are never duplicates, however
+ * similar their words or embeddings (opposite directives score 0.88-0.98
+ * cosine on all-MiniLM-L6-v2).
+ */
+export function directivesDisagree(a: DirectiveClause[], b: DirectiveClause[]): boolean {
+  const aNeg = a.some((c) => c.polarity === "negative");
+  const bNeg = b.some((c) => c.polarity === "negative");
+  return aNeg !== bNeg || clauseConflict(a, b) !== null;
 }
 
 /** First conflicting clause pair between two rules, or null. */
@@ -346,13 +362,11 @@ function findSemanticDuplicateFromMeta(
   const query = index.embeddings.get(hashContent(content));
   if (!query) return undefined;
   const clauses = splitDirectiveClauses(content);
-  const negates = clauses.some((c) => c.polarity === "negative");
   let best: { bullet: PlaybookBullet; similarity: number } | undefined;
   for (const meta of metaList) {
     const b = meta.bullet;
     if (b.deprecated || b.maturity === "deprecated" || b.state === "retired") continue;
-    if (meta.clauses.some((c) => c.polarity === "negative") !== negates) continue;
-    if (clauseConflict(clauses, meta.clauses)) continue;
+    if (directivesDisagree(clauses, meta.clauses)) continue;
     const vector = index.embeddings.get(hashContent(b.content));
     if (!vector) continue;
     const similarity = cosineSimilarity(query, vector);
@@ -504,6 +518,7 @@ export function curatePlaybook(
           newTokenSet,
           conflictMeta,
           config.dedupSimilarityThreshold,
+          splitDirectiveClauses(content),
         );
         // Word overlap misses rewordings ("Run tests before you push" vs
         // "Always execute the test suite prior to pushing"); embeddings catch them.

@@ -492,7 +492,11 @@ export const ConfigSchema = z.object({
   // Embedding cosine similarity at which the curator treats a new rule as a
   // rewording of an existing one and reinforces it instead of adding it.
   // Used only when semantic search is enabled (explicitly or automatically).
-  semanticDedupThreshold: z.number().min(0).max(1).default(0.9),
+  // Calibrated on all-MiniLM-L6-v2 (bd-q3c9): related-but-distinct rules
+  // peaked at 0.65 and 0.75 caught about half of genuine rewordings; 0.9
+  // caught almost none. Opposite directives score 0.88-0.98, so the
+  // curator's negation guard, not this threshold, keeps them apart.
+  semanticDedupThreshold: z.number().min(0).max(1).default(0.75),
   pruneHarmfulThreshold: z.number().default(3),
   defaultDecayHalfLife: z.number().default(90),
   // Retrieval sizing (#89). A 50-bullet default produced ~15k-token context

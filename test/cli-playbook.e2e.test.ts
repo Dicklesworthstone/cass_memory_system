@@ -1408,3 +1408,33 @@ describe("E2E: cm playbook import merges teammates' rules by content", () => {
     });
   });
 });
+
+describe("E2E: cm playbook import never merges opposite rules", () => {
+  it("adds 'Never X' instead of folding it into 'X'", async () => {
+    await withTempCassHome(async (env) => {
+      await writeFile(
+        env.playbookPath,
+        yaml.stringify(
+          createTestPlaybook([createTestBullet({ id: "b-mock", content: "Mock the database in unit tests" })]),
+        ),
+      );
+      const importPath = path.join(env.cassMemoryDir, "opposite.json");
+      await writeFile(
+        importPath,
+        JSON.stringify({
+          bullets: [createTestBullet({ id: "b-never", content: "Never mock the database in unit tests" })],
+        }),
+      );
+      const capture = captureConsole();
+      try {
+        await playbookCommand("import", [importPath], { json: true });
+      } finally {
+        capture.restore();
+      }
+      const data = JSON.parse(capture.logs.join("\n")).data;
+      expect(data.merged).toBe(0);
+      expect(data.added).toBe(1);
+      expect(data.conflicts.length).toBe(1);
+    });
+  });
+});

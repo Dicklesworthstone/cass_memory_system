@@ -1626,7 +1626,7 @@ Remote cass is **opt-in** and queries other machines via SSH (using your existin
 | `embeddingBackend` | `xenova` | Embedding backend: `xenova` (local WASM) or `ollama` |
 | `ollamaBaseUrl` | `http://localhost:11434` | Base URL when `embeddingBackend: "ollama"` |
 | `dedupSimilarityThreshold` | `0.85` | Threshold for duplicate detection |
-| `semanticDedupThreshold` | `0.9` | Embedding similarity at which `cm reflect` treats a new rule as a rewording of an existing one and reinforces that rule instead of adding a duplicate. Only used while semantic search is on, and never across rules whose directives disagree ("always X" vs "never X") |
+| `semanticDedupThreshold` | `0.75` | Embedding similarity at which `cm reflect` treats a new rule as a rewording of an existing one and reinforces that rule instead of adding a duplicate. Only used while semantic search is on, and never across rules whose directives disagree ("always X" vs "never X") |
 
 ##### When does semantic search turn itself on?
 

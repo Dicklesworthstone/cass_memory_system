@@ -1346,7 +1346,7 @@ export async function buildSemanticDedupIndex(
       ? config.embeddingModel.trim()
       : undefined;
   const threshold =
-    typeof config.semanticDedupThreshold === "number" ? config.semanticDedupThreshold : 0.9;
+    typeof config.semanticDedupThreshold === "number" ? config.semanticDedupThreshold : 0.75;
 
   try {
     const clones = existing
