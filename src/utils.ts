@@ -2211,13 +2211,52 @@ export function canonicalAgentName(agent: string | undefined | null): string {
   return Object.hasOwn(AGENT_ALIASES, key) ? AGENT_ALIASES[key]! : key;
 }
 
-/** Read all of stdin as UTF-8 text (for `-` / piped input). */
-export async function readStdinText(): Promise<string> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) {
-    chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
-  }
-  return Buffer.concat(chunks).toString("utf-8");
+/**
+ * Read all of stdin as UTF-8 text (for `-` / piped input).
+ *
+ * With `firstByteTimeoutMs`, give up and return "" if nothing arrives in that
+ * time: a caller that merely inherited an open, silent pipe (agent harnesses,
+ * CI) must get a prompt validation error, not a hang. Once data starts
+ * flowing it is read to EOF.
+ */
+export async function readStdinText(options: { firstByteTimeoutMs?: number } = {}): Promise<string> {
+  const stdin = process.stdin;
+  return await new Promise<string>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      stdin.off("data", onData);
+      stdin.off("end", onEnd);
+      stdin.off("error", onError);
+    };
+    const onData = (chunk: Buffer | string) => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+      chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+    };
+    const onEnd = () => {
+      cleanup();
+      resolve(Buffer.concat(chunks).toString("utf-8"));
+    };
+    const onError = (err: Error) => {
+      cleanup();
+      reject(err);
+    };
+    stdin.on("data", onData);
+    stdin.on("end", onEnd);
+    stdin.on("error", onError);
+    if (options.firstByteTimeoutMs !== undefined && options.firstByteTimeoutMs > 0) {
+      timer = setTimeout(() => {
+        cleanup();
+        stdin.pause();
+        stdin.unref?.();
+        resolve("");
+      }, options.firstByteTimeoutMs);
+    }
+  });
 }
 
 /**

@@ -828,11 +828,21 @@ cm reflect --days 7 --json
 0 2 * * * /usr/local/bin/cm reflect --days 7 >> ~/.cass-memory/reflect.log 2>&1
 ```
 
-For Claude Code users, add a post-session hook in `.claude/hooks.json`:
-```json
-{
-  "post-session": ["cm reflect --days 1"]
-}
+For Claude Code, install the auto-reflect hook once and every finished session is reflected in the background:
+
+```bash
+cm hook install            # this project (.claude/settings.json)
+cm hook install --global   # every project (~/.claude/settings.json)
+cm hook status             # where it is installed
+cm hook uninstall          # remove it (other hooks are left alone)
+```
+
+This adds a `SessionEnd` hook that runs `cm hook session-end`. It reads the transcript path from the hook payload and starts `cm reflect --session <transcript>` detached, so Claude Code never waits on it. Output goes to `~/.cass-memory/hooks.log`. It skips transcripts written by cm's own LLM subprocess calls, and sessions that end inside a background reflect, so it cannot loop. Reflection keeps your usual budget limits and processed-session tracking, so re-running a session costs nothing.
+
+For other agents, call the same entry point from a wrapper script or the agent's own end-of-session hook:
+
+```bash
+cm hook session-end --transcript ~/.codex/sessions/2026/10/06/rollout.jsonl
 ```
 
 **Long sessions: reflect often.** The diary step reads at most `diaryMaxInputChars` (default 50,000) characters of a transcript: the start, the end, and error/correction lines picked from the middle (see [Reflection Settings](#reflection-settings)). A session that goes on for hours can be much longer than that. `cm reflect` remembers how far into each session it got, and when a session has grown it reflects only the new part. Running it often (from a hook, or cron every 30–60 minutes) therefore keeps each new part small enough to be read in full. Raising `diaryMaxInputChars` is the other option when your model has the context for it.

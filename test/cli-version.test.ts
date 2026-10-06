@@ -87,8 +87,15 @@ describe("CLI Error Handling", () => {
   });
 
   test("missing required argument shows error", async () => {
-    const result = await runCm(["context"]); // Missing required <task> argument
+    const result = await runCm(["why"]); // Missing required <bulletId> argument
     expect(result.code).not.toBe(0);
     expect(result.stderr).toContain("missing required argument");
+  });
+
+  test("context without a task and with empty stdin fails validation", async () => {
+    // The task may come from piped stdin; with nothing piped it is still required.
+    const result = await runCm(["context"]);
+    expect(result.code).not.toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toContain("task");
   });
 });

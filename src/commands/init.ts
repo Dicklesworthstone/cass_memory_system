@@ -6,6 +6,7 @@ import chalk from "chalk";
 import yaml from "yaml";
 import { cassAvailable } from "../cass.js";
 import { getDefaultConfig } from "../config.js";
+import { hookCommand } from "./hook.js";
 import { withLock } from "../lock.js";
 import { formatKv, icon, iconPrefix } from "../output.js";
 import { createEmptyPlaybook, loadPlaybook, savePlaybook } from "../playbook.js";
@@ -326,6 +327,18 @@ export async function initCommand(options: InitOptions) {
         }
       } else {
         console.log(chalk.gray(`Skipped. You can install later with: ${cli} guard --install`));
+      }
+
+      console.log("");
+      console.log(chalk.bold("Auto-Reflection (Optional):"));
+      console.log("Reflect each finished Claude Code session in the background, so rules are");
+      console.log("learned without running `cm reflect` by hand? (Uses your LLM budget.)");
+      console.log("");
+      const installReflect = await promptYesNo("Install SessionEnd auto-reflect hook? [y/N]: ");
+      if (installReflect) {
+        await hookCommand("install", {});
+      } else {
+        console.log(chalk.gray(`Skipped. You can install later with: ${cli} hook install`));
       }
     }
 

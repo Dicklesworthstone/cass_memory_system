@@ -6,6 +6,7 @@ import { diaryCommand } from "./commands/diary.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { forgetCommand } from "./commands/forget.js";
 import { guardCommand } from "./commands/guard.js";
+import { hookCommand } from "./commands/hook.js";
 import { initCommand } from "./commands/init.js";
 import { markCommand } from "./commands/mark.js";
 import { onboardCommand } from "./commands/onboard.js";
@@ -548,6 +549,47 @@ export function createProgram(argv: string[] = process.argv): Command {
     )
     .action(async (opts: any) => await updateCommand(opts));
 
+  // --- Hook (auto-reflection) ---
+  const hook = program
+    .command("hook")
+    .description("Auto-reflection: reflect each finished agent session in the background");
+  hook
+    .command("install")
+    .description("Install a Claude Code SessionEnd hook that runs `cm reflect` on each finished session")
+    .option("--global", "Install into ~/.claude/settings.json (all projects) instead of this project")
+    .option("--command <cmd>", "Command the hook runs (default: resolved `cm hook session-end`)")
+    .option("-j, --json", "Output JSON")
+    .addHelpText("after", () =>
+      formatCommandExamples(["hook install", "hook install --global --json", "hook status"]),
+    )
+    .action(async (opts: any) => await hookCommand("install", opts));
+  hook
+    .command("uninstall")
+    .description("Remove cm's SessionEnd hook (other hooks are left alone)")
+    .option("--global", "Remove from ~/.claude/settings.json")
+    .option("-j, --json", "Output JSON")
+    .action(async (opts: any) => await hookCommand("uninstall", opts));
+  hook
+    .command("status")
+    .description("Show whether auto-reflection is installed (project and user scope)")
+    .option("-j, --json", "Output JSON")
+    .action(async (opts: any) => await hookCommand("status", opts));
+  hook
+    .command("session-end")
+    .description(
+      "Hook body: read the SessionEnd payload from stdin and reflect that transcript in the background",
+    )
+    .option("--transcript <path>", "Transcript to reflect (for agents without a stdin payload)")
+    .option("--wait", "Run reflect in the foreground and wait for it")
+    .option("-j, --json", "Output JSON")
+    .addHelpText("after", () =>
+      formatCommandExamples([
+        "hook session-end --transcript ~/.codex/sessions/2026/10/06/s.jsonl",
+        "hook session-end --transcript ./session.jsonl --wait --json",
+      ]),
+    )
+    .action(async (opts: any) => await hookCommand("session-end", opts));
+
   // --- Diary ---
   program
     .command("diary")
@@ -1074,6 +1116,7 @@ export function hasJsonFlag(argv: string[] = process.argv): boolean {
     "doctor",
     "reflect",
     "diary",
+    "hook",
     "forget",
     "audit",
     "project",

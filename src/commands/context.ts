@@ -867,7 +867,7 @@ export async function contextCommand(task: string | undefined, flags: ContextFla
   // comes from stdin when it is not given (or is "-") and stdin is piped.
   if ((task === undefined || task.trim() === "" || task === "-") && !process.stdin.isTTY) {
     try {
-      task = await readStdinText();
+      task = await readStdinText({ firstByteTimeoutMs: 2000 });
     } catch {
       task = "";
     }
