@@ -1,5 +1,4 @@
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import chalk from "chalk";
@@ -898,7 +897,7 @@ export async function computeMemoryQualityChecks(config: Config): Promise<Health
     details: { bullets: pollutedBullets.size, events: pollutedEvents },
   });
 
-  const usesClaude = (await fileExists(".claude")) || (await fileExists(path.join(os.homedir(), ".claude")));
+  const usesClaude = (await fileExists(".claude")) || (await fileExists(expandPath("~/.claude")));
   if (usesClaude) {
     const hook = await getAutoReflectStatus();
     checks.push({

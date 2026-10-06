@@ -191,3 +191,105 @@ describe("cm hook install / status / uninstall", () => {
     });
   });
 });
+
+describe("cm hook human output and edge cases", () => {
+  function captureAll() {
+    const lines: string[] = [];
+    const origLog = console.log;
+    const origErr = console.error;
+    console.log = (...a: any[]) => lines.push(a.map(String).join(" "));
+    console.error = (...a: any[]) => lines.push(a.map(String).join(" "));
+    return {
+      text: () => lines.join("\n"),
+      restore: () => {
+        console.log = origLog;
+        console.error = origErr;
+      },
+    };
+  }
+
+  it("install, status and uninstall print what they did", async () => {
+    await withTempCassHome(async (env) => {
+      const project = path.join(env.home, "proj-h");
+      await mkdir(project, { recursive: true });
+      await inDir(project, async () => {
+        const cap = captureAll();
+        try {
+          await hookCommand("install", { command: CMD });
+          await hookCommand("install", { command: CMD }); // second time: "Updated"
+          await hookCommand("status", {});
+          await hookCommand("uninstall", {});
+          await hookCommand("uninstall", {}); // nothing left
+          await hookCommand("status", {});
+        } finally {
+          cap.restore();
+        }
+        const out = cap.text();
+        expect(out).toContain("Installed SessionEnd auto-reflect hook");
+        expect(out).toContain("Updated SessionEnd auto-reflect hook");
+        expect(out).toMatch(/project\s+installed/);
+        expect(out).toContain("Removed the auto-reflect hook");
+        expect(out).toContain("No cm auto-reflect hook");
+        expect(out).toContain("hook install");
+      });
+    });
+  });
+
+  it("--global targets the user settings file", async () => {
+    await withTempCassHome(async (env) => {
+      const cap = captureConsole();
+      try {
+        await hookCommand("install", { json: true, global: true, command: CMD });
+      } finally {
+        cap.restore();
+      }
+      const data = JSON.parse(cap.logs.join("\n")).data;
+      expect(data.scope).toBe("user");
+      expect(data.settingsPath).toBe(path.join(env.home, ".claude", "settings.json"));
+    });
+  });
+
+  it("uninstall refuses to touch an unparseable settings file", async () => {
+    await withTempCassHome(async (env) => {
+      const project = path.join(env.home, "proj-bad");
+      const settingsPath = path.join(project, ".claude", "settings.json");
+      await mkdir(path.dirname(settingsPath), { recursive: true });
+      await writeFile(settingsPath, "not json");
+      await inDir(project, async () => {
+        const cap = captureConsole();
+        try {
+          await hookCommand("uninstall", { json: true });
+        } finally {
+          cap.restore();
+        }
+      });
+      expect(await readFile(settingsPath, "utf-8")).toBe("not json");
+    });
+  });
+
+  it("session-end skips a nested run and logs why", async () => {
+    await withTempCassHome(async (env) => {
+      const t = path.join(env.home, "s.jsonl");
+      await writeFile(t, "{}\n");
+      const prev = process.env[HOOK_ACTIVE_ENV];
+      process.env[HOOK_ACTIVE_ENV] = "1";
+      try {
+        await hookCommand("session-end", { transcript: t });
+      } finally {
+        if (prev === undefined) delete process.env[HOOK_ACTIVE_ENV];
+        else process.env[HOOK_ACTIVE_ENV] = prev;
+      }
+      const { hookLogPath } = await import("../src/commands/hook.js");
+      expect(await readFile(hookLogPath(), "utf-8")).toContain("session-end skip: nested session");
+    });
+  });
+});
+
+describe("selfInvocation / defaultHookCommand", () => {
+  it("re-invokes this cm and ends with the hook subcommand", async () => {
+    const { selfInvocation, defaultHookCommand } = await import("../src/commands/hook.js");
+    const argv = selfInvocation();
+    expect(argv.length).toBeGreaterThanOrEqual(1);
+    expect(defaultHookCommand().endsWith(SESSION_END_HOOK_ARGS)).toBe(true);
+  });
+});

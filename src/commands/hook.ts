@@ -6,7 +6,6 @@
 import { spawn } from "node:child_process";
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import chalk from "chalk";
 import { loadConfig } from "../config.js";
@@ -74,7 +73,8 @@ export function defaultHookCommand(): string {
 }
 
 export async function resolveSettingsPath(scope: HookScope): Promise<string | null> {
-  if (scope === "user") return path.join(os.homedir(), ".claude", "settings.json");
+  // expandPath honours HOME (os.homedir() is cached at startup under Bun).
+  if (scope === "user") return expandPath("~/.claude/settings.json");
   const root = await resolveGitRoot();
   return path.join(root ?? process.cwd(), ".claude", "settings.json");
 }

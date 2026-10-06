@@ -277,3 +277,107 @@ describe("cm playbook scrub (command)", () => {
     });
   });
 });
+
+describe("cm playbook scrub / conflicts human output", () => {
+  function captureAll() {
+    const lines: string[] = [];
+    const origLog = console.log;
+    const origErr = console.error;
+    console.log = (...a: any[]) => lines.push(a.map(String).join(" "));
+    console.error = (...a: any[]) => lines.push(a.map(String).join(" "));
+    return {
+      text: () => lines.join("\n"),
+      restore: () => {
+        console.log = origLog;
+        console.error = origErr;
+      },
+    };
+  }
+
+  it("scrub dry-run lists changed bullets and orphans with next steps", async () => {
+    await withTempCassHome(async (env) => {
+      await writeFile(
+        env.playbookPath,
+        yaml.stringify(
+          createTestPlaybook([
+            createTestBullet({
+              id: "b-orphan",
+              sourceSessions: [POLLUTED],
+              feedbackEvents: [ev("helpful", POLLUTED)],
+              helpfulCount: 1,
+            }),
+          ]),
+        ),
+      );
+      await inDir(env.home, async () => {
+        const cap = captureAll();
+        try {
+          await playbookCommand("scrub", [], { dryRun: true, fromSessions: ["llm-subprocess-cwd"] });
+        } finally {
+          cap.restore();
+        }
+        const out = cap.text();
+        expect(out).toContain("dry run");
+        expect(out).toContain("b-orphan");
+        expect(out).toContain("no genuine support left");
+        expect(out).toContain("--deprecate-orphans");
+        expect(out).toContain("Re-run without --dry-run");
+      });
+    });
+  });
+
+  it("scrub with --deprecate-orphans reports what it deprecated; no playbook prints a notice", async () => {
+    await withTempCassHome(async (env) => {
+      await writeFile(
+        env.playbookPath,
+        yaml.stringify(
+          createTestPlaybook([
+            createTestBullet({ id: "b-o", sourceSessions: [POLLUTED], feedbackEvents: [ev("helpful", POLLUTED)] }),
+          ]),
+        ),
+      );
+      await inDir(env.home, async () => {
+        const cap = captureAll();
+        try {
+          await playbookCommand("scrub", [], { fromSessions: ["llm-subprocess-cwd"], deprecateOrphans: true });
+        } finally {
+          cap.restore();
+        }
+        expect(cap.text()).toContain("Deprecated 1");
+        expect(cap.text()).toContain("Backup:");
+      });
+    });
+  });
+
+  it("conflicts prints pairs with a suggestion, and a clean message when there are none", async () => {
+    await withTempCassHome(async (env) => {
+      await writeFile(
+        env.playbookPath,
+        yaml.stringify(
+          createTestPlaybook([
+            createTestBullet({ id: "b-y", content: "Always commit generated lockfiles", category: "git" }),
+            createTestBullet({ id: "b-n", content: "Never commit generated lockfiles", category: "git" }),
+          ]),
+        ),
+      );
+      await inDir(env.home, async () => {
+        let cap = captureAll();
+        try {
+          await playbookCommand("conflicts", [], {});
+        } finally {
+          cap.restore();
+        }
+        expect(cap.text()).toContain("PLAYBOOK CONFLICTS (1)");
+        expect(cap.text()).toContain("Equal support");
+
+        cap = captureAll();
+        try {
+          await playbookCommand("conflicts", [], { category: "security" });
+        } finally {
+          cap.restore();
+        }
+        expect(cap.text()).toContain("No contradicting rules");
+      });
+    });
+  });
+});
