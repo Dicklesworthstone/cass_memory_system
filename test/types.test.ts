@@ -432,7 +432,7 @@ describe("ConfigSchema", () => {
     expect(result.provider).toBe("anthropic");
     expect(result.model).toBe("claude-sonnet-5");
     expect(result.cassPath).toBe("cass");
-    expect(result.maxBulletsInContext).toBe(50);
+    expect(result.maxBulletsInContext).toBe(10);
     expect(result.maxHistoryInContext).toBe(10);
     expect(result.jsonOutput).toBe(false);
     expect(result.verbose).toBe(false);

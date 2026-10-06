@@ -491,7 +491,22 @@ export const ConfigSchema = z.object({
   dedupSimilarityThreshold: z.number().default(0.85),
   pruneHarmfulThreshold: z.number().default(3),
   defaultDecayHalfLife: z.number().default(90),
-  maxBulletsInContext: z.number().default(50),
+  // Retrieval sizing (#89). A 50-bullet default produced ~15k-token context
+  // payloads with no recall gain over 10; agents pay for every token.
+  maxBulletsInContext: z.number().default(10),
+  // Approximate token budget (~4 chars/token) for the rules + anti-patterns
+  // in one `cm context` result. Ranked bullets are taken in order until the
+  // next one would exceed it (the top bullet is always kept). 0 disables.
+  contextTokenBudget: z.number().int().min(0).default(4000),
+  // Drop bullets whose relevance is below this fraction of the best match's
+  // relevance for the same query: the long tail of one-keyword overlaps is
+  // noise that crowds out the rules that actually answer the task. 0 disables.
+  minRelativeRelevance: z.number().min(0).max(1).default(0.2),
+  // How far a bullet's feedback track record can move its ranking, as a
+  // bounded multiplier in [1 - w, 1 + w] damped while marks are few (#89).
+  // Relevance decides what is retrieved; feedback only reorders it. 0 ignores
+  // feedback for ranking entirely.
+  feedbackWeight: z.number().min(0).max(0.9).default(0.25),
   maxHistoryInContext: z.number().default(10),
   sessionLookbackDays: z.number().default(7),
   validationLookbackDays: z.number().default(90),
@@ -627,6 +642,36 @@ export const ScoredBulletSchema = PlaybookBulletSchema.extend({
 });
 export type ScoredBullet = z.infer<typeof ScoredBulletSchema>;
 
+/**
+ * A bullet as `cm context` returns it: what an agent needs to act on the rule
+ * and give feedback on it, without the full feedback-event log, source-session
+ * list or embedding (those made each bullet ~1.2k chars, #89). The complete
+ * record is one `cm playbook get <id>` away.
+ */
+export const ContextBulletSchema = z.object({
+  id: z.string(),
+  scope: BulletScopeEnum,
+  workspace: z.string().optional(),
+  category: z.string(),
+  content: z.string(),
+  type: BulletTypeEnum,
+  isNegative: z.boolean(),
+  kind: BulletKindEnum,
+  state: BulletStateEnum,
+  maturity: BulletMaturityEnum,
+  pinned: z.boolean().optional(),
+  tags: z.array(z.string()),
+  helpfulCount: z.number(),
+  harmfulCount: z.number(),
+  searchPointer: z.string().optional(),
+  relevanceScore: z.number(),
+  effectiveScore: z.number(),
+  finalScore: z.number().optional(),
+  lastHelpful: z.string().optional(),
+  reasoning: z.string().optional(),
+});
+export type ContextBullet = z.infer<typeof ContextBulletSchema>;
+
 export const DegradedCassReasonSchema = z.enum([
   "NOT_FOUND",
   "INDEX_MISSING",
@@ -656,8 +701,8 @@ export type DegradedSummary = z.infer<typeof DegradedSummarySchema>;
 
 export const ContextResultSchema = z.object({
   task: z.string(),
-  relevantBullets: z.array(ScoredBulletSchema),
-  antiPatterns: z.array(ScoredBulletSchema),
+  relevantBullets: z.array(ContextBulletSchema),
+  antiPatterns: z.array(ContextBulletSchema),
   historySnippets: z.array(CassSearchHitSchema),
   deprecatedWarnings: z.array(z.string()),
   suggestedCassQueries: z.array(z.string()),
@@ -688,6 +733,22 @@ export const ContextResultSchema = z.object({
       pattern: z.string(),
       reason: z.string(),
       reference: z.string(),
+    })
+    .optional(),
+  /**
+   * How the returned bullets were chosen from the scored candidates: how many
+   * fell below the relevance floors, the count limit, or the token budget.
+   * Lets an agent tell "nothing relevant" from "budget too small".
+   */
+  retrieval: z
+    .object({
+      candidates: z.number(),
+      returned: z.number(),
+      droppedByRelevance: z.number(),
+      droppedByLimit: z.number(),
+      droppedByTokenBudget: z.number(),
+      tokenBudget: z.number(),
+      estimatedTokens: z.number(),
     })
     .optional(),
 });

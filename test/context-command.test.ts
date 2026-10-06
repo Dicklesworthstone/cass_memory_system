@@ -1115,9 +1115,11 @@ describe("generateContextResult", () => {
         });
         const ids = result.relevantBullets.map((b) => b.id);
 
-        expect(ids.length).toBeGreaterThanOrEqual(2);
         expect(ids[0]).toBe("b-high");
-        expect(ids).toContain("b-low");
+        // b-low only shares "api", which both bullets contain (near-zero IDF):
+        // far below the relative relevance floor, so it is dropped, not shown last.
+        expect(ids).not.toContain("b-low");
+        expect(result.retrieval?.droppedByRelevance).toBe(1);
       } finally {
         capture.restore();
       }

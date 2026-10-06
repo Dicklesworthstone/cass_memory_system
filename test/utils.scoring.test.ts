@@ -1,188 +1,249 @@
 /**
- * Unit Tests: scoreBulletRelevance
+ * Unit Tests: context retrieval ranking (#89)
  *
- * Tests the bullet relevance scoring function used for context retrieval.
- * Scoring rules:
- * - Exact token match in content: +3 points
- * - Partial substring match in content: +1 point
- * - Tag match: +5 points
+ * - scoreLexicalRelevance: corpus-aware BM25, 0..10 scale
+ * - stemToken: conservative suffix stemming
+ * - getFeedbackMultiplier: bounded, damped feedback signal
+ * - selectContextBullets: relevance floors, count limit, token budget
  */
 import { describe, expect, test } from "bun:test";
-import { scoreBulletRelevance } from "../src/utils.js";
+import { scoreBulletsKeyword, selectContextBullets } from "../src/commands/context.js";
+import { getFeedbackMultiplier } from "../src/scoring.js";
+import type { FeedbackEvent, PlaybookBullet, ScoredBullet } from "../src/types.js";
+import { scoreLexicalRelevance, stemToken } from "../src/utils.js";
+import { createTestBullet, createTestConfig } from "./helpers/factories.js";
 
-describe("scoreBulletRelevance", () => {
-  describe("Edge cases - Empty inputs", () => {
-    test("returns 0 for empty content", () => {
-      expect(scoreBulletRelevance("", ["tag1"], ["keyword"])).toBe(0);
-    });
+const doc = (id: string, content: string, tags: string[] = []) => ({ id, content, tags });
 
-    test("returns 0 for empty keywords array", () => {
-      expect(scoreBulletRelevance("some content", ["tag1"], [])).toBe(0);
-    });
+function events(type: "helpful" | "harmful", count: number): FeedbackEvent[] {
+  const now = new Date().toISOString();
+  return Array.from({ length: count }, () => ({ type, timestamp: now }) as FeedbackEvent);
+}
 
-    test("returns 0 for both empty", () => {
-      expect(scoreBulletRelevance("", [], [])).toBe(0);
-    });
-
-    test("handles empty tags array gracefully", () => {
-      const score = scoreBulletRelevance("test content", [], ["test"]);
-      expect(score).toBe(3); // exact token match only
-    });
+describe("stemToken", () => {
+  test("strips common inflections", () => {
+    expect(stemToken("deploying")).toBe("deploy");
+    expect(stemToken("deployed")).toBe("deploy");
+    expect(stemToken("deploys")).toBe("deploy");
+    expect(stemToken("libraries")).toBe("library");
+    expect(stemToken("patches")).toBe("patch");
   });
 
-  describe("Exact token matching (+3 points)", () => {
-    test("scores exact single word match", () => {
-      const score = scoreBulletRelevance("The user wants authentication", [], ["authentication"]);
-      expect(score).toBe(3);
-    });
+  test("leaves short, technical and -ss/-us/-is tokens alone", () => {
+    expect(stemToken("bus")).toBe("bus");
+    expect(stemToken("node.js")).toBe("node.js");
+    expect(stemToken("user_id")).toBe("user_id");
+    expect(stemToken("class")).toBe("class");
+    expect(stemToken("status")).toBe("status");
+    expect(stemToken("analysis")).toBe("analysis");
+  });
+});
 
-    test("scores multiple exact matches", () => {
-      const score = scoreBulletRelevance(
-        "Use typescript for authentication",
-        [],
-        ["typescript", "authentication"],
-      );
-      expect(score).toBe(6); // 3 + 3
-    });
-
-    test("is case insensitive", () => {
-      const score = scoreBulletRelevance("TypeScript is great", [], ["typescript"]);
-      expect(score).toBe(3);
-    });
-
-    test("matches word boundaries via tokenization", () => {
-      const score = scoreBulletRelevance("config settings", [], ["config"]);
-      expect(score).toBe(3);
-    });
+describe("scoreLexicalRelevance", () => {
+  test("empty corpus returns an empty map", () => {
+    expect(scoreLexicalRelevance([], ["auth"]).size).toBe(0);
   });
 
-  describe("Partial substring matching (+1 point)", () => {
-    test("scores partial match when token not found", () => {
-      // "auth" is not a complete token, but is substring of "authentication"
-      const score = scoreBulletRelevance("Use authentication for login", [], ["auth"]);
-      expect(score).toBe(1);
-    });
-
-    test("scores partial matches for compound words", () => {
-      const score = scoreBulletRelevance("Implement middleware handler", [], ["ware"]);
-      expect(score).toBe(1);
-    });
-
-    test("does not double-count when both exact and partial match", () => {
-      // "test" is an exact token, should get 3, not 3+1
-      const score = scoreBulletRelevance("test driven development", [], ["test"]);
-      expect(score).toBe(3);
-    });
+  test("no keywords scores every doc 0", () => {
+    const scores = scoreLexicalRelevance([doc("a", "use jwt"), doc("b", "use oauth")], []);
+    expect(scores.get("a")).toBe(0);
+    expect(scores.get("b")).toBe(0);
   });
 
-  describe("Tag matching (+5 points)", () => {
-    test("scores tag match", () => {
-      const score = scoreBulletRelevance("Some content", ["security"], ["security"]);
-      expect(score).toBe(5);
-    });
-
-    test("tag matching is case insensitive", () => {
-      const score = scoreBulletRelevance("Some content", ["Security"], ["security"]);
-      expect(score).toBe(5);
-    });
-
-    test("multiple tag matches accumulate", () => {
-      const score = scoreBulletRelevance("Some content", ["api", "rest"], ["api", "rest"]);
-      expect(score).toBe(10); // 5 + 5
-    });
-
-    test("tag match adds to content match", () => {
-      const score = scoreBulletRelevance("Implement security checks", ["security"], ["security"]);
-      // Content exact match (3) + tag match (5) = 8
-      expect(score).toBe(8);
-    });
+  test("non-matching docs score 0, matching docs score in (0, 10]", () => {
+    const scores = scoreLexicalRelevance(
+      [doc("a", "Rotate JWT signing keys monthly"), doc("b", "Prefer bun over npm")],
+      ["jwt"],
+    );
+    expect(scores.get("b")).toBe(0);
+    expect(scores.get("a")!).toBeGreaterThan(0);
+    expect(scores.get("a")!).toBeLessThanOrEqual(10);
   });
 
-  describe("Combined scoring scenarios", () => {
-    test("real-world bullet with multiple matches", () => {
-      const content = "Add rate limiting to the REST API endpoints";
-      const tags = ["api", "security"];
-      const keywords = ["api", "rate", "limiting"];
-
-      // "api" exact: 3, tag: 5 = 8
-      // "rate" exact: 3
-      // "limiting" exact: 3
-      const score = scoreBulletRelevance(content, tags, keywords);
-      expect(score).toBe(14);
-    });
-
-    test("content match without tag match", () => {
-      const score = scoreBulletRelevance("Configure database connection", ["db"], ["database"]);
-      // "database" exact: 3, no tag match for "database"
-      expect(score).toBe(3);
-    });
-
-    test("tag match without content match", () => {
-      const score = scoreBulletRelevance("Unrelated content here", ["auth"], ["auth"]);
-      // No content match, tag match: 5
-      expect(score).toBe(5);
-    });
-
-    test("partial content match with tag match", () => {
-      const score = scoreBulletRelevance("Use authentication middleware", ["auth"], ["auth"]);
-      // Partial "auth" in "authentication": 1, tag match: 5
-      expect(score).toBe(6);
-    });
+  test("rare terms outweigh common ones (IDF)", () => {
+    const corpus = [
+      doc("rare", "Add the postgres migration behind a feature flag"),
+      doc("common1", "Always run tests before committing"),
+      doc("common2", "Run tests in CI and locally"),
+      doc("common3", "Tests must be deterministic"),
+    ];
+    // Each doc matches exactly one query term; the one matching the rare term wins.
+    const scores = scoreLexicalRelevance(corpus, ["tests", "postgres"]);
+    expect(scores.get("rare")!).toBeGreaterThan(scores.get("common1")!);
+    expect(scores.get("common1")!).toBeGreaterThan(0);
   });
 
-  describe("Performance considerations", () => {
-    test("handles long content efficiently", () => {
-      const longContent = "word ".repeat(1000) + "target";
-      const score = scoreBulletRelevance(longContent, [], ["target"]);
-      expect(score).toBe(3);
-    });
-
-    test("handles many keywords", () => {
-      const content = "word1 word2 word3";
-      const keywords = Array.from({ length: 50 }, (_, i) => `keyword${i}`);
-      keywords.push("word1"); // Add one that matches
-
-      const score = scoreBulletRelevance(content, [], keywords);
-      expect(score).toBe(3); // Only word1 matches
-    });
-
-    test("does not double-count duplicate keywords", () => {
-      const content = "secure auth";
-      const keywords = ["auth", "auth", "Auth"];
-      const score = scoreBulletRelevance(content, [], keywords);
-      expect(score).toBe(3); // exact match once, not multiplied by duplicates
-    });
-
-    test("handles many tags", () => {
-      const tags = Array.from({ length: 20 }, (_, i) => `tag${i}`);
-      tags.push("match");
-
-      const score = scoreBulletRelevance("content", tags, ["match"]);
-      expect(score).toBe(5); // Tag match only
-    });
+  test("covering more of the query scores higher", () => {
+    const corpus = [
+      doc("both", "Retry flaky network calls with exponential backoff"),
+      doc("one", "Network timeouts default to thirty seconds"),
+      doc("none", "Use zod for schema validation"),
+    ];
+    const scores = scoreLexicalRelevance(corpus, ["network", "backoff"]);
+    expect(scores.get("both")!).toBeGreaterThan(scores.get("one")!);
+    expect(scores.get("one")!).toBeGreaterThan(0);
   });
 
-  describe("Special characters and edge cases", () => {
-    test("handles content with special characters", () => {
-      const score = scoreBulletRelevance("Use @decorator for auth", [], ["decorator"]);
-      expect(score).toBe(3);
-    });
+  test("query terms absent from the corpus still count in the denominator", () => {
+    const corpus = [doc("a", "Prefer bun for scripts"), doc("b", "Pin versions in CI")];
+    const full = scoreLexicalRelevance(corpus, ["bun"]).get("a")!;
+    const partial = scoreLexicalRelevance(corpus, ["bun", "kubernetes"]).get("a")!;
+    expect(partial).toBeLessThan(full);
+  });
 
-    test("handles hyphenated words", () => {
-      // Depends on tokenize implementation
-      const score = scoreBulletRelevance("Add rate-limiting feature", [], ["rate"]);
-      // "rate" should be a token after splitting on hyphens
-      expect(score).toBeGreaterThan(0);
-    });
+  test("matches inflected forms via stemming and prefixes", () => {
+    const corpus = [doc("a", "Deployed services need health checks"), doc("b", "Unrelated rule")];
+    expect(scoreLexicalRelevance(corpus, ["deploying"]).get("a")!).toBeGreaterThan(0);
+    // "auth" is a prefix of "authentication": partial match.
+    const prefix = scoreLexicalRelevance(
+      [doc("a", "Use authentication middleware"), doc("b", "Unrelated rule")],
+      ["auth"],
+    );
+    expect(prefix.get("a")!).toBeGreaterThan(0);
+  });
 
-    test("handles numeric content", () => {
-      const score = scoreBulletRelevance("Version 2.0 release", [], ["version"]);
-      expect(score).toBe(3);
-    });
+  test("tag matches count more than a single content occurrence", () => {
+    const corpus = [
+      doc("tagged", "Keep handlers small", ["security"]),
+      doc("content", "Review security of handlers"),
+      doc("other", "Unrelated rule"),
+    ];
+    const scores = scoreLexicalRelevance(corpus, ["security"]);
+    expect(scores.get("tagged")!).toBeGreaterThan(scores.get("content")!);
+  });
 
-    test("handles unicode characters", () => {
-      const score = scoreBulletRelevance("Implement i18n for français", [], ["i18n"]);
-      expect(score).toBe(3);
+  test("is case insensitive", () => {
+    const scores = scoreLexicalRelevance([doc("a", "TypeScript strict mode"), doc("b", "x")], [
+      "TYPESCRIPT",
+    ]);
+    expect(scores.get("a")!).toBeGreaterThan(0);
+  });
+});
+
+describe("getFeedbackMultiplier", () => {
+  const config = createTestConfig();
+
+  test("unmarked bullet is neutral", () => {
+    expect(getFeedbackMultiplier(createTestBullet({ feedbackEvents: [] }), config)).toBe(1);
+  });
+
+  test("helpful marks raise it, harmful marks lower it, both bounded by feedbackWeight", () => {
+    const good = getFeedbackMultiplier(
+      createTestBullet({ feedbackEvents: events("helpful", 50) }),
+      config,
+    );
+    const bad = getFeedbackMultiplier(
+      createTestBullet({ feedbackEvents: events("harmful", 50) }),
+      config,
+    );
+    expect(good).toBeGreaterThan(1);
+    expect(good).toBeLessThanOrEqual(1.25);
+    expect(bad).toBeLessThan(1);
+    expect(bad).toBeGreaterThanOrEqual(0.75);
+  });
+
+  test("few marks move it less than many marks (damping)", () => {
+    const one = getFeedbackMultiplier(createTestBullet({ feedbackEvents: events("helpful", 1) }), config);
+    const many = getFeedbackMultiplier(
+      createTestBullet({ feedbackEvents: events("helpful", 20) }),
+      config,
+    );
+    expect(one).toBeGreaterThan(1);
+    expect(one).toBeLessThan(many);
+    expect(one - 1).toBeLessThan(0.05);
+  });
+
+  test("feedbackWeight 0 ignores feedback; pinned gets full positive weight", () => {
+    const zero = createTestConfig({ feedbackWeight: 0 });
+    expect(
+      getFeedbackMultiplier(createTestBullet({ feedbackEvents: events("harmful", 9) }), zero),
+    ).toBe(1);
+    expect(getFeedbackMultiplier(createTestBullet({ pinned: true }), config)).toBe(1.25);
+  });
+});
+
+describe("ranking: feedback reorders, relevance decides (#89)", () => {
+  test("a heavily marked, weakly relevant rule does not outrank a strongly relevant one", () => {
+    const config = createTestConfig();
+    const general: PlaybookBullet = createTestBullet({
+      id: "general",
+      content: "Always run the full test suite before you push any database change",
+      feedbackEvents: events("helpful", 40),
+      maturity: "proven",
     });
+    const specific: PlaybookBullet = createTestBullet({
+      id: "specific",
+      content: "Postgres migration locks: add indexes concurrently to avoid table locks",
+      feedbackEvents: [],
+    });
+    const filler = Array.from({ length: 6 }, (_, i) =>
+      createTestBullet({ id: `filler-${i}`, content: `Unrelated guidance number ${i}` }),
+    );
+    const ranked = scoreBulletsKeyword(
+      [general, specific, ...filler],
+      ["postgres", "migration", "locks", "database"],
+      config,
+    );
+    expect(ranked[0].id).toBe("specific");
+  });
+
+  test("among equally relevant rules, the better track record wins", () => {
+    const config = createTestConfig();
+    const a = createTestBullet({ id: "a", content: "Cache invalidation needs explicit keys" });
+    const b = createTestBullet({
+      id: "b",
+      content: "Cache invalidation needs explicit keys",
+      feedbackEvents: events("helpful", 10),
+    });
+    const ranked = scoreBulletsKeyword([a, b], ["cache", "invalidation"], config);
+    expect(ranked[0].id).toBe("b");
+  });
+});
+
+describe("selectContextBullets", () => {
+  function scored(id: string, relevance: number, content = `rule ${id}`): ScoredBullet {
+    return {
+      ...createTestBullet({ id, content }),
+      relevanceScore: relevance,
+      effectiveScore: 0,
+      finalScore: relevance,
+    };
+  }
+  const base = { maxBullets: 10, minRelevance: 0.1, minRelativeRelevance: 0, tokenBudget: 0 };
+
+  test("empty input returns nothing", () => {
+    const { selected, stats } = selectContextBullets([], base);
+    expect(selected).toEqual([]);
+    expect(stats.candidates).toBe(0);
+    expect(stats.returned).toBe(0);
+  });
+
+  test("applies the absolute and relative relevance floors", () => {
+    const input = [scored("a", 8), scored("b", 3), scored("c", 1), scored("d", 0)];
+    const { selected, stats } = selectContextBullets(input, { ...base, minRelativeRelevance: 0.25 });
+    expect(selected.map((b) => b.id)).toEqual(["a", "b"]);
+    expect(stats.droppedByRelevance).toBe(2);
+  });
+
+  test("caps at maxBullets", () => {
+    const input = [scored("a", 5), scored("b", 4), scored("c", 3)];
+    const { selected, stats } = selectContextBullets(input, { ...base, maxBullets: 2 });
+    expect(selected.map((b) => b.id)).toEqual(["a", "b"]);
+    expect(stats.droppedByLimit).toBe(1);
+  });
+
+  test("stops at the token budget but always keeps the top bullet", () => {
+    const long = "x ".repeat(2000);
+    const input = [scored("a", 5, long), scored("b", 4, long), scored("c", 3)];
+    const { selected, stats } = selectContextBullets(input, { ...base, tokenBudget: 50 });
+    expect(selected.map((b) => b.id)).toEqual(["a"]);
+    expect(stats.droppedByTokenBudget).toBe(2);
+    expect(stats.estimatedTokens).toBeGreaterThan(50);
+  });
+
+  test("budget 0 means unlimited", () => {
+    const long = "x ".repeat(2000);
+    const input = [scored("a", 5, long), scored("b", 4, long)];
+    expect(selectContextBullets(input, base).selected).toHaveLength(2);
   });
 });

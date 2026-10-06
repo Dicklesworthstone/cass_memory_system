@@ -250,9 +250,14 @@ describe("E2E: CLI context command", () => {
         const parsed = JSON.parse(output);
         const ids = parsed.data.relevantBullets.map((b: any) => b.id);
 
-        expect(ids.length).toBeGreaterThanOrEqual(2);
         expect(ids[0]).toBe("rule-high");
-        expect(ids).toContain("rule-low");
+        // rule-low matches only "api", shared by every bullet: dropped by the
+        // relative relevance floor and reported in the retrieval stats.
+        expect(ids).not.toContain("rule-low");
+        expect(parsed.data.retrieval.droppedByRelevance).toBe(1);
+        // Compact projection: no feedback log or embedding in context output (#89).
+        expect(parsed.data.relevantBullets[0].feedbackEvents).toBeUndefined();
+        expect(parsed.data.relevantBullets[0].embedding).toBeUndefined();
       });
     });
 

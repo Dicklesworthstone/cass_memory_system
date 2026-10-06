@@ -1066,7 +1066,7 @@ describe("Config Defaults Snapshot", () => {
     // Key thresholds
     expect(defaults.dedupSimilarityThreshold).toBe(0.85);
     expect(defaults.pruneHarmfulThreshold).toBe(3);
-    expect(defaults.maxBulletsInContext).toBe(50);
+    expect(defaults.maxBulletsInContext).toBe(10);
     expect(defaults.maxHistoryInContext).toBe(10);
     expect(defaults.minRelevanceScore).toBe(0.1);
 

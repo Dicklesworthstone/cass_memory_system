@@ -579,7 +579,8 @@ Config lives at `~/.cass-memory/config.json` (global) and `.cass/config.json` (r
     "decayHalfLifeDays": 90,
     "harmfulMultiplier": 4
   },
-  "maxBulletsInContext": 50,
+  "maxBulletsInContext": 10,
+  "contextTokenBudget": 4000,
   "maxHistoryInContext": 10,
   "sessionLookbackDays": 7,
   "crossAgent": {

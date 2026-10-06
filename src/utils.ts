@@ -2041,37 +2041,110 @@ export function checkDeprecatedPatterns(
 
 // --- Scoring ---
 
-export function scoreBulletRelevance(
-  bulletContent: string,
-  bulletTags: string[],
+/**
+ * Light suffix stemmer for retrieval matching, so "deploying", "deployed" and
+ * "deploys" all meet "deploy". Deliberately conservative: short tokens and
+ * technical tokens (anything with digits or separators: `node.js`, `c++`,
+ * `user_id`) pass through untouched, and the prefix fallback in
+ * `scoreLexicalRelevance` absorbs what this misses ("caching" vs "cache").
+ */
+export function stemToken(token: string): string {
+  if (token.length <= 4 || /[^a-z]/.test(token)) return token;
+  if (token.endsWith("ies") && token.length > 5) return `${token.slice(0, -3)}y`;
+  if (token.endsWith("ing") && token.length > 6) return token.slice(0, -3);
+  if (token.endsWith("ed") && token.length > 5) return token.slice(0, -2);
+  if (/(?:ss|sh|ch|x|z)es$/.test(token)) return token.slice(0, -2);
+  if (token.endsWith("s") && !/(?:ss|us|is)$/.test(token)) return token.slice(0, -1);
+  return token;
+}
+
+/** Minimum length of both tokens before a prefix relation counts as a partial match. */
+const LEXICAL_PREFIX_MIN = 4;
+/** A partial (prefix) match counts as this fraction of an exact occurrence. */
+const LEXICAL_PARTIAL_WEIGHT = 0.5;
+/** Tag terms count as this many occurrences: tags are curated, content is prose. */
+const LEXICAL_TAG_WEIGHT = 2;
+const BM25_K1 = 1.2;
+const BM25_B = 0.75;
+
+/**
+ * Corpus-aware lexical relevance (BM25 over a bullet set), scored 0..10.
+ *
+ * The score of a document is the IDF-weighted share of the query it covers:
+ * matching a term that few bullets contain is worth far more than matching
+ * one that most bullets contain, and a term repeated in a long bullet counts
+ * less than once in a short one. 10 means every query term matched (at
+ * average length); terms absent from the whole corpus still count in the
+ * denominator, so a bullet matching one of five query terms never scores as
+ * if it matched them all.
+ *
+ * The 0..10 scale is shared with semantic similarity (cosine × 10) so the two
+ * can be blended linearly in `cm context`.
+ */
+export function scoreLexicalRelevance(
+  docs: ReadonlyArray<{ id: string; content: string; tags?: string[] }>,
   keywords: string[],
-): number {
-  if (!bulletContent || keywords.length === 0) return 0;
-
-  let score = 0;
-  const contentLower = bulletContent.toLowerCase();
-  const tagsLower = bulletTags.map((t) => t.toLowerCase());
-  const normalizedKeywords = Array.from(new Set(keywords.map((k) => k.toLowerCase())));
-
-  // Tokenize once
-  const contentTokens = new Set(tokenize(contentLower));
-
-  for (const k of normalizedKeywords) {
-    // Exact match in token set (fast)
-    if (contentTokens.has(k)) {
-      score += 3;
-    }
-    // Partial string match (slower fallback for "auth" -> "authenticate")
-    else if (contentLower.includes(k)) {
-      score += 1;
-    }
-
-    if (tagsLower.includes(k)) {
-      score += 5; // Higher weight for explicit tags
-    }
+): Map<string, number> {
+  const scores = new Map<string, number>();
+  const terms = Array.from(
+    new Set(
+      keywords
+        .flatMap((k) => tokenize(String(k)))
+        .map(stemToken)
+        .filter((t) => t.length > 0),
+    ),
+  );
+  if (docs.length === 0) return scores;
+  if (terms.length === 0) {
+    for (const d of docs) scores.set(d.id, 0);
+    return scores;
   }
 
-  return score;
+  const indexed = docs.map((d) => {
+    const tf = new Map<string, number>();
+    const contentTokens = tokenize(d.content || "").map(stemToken);
+    const tagTokens = (d.tags || []).flatMap((t) => tokenize(String(t))).map(stemToken);
+    for (const t of contentTokens) tf.set(t, (tf.get(t) ?? 0) + 1);
+    for (const t of tagTokens) tf.set(t, (tf.get(t) ?? 0) + LEXICAL_TAG_WEIGHT);
+    return { id: d.id, tf, len: contentTokens.length + tagTokens.length * LEXICAL_TAG_WEIGHT };
+  });
+  const n = indexed.length;
+  const avgLen = Math.max(1, indexed.reduce((sum, d) => sum + d.len, 0) / n);
+
+  // Per-term match weight per document: exact occurrences, else prefix matches at a discount.
+  const termMatches = terms.map((term) =>
+    indexed.map((d) => {
+      const exact = d.tf.get(term);
+      if (exact) return exact;
+      if (term.length < LEXICAL_PREFIX_MIN) return 0;
+      let partial = 0;
+      for (const [tok, count] of d.tf) {
+        if (tok.length < LEXICAL_PREFIX_MIN) continue;
+        if (tok.startsWith(term) || term.startsWith(tok)) partial += count;
+      }
+      return partial * LEXICAL_PARTIAL_WEIGHT;
+    }),
+  );
+
+  const idfs = termMatches.map((matches) => {
+    const df = matches.filter((m) => m > 0).length;
+    return Math.log(1 + (n - df + 0.5) / (df + 0.5));
+  });
+  const denominator = idfs.reduce((sum, idf) => sum + idf, 0);
+
+  indexed.forEach((d, docIdx) => {
+    let raw = 0;
+    terms.forEach((_term, termIdx) => {
+      const tf = termMatches[termIdx][docIdx];
+      if (tf <= 0) return;
+      const norm = tf + BM25_K1 * (1 - BM25_B + (BM25_B * d.len) / avgLen);
+      raw += idfs[termIdx] * ((tf * (BM25_K1 + 1)) / norm);
+    });
+    const score = denominator > 0 ? Math.min(10, (10 * raw) / denominator) : 0;
+    scores.set(d.id, Number.isFinite(score) ? score : 0);
+  });
+
+  return scores;
 }
 
 /**

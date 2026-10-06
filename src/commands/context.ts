@@ -16,7 +16,7 @@ import {
 import { getActiveBullets, loadMergedPlaybookWithSources } from "../playbook.js";
 import { createProgress, type ProgressReporter } from "../progress.js";
 import { sanitize } from "../sanitize.js";
-import { getEffectiveScore } from "../scoring.js";
+import { getEffectiveScore, getFeedbackMultiplier } from "../scoring.js";
 import {
   cosineSimilarity,
   embedText,
@@ -28,6 +28,7 @@ import { workspaceMatches } from "../workspace.js";
 import {
   type CassSearchHit,
   type Config,
+  type ContextBullet,
   type ContextResult,
   ErrorCode,
   type PlaybookBullet,
@@ -50,7 +51,7 @@ import {
   reportError,
   resolveGlobalDir,
   resolveRepoDir,
-  scoreBulletRelevance,
+  scoreLexicalRelevance,
   truncateWithIndicator,
   validateNonEmptyString,
   validateOneOf,
@@ -166,6 +167,122 @@ function safeDeprecatedPatternMatcher(pattern: string): (text: string) => boolea
 // ============================================================================
 
 /**
+ * Project a scored bullet onto what `cm context` returns (see ContextBulletSchema):
+ * no feedback-event log, source-session list or embedding.
+ */
+export function toContextBullet(b: ScoredBullet): ContextBullet {
+  return {
+    id: b.id,
+    scope: b.scope,
+    ...(b.workspace ? { workspace: b.workspace } : {}),
+    category: b.category,
+    content: b.content,
+    type: b.type,
+    isNegative: b.isNegative,
+    kind: b.kind,
+    state: b.state,
+    maturity: b.maturity,
+    ...(b.pinned ? { pinned: true } : {}),
+    tags: b.tags ?? [],
+    helpfulCount: b.helpfulCount ?? 0,
+    harmfulCount: b.harmfulCount ?? 0,
+    ...(b.searchPointer ? { searchPointer: b.searchPointer } : {}),
+    relevanceScore: roundScore(b.relevanceScore),
+    effectiveScore: roundScore(b.effectiveScore),
+    ...(b.finalScore !== undefined ? { finalScore: roundScore(b.finalScore) } : {}),
+    lastHelpful: formatLastHelpful(b),
+    reasoning: extractBulletReasoning(b),
+  };
+}
+
+function roundScore(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+  return Math.round(value * 1000) / 1000;
+}
+
+/** ~4 chars per token, the same estimate `--stats` uses. */
+function estimateTokensOf(value: unknown): number {
+  return Math.ceil(JSON.stringify(value).length / 4);
+}
+
+export interface ContextSelectionOptions {
+  maxBullets: number;
+  /** Absolute relevance floor (config.minRelevanceScore). */
+  minRelevance: number;
+  /** Relative floor as a fraction of the best relevance (config.minRelativeRelevance). */
+  minRelativeRelevance: number;
+  /** Approximate token budget for the selected bullets; 0 = unlimited. */
+  tokenBudget: number;
+}
+
+export interface ContextSelectionStats {
+  candidates: number;
+  returned: number;
+  droppedByRelevance: number;
+  droppedByLimit: number;
+  droppedByTokenBudget: number;
+  tokenBudget: number;
+  estimatedTokens: number;
+}
+
+/**
+ * Choose which ranked bullets go into a context result (#89).
+ *
+ * `scored` must already be sorted best-first. Bullets below the absolute
+ * relevance floor, or below `minRelativeRelevance` × the best bullet's
+ * relevance, are dropped; then at most `maxBullets` are kept, in rank order,
+ * while their compact projection fits the token budget. The top bullet is
+ * always kept even if it alone exceeds the budget, so a tiny budget degrades
+ * to "the single best rule" rather than to nothing.
+ */
+export function selectContextBullets(
+  scored: ScoredBullet[],
+  options: ContextSelectionOptions,
+): { selected: ScoredBullet[]; stats: ContextSelectionStats } {
+  const maxBullets =
+    Number.isFinite(options.maxBullets) && options.maxBullets > 0 ? options.maxBullets : 10;
+  const tokenBudget =
+    Number.isFinite(options.tokenBudget) && options.tokenBudget > 0 ? options.tokenBudget : 0;
+  const minRelevance = Number.isFinite(options.minRelevance) ? options.minRelevance : 0;
+  const relative = Number.isFinite(options.minRelativeRelevance)
+    ? Math.min(1, Math.max(0, options.minRelativeRelevance))
+    : 0;
+
+  const aboveFloor = scored.filter((b) => (b.relevanceScore ?? 0) >= minRelevance);
+  const bestRelevance = aboveFloor.reduce((max, b) => Math.max(max, b.relevanceScore ?? 0), 0);
+  const relevant = aboveFloor.filter(
+    (b) => (b.relevanceScore ?? 0) >= bestRelevance * relative,
+  );
+
+  const capped = relevant.slice(0, maxBullets);
+  const selected: ScoredBullet[] = [];
+  let estimatedTokens = 0;
+  let droppedByTokenBudget = 0;
+  for (const b of capped) {
+    const cost = estimateTokensOf(toContextBullet(b));
+    if (tokenBudget > 0 && selected.length > 0 && estimatedTokens + cost > tokenBudget) {
+      droppedByTokenBudget = capped.length - selected.length;
+      break;
+    }
+    selected.push(b);
+    estimatedTokens += cost;
+  }
+
+  return {
+    selected,
+    stats: {
+      candidates: scored.length,
+      returned: selected.length,
+      droppedByRelevance: scored.length - relevant.length,
+      droppedByLimit: relevant.length - capped.length,
+      droppedByTokenBudget,
+      tokenBudget,
+      estimatedTokens,
+    },
+  };
+}
+
+/**
  * Build the final ContextResult from gathered components.
  */
 export function buildContextResult(
@@ -183,27 +300,8 @@ export function buildContextResult(
   const maxHistory =
     Number.isFinite(limits.maxHistory) && limits.maxHistory > 0 ? limits.maxHistory : 10;
 
-  // Transform rules with additional metadata for LLM consumption
-  // Exclude embedding vectors from output - they bloat JSON and are internal implementation detail
-  const relevantBullets = rules.slice(0, maxBullets).map((b) => {
-    const { embedding: _embedding, ...withoutEmbedding } = b;
-    return {
-      ...withoutEmbedding,
-      lastHelpful: formatLastHelpful(b),
-      reasoning: extractBulletReasoning(b),
-    };
-  });
-
-  // Transform anti-patterns with additional metadata
-  // Exclude embedding vectors from output
-  const transformedAntiPatterns = antiPatterns.slice(0, maxBullets).map((b) => {
-    const { embedding: _embedding, ...withoutEmbedding } = b;
-    return {
-      ...withoutEmbedding,
-      lastHelpful: formatLastHelpful(b),
-      reasoning: extractBulletReasoning(b),
-    };
-  });
+  const relevantBullets = rules.slice(0, maxBullets).map(toContextBullet);
+  const transformedAntiPatterns = antiPatterns.slice(0, maxBullets).map(toContextBullet);
 
   // Transform history snippets - simplify structure, truncate long snippets
   const historySnippets = history.slice(0, maxHistory).map((h) => ({
@@ -268,6 +366,8 @@ export interface ContextFlags {
   stats?: boolean;
   logContext?: boolean;
   session?: string;
+  /** Approximate token budget for returned bullets; overrides config.contextTokenBudget. 0 = unlimited. */
+  maxTokens?: number;
 }
 
 export interface ContextComputation {
@@ -415,8 +515,9 @@ export async function scoreBulletsEnhanced(
     }
   }
 
+  const keywordScores = scoreLexicalRelevance(bullets, keywords);
   const scored: ScoredBullet[] = bullets.map((b) => {
-    const keywordScore = scoreBulletRelevance(b.content, b.tags, keywords);
+    const keywordScore = keywordScores.get(b.id) ?? 0;
 
     const hasSemantic =
       semanticEnabled &&
@@ -432,24 +533,63 @@ export async function scoreBulletsEnhanced(
 
     const w = hasSemantic ? semanticWeight : 0;
     const relevanceScore = keywordScore * (1 - w) + semanticScore * w;
-    const effectiveScore = getEffectiveScore(b, config);
-    const finalScore = relevanceScore * Math.max(0.1, effectiveScore);
-
     return {
       ...b,
       relevanceScore,
-      effectiveScore,
-      finalScore,
+      effectiveScore: getEffectiveScore(b, config),
+      // Relevance decides what is retrieved; the track record only reorders
+      // it within a bounded band (#89).
+      finalScore: relevanceScore * getFeedbackMultiplier(b, config),
     };
   });
 
-  // Sort by finalScore descending, with relevanceScore as tie-breaker for deterministic ordering
-  scored.sort((a, b) => {
+  return sortScoredBullets(scored);
+}
+
+/**
+ * Keyword-only scoring (no embeddings), for paths that must not touch the
+ * semantic backend. Same scale and ranking rule as `scoreBulletsEnhanced`.
+ */
+export function scoreBulletsKeyword(
+  bullets: PlaybookBullet[],
+  keywords: string[],
+  config: Config,
+): ScoredBullet[] {
+  const keywordScores = scoreLexicalRelevance(bullets, keywords);
+  return sortScoredBullets(
+    bullets.map((b) => {
+      const relevanceScore = keywordScores.get(b.id) ?? 0;
+      return {
+        ...b,
+        relevanceScore,
+        effectiveScore: getEffectiveScore(b, config),
+        finalScore: relevanceScore * getFeedbackMultiplier(b, config),
+      };
+    }),
+  );
+}
+
+/** finalScore descending; relevance, then id, as deterministic tie-breakers. */
+function sortScoredBullets(scored: ScoredBullet[]): ScoredBullet[] {
+  return scored.sort((a, b) => {
     const scoreDiff = (b.finalScore ?? 0) - (a.finalScore ?? 0);
     if (scoreDiff !== 0) return scoreDiff;
-    return (b.relevanceScore ?? 0) - (a.relevanceScore ?? 0);
+    const relDiff = (b.relevanceScore ?? 0) - (a.relevanceScore ?? 0);
+    if (relDiff !== 0) return relDiff;
+    return a.id.localeCompare(b.id);
   });
-  return scored;
+}
+
+function contextSelectionOptions(
+  config: Config,
+  flags: { limit?: number; top?: number; maxTokens?: number },
+): ContextSelectionOptions {
+  return {
+    maxBullets: flags.limit ?? flags.top ?? config.maxBulletsInContext,
+    minRelevance: config.minRelevanceScore,
+    minRelativeRelevance: config.minRelativeRelevance,
+    tokenBudget: flags.maxTokens ?? config.contextTokenBudget,
+  };
 }
 
 /**
@@ -501,14 +641,11 @@ export async function generateContextResult(
       : undefined,
   });
 
-  const maxBullets = flags.limit ?? flags.top ?? config.maxBulletsInContext;
-  const minRelevance = config.minRelevanceScore;
-  // scoredBullets is already sorted by finalScore with relevanceScore tie-breaker
-  // Filter by relevanceScore against config.minRelevanceScore (not finalScore > 0)
-  // so that the configured threshold is actually respected
-  const topBullets = scoredBullets
-    .filter((b) => (b.relevanceScore ?? 0) >= minRelevance)
-    .slice(0, maxBullets);
+  const selectionOptions = contextSelectionOptions(config, flags);
+  const { selected: topBullets, stats: selectionStats } = selectContextBullets(
+    scoredBullets,
+    selectionOptions,
+  );
 
   const rules = topBullets.filter((b) => !b.isNegative && b.kind !== "anti_pattern");
   const antiPatterns = topBullets.filter((b) => b.isNegative || b.kind === "anti_pattern");
@@ -565,13 +702,14 @@ export async function generateContextResult(
     warnings,
     suggestedQueries,
     {
-      maxBullets: flags.limit ?? flags.top ?? config.maxBulletsInContext,
+      maxBullets: selectionOptions.maxBullets,
       maxHistory: flags.history ?? config.maxHistoryInContext,
     },
   );
   if (degraded) {
     result.degraded = degraded;
   }
+  result.retrieval = selectionStats;
 
   // Surface which mode actually ran + why we degraded (if applicable).
   // This makes silent semantic-search fallback visible to agents consuming
@@ -667,24 +805,11 @@ export async function contextWithoutCass(
       bulletAppliesToWorkspace(b, effectiveWorkspace, sources),
     );
 
-    const scoredBullets: ScoredBullet[] = activeBullets.map((b) => {
-      const relevance = scoreBulletRelevance(b.content, b.tags, keywords);
-      const effective = getEffectiveScore(b, config);
-      const final = relevance * Math.max(0.1, effective);
-
-      return {
-        ...b,
-        relevanceScore: relevance,
-        effectiveScore: effective,
-        finalScore: final,
-      };
-    });
-
-    scoredBullets.sort((a, b) => (b.finalScore || 0) - (a.finalScore || 0));
-
-    const topBullets = scoredBullets
-      .filter((b) => (b.relevanceScore ?? 0) >= config.minRelevanceScore)
-      .slice(0, maxBullets ?? config.maxBulletsInContext);
+    const scoredBullets = scoreBulletsKeyword(activeBullets, keywords, config);
+    const { selected: topBullets, stats: selectionStats } = selectContextBullets(
+      scoredBullets,
+      contextSelectionOptions(config, { limit: maxBullets }),
+    );
 
     const rules = topBullets.filter((b) => !b.isNegative && b.kind !== "anti_pattern");
     const antiPatterns = topBullets.filter((b) => b.isNegative || b.kind === "anti_pattern");
@@ -704,11 +829,12 @@ export async function contextWithoutCass(
 
     return {
       task,
-      relevantBullets: rules,
-      antiPatterns,
+      relevantBullets: rules.map(toContextBullet),
+      antiPatterns: antiPatterns.map(toContextBullet),
       historySnippets: [],
       deprecatedWarnings: warnings,
       suggestedCassQueries: [],
+      retrieval: selectionStats,
     };
   } catch (err) {
     warn(`Playbook also unavailable: ${err}`);
@@ -855,6 +981,23 @@ export async function contextCommand(task: string, flags: ContextFlags) {
     return;
   }
 
+  const maxTokensCheck = validatePositiveInt(flags.maxTokens, "max-tokens", {
+    min: 0,
+    allowUndefined: true,
+  });
+  if (!maxTokensCheck.ok) {
+    reportError(maxTokensCheck.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: maxTokensCheck.details,
+      hint: `Example: ${cli} context "<task>" --max-tokens 2000 --json (0 = unlimited)`,
+      json: wantsJsonForErrors,
+      format: flags.format,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+
   const formatCheck = validateOneOf(flags.format, "format", ["json", "markdown", "toon"] as const, {
     allowUndefined: true,
     caseInsensitive: true,
@@ -909,6 +1052,7 @@ export async function contextCommand(task: string, flags: ContextFlags) {
       : {}),
     ...(historyCheck.value !== undefined ? { history: historyCheck.value } : {}),
     ...(daysCheck.value !== undefined ? { days: daysCheck.value } : {}),
+    ...(maxTokensCheck.value !== undefined ? { maxTokens: maxTokensCheck.value } : {}),
     ...(formatCheck.value !== undefined ? { format: formatCheck.value } : {}),
     ...(workspaceCheck.value !== undefined ? { workspace: workspaceCheck.value } : {}),
     ...(sessionCheck.value !== undefined ? { session: sessionCheck.value } : {}),

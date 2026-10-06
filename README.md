@@ -1065,32 +1065,38 @@ async function generateContext(task: string): Promise<ContextResult> {
   // 1. Extract keywords from task
   const keywords = extractKeywords(task);
 
-  // 2. Score all playbook bullets against keywords
-  const scoredBullets = playbook.bullets
-    .map(bullet => ({
-      ...bullet,
-      relevanceScore: scoreRelevance(bullet, keywords),
-      effectiveScore: getEffectiveScore(bullet)
-    }))
-    .filter(b => b.relevanceScore > config.minRelevanceScore)
-    .sort((a, b) => b.relevanceScore * b.effectiveScore - a.relevanceScore * a.effectiveScore);
+  // 2. Relevance: BM25 over the playbook (IDF-weighted share of the query a
+  //    bullet covers, 0..10), blended with embedding similarity when enabled
+  const lexical = scoreLexicalRelevance(bullets, keywords);
+  const scored = bullets.map(b => {
+    const relevanceScore = blend(lexical.get(b.id), cosine(taskEmbedding, b.embedding) * 10);
+    // 3. Track record only reorders within a bounded band: [1 - w, 1 + w],
+    //    damped while a bullet has few marks (feedbackWeight, default 0.25)
+    return { ...b, relevanceScore, finalScore: relevanceScore * getFeedbackMultiplier(b) };
+  }).sort(byFinalScore);
 
-  // 3. Search cass for historical context
+  // 4. Keep what is relevant and fits: absolute + relative relevance floors,
+  //    maxBulletsInContext, then contextTokenBudget
+  const { selected, stats } = selectContextBullets(scored, config);
+
+  // 5. Search cass for historical context
   const historySnippets = await safeCassSearch(task, {
     limit: config.maxHistoryInContext,
     days: config.sessionLookbackDays
   });
 
-  // 4. Return ranked results
   return {
     task,
-    relevantBullets: scoredBullets.slice(0, config.maxBulletsInContext),
-    antiPatterns: scoredBullets.filter(b => b.type === 'anti-pattern'),
+    relevantBullets: selected.filter(isRule).map(toContextBullet),  // compact: no event log
+    antiPatterns: selected.filter(isAntiPattern).map(toContextBullet),
     historySnippets,
+    retrieval: stats,  // candidates / returned / dropped by relevance, limit, budget
     suggestedCassQueries: generateSuggestedQueries(task, keywords)
   };
 }
 ```
+
+Bullets in `cm context` output are a compact projection (id, content, category, kind, maturity, tags, counts, scores, reasoning). The full record, including the feedback-event log and source sessions, is one `cm playbook get <id>` away.
 
 ### Stage 2: Reflector (`cm reflect`)
 
@@ -1485,7 +1491,10 @@ back to whichever file is active, in its own format.
   },
 
   // Context Settings
-  "maxBulletsInContext": 50,
+  "maxBulletsInContext": 10,
+  "contextTokenBudget": 4000,
+  "minRelativeRelevance": 0.2,
+  "feedbackWeight": 0.25,
   "maxHistoryInContext": 10,
   "sessionLookbackDays": 7,
   "minRelevanceScore": 0.1,
@@ -1545,7 +1554,10 @@ back to whichever file is active, in its own format.
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `maxBulletsInContext` | `50` | Max rules to return in context |
+| `maxBulletsInContext` | `10` | Max rules to return in context (`--limit` overrides) |
+| `contextTokenBudget` | `4000` | Approximate token budget for the returned rules (~4 chars/token); ranked rules are added until the next would exceed it, the top rule is always kept. `--max-tokens` overrides; `0` = unlimited |
+| `minRelativeRelevance` | `0.2` | Drop rules whose relevance is below this fraction of the best match for the same task; `0` disables |
+| `feedbackWeight` | `0.25` | How far helpful/harmful marks can move a rule's rank: a bounded multiplier in `[1 - w, 1 + w]`, damped while a rule has few marks. Relevance decides what is retrieved; feedback only reorders it. `0` ignores feedback for ranking |
 | `maxHistoryInContext` | `10` | Max history snippets to return |
 | `sessionLookbackDays` | `7` | Days to search for related sessions |
 | `minRelevanceScore` | `0.1` | Min relevance to include a bullet |

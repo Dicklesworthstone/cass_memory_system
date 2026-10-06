@@ -92,6 +92,47 @@ export function getEffectiveScore(bullet: PlaybookBullet, config: Config): numbe
 }
 
 // ---------------------------------------------------------------------------
+// Retrieval ranking
+// ---------------------------------------------------------------------------
+
+/** Pseudo-count of feedback before a bullet's track record carries half its weight. */
+const FEEDBACK_PRIOR_EVENTS = 3;
+/** Net (decayed, harmful-weighted) score at which the feedback signal is ~76% saturated. */
+const FEEDBACK_SATURATION = 4;
+
+/**
+ * Bounded multiplier that lets a bullet's track record reorder results that
+ * are already relevant, without letting it override relevance (#89).
+ *
+ * Returns a value in `[1 - w, 1 + w]` with `w = config.feedbackWeight`
+ * (default 0.25). An unmarked bullet is exactly neutral (1.0). The signal is
+ * the decayed net score squashed through `tanh`, then shrunk toward neutral
+ * while the decayed event count is small (`n / (n + 3)`), so one or two marks
+ * barely move a bullet and no amount of marks lets a weakly relevant general
+ * rule outrank a strongly relevant specific one. Pinned bullets get the full
+ * positive weight; they were endorsed explicitly.
+ */
+export function getFeedbackMultiplier(bullet: PlaybookBullet, config: Config): number {
+  const configured = (config as any)?.feedbackWeight;
+  const w =
+    typeof configured === "number" && Number.isFinite(configured)
+      ? Math.min(0.9, Math.max(0, configured))
+      : 0.25;
+  if (w === 0) return 1;
+  if (bullet.pinned) return 1 + w;
+
+  const { decayedHelpful, decayedHarmful } = getDecayedCounts(bullet, config);
+  const events = decayedHelpful + decayedHarmful;
+  if (!(events > 0)) return 1;
+
+  const net = decayedHelpful - getHarmfulMultiplier(config) * decayedHarmful;
+  const confidence = events / (events + FEEDBACK_PRIOR_EVENTS);
+  const signal = Math.tanh(net / FEEDBACK_SATURATION);
+  const multiplier = 1 + w * confidence * signal;
+  return Number.isFinite(multiplier) ? multiplier : 1;
+}
+
+// ---------------------------------------------------------------------------
 // Maturity transitions
 // ---------------------------------------------------------------------------
 

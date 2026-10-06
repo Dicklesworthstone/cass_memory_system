@@ -299,6 +299,11 @@ const TOOL_DEFS = [
         top: { type: "integer", minimum: 1, description: "DEPRECATED: use limit" },
         history: { type: "integer", minimum: 1 },
         days: { type: "integer", minimum: 1 },
+        maxTokens: {
+          type: "integer",
+          minimum: 0,
+          description: "Approximate token budget for returned rules (0 = unlimited)",
+        },
       },
       required: ["task"],
     },
@@ -526,6 +531,11 @@ async function handleToolCall(name: string, args: any): Promise<any> {
       if (!history.ok) throw new Error(history.message);
       const days = validatePositiveInt(args?.days, "days", { min: 1, allowUndefined: true });
       if (!days.ok) throw new Error(days.message);
+      const maxTokens = validatePositiveInt(args?.maxTokens, "maxTokens", {
+        min: 0,
+        allowUndefined: true,
+      });
+      if (!maxTokens.ok) throw new Error(maxTokens.message);
       const workspace = validateNonEmptyString(args?.workspace, "workspace", {
         allowUndefined: true,
       });
@@ -537,6 +547,7 @@ async function handleToolCall(name: string, args: any): Promise<any> {
           limit: limit.value ?? top.value,
           history: history.value,
           days: days.value,
+          maxTokens: maxTokens.value,
           workspace: workspace.value,
           json: true,
         }),

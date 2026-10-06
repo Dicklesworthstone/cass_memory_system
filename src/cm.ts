@@ -106,6 +106,11 @@ export function createProgram(argv: string[] = process.argv): Command {
     .option("--history <n>", "Number of history snippets", toInt)
     .option("--days <n>", "Lookback days for history", toInt)
     .option(
+      "--max-tokens <n>",
+      "Approximate token budget for returned rules (default: config contextTokenBudget; 0 = unlimited)",
+      toInt,
+    )
+    .option(
       "--format <markdown|json|toon>",
       "Force output format (overrides --json). TOON provides token-efficient output.",
     )
