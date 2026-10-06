@@ -1785,11 +1785,13 @@ When `MCP_HTTP_TOKEN` is set, clients must send either `Authorization: Bearer <t
 
 | Tool | Purpose | Parameters |
 |------|---------|------------|
-| `cm_context` | Get relevant rules + history for a task | `task: string, limit?: number, top?: number (deprecated), history?: number, days?: number, workspace?: string` |
+| `cm_context` | Get relevant rules + history for a task | `task: string, limit?: number, top?: number (deprecated), history?: number, days?: number, workspace?: string, maxTokens?: number` |
 | `cm_feedback` | Record helpful/harmful feedback | `bulletId: string, helpful?: boolean, harmful?: boolean, reason?: string, session?: string` |
 | `cm_outcome` | Record a session outcome with rules used | `sessionId: string, outcome: "success" \| "failure" \| "mixed" \| "partial", rulesUsed?: string[]` |
 | `memory_search` | Search playbook bullets and/or cass history | `query: string, scope?: "playbook" \| "cass" \| "both", limit?: number, days?: number` |
 | `memory_reflect` | Trigger reflection on recent sessions | `days?: number, maxSessions?: number, dryRun?: boolean, workspace?: string, session?: string` |
+| `cm_why` | Explain a rule: reasoning, sources, feedback, and cass history found by its search pointer | `bulletId: string, history?: boolean, verbose?: boolean` |
+| `cm_conflicts` | List pairs of active rules that contradict each other | `category?: string, workspace?: string` |
 
 ### Resources Exposed
 

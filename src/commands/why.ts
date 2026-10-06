@@ -17,9 +17,15 @@ import {
   icon,
   wrapText,
 } from "../output.js";
-import { findBullet, loadMergedPlaybook } from "../playbook.js";
+import { loadMergedPlaybook } from "../playbook.js";
 import { getEffectiveScore } from "../scoring.js";
-import { type Config, type DiaryEntry, ErrorCode, type PlaybookBullet } from "../types.js";
+import {
+  type Config,
+  type DiaryEntry,
+  ErrorCode,
+  type ErrorCodeType,
+  type PlaybookBullet,
+} from "../types.js";
 import { safeCassSearchWithDegraded } from "../cass.js";
 import {
   cassSearchCommand,
@@ -162,48 +168,19 @@ export async function whyCommand(bulletId: string, flags: WhyFlags = {}): Promis
     return;
   }
 
-  let bullet = findBullet(playbook, needle);
-  if (!bullet) {
-    const lower = needle.toLowerCase();
-    const scored = playbook.bullets
-      .map((b) => {
-        const idLower = b.id.toLowerCase();
-        const score =
-          idLower === lower ? 3 : idLower.startsWith(lower) ? 2 : idLower.includes(lower) ? 1 : 0;
-        return score > 0 ? { bullet: b, score } : null;
-      })
-      .filter((x): x is { bullet: PlaybookBullet; score: number } => x !== null);
-
-    if (scored.length === 0) {
-      reportError(`Bullet not found: ${needle}`, {
-        code: ErrorCode.BULLET_NOT_FOUND,
-        details: { bulletId: needle },
-        json: flags.json,
-        command,
-        startedAtMs,
-      });
-      return;
-    }
-
-    const bestScore = Math.max(...scored.map((c) => c.score));
-    const best = scored.filter((c) => c.score === bestScore).map((c) => c.bullet);
-
-    if (best.length === 1) {
-      bullet = best[0];
-    } else {
-      const ids = best.map((b) => b.id);
-      const sample = ids.slice(0, 8).join(", ");
-      reportError(`Ambiguous bullet id: ${needle}`, {
-        code: ErrorCode.INVALID_INPUT,
-        hint: `Matches: ${sample}${ids.length > 8 ? ` … (+${ids.length - 8} more)` : ""}`,
-        details: { bulletId: needle, matchCount: ids.length, matches: ids.slice(0, 50) },
-        json: flags.json,
-        command,
-        startedAtMs,
-      });
-      return;
-    }
+  const resolved = resolveWhyBullet(playbook.bullets, needle);
+  if ("error" in resolved) {
+    reportError(resolved.error, {
+      code: resolved.code,
+      ...(resolved.hint ? { hint: resolved.hint } : {}),
+      details: resolved.details,
+      json: flags.json,
+      command,
+      startedAtMs,
+    });
+    return;
   }
+  const bullet = resolved.bullet;
 
   const result = await buildWhyResult(bullet, config, flags.verbose, flags.history !== false);
 
@@ -214,7 +191,47 @@ export async function whyCommand(bulletId: string, flags: WhyFlags = {}): Promis
   }
 }
 
-async function buildWhyResult(
+/**
+ * Find a bullet by exact id, else by a unique id prefix/substring (best match
+ * class wins). Shared by `cm why` and the MCP `cm_why` tool.
+ */
+export function resolveWhyBullet(
+  bullets: PlaybookBullet[],
+  needle: string,
+):
+  | { bullet: PlaybookBullet }
+  | { error: string; code: ErrorCodeType; hint?: string; details: Record<string, unknown> } {
+  const exact = bullets.find((b) => b.id === needle);
+  if (exact) return { bullet: exact };
+  const lower = needle.toLowerCase();
+  const scored = bullets
+    .map((b) => {
+      const idLower = b.id.toLowerCase();
+      const score =
+        idLower === lower ? 3 : idLower.startsWith(lower) ? 2 : idLower.includes(lower) ? 1 : 0;
+      return score > 0 ? { bullet: b, score } : null;
+    })
+    .filter((x): x is { bullet: PlaybookBullet; score: number } => x !== null);
+  if (scored.length === 0) {
+    return {
+      error: `Bullet not found: ${needle}`,
+      code: ErrorCode.BULLET_NOT_FOUND,
+      details: { bulletId: needle },
+    };
+  }
+  const bestScore = Math.max(...scored.map((c) => c.score));
+  const best = scored.filter((c) => c.score === bestScore).map((c) => c.bullet);
+  if (best.length === 1) return { bullet: best[0] };
+  const ids = best.map((b) => b.id);
+  return {
+    error: `Ambiguous bullet id: ${needle}`,
+    code: ErrorCode.INVALID_INPUT,
+    hint: `Matches: ${ids.slice(0, 8).join(", ")}${ids.length > 8 ? ` … (+${ids.length - 8} more)` : ""}`,
+    details: { bulletId: needle, matchCount: ids.length, matches: ids.slice(0, 50) },
+  };
+}
+
+export async function buildWhyResult(
   bullet: PlaybookBullet,
   config: Config,
   verbose?: boolean,

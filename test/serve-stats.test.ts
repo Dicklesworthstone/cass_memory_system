@@ -996,3 +996,63 @@ describe("serve module resource reads", () => {
     });
   });
 });
+
+describe("serve: cm_why and cm_conflicts tools", () => {
+  async function call(name: string, args: Record<string, unknown>) {
+    return await serveTest.routeRequest({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name, arguments: args },
+    });
+  }
+
+  test("both tools are listed", async () => {
+    const list = await serveTest.routeRequest({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+    const names = ((list as any).result.tools as any[]).map((t) => t.name);
+    expect(names).toContain("cm_why");
+    expect(names).toContain("cm_conflicts");
+  });
+
+  test("cm_why explains a rule (prefix id, history skipped) and errors on unknown ids", async () => {
+    await withTempCassHome(async (env) => {
+      writeFileSync(
+        env.playbookPath,
+        yaml.stringify(
+          createTestPlaybook([
+            createTestBullet({ id: "b-why-1", content: "Rotate keys monthly", reasoning: "Leak in Q2" }),
+          ]),
+        ),
+      );
+      const ok = await call("cm_why", { bulletId: "b-why", history: false });
+      expect("result" in ok).toBe(true);
+      const result = parseToolResult<any>((ok as any).result);
+      expect(result.bullet.id).toBe("b-why-1");
+      expect(result.reasoning).toBe("Leak in Q2");
+      expect(result.history).toBeUndefined();
+
+      const missing = await call("cm_why", { bulletId: "b-nope" });
+      expect("error" in missing).toBe(true);
+    });
+  });
+
+  test("cm_conflicts lists contradicting pairs", async () => {
+    await withTempCassHome(async (env) => {
+      writeFileSync(
+        env.playbookPath,
+        yaml.stringify(
+          createTestPlaybook([
+            createTestBullet({ id: "b-a", content: "Always commit generated lockfiles" }),
+            createTestBullet({ id: "b-b", content: "Never commit generated lockfiles" }),
+          ]),
+        ),
+      );
+      const res = await call("cm_conflicts", {});
+      const result = parseToolResult<any>((res as any).result);
+      expect(result.count).toBeGreaterThanOrEqual(1);
+      expect(
+        result.conflicts.some((c: any) => [c.a.id, c.b.id].sort().join() === "b-a,b-b"),
+      ).toBe(true);
+    });
+  });
+});

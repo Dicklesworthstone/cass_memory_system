@@ -5,10 +5,16 @@ import { safeCassSearch } from "../cass.js";
 import { loadConfig } from "../config.js";
 import { loadAllDiaries } from "../diary.js";
 import { loadOutcomes, recordOutcome } from "../outcome.js";
-import { getActiveBullets, loadMergedPlaybook } from "../playbook.js";
+import { findBulletConflicts } from "../curate.js";
+import {
+  getActiveBullets,
+  loadMergedPlaybook,
+  loadMergedPlaybookWithSources,
+} from "../playbook.js";
 import { analyzeScoreDistribution, getEffectiveScore, isStale } from "../scoring.js";
 import { type Config, ErrorCode, type PlaybookBullet } from "../types.js";
 import {
+  expandPath,
   getVersion,
   log,
   error as logError,
@@ -20,6 +26,7 @@ import {
 } from "../utils.js";
 import { generateContextResult } from "./context.js";
 import { recordFeedback } from "./mark.js";
+import { buildWhyResult, resolveWhyBullet } from "./why.js";
 
 // --- CASS-backed admission control (bounded concurrency) --------------------
 //
@@ -384,6 +391,35 @@ const TOOL_DEFS = [
       },
     },
   },
+  {
+    name: "cm_why",
+    description:
+      "Explain a rule: its reasoning, source sessions, feedback history, and matching cass history found by its search pointer",
+    inputSchema: {
+      type: "object",
+      properties: {
+        bulletId: { type: "string", description: "Rule id (or a unique prefix)" },
+        history: {
+          type: "boolean",
+          description: "Search cass history for evidence (default true)",
+          default: true,
+        },
+        verbose: { type: "boolean", default: false },
+      },
+      required: ["bulletId"],
+    },
+  },
+  {
+    name: "cm_conflicts",
+    description: "List pairs of active playbook rules that contradict each other",
+    inputSchema: {
+      type: "object",
+      properties: {
+        category: { type: "string", description: "Only check one category" },
+        workspace: { type: "string", description: "Workspace whose repo playbook to include" },
+      },
+    },
+  },
 ];
 
 const RESOURCE_DEFS = [
@@ -553,6 +589,39 @@ async function handleToolCall(name: string, args: any): Promise<any> {
         }),
       );
       return context.result;
+    }
+    case "cm_why": {
+      assertArgs(args, { bulletId: "string" });
+      const config = await loadConfig();
+      const playbook = await loadMergedPlaybook(config);
+      const resolved = resolveWhyBullet(playbook.bullets, String(args.bulletId).trim());
+      if ("error" in resolved) {
+        throw new Error(resolved.hint ? `${resolved.error}. ${resolved.hint}` : resolved.error);
+      }
+      return await buildWhyResult(
+        resolved.bullet,
+        config,
+        Boolean(args?.verbose),
+        args?.history !== false,
+      );
+    }
+    case "cm_conflicts": {
+      const category = validateNonEmptyString(args?.category, "category", { allowUndefined: true });
+      if (!category.ok) throw new Error(category.message);
+      const workspace = validateNonEmptyString(args?.workspace, "workspace", {
+        allowUndefined: true,
+      });
+      if (!workspace.ok) throw new Error(workspace.message);
+      const config = await loadConfig();
+      const { playbook } = await loadMergedPlaybookWithSources(
+        config,
+        workspace.value ? { cwd: expandPath(workspace.value) } : {},
+      );
+      const bullets = getActiveBullets(playbook).filter(
+        (b) => !category.value || b.category === category.value,
+      );
+      const conflicts = findBulletConflicts(bullets);
+      return { bulletsChecked: bullets.length, count: conflicts.length, conflicts };
     }
     case "cm_feedback": {
       assertArgs(args, { bulletId: "string" });
