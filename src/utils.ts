@@ -8,7 +8,7 @@ import readline from "node:readline";
 import { promisify } from "node:util";
 import chalk from "chalk";
 import { iconPrefix } from "./output.js";
-import { type ContextResult, ErrorCode } from "./types.js";
+import { type ContextResult, ErrorCode, type PlaybookDelta } from "./types.js";
 
 const execAsync = promisify(exec);
 
@@ -3946,18 +3946,26 @@ export function parseInlineFeedback(content: string): InlineFeedback[] {
 export function inlineFeedbackToDeltas(
   feedback: InlineFeedback[],
   sessionPath: string,
-): Array<{
-  type: "helpful" | "harmful";
-  bulletId: string;
-  sourceSession: string;
-  reason?: string;
-}> {
-  return feedback.map((f) => ({
-    type: f.type,
-    bulletId: f.bulletId,
-    sourceSession: sessionPath,
-    reason: f.reason,
-  }));
+): Array<Extract<PlaybookDelta, { type: "helpful" | "harmful" }>> {
+  // The free-text reason goes in `context`; a harmful delta's `reason` is the
+  // HarmfulReason enum, which inline comments do not carry ("other").
+  return feedback.map(
+    (f): Extract<PlaybookDelta, { type: "helpful" | "harmful" }> =>
+      f.type === "harmful"
+        ? {
+            type: "harmful",
+            bulletId: f.bulletId,
+            sourceSession: sessionPath,
+            reason: "other",
+            ...(f.reason ? { context: f.reason } : {}),
+          }
+        : {
+            type: "helpful",
+            bulletId: f.bulletId,
+            sourceSession: sessionPath,
+            ...(f.reason ? { context: f.reason } : {}),
+          },
+  );
 }
 // --- Graceful Shutdown ---
 

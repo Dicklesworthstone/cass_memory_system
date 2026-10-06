@@ -55,6 +55,7 @@ import {
   jaccardSimilarity,
   log,
   now,
+  inlineFeedbackToDeltas,
   parseInlineFeedback,
   resolveRepoDir,
   warn,
@@ -548,24 +549,7 @@ export async function orchestrateReflection(
           // Parse inline feedback comments (// [cass: helpful b-xyz] - reason)
           const inlineFeedback = parseInlineFeedback(gradableContent);
           if (inlineFeedback.length > 0) {
-            for (const fb of inlineFeedback) {
-              const delta: PlaybookDelta =
-                fb.type === "harmful"
-                  ? {
-                      type: "harmful",
-                      bulletId: fb.bulletId,
-                      sourceSession: sessionPath,
-                      reason: "other",
-                      context: fb.reason,
-                    }
-                  : {
-                      type: "helpful",
-                      bulletId: fb.bulletId,
-                      sourceSession: sessionPath,
-                      context: fb.reason,
-                    };
-              allDeltas.push(delta);
-            }
+            allDeltas.push(...inlineFeedbackToDeltas(inlineFeedback, sessionPath));
             inlineFeedbackDeltaCount += inlineFeedback.length;
           }
 

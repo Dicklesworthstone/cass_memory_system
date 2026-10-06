@@ -252,5 +252,3 @@ export function isSemanticallyBlocked(content: string, blockedEntries: string[])
   return false;
 }
 
-/** @deprecated Use isSemanticallyBlocked instead */
-export const isSemanticallyToxic = isSemanticallyBlocked;

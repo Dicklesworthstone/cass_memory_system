@@ -273,9 +273,6 @@ export async function loadBlockedLog(logPath: string): Promise<ToxicEntry[]> {
   }
 }
 
-/** @deprecated Use loadBlockedLog instead */
-export const loadToxicLog = loadBlockedLog;
-
 export async function appendBlockedLog(entry: BlockedEntry, logPath: string): Promise<void> {
   const expanded = expandPath(logPath);
   await withLock(expanded, async () => {
@@ -283,9 +280,6 @@ export async function appendBlockedLog(entry: BlockedEntry, logPath: string): Pr
     await fs.appendFile(expanded, JSON.stringify(entry) + "\n", "utf-8");
   });
 }
-
-/** @deprecated Use appendBlockedLog instead */
-export const appendToxicLog = appendBlockedLog;
 
 /**
  * Remove an entry from the blocked log by bullet ID.

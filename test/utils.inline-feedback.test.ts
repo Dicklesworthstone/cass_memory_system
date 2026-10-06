@@ -210,13 +210,15 @@ describe("inlineFeedbackToDeltas", () => {
       type: "helpful",
       bulletId: "b-abc",
       sourceSession: "/path/to/session.jsonl",
-      reason: "good",
+      context: "good",
     });
+    // Free text goes in `context`; a harmful delta's `reason` is the HarmfulReason enum.
     expect(deltas[1]).toEqual({
       type: "harmful",
       bulletId: "b-xyz",
       sourceSession: "/path/to/session.jsonl",
-      reason: "bad",
+      reason: "other",
+      context: "bad",
     });
   });
 
@@ -226,7 +228,7 @@ describe("inlineFeedbackToDeltas", () => {
     const deltas = inlineFeedbackToDeltas(feedback, "/session");
 
     expect(deltas).toHaveLength(1);
-    expect(deltas[0].reason).toBeUndefined();
+    expect(deltas[0]).not.toHaveProperty("context");
   });
 
   test("returns empty array for empty feedback", () => {

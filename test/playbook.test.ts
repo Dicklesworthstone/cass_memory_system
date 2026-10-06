@@ -8,7 +8,6 @@ import yaml from "yaml";
 import {
   addBullet,
   appendBlockedLog,
-  appendToxicLog,
   type BlockedEntry,
   computeFullStats,
   createEmptyPlaybook,
@@ -21,7 +20,6 @@ import {
   loadMergedPlaybook,
   loadPlaybook,
   loadPlaybookWithRecovery,
-  loadToxicLog,
   recordReflectionRun,
   savePlaybook,
   ToxicEntry,
@@ -875,7 +873,7 @@ describe("exportToMarkdown", () => {
 });
 
 // =============================================================================
-// loadBlockedLog (deprecated alias: loadToxicLog)
+// loadBlockedLog
 // =============================================================================
 describe("loadBlockedLog", () => {
   it("returns empty array for non-existent file", async () => {
@@ -985,7 +983,7 @@ describe("loadBlockedLog", () => {
 });
 
 // =============================================================================
-// appendBlockedLog (deprecated alias: appendToxicLog)
+// appendBlockedLog
 // =============================================================================
 describe("appendBlockedLog", () => {
   it("appends entry to new file", async () => {
