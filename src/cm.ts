@@ -570,18 +570,27 @@ export function createProgram(argv: string[] = process.argv): Command {
     .description("Auto-reflection: reflect each finished agent session in the background");
   hook
     .command("install")
-    .description("Install a Claude Code SessionEnd hook that runs `cm reflect` on each finished session")
-    .option("--global", "Install into ~/.claude/settings.json (all projects) instead of this project")
+    .description(
+      "Install a SessionEnd hook (Claude Code or Gemini CLI) that runs `cm reflect` on each finished session",
+    )
+    .option("--agent <name>", "claude (default) or gemini")
+    .option("--global", "Install into the user settings (~/.claude or ~/.gemini) instead of this project")
     .option("--command <cmd>", "Command the hook runs (default: resolved `cm hook session-end`)")
     .option("-j, --json", "Output JSON")
     .addHelpText("after", () =>
-      formatCommandExamples(["hook install", "hook install --global --json", "hook status"]),
+      formatCommandExamples([
+        "hook install",
+        "hook install --global --json",
+        "hook install --agent gemini",
+        "hook status",
+      ]),
     )
     .action(async (opts: any) => await hookCommand("install", opts));
   hook
     .command("uninstall")
     .description("Remove cm's SessionEnd hook (other hooks are left alone)")
-    .option("--global", "Remove from ~/.claude/settings.json")
+    .option("--agent <name>", "claude (default) or gemini")
+    .option("--global", "Remove from the user settings (~/.claude or ~/.gemini)")
     .option("-j, --json", "Output JSON")
     .action(async (opts: any) => await hookCommand("uninstall", opts));
   hook

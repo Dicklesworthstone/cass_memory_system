@@ -17,7 +17,7 @@ import { formatCheckStatusBadge, formatSafetyBadge, icon, iconPrefix } from "../
 import { findBulletConflicts } from "../curate.js";
 import { createEmptyPlaybook, loadMergedPlaybook, loadPlaybook, savePlaybook } from "../playbook.js";
 import { isCmSubprocessTranscriptPath } from "../subprocess-tag.js";
-import { getAutoReflectStatus } from "./hook.js";
+import { getAutoReflectStatus, HOOK_AGENTS, type HookAgent } from "./hook.js";
 import { createProgress, type ProgressReporter } from "../progress.js";
 import { compileExtraPatterns, SECRET_PATTERNS } from "../sanitize.js";
 import {
@@ -375,10 +375,13 @@ function buildRecommendedActions(params: {
     (c) => c.category === "Memory Quality" && c.item === "Auto-reflection",
   );
   if (autoReflectCheck && (autoReflectCheck.details as any)?.installed === false) {
+    const missing: string[] = (autoReflectCheck.details as any)?.missingAgents ?? ["claude"];
     actions.push({
       label: "Learn from every finished session automatically (optional)",
-      command: `${cli} hook install`,
-      reason: "Installs a Claude Code SessionEnd hook that runs reflect in the background.",
+      command: missing
+        .map((a) => `${cli} hook install${a === "claude" ? "" : ` --agent ${a}`}`)
+        .join(" && "),
+      reason: "Installs a SessionEnd hook that runs reflect on each finished session in the background.",
       urgency: "low",
     });
   }
@@ -897,18 +900,27 @@ export async function computeMemoryQualityChecks(config: Config): Promise<Health
     details: { bullets: pollutedBullets.size, events: pollutedEvents },
   });
 
-  const usesClaude = (await fileExists(".claude")) || (await fileExists(expandPath("~/.claude")));
-  if (usesClaude) {
+  // Agents in use (project or user config dir present) that support the hook.
+  const agentsInUse: HookAgent[] = [];
+  for (const [agent, { dir }] of Object.entries(HOOK_AGENTS) as [HookAgent, { dir: string }][]) {
+    if ((await fileExists(dir)) || (await fileExists(expandPath(`~/${dir}`)))) agentsInUse.push(agent);
+  }
+  if (agentsInUse.length > 0) {
     const hook = await getAutoReflectStatus();
+    const missing = agentsInUse.filter(
+      (agent) => !hook.scopes.some((s) => s.agent === agent && s.installed),
+    );
+    const installed = hook.scopes.filter((s) => s.installed).map((s) => `${s.agent}/${s.scope}`);
     checks.push({
       category: "Memory Quality",
       item: "Auto-reflection",
       // Opt-in (it spends LLM budget), so a missing hook is never a warning.
       status: "pass",
-      message: hook.autoReflect
-        ? `SessionEnd auto-reflect hook installed (${hook.scopes.filter((s) => s.installed).map((s) => s.scope).join(", ")})`
-        : `Not installed (optional): finished Claude Code sessions are only learned from when '${cli} reflect' runs. Enable with '${cli} hook install'.`,
-      details: { installed: hook.autoReflect },
+      message:
+        missing.length === 0
+          ? `SessionEnd auto-reflect hook installed (${installed.join(", ")})`
+          : `Not installed for ${missing.map((a) => HOOK_AGENTS[a].label).join(", ")} (optional): those sessions are only learned from when '${cli} reflect' runs. Enable with ${missing.map((a) => `'${cli} hook install${a === "claude" ? "" : ` --agent ${a}`}'`).join(" / ")}.`,
+      details: { installed: missing.length === 0, missingAgents: missing },
     });
   }
 

@@ -10,7 +10,11 @@ import path from "node:path";
 import chalk from "chalk";
 import { loadConfig } from "../config.js";
 import { icon } from "../output.js";
-import { isCmSubprocessTranscriptPath } from "../subprocess-tag.js";
+import {
+  CM_SUBPROCESS_ENV_VALUE,
+  CM_SUBPROCESS_ENV_VAR,
+  isCmSubprocessTranscriptPath,
+} from "../subprocess-tag.js";
 import { ErrorCode } from "../types.js";
 import {
   atomicWrite,
@@ -32,10 +36,30 @@ export const HOOK_ACTIVE_ENV = "CM_HOOK_ACTIVE";
 
 export type HookScope = "project" | "user";
 
+/**
+ * Agents whose CLI has a SessionEnd hook that pipes `{transcript_path, cwd}`
+ * JSON on stdin and lives under `hooks.SessionEnd` in a settings.json
+ * (Claude Code: `.claude/`, Gemini CLI: `.gemini/`). Codex has no session-end
+ * event (only per-turn Stop), so it is not offered here; its wrappers can call
+ * `cm hook session-end --transcript <path>`.
+ */
+export const HOOK_AGENTS = {
+  claude: { dir: ".claude", label: "Claude Code" },
+  gemini: { dir: ".gemini", label: "Gemini CLI" },
+} as const;
+export type HookAgent = keyof typeof HOOK_AGENTS;
+
+export function parseHookAgent(value: string | undefined): HookAgent | null {
+  const v = (value ?? "claude").trim().toLowerCase();
+  return v in HOOK_AGENTS ? (v as HookAgent) : null;
+}
+
 export interface HookFlags {
   json?: boolean;
-  /** Install into ~/.claude/settings.json instead of the project's .claude/settings.json. */
+  /** Install into the user-level settings (~/.claude, ~/.gemini) instead of the project's. */
   global?: boolean;
+  /** Which agent's settings to edit: claude (default) or gemini. */
+  agent?: string;
   /** Override the command the hook runs (default: resolved cm invocation). */
   command?: string;
   /** session-end: transcript path when not invoked by Claude Code (no stdin payload). */
@@ -72,11 +96,15 @@ export function defaultHookCommand(): string {
   return `${argv.map(shellQuote).join(" ")} ${SESSION_END_HOOK_ARGS}`;
 }
 
-export async function resolveSettingsPath(scope: HookScope): Promise<string | null> {
+export async function resolveSettingsPath(
+  scope: HookScope,
+  agent: HookAgent = "claude",
+): Promise<string | null> {
+  const dir = HOOK_AGENTS[agent].dir;
   // expandPath honours HOME (os.homedir() is cached at startup under Bun).
-  if (scope === "user") return expandPath("~/.claude/settings.json");
+  if (scope === "user") return expandPath(`~/${dir}/settings.json`);
   const root = await resolveGitRoot();
-  return path.join(root ?? process.cwd(), ".claude", "settings.json");
+  return path.join(root ?? process.cwd(), dir, "settings.json");
 }
 
 function isCmHookEntry(entry: unknown): boolean {
@@ -104,7 +132,11 @@ async function readSettings(settingsPath: string): Promise<Record<string, any>> 
  * Add (or replace) cm's SessionEnd entry in a settings object, leaving every
  * other hook untouched. Returns whether an entry already existed.
  */
-export function upsertSessionEndHook(settings: Record<string, any>, command: string): boolean {
+export function upsertSessionEndHook(
+  settings: Record<string, any>,
+  command: string,
+  agent: HookAgent = "claude",
+): boolean {
   if (!settings.hooks || typeof settings.hooks !== "object" || Array.isArray(settings.hooks)) {
     settings.hooks = {};
   }
@@ -114,7 +146,14 @@ export function upsertSessionEndHook(settings: Record<string, any>, command: str
   const had = existing.some(isCmHookEntry);
   settings.hooks.SessionEnd = [
     ...existing.filter((e) => !isCmHookEntry(e)),
-    { hooks: [{ type: "command", command }] },
+    {
+      hooks: [
+        // Gemini CLI lists hooks by name (`/hooks`); Claude Code ignores it.
+        agent === "gemini"
+          ? { name: "cass-memory-reflect", type: "command", command }
+          : { type: "command", command },
+      ],
+    },
   ];
   return had;
 }
@@ -157,6 +196,7 @@ export interface SessionEndDecision {
  * Decide what a SessionEnd payload should trigger. Pure apart from the
  * existence check, so the loop guards are testable:
  * - inside a background reflect (HOOK_ACTIVE_ENV) -> skip
+ * - inside a session cm started as its LLM (CM_SUBPROCESS_ENV_VAR) -> skip
  * - transcript written by one of cm's own LLM subprocesses -> skip (#76)
  * - no transcript path, or the file does not exist -> skip
  */
@@ -167,6 +207,13 @@ export async function decideSessionEnd(
   const env = options.env ?? process.env;
   if (env[HOOK_ACTIVE_ENV]) {
     return { action: "skip", reason: "nested session inside a cm background reflect" };
+  }
+  // A session cm itself started as its LLM (provider "cli": claude -p, gemini,
+  // codex). The hook inherits that process's env, so this works for every
+  // agent, including Gemini, whose transcript folders are hashed rather than
+  // slugged and so escape the path check below.
+  if (env[CM_SUBPROCESS_ENV_VAR] === CM_SUBPROCESS_ENV_VALUE) {
+    return { action: "skip", reason: "session is a cm LLM subprocess call" };
   }
   const transcript =
     typeof payload.transcript_path === "string" ? payload.transcript_path.trim() : "";
@@ -245,9 +292,21 @@ async function sessionEnd(flags: HookFlags, startedAtMs: number): Promise<void> 
   }
 }
 
+function reportBadAgent(flags: HookFlags, startedAtMs: number): void {
+  reportError(`Unknown --agent '${flags.agent}'`, {
+    code: ErrorCode.INVALID_INPUT,
+    hint: `Supported: ${Object.keys(HOOK_AGENTS).join(", ")}`,
+    json: flags.json,
+    command: "hook",
+    startedAtMs,
+  });
+}
+
 async function install(flags: HookFlags, startedAtMs: number): Promise<void> {
+  const agent = parseHookAgent(flags.agent);
+  if (!agent) return reportBadAgent(flags, startedAtMs);
   const scope: HookScope = flags.global ? "user" : "project";
-  const settingsPath = (await resolveSettingsPath(scope))!;
+  const settingsPath = (await resolveSettingsPath(scope, agent))!;
   const hookCommand = flags.command?.trim() || defaultHookCommand();
   const cli = getCliName();
 
@@ -266,13 +325,14 @@ async function install(flags: HookFlags, startedAtMs: number): Promise<void> {
     return;
   }
 
-  const replaced = upsertSessionEndHook(settings, hookCommand);
+  const replaced = upsertSessionEndHook(settings, hookCommand, agent);
   await ensureDir(path.dirname(settingsPath));
   await atomicWrite(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
 
   const result = {
     installed: true,
     replaced,
+    agent,
     scope,
     settingsPath,
     hookCommand,
@@ -288,14 +348,20 @@ async function install(flags: HookFlags, startedAtMs: number): Promise<void> {
     ),
   );
   console.log(chalk.gray(`  Runs: ${hookCommand}`));
-  console.log(chalk.gray(`  Each finished Claude Code session is reflected in the background.`));
-  console.log(chalk.gray(`  Log: ${result.logPath}   Remove: ${cli} hook uninstall${flags.global ? " --global" : ""}`));
-  console.log(chalk.yellow("  Restart Claude Code for the hook to take effect."));
+  const label = HOOK_AGENTS[agent].label;
+  const agentFlag = agent === "claude" ? "" : ` --agent ${agent}`;
+  console.log(chalk.gray(`  Each finished ${label} session is reflected in the background.`));
+  console.log(
+    chalk.gray(`  Log: ${result.logPath}   Remove: ${cli} hook uninstall${agentFlag}${flags.global ? " --global" : ""}`),
+  );
+  console.log(chalk.yellow(`  Restart ${label} for the hook to take effect.`));
 }
 
 async function uninstall(flags: HookFlags, startedAtMs: number): Promise<void> {
+  const agent = parseHookAgent(flags.agent);
+  if (!agent) return reportBadAgent(flags, startedAtMs);
   const scope: HookScope = flags.global ? "user" : "project";
-  const settingsPath = (await resolveSettingsPath(scope))!;
+  const settingsPath = (await resolveSettingsPath(scope, agent))!;
   let removed = false;
   if (await fileExists(settingsPath)) {
     let settings: Record<string, any>;
@@ -315,7 +381,7 @@ async function uninstall(flags: HookFlags, startedAtMs: number): Promise<void> {
     if (removed) await atomicWrite(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
   }
   if (flags.json) {
-    printJsonResult("hook", { removed, scope, settingsPath }, { startedAtMs });
+    printJsonResult("hook", { removed, agent, scope, settingsPath }, { startedAtMs });
     return;
   }
   console.log(
@@ -326,6 +392,7 @@ async function uninstall(flags: HookFlags, startedAtMs: number): Promise<void> {
 }
 
 export interface AutoReflectScopeStatus {
+  agent: HookAgent;
   scope: HookScope;
   settingsPath: string;
   installed: boolean;
@@ -333,28 +400,30 @@ export interface AutoReflectScopeStatus {
   error?: string;
 }
 
-/** Where cm's SessionEnd auto-reflect hook is installed (project and user scope). */
+/** Where cm's SessionEnd auto-reflect hook is installed (each agent, project and user scope). */
 export async function getAutoReflectStatus(): Promise<{
   autoReflect: boolean;
   scopes: AutoReflectScopeStatus[];
 }> {
   const scopes: AutoReflectScopeStatus[] = [];
-  for (const scope of ["project", "user"] as HookScope[]) {
-    const settingsPath = (await resolveSettingsPath(scope))!;
-    const entry: AutoReflectScopeStatus = { scope, settingsPath, installed: false };
-    try {
-      const settings = await readSettings(settingsPath);
-      const found = (Array.isArray(settings?.hooks?.SessionEnd) ? settings.hooks.SessionEnd : []).find(
-        isCmHookEntry,
-      );
-      entry.installed = Boolean(found);
-      const command = found?.hooks?.find((h: any) => h?.command?.includes(SESSION_END_HOOK_ARGS))
-        ?.command;
-      if (command) entry.hookCommand = command;
-    } catch (err: any) {
-      entry.error = err?.message ?? String(err);
+  for (const agent of Object.keys(HOOK_AGENTS) as HookAgent[]) {
+    for (const scope of ["project", "user"] as HookScope[]) {
+      const settingsPath = (await resolveSettingsPath(scope, agent))!;
+      const entry: AutoReflectScopeStatus = { agent, scope, settingsPath, installed: false };
+      try {
+        const settings = await readSettings(settingsPath);
+        const found = (Array.isArray(settings?.hooks?.SessionEnd) ? settings.hooks.SessionEnd : []).find(
+          isCmHookEntry,
+        );
+        entry.installed = Boolean(found);
+        const command = found?.hooks?.find((h: any) => h?.command?.includes(SESSION_END_HOOK_ARGS))
+          ?.command;
+        if (command) entry.hookCommand = command;
+      } catch (err: any) {
+        entry.error = err?.message ?? String(err);
+      }
+      scopes.push(entry);
     }
-    scopes.push(entry);
   }
   return { autoReflect: scopes.some((e) => e.installed), scopes };
 }
@@ -368,11 +437,15 @@ async function status(flags: HookFlags, startedAtMs: number): Promise<void> {
   for (const e of result.scopes) {
     const mark = e.installed ? chalk.green("installed") : chalk.gray("not installed");
     console.log(
-      `${e.scope.padEnd(8)} ${mark}  ${chalk.gray(e.settingsPath)}${e.error ? chalk.red(` (${e.error})`) : ""}`,
+      `${e.agent.padEnd(7)} ${e.scope.padEnd(8)} ${mark}  ${chalk.gray(e.settingsPath)}${e.error ? chalk.red(` (${e.error})`) : ""}`,
     );
   }
   if (!result.autoReflect) {
-    console.log(chalk.gray(`\nEnable: ${getCliName()} hook install   (or --global for every project)`));
+    console.log(
+      chalk.gray(
+        `\nEnable: ${getCliName()} hook install [--agent gemini] [--global]   (default: Claude Code, this project)`,
+      ),
+    );
   }
 }
 

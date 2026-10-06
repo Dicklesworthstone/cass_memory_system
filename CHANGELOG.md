@@ -12,6 +12,7 @@ All notable changes to **cass-memory** (`cm`) are documented in this file.
 
 ### Added
 
+- `cm hook install --agent gemini`: the same auto-reflect hook for Gemini CLI (`.gemini/settings.json`, same SessionEnd payload). `cm hook status` and `cm doctor` cover both agents.
 - `cm hook install|uninstall|status|session-end`: auto-reflection. A Claude Code `SessionEnd` hook reflects each finished session in the background (`cm reflect --session <transcript>`, detached, logged to `~/.cass-memory/hooks.log`). Transcripts of cm's own LLM subprocesses are skipped, and so are sessions that end inside a background reflect, so the hook cannot loop. Interactive `cm init` offers it. Other agents can call `cm hook session-end --transcript <path>`.
 - `cm playbook scrub --from-sessions <pattern>... | --cm-subprocess-calls [--deprecate-orphans] [--dry-run]` removes feedback events and source references by session path, recounts them and re-derives maturity (never raising it), and backs up each playbook first (#77).
 - `cm playbook conflicts`: pairs of active rules that contradict each other, with a keep/retire suggestion. `cm context` reports contradicting returned rules in `conflicts` and as a warning, and `cm reflect` notes new rules that contradict existing ones.

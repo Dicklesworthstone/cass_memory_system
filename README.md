@@ -831,16 +831,17 @@ cm reflect --workspace ~/code/api --agent claude,codex --json
 0 2 * * * /usr/local/bin/cm reflect --days 7 >> ~/.cass-memory/reflect.log 2>&1
 ```
 
-For Claude Code, install the auto-reflect hook once and every finished session is reflected in the background:
+For Claude Code and Gemini CLI, install the auto-reflect hook once and every finished session is reflected in the background:
 
 ```bash
-cm hook install            # this project (.claude/settings.json)
-cm hook install --global   # every project (~/.claude/settings.json)
-cm hook status             # where it is installed
-cm hook uninstall          # remove it (other hooks are left alone)
+cm hook install                  # Claude Code, this project (.claude/settings.json)
+cm hook install --global         # Claude Code, every project (~/.claude/settings.json)
+cm hook install --agent gemini   # Gemini CLI (.gemini/settings.json; --global for ~/.gemini)
+cm hook status                   # where it is installed, per agent and scope
+cm hook uninstall [--agent gemini] [--global]   # remove it (other hooks are left alone)
 ```
 
-This adds a `SessionEnd` hook that runs `cm hook session-end`. It reads the transcript path from the hook payload and starts `cm reflect --session <transcript>` detached, so Claude Code never waits on it. Output goes to `~/.cass-memory/hooks.log`. It skips transcripts written by cm's own LLM subprocess calls, and sessions that end inside a background reflect, so it cannot loop. Reflection keeps your usual budget limits and processed-session tracking, so re-running a session costs nothing.
+This adds a `SessionEnd` hook that runs `cm hook session-end`. It reads the transcript path from the hook payload and starts `cm reflect --session <transcript>` detached, so the agent never waits on it. Output goes to `~/.cass-memory/hooks.log`. It skips sessions cm itself started as its LLM (detected by transcript folder and by an environment marker the hook inherits, so it also covers Gemini's hashed folders), and sessions that end inside a background reflect, so it cannot loop. Codex has no session-end event, only a per-turn `Stop`, so it is not offered; use the `--transcript` entry point below from a wrapper. Reflection keeps your usual budget limits and processed-session tracking, so re-running a session costs nothing.
 
 For other agents, call the same entry point from a wrapper script or the agent's own end-of-session hook:
 

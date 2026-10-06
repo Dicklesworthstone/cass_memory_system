@@ -293,3 +293,63 @@ describe("selfInvocation / defaultHookCommand", () => {
     expect(defaultHookCommand().endsWith(SESSION_END_HOOK_ARGS)).toBe(true);
   });
 });
+
+describe("cm hook --agent gemini", () => {
+  it("installs into .gemini/settings.json with a named entry and shows in status", async () => {
+    await withTempCassHome(async (env) => {
+      const project = path.join(env.home, "proj-gem");
+      await mkdir(project, { recursive: true });
+      await inDir(project, async () => {
+        let capture = captureConsole();
+        try {
+          await hookCommand("install", { json: true, agent: "gemini", command: CMD });
+        } finally {
+          capture.restore();
+        }
+        const data = JSON.parse(capture.logs.join("\n")).data;
+        expect(data.agent).toBe("gemini");
+        expect(data.settingsPath).toBe(path.join(project, ".gemini", "settings.json"));
+        const saved = JSON.parse(await readFile(data.settingsPath, "utf-8"));
+        expect(saved.hooks.SessionEnd[0].hooks[0]).toEqual({
+          name: "cass-memory-reflect",
+          type: "command",
+          command: CMD,
+        });
+
+        capture = captureConsole();
+        try {
+          await hookCommand("status", { json: true });
+        } finally {
+          capture.restore();
+        }
+        const status = JSON.parse(capture.logs.join("\n")).data;
+        expect(status.scopes.find((s: any) => s.agent === "gemini" && s.scope === "project").installed).toBe(true);
+        expect(status.scopes.find((s: any) => s.agent === "claude" && s.scope === "project").installed).toBe(false);
+      });
+    });
+  });
+
+  it("rejects an unknown agent", async () => {
+    await withTempCassHome(async (env) => {
+      await inDir(env.home, async () => {
+        const capture = captureConsole();
+        try {
+          await hookCommand("install", { json: true, agent: "codex" });
+        } finally {
+          capture.restore();
+        }
+        expect(JSON.parse(capture.logs.join("\n")).success).toBe(false);
+      });
+    });
+  });
+
+  it("session-end skips sessions cm started as its own LLM (any agent)", async () => {
+    const { CM_SUBPROCESS_ENV_VAR, CM_SUBPROCESS_ENV_VALUE } = await import("../src/subprocess-tag.js");
+    const d = await decideSessionEnd(
+      { transcript_path: "/home/u/.gemini/tmp/abc123/chats/session.json" },
+      { env: { [CM_SUBPROCESS_ENV_VAR]: CM_SUBPROCESS_ENV_VALUE } },
+    );
+    expect(d.action).toBe("skip");
+    expect(d.reason).toContain("subprocess");
+  });
+});
