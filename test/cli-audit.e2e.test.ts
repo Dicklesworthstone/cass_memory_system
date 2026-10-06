@@ -98,7 +98,7 @@ function createMockLLMIO(results: {
   return {
     generateObject: async <T>() => ({
       object: results as unknown as T,
-      usage: { promptTokens: 100, completionTokens: 50 },
+      usage: { inputTokens: 100, outputTokens: 50 },
     }),
   };
 }

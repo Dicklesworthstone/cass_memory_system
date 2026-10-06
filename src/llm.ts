@@ -6,8 +6,8 @@ import { createAmazonBedrock } from "@ai-sdk/amazon-bedrock";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createOpenAI } from "@ai-sdk/openai";
-import { generateObject, type LanguageModel } from "ai";
-import { createOllama } from "ollama-ai-provider";
+import { generateObject, type LanguageModel, zodSchema } from "ai";
+import { createOllama } from "ollama-ai-provider-v2";
 import { z } from "zod";
 import { checkBudget, recordCost } from "./cost.js";
 import {
@@ -24,8 +24,8 @@ import { buildDiaryInput, truncateForContext, warn } from "./utils.js";
 export type { LLMProvider } from "./types.js";
 
 export interface LLMUsage {
-  promptTokens: number;
-  completionTokens: number;
+  inputTokens?: number;
+  outputTokens?: number;
 }
 
 export interface LLMGenerateObjectResult<T> {
@@ -170,7 +170,7 @@ export function getModel(config: {
   baseUrl?: string;
   ollamaBaseUrl?: string;
   disableStructuredOutputs?: boolean;
-}): LanguageModel {
+}): Exclude<LanguageModel, string> {
   const provider = config.provider as LLMProvider;
 
   if (provider === "cli") {
@@ -216,18 +216,18 @@ export function getModel(config: {
       // by AI SDK as a post-hoc Zod validator, so empty/wrong outputs
       // still fail loud rather than silently passing.
       //
-      // IMPORTANT: in @ai-sdk/openai 1.x, `structuredOutputs` is a *model*
-      // setting (OpenAIChatSettings), NOT a provider setting. Passing it to
-      // createOpenAI() is silently swallowed (object spreads bypass TS
-      // excess-property checks), which is why the #47 escape hatch never
-      // took effect — reported via PR #59. It must be applied per-model.
+      // The escape hatch is applied per request (see usesJsonModeFallback),
+      // not on the model.
+      //
+      // `.chat()`, not the default provider call: since AI SDK 5 the default
+      // is OpenAI's Responses API (/v1/responses), which most
+      // OpenAI-compatible gateways (OpenRouter, DeepSeek, Azure-style
+      // proxies) do not implement. Chat Completions works on all of them.
       const openaiProvider = createOpenAI({
         apiKey,
         ...(baseURL ? { baseURL } : {}),
       });
-      return config.disableStructuredOutputs
-        ? openaiProvider(config.model, { structuredOutputs: false })
-        : openaiProvider(config.model);
+      return openaiProvider.chat(config.model);
     }
     case "anthropic":
       return createAnthropic({ apiKey, ...(baseURL ? { baseURL } : {}) })(config.model);
@@ -239,25 +239,20 @@ export function getModel(config: {
 }
 
 /**
- * generateObject() option overrides for the disableStructuredOutputs escape
- * hatch (#47). With structured outputs off, the OpenAI chat model's
- * defaultObjectGenerationMode is "tool", so generateObject's default "auto"
- * mode sends a forced `tool_choice: {type: "function", ...}` — which some
- * openai-compatible gateways/models reject outright (e.g. DeepSeek thinking
- * models: 400 "Thinking mode does not support this tool_choice"). Forcing
- * `mode: "json"` sends `response_format: {type: "json_object"}` with no
- * tools; the AI SDK injects the schema into the prompt and still validates
- * the result with Zod post-hoc, so guarantees are preserved.
+ * Whether a request takes the disableStructuredOutputs escape hatch (#47):
+ * plain JSON mode (`response_format: {type: "json_object"}`, no schema in the
+ * request) instead of strict structured outputs. Some OpenAI-compatible
+ * gateways and models reject json_schema / strict mode, or return invalid
+ * JSON with it on. The schema is then given in the prompt and the result is
+ * validated with Zod afterwards (see monitoredGenerateObject), so a wrong or
+ * empty object still fails loudly.
  *
- * Only applies to the "openai" provider — the flag is an openai-compatible-
- * gateway escape hatch and must not perturb anthropic/google/ollama/bedrock
- * request shapes (fallback providers included).
+ * Only the "openai" provider is affected: the flag is an escape hatch for
+ * OpenAI-compatible gateways and must not change anthropic, google, ollama
+ * or bedrock requests, fallback providers included.
  */
-export function objectGenerationOverrides(
-  provider: string,
-  disableStructuredOutputs?: boolean,
-): { mode?: "json" } {
-  return provider === "openai" && disableStructuredOutputs ? { mode: "json" } : {};
+export function usesJsonModeFallback(provider: string, disableStructuredOutputs?: boolean): boolean {
+  return provider === "openai" && Boolean(disableStructuredOutputs);
 }
 
 // --- CLI LLM Backend ---
@@ -531,7 +526,7 @@ export async function cliGenerateObject<T>(
 
   return {
     object: validated.data,
-    usage: { promptTokens: 0, completionTokens: 0 },
+    usage: { inputTokens: 0, outputTokens: 0 },
   };
 }
 
@@ -907,17 +902,29 @@ async function monitoredGenerateObject<T>(
     throw new Error(`LLM budget exceeded: ${budgetCheck.reason}`);
   }
 
-  const result = await io.generateObject<T>({
-    ...options,
-    // Ensure schema is passed through if present in options, typically it is
-  });
+  const { jsonModeFallback, ...requestOptions } = options ?? {};
+  let result: LLMGenerateObjectResult<T>;
+  if (jsonModeFallback && requestOptions.schema) {
+    // JSON mode: no schema in the request (the provider sends json_object),
+    // the schema goes in the prompt, and Zod validates the reply here.
+    const { schema, prompt, ...rest } = requestOptions;
+    const jsonSchema = JSON.stringify(zodSchema(schema).jsonSchema);
+    const raw = await io.generateObject<unknown>({
+      ...rest,
+      output: "no-schema",
+      prompt: `${prompt}\n\nRespond with only a JSON object that matches this JSON Schema exactly:\n${jsonSchema}`,
+    });
+    result = { ...raw, object: schema.parse(raw.object) as T };
+  } else {
+    result = await io.generateObject<T>(requestOptions);
+  }
 
   if (result.usage) {
     await recordCost(config, {
       provider: config.provider,
       model: config.model,
-      tokensIn: result.usage.promptTokens,
-      tokensOut: result.usage.completionTokens,
+      tokensIn: result.usage.inputTokens ?? 0,
+      tokensOut: result.usage.outputTokens ?? 0,
       context,
     });
   }
@@ -1049,7 +1056,7 @@ export async function generateObjectSafe<T>(
           schema,
           prompt: enhancedPrompt,
           temperature,
-          ...objectGenerationOverrides(config.provider, config.disableStructuredOutputs),
+          jsonModeFallback: usesJsonModeFallback(config.provider, config.disableStructuredOutputs),
         },
         config,
         "generateObjectSafe",
@@ -1530,7 +1537,7 @@ export async function llmWithFallback<T>(
           temperature: 0.3,
           // Keyed on the per-iteration fallback provider, not config.provider:
           // a fallback hop to/from openai must get the right request shape.
-          ...objectGenerationOverrides(provider, config.disableStructuredOutputs),
+          jsonModeFallback: usesJsonModeFallback(provider, config.disableStructuredOutputs),
         },
         costConfig,
         "llmWithFallback",

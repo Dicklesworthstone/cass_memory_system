@@ -13,7 +13,7 @@ import {
   type LLMProvider,
   llmWithFallback,
   llmWithRetry,
-  objectGenerationOverrides,
+  usesJsonModeFallback,
   PROMPTS,
   resolveEffectiveLLMConfig,
   validateApiKey,
@@ -349,54 +349,29 @@ describe("getModel", () => {
     expect(model).toBeDefined();
   });
 
-  // #47 escape hatch / PR #59: `structuredOutputs` is a model-level setting
-  // in @ai-sdk/openai 1.x — passing it to createOpenAI() is silently ignored.
-  // Reasoning-style model ids default to structured outputs ON, so they are
-  // the ids where the model-level toggle is observable.
-  it("disableStructuredOutputs turns structured outputs off at the model level", () => {
-    const flagOff = getModel({ provider: "openai", model: "o3", apiKey: "sk-test-key" }) as any;
-    expect(flagOff.supportsStructuredOutputs).toBe(true);
-
-    const flagOn = getModel({
-      provider: "openai",
-      model: "o3",
-      apiKey: "sk-test-key",
-      disableStructuredOutputs: true,
-    }) as any;
-    expect(flagOn.supportsStructuredOutputs).toBe(false);
-  });
-
-  it("disableStructuredOutputs works for openai-compatible gateway model ids", () => {
-    const model = getModel({
-      provider: "openai",
-      model: "deepseek/deepseek-chat",
-      apiKey: "sk-test-key",
-      baseUrl: "https://openrouter.ai/api/v1",
-      disableStructuredOutputs: true,
-    }) as any;
-    expect(model.supportsStructuredOutputs).toBe(false);
+  // Since AI SDK 5 the default OpenAI call goes to the Responses API, which
+  // most OpenAI-compatible gateways lack; cm pins Chat Completions.
+  it("openai models use the Chat Completions API", () => {
+    const model = getModel({ provider: "openai", model: "gpt-4o-mini", apiKey: "sk-test-key" }) as any;
+    expect(String(model.provider)).toContain("chat");
   });
 });
 
 // ============================================================================
-// objectGenerationOverrides() Tests (#47 / PR #59)
+// usesJsonModeFallback() Tests (#47 / PR #59)
 // ============================================================================
 
-describe("objectGenerationOverrides", () => {
-  it("forces json mode for openai when structured outputs are disabled", () => {
-    expect(objectGenerationOverrides("openai", true)).toEqual({ mode: "json" });
+describe("usesJsonModeFallback", () => {
+  it("is on for openai only when structured outputs are disabled", () => {
+    expect(usesJsonModeFallback("openai", true)).toBe(true);
+    expect(usesJsonModeFallback("openai", false)).toBe(false);
+    expect(usesJsonModeFallback("openai", undefined)).toBe(false);
   });
 
-  it("returns no override for openai when the flag is off", () => {
-    expect(objectGenerationOverrides("openai", false)).toEqual({});
-    expect(objectGenerationOverrides("openai", undefined)).toEqual({});
-  });
-
-  it("never overrides non-openai providers, even with the flag on", () => {
-    expect(objectGenerationOverrides("anthropic", true)).toEqual({});
-    expect(objectGenerationOverrides("google", true)).toEqual({});
-    expect(objectGenerationOverrides("ollama", true)).toEqual({});
-    expect(objectGenerationOverrides("bedrock", true)).toEqual({});
+  it("never applies to non-openai providers, even with the flag on", () => {
+    for (const p of ["anthropic", "google", "ollama", "bedrock"]) {
+      expect(usesJsonModeFallback(p, true)).toBe(false);
+    }
   });
 });
 
@@ -416,7 +391,7 @@ describe("generateObjectSafe with disableStructuredOutputs", () => {
     };
   }
 
-  it("passes mode: json to generateObject when openai + flag on", async () => {
+  it("uses JSON mode with the schema in the prompt when openai + flag on", async () => {
     const captured: { options: any } = { options: null };
     const config = createTestConfig({
       provider: "openai",
@@ -428,25 +403,45 @@ describe("generateObjectSafe with disableStructuredOutputs", () => {
     const result = await generateObjectSafe(schema, "prompt", config, 3, capturingIO(captured));
 
     expect(result.test).toBe("ok");
-    expect(captured.options.mode).toBe("json");
+    // No schema in the request -> the provider sends response_format json_object.
+    expect(captured.options.output).toBe("no-schema");
+    expect(captured.options.schema).toBeUndefined();
+    expect(captured.options.prompt).toContain('"test"');
+    expect(captured.options.prompt).toContain("JSON Schema");
   });
 
-  it("does not set mode when the flag is off (default openai behavior unchanged)", async () => {
+  it("still validates JSON-mode output with Zod (wrong shape fails, then retries)", async () => {
+    let calls = 0;
+    const io: LLMIO = {
+      generateObject: async <T>() => {
+        calls++;
+        return { object: (calls === 1 ? { wrong: 1 } : { test: "fixed" }) as T };
+      },
+    };
+    const config = createTestConfig({ provider: "openai", disableStructuredOutputs: true });
+    const result = await generateObjectSafe(schema, "prompt", config, 3, io);
+    expect(result.test).toBe("fixed");
+    expect(calls).toBe(2);
+  });
+
+  it("sends the schema normally when the flag is off", async () => {
     const captured: { options: any } = { options: null };
     const config = createTestConfig({ provider: "openai", model: "gpt-4o-mini" });
 
     await generateObjectSafe(schema, "prompt", config, 3, capturingIO(captured));
 
-    expect(captured.options.mode).toBeUndefined();
+    expect(captured.options.schema).toBe(schema);
+    expect(captured.options.output).toBeUndefined();
   });
 
-  it("does not set mode for non-openai providers even with the flag on", async () => {
+  it("ignores the flag for non-openai providers", async () => {
     const captured: { options: any } = { options: null };
     const config = createTestConfig({ disableStructuredOutputs: true }); // anthropic default
 
     await generateObjectSafe(schema, "prompt", config, 3, capturingIO(captured));
 
-    expect(captured.options.mode).toBeUndefined();
+    expect(captured.options.schema).toBe(schema);
+    expect(captured.options.output).toBeUndefined();
   });
 });
 

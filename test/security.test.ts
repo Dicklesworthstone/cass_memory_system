@@ -429,7 +429,9 @@ describe("dependency security", () => {
     ].map((match) => match[1]);
 
     expect(packageJson.overrides?.["@aws-sdk/xml-builder"]).toBe("3.972.37");
-    expect([...new Set(resolvedVersions)]).toEqual(["3.972.37"]);
+    // @ai-sdk/amazon-bedrock 5 no longer pulls xml-builder in at all; if any
+    // dependency brings it back, it must resolve to the pinned version.
+    for (const version of new Set(resolvedVersions)) expect(version).toBe("3.972.37");
     expect(lockfile).not.toContain('"fast-xml-builder": [');
     expect(lockfile).not.toContain('"fast-xml-parser": [');
   });

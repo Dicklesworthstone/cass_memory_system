@@ -106,7 +106,7 @@ function createMockLLMIO(result: {
         suggestedRefinement: result.suggestedRefinement,
         evidence: result.evidence ?? [], // LLM validator returns evidence array
       } as unknown as T,
-      usage: { promptTokens: 100, completionTokens: 50 },
+      usage: { inputTokens: 100, outputTokens: 50 },
     }),
   };
 }
