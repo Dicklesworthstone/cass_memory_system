@@ -340,7 +340,7 @@ async function handleBatchAdd(
             : `[item ${i}]`;
         result.failed.push({
           content,
-          error: validated.error.errors.map((e) => e.message).join(", "),
+          error: validated.error.issues.map((e) => e.message).join(", "),
         });
         continue;
       }

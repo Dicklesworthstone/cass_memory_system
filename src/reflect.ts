@@ -249,7 +249,11 @@ const LLMMergeDeltaSchema = z
   })
   .strict();
 
-const LLMPlaybookDeltaSchema = z.discriminatedUnion("type", [
+// z.union, not z.discriminatedUnion: zod 4 emits `oneOf` for discriminated
+// unions, which OpenAI strict structured outputs reject; plain unions emit
+// `anyOf`, which every provider accepts. Each variant's `type` literal is
+// distinct, so parsing is unchanged.
+const LLMPlaybookDeltaSchema = z.union([
   LLMAddDeltaSchema,
   LLMHelpfulDeltaSchema,
   LLMHarmfulDeltaSchema,

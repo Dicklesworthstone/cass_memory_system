@@ -251,7 +251,7 @@ export type EmbeddingCacheEntry = z.infer<typeof EmbeddingCacheEntrySchema>;
 export const EmbeddingCacheSchema = z.object({
   version: z.string(),
   model: z.string(),
-  bullets: z.record(EmbeddingCacheEntrySchema).default({}),
+  bullets: z.record(z.string(), EmbeddingCacheEntrySchema).default({}),
 });
 export type EmbeddingCache = z.infer<typeof EmbeddingCacheSchema>;
 
@@ -371,7 +371,7 @@ export const RemoteCassConfigSchema = z
     /** Remote hosts to query via SSH for cass history. */
     hosts: z.array(RemoteCassHostSchema).default([]),
   })
-  .default({});
+  .prefault({});
 export type RemoteCassConfig = z.infer<typeof RemoteCassConfigSchema>;
 
 // Bounded-concurrency / admission control for `cm serve` CASS-backed MCP calls.
@@ -392,7 +392,7 @@ export const ServeConfigSchema = z
     // retryable busy error. 0 = wait indefinitely.
     cassQueueTimeoutMs: z.number().int().nonnegative().default(20000),
   })
-  .default({});
+  .prefault({});
 export type ServeConfig = z.infer<typeof ServeConfigSchema>;
 
 /**
@@ -434,10 +434,10 @@ export const ConfigSchema = z.object({
   // Wall-clock budget (seconds) for `cass timeline` session discovery in
   // `cm reflect`. Env override: CM_CASS_TIMELINE_TIMEOUT_SECONDS (#78).
   cassTimelineTimeoutSeconds: z.number().int().positive().default(120),
-  remoteCass: RemoteCassConfigSchema.default({}),
+  remoteCass: RemoteCassConfigSchema.prefault({}),
   playbookPath: z.string().default("~/.cass-memory/playbook.yaml"),
   diaryDir: z.string().default("~/.cass-memory/diary"),
-  scoring: ScoringConfigSectionSchema.default({}),
+  scoring: ScoringConfigSectionSchema.prefault({}),
   maxReflectorIterations: z.number().default(3),
   autoReflect: z.boolean().default(false),
   // Session type filtering: exclude internal/auto-generated sessions from reflection
@@ -523,7 +523,7 @@ export const ConfigSchema = z.object({
   minRelevanceScore: z.number().default(0.1),
   maxRelatedSessions: z.number().default(5),
   validationEnabled: z.boolean().default(true),
-  crossAgent: CrossAgentConfigSchema.default({}),
+  crossAgent: CrossAgentConfigSchema.prefault({}),
   // Tri-state on purpose (#75): `true`/`false` are explicit and always win;
   // unset means "automatic" — semantic search runs when the configured
   // embedding backend is already ready offline (local model cached, or the
@@ -549,9 +549,9 @@ export const ConfigSchema = z.object({
   // that issue #44 fixed; only flip when you've confirmed strict-mode is the
   // failure surface.
   disableStructuredOutputs: z.boolean().default(false),
-  sanitization: SanitizationConfigSchema.default({}),
-  budget: BudgetConfigSchema.default({}),
-  serve: ServeConfigSchema.default({}),
+  sanitization: SanitizationConfigSchema.prefault({}),
+  budget: BudgetConfigSchema.prefault({}),
+  serve: ServeConfigSchema.prefault({}),
   cliCommand: z.string().min(1).max(256).optional(),
   // Working directory for cm's own LLM subprocesses on `provider: cli` (#76).
   // Agent CLIs name their per-project transcript folder after the cwd, so
@@ -941,7 +941,7 @@ export const DecisionLogEntrySchema = z.object({
   bulletId: z.string().optional(),
   content: z.string().optional(),
   reason: z.string(),
-  details: z.record(z.unknown()).optional(),
+  details: z.record(z.string(), z.unknown()).optional(),
 });
 export type DecisionLogEntry = z.infer<typeof DecisionLogEntrySchema>;
 
@@ -1108,7 +1108,7 @@ export type CMErrorCode = z.infer<typeof CMErrorCodeEnum>;
 export const CMErrorSchema = z.object({
   code: CMErrorCodeEnum,
   message: z.string(),
-  details: z.record(z.unknown()).optional(),
+  details: z.record(z.string(), z.unknown()).optional(),
   recoverable: z.boolean().default(true),
 });
 export type CMError = z.infer<typeof CMErrorSchema>;

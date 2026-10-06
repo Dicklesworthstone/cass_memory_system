@@ -906,3 +906,41 @@ describe("cliGenerateObject schema hint", () => {
     expect(prompt).toContain('"rule"');
   });
 });
+
+describe("LLM-facing schemas convert to provider-safe JSON Schema", () => {
+  // ai 4 + zod 3.25 silently sent an EMPTY schema to every provider; zod 4
+  // emits `oneOf` for discriminated unions, which OpenAI strict mode rejects.
+  it("the reflector output schema is complete and uses anyOf, not oneOf", async () => {
+    const { zodSchema } = await import("ai");
+    const { reflectOnSession } = await import("../src/reflect.js");
+    const { createTestPlaybook } = await import("./helpers/factories.js");
+    const seen: any[] = [];
+    const io: LLMIO = {
+      generateObject: async <T>(o: any) => {
+        seen.push(o.schema);
+        return { object: { deltas: [] } as T };
+      },
+    };
+    const diary: any = {
+      id: "d1",
+      sessionPath: "/s.jsonl",
+      timestamp: new Date().toISOString(),
+      agent: "claude",
+      status: "success",
+      accomplishments: ["a"],
+      decisions: [],
+      challenges: [],
+      preferences: [],
+      keyLearnings: ["k"],
+      tags: [],
+      searchAnchors: [],
+      relatedSessions: [],
+    };
+    await reflectOnSession(diary, createTestPlaybook([]), createTestConfig(), io);
+    const json = JSON.stringify(zodSchema(seen[0]).jsonSchema);
+    expect(json).not.toContain("oneOf");
+    for (const t of ['"add"', '"helpful"', '"harmful"', '"replace"', '"deprecate"', '"merge"']) {
+      expect(json).toContain(t);
+    }
+  });
+});

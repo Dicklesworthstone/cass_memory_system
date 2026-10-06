@@ -9,7 +9,7 @@ import { ConfigSchema, PlaybookBulletSchema, PlaybookSchema } from "../../src/ty
 export function expectValidPlaybook(value: unknown): asserts value is Playbook {
   const result = PlaybookSchema.safeParse(value);
   if (!result.success) {
-    const errors = result.error.errors
+    const errors = result.error.issues
       .map((e) => `  - ${e.path.join(".")}: ${e.message}`)
       .join("\n");
     throw new Error(`Invalid Playbook:\n${errors}`);
@@ -22,7 +22,7 @@ export function expectValidPlaybook(value: unknown): asserts value is Playbook {
 export function expectValidBullet(value: unknown): asserts value is PlaybookBullet {
   const result = PlaybookBulletSchema.safeParse(value);
   if (!result.success) {
-    const errors = result.error.errors
+    const errors = result.error.issues
       .map((e) => `  - ${e.path.join(".")}: ${e.message}`)
       .join("\n");
     throw new Error(`Invalid PlaybookBullet:\n${errors}`);
@@ -35,7 +35,7 @@ export function expectValidBullet(value: unknown): asserts value is PlaybookBull
 export function expectValidConfig(value: unknown): asserts value is Config {
   const result = ConfigSchema.safeParse(value);
   if (!result.success) {
-    const errors = result.error.errors
+    const errors = result.error.issues
       .map((e) => `  - ${e.path.join(".")}: ${e.message}`)
       .join("\n");
     throw new Error(`Invalid Config:\n${errors}`);

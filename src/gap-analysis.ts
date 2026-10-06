@@ -213,7 +213,7 @@ export type CategoryAnalysis = z.infer<typeof CategoryAnalysisSchema>;
 export const PlaybookGapAnalysisSchema = z
   .object({
     totalRules: z.number().int().min(0),
-    byCategory: z.record(CategoryAnalysisSchema),
+    byCategory: z.record(z.string(), CategoryAnalysisSchema),
     gaps: z
       .object({
         critical: z.array(z.string()),

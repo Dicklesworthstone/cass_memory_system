@@ -46,7 +46,7 @@
     "commander": "^15.0.0",
     "ollama-ai-provider-v2": "^4.0.1",
     "yaml": "^2.9.1",
-    "zod": "3.25.76"
+    "zod": "^4.6.5"
   },
   "overrides": {
     "@aws-sdk/xml-builder": "3.972.37",
