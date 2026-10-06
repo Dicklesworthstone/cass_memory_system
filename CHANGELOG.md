@@ -21,6 +21,7 @@ All notable changes to **cass-memory** (`cm`) are documented in this file.
 - The curator detects reworded duplicates by embedding similarity (`semanticDedupThreshold`, default 0.9) when semantic search is on. Rules whose directives disagree are never merged.
 - Freebuff sessions are recognized (`.freebuff/`, `~/.config/freebuff/`) and included in the default cross-agent allowlist (#69).
 - `cm diary <session>` is registered. It was implemented but unreachable.
+- Team playbook merge: `cm playbook import` matches rules by content as well as id. A teammate's copy of a rule (same text under another id, near-identical wording, or same id and text) merges into the existing rule. Feedback events are unioned without double counting, sources and tags are combined, and counts and maturity are recomputed. Imported rules that contradict existing ones are reported in `conflicts`.
 
 ### Changed
 

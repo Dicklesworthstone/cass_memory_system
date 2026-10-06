@@ -1331,3 +1331,80 @@ describe("E2E: cm playbook conflicts", () => {
     });
   });
 });
+
+describe("E2E: cm playbook import merges teammates' rules by content", () => {
+  const t1 = "2026-09-01T10:00:00.000Z";
+  const t2 = "2026-09-02T10:00:00.000Z";
+
+  async function importJson(env: TestEnv, data: unknown) {
+    const importPath = path.join(env.cassMemoryDir, `import-${Math.random()}.json`);
+    await writeFile(importPath, JSON.stringify(data, null, 2));
+    const capture = captureConsole();
+    try {
+      await playbookCommand("import", [importPath], { json: true });
+    } finally {
+      capture.restore();
+    }
+    return JSON.parse(capture.logs.join("\n")).data;
+  }
+
+  it("folds a same-text rule under another id into ours, unioning feedback without double counting", async () => {
+    await withTempCassHome(async (env) => {
+      const ours = {
+        ...createTestBullet({ id: "b-ours", content: "Run database migrations inside a transaction" }),
+        feedbackEvents: [{ type: "helpful", timestamp: t1, sessionPath: "/a.jsonl" }],
+        helpfulCount: 1,
+        sourceSessions: ["/a.jsonl"],
+      };
+      await writeFile(env.playbookPath, yaml.stringify(createTestPlaybook([ours])));
+      const theirs = {
+        ...createTestBullet({ id: "b-theirs", content: "Run database migrations inside a transaction" }),
+        feedbackEvents: [
+          { type: "helpful", timestamp: t1, sessionPath: "/a.jsonl" },
+          { type: "helpful", timestamp: t2, sessionPath: "/b.jsonl" },
+        ],
+        helpfulCount: 2,
+        sourceSessions: ["/b.jsonl"],
+      };
+      const result = await importJson(env, { bullets: [theirs] });
+      expect(result.added).toBe(0);
+      expect(result.merged).toBe(1);
+      expect(result.feedbackEventsMerged).toBe(1);
+      expect(result.mergedInto).toEqual([{ importedId: "b-theirs", existingId: "b-ours", how: "exact" }]);
+
+      const saved = yaml.parse(await readFile(env.playbookPath, "utf-8"));
+      expect(saved.bullets).toHaveLength(1);
+      expect(saved.bullets[0].helpfulCount).toBe(2);
+      expect(saved.bullets[0].sourceSessions.sort()).toEqual(["/a.jsonl", "/b.jsonl"]);
+
+      // Re-importing the same export is a no-op for feedback.
+      const again = await importJson(env, { bullets: [theirs] });
+      expect(again.feedbackEventsMerged).toBe(0);
+    });
+  });
+
+  it("merges near-duplicate wording, adds distinct rules, and reports contradictions", async () => {
+    await withTempCassHome(async (env) => {
+      const ours = createTestBullet({
+        id: "b-lock",
+        content: "Always commit the generated lockfile with dependency changes",
+      });
+      await writeFile(env.playbookPath, yaml.stringify(createTestPlaybook([ours])));
+      const result = await importJson(env, {
+        bullets: [
+          createTestBullet({
+            id: "b-lock2",
+            content: "Always commit the generated lockfile with any dependency changes",
+          }),
+          createTestBullet({ id: "b-never", content: "Never commit the generated lockfile" }),
+          createTestBullet({ id: "b-new", content: "Prefer small focused pull requests always" }),
+        ],
+      });
+      expect(result.mergedInto).toEqual([{ importedId: "b-lock2", existingId: "b-lock", how: "similar" }]);
+      expect(result.added).toBe(2);
+      expect(result.conflicts).toEqual([
+        expect.objectContaining({ importedId: "b-never", existingId: "b-lock" }),
+      ]);
+    });
+  });
+});

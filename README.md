@@ -933,7 +933,9 @@ cm playbook remove b-xyz789 --reason "No longer applicable"
 # Export playbook for backup or sharing
 cm playbook export > playbook-backup.yaml
 
-# Import playbook from file
+# Import playbook from file. Rules matching an existing one by text (exact,
+# or near-identical wording) merge their feedback into it instead of becoming
+# duplicates; contradictions with existing rules are reported.
 cm playbook import shared-playbook.yaml
 
 # Find rules that contradict each other (with a keep/retire suggestion)

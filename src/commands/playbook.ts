@@ -22,6 +22,7 @@ import {
   getActiveBullets,
   loadMergedPlaybook,
   loadPlaybook,
+  mergeImportedBullet,
   type ScrubResult,
   savePlaybook,
   scrubFeedbackFromSessions,
@@ -49,7 +50,10 @@ import {
   expandPath,
   fileExists,
   getCliName,
+  hashContent,
   isJsonOutput,
+  jaccardSimilarity,
+  tokenize,
   isToonOutput,
   now,
   printJsonResult,
@@ -60,6 +64,9 @@ import {
   truncate,
   validateOneOf,
 } from "../utils.js";
+
+/** Very short rules ("Use Node 18" / "Use Node 20") only merge on exact text. */
+const MIN_TOKENS_FOR_SIMILAR_MERGE = 4;
 
 // Helper function to format a bullet for detailed display
 function formatBulletDetails(
@@ -656,36 +663,93 @@ export async function playbookCommand(
     let added = 0;
     let skipped = 0;
     let updated = 0;
+    let merged = 0;
+    let feedbackMerged = 0;
+    const mergedInto: Array<{ importedId: string; existingId: string; how: "exact" | "similar" }> =
+      [];
+    let conflicts: Array<{ importedId: string; existingId: string; reason: string }> = [];
 
-    // Merge with existing playbook
+    // Merge with existing playbook. Beyond ids, rules are matched by content
+    // (exact, or word overlap >= dedupSimilarityThreshold) so a teammate's
+    // copy of a rule under another id merges its track record into ours
+    // instead of becoming a duplicate.
     await withLock(targetPath, async () => {
       const existingPlaybook = await loadPlaybook(targetPath);
       const existingIds = new Set(existingPlaybook.bullets.map((b) => b.id));
+      const isActive = (b: PlaybookBullet) =>
+        !(b.deprecated || b.maturity === "deprecated" || b.state === "retired");
+      const byHash = new Map<string, PlaybookBullet>();
+      for (const b of existingPlaybook.bullets) {
+        if (isActive(b)) byHash.set(hashContent(b.content), b);
+      }
+      const threshold =
+        typeof config.dedupSimilarityThreshold === "number" ? config.dedupSimilarityThreshold : 0.85;
+      const newlyAdded: PlaybookBullet[] = [];
 
       for (let i = 0; i < importedBullets.length; i++) {
         const bullet = importedBullets[i];
-        if (existingIds.has(bullet.id)) {
+        const sameId = existingIds.has(bullet.id)
+          ? existingPlaybook.bullets.find((b) => b.id === bullet.id)
+          : undefined;
+        if (sameId) {
           if (flags.replace) {
-            // Replace existing bullet
-            const idx = existingPlaybook.bullets.findIndex((b) => b.id === bullet.id);
-            if (idx >= 0) {
-              existingPlaybook.bullets[idx] = bullet;
-              updated++;
-            }
+            const idx = existingPlaybook.bullets.indexOf(sameId);
+            existingPlaybook.bullets[idx] = bullet;
+            updated++;
+          } else if (hashContent(sameId.content) === hashContent(bullet.content)) {
+            feedbackMerged += mergeImportedBullet(sameId, bullet, config);
+            merged++;
           } else {
             skipped++;
           }
-        } else {
+        } else if (!isActive(bullet)) {
           existingPlaybook.bullets.push(bullet);
           added++;
+        } else {
+          const exact = byHash.get(hashContent(bullet.content));
+          const similar =
+            exact ??
+            (tokenize(bullet.content).length >= MIN_TOKENS_FOR_SIMILAR_MERGE
+              ? existingPlaybook.bullets.find(
+                  (b) =>
+                    isActive(b) &&
+                    tokenize(b.content).length >= MIN_TOKENS_FOR_SIMILAR_MERGE &&
+                    jaccardSimilarity(b.content, bullet.content) >= threshold,
+                )
+              : undefined);
+          if (similar) {
+            feedbackMerged += mergeImportedBullet(similar, bullet, config);
+            mergedInto.push({
+              importedId: bullet.id,
+              existingId: similar.id,
+              how: exact ? "exact" : "similar",
+            });
+            merged++;
+          } else {
+            existingPlaybook.bullets.push(bullet);
+            existingIds.add(bullet.id);
+            byHash.set(hashContent(bullet.content), bullet);
+            newlyAdded.push(bullet);
+            added++;
+          }
         }
         mergeProgress.update(i + 1, "Merging bullets...");
       }
 
+      // Contradictions between what was just imported and what was already there.
+      const addedIds = new Set(newlyAdded.map((b) => b.id));
+      conflicts = findBulletConflicts(existingPlaybook.bullets)
+        .filter((p) => addedIds.has(p.a.id) !== addedIds.has(p.b.id))
+        .map((p) =>
+          addedIds.has(p.a.id)
+            ? { importedId: p.a.id, existingId: p.b.id, reason: p.reason }
+            : { importedId: p.b.id, existingId: p.a.id, reason: p.reason },
+        );
+
       mergeProgress.update(importedBullets.length, "Saving playbook...");
       await savePlaybook(existingPlaybook, targetPath);
       mergeProgress.complete(
-        `Import complete (${added} added, ${updated} updated, ${skipped} skipped)`,
+        `Import complete (${added} added, ${merged} merged, ${updated} updated, ${skipped} skipped)`,
       );
 
       if (flags.json) {
@@ -695,8 +759,12 @@ export async function playbookCommand(
             file: filePath,
             target: targetPath,
             added,
+            merged,
+            feedbackEventsMerged: feedbackMerged,
+            mergedInto,
             skipped,
             updated,
+            conflicts,
             validationWarnings: validationErrors.length > 0 ? validationErrors : undefined,
           },
           { startedAtMs },
@@ -705,7 +773,19 @@ export async function playbookCommand(
         console.log(chalk.green(`${icon("success")} Imported playbook from ${filePath}`));
         console.log(chalk.dim(`  Target: ${targetPath}`));
         console.log(`  - ${chalk.green(added)} bullets added`);
+        if (merged > 0) {
+          console.log(
+            `  - ${chalk.cyan(merged)} bullets merged into existing rules (${feedbackMerged} feedback events combined)`,
+          );
+        }
         console.log(`  - ${chalk.yellow(skipped)} bullets skipped (already exist)`);
+        if (conflicts.length > 0) {
+          console.log(
+            chalk.yellow(
+              `  - ${conflicts.length} imported rule(s) may contradict existing ones; review: ${getCliName()} playbook conflicts`,
+            ),
+          );
+        }
         if (updated > 0) {
           console.log(`  - ${chalk.blue(updated)} bullets updated`);
         }

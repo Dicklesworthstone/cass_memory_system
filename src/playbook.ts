@@ -578,6 +578,41 @@ export function deprecateBullet(
   return true;
 }
 
+// --- Playbook Import Merge ---
+
+/**
+ * Fold an incoming copy of a rule (a teammate's export, another machine's
+ * playbook) into the existing one: feedback events are unioned (an event
+ * already present, by type + timestamp + session, is not counted twice),
+ * sources, agents and tags are combined, counts are recounted from the
+ * events, and maturity is re-derived. The existing rule keeps its id and text.
+ * Returns how many feedback events were new.
+ */
+export function mergeImportedBullet(
+  existing: PlaybookBullet,
+  incoming: PlaybookBullet,
+  config: Config,
+): number {
+  const key = (e: { type: string; timestamp: string; sessionPath?: string }) =>
+    `${e.type}|${e.timestamp}|${e.sessionPath ?? ""}`;
+  const seen = new Set((existing.feedbackEvents || []).map(key));
+  const fresh = (incoming.feedbackEvents || []).filter((e) => !seen.has(key(e)));
+  existing.feedbackEvents = [...(existing.feedbackEvents || []), ...fresh];
+  const union = (a: string[] = [], b: string[] = []) => Array.from(new Set([...a, ...b]));
+  existing.sourceSessions = union(existing.sourceSessions, incoming.sourceSessions);
+  existing.sourceAgents = union(existing.sourceAgents, incoming.sourceAgents);
+  existing.tags = union(existing.tags, incoming.tags);
+  if (!existing.reasoning && incoming.reasoning) existing.reasoning = incoming.reasoning;
+  if (!existing.searchPointer && incoming.searchPointer) existing.searchPointer = incoming.searchPointer;
+  if (fresh.length > 0) {
+    existing.helpfulCount = existing.feedbackEvents.filter((e) => e.type === "helpful").length;
+    existing.harmfulCount = existing.feedbackEvents.filter((e) => e.type === "harmful").length;
+    existing.maturity = calculateMaturityState(existing, config);
+  }
+  existing.updatedAt = now();
+  return fresh.length;
+}
+
 // --- Feedback Scrubbing (#77) ---
 
 /**
