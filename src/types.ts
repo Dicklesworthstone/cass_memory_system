@@ -489,6 +489,10 @@ export const ConfigSchema = z.object({
   diaryMaxInputChars: z.number().int().min(10_000).max(2_000_000).default(50_000),
   diaryMiddleScanChars: z.number().int().min(0).max(200_000).default(8_000),
   dedupSimilarityThreshold: z.number().default(0.85),
+  // Embedding cosine similarity at which the curator treats a new rule as a
+  // rewording of an existing one and reinforces it instead of adding it.
+  // Used only when semantic search is enabled (explicitly or automatically).
+  semanticDedupThreshold: z.number().min(0).max(1).default(0.9),
   pruneHarmfulThreshold: z.number().default(3),
   defaultDecayHalfLife: z.number().default(90),
   // Retrieval sizing (#89). A 50-bullet default produced ~15k-token context

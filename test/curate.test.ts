@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "bun:test";
 import { curatePlaybook } from "../src/curate";
+import { hashContent } from "../src/utils";
 import type { Config, Playbook, PlaybookDelta } from "../src/types";
 import {
   createFeedbackEvent,
@@ -1226,5 +1227,117 @@ describe("curatePlaybook", () => {
         expect(new Date(entry.timestamp).getTime()).not.toBeNaN();
       }
     });
+  });
+});
+
+describe("curatePlaybook semantic dedup", () => {
+  const existingContent = "Run the full test suite before pushing";
+  const reworded = "Always execute every test prior to a git push";
+  const unrelated = "Pin dependency versions in the lockfile";
+
+  function addDelta(content: string): PlaybookDelta {
+    return {
+      type: "add",
+      bullet: { content, category: "testing", scope: "global", kind: "workflow_rule" },
+      sourceSession: "/session/2.jsonl",
+      reason: "test",
+    };
+  }
+
+  // Hand-built vectors stand in for a model: the rewording is nearly parallel
+  // to the existing rule, the unrelated rule is orthogonal.
+  function index(threshold = 0.9) {
+    return {
+      threshold,
+      embeddings: new Map<string, number[]>([
+        [hashContent(existingContent), [1, 0, 0]],
+        [hashContent(reworded), [0.98, 0.199, 0]],
+        [hashContent(unrelated), [0, 0, 1]],
+      ]),
+    };
+  }
+
+  it("reinforces the existing rule instead of adding a rewording", () => {
+    const existing = createTestBullet({ id: "b-tests", content: existingContent });
+    const playbook = createTestPlaybook([existing]);
+    const result = curatePlaybook(playbook, [addDelta(reworded)], createTestConfig(), undefined, {
+      semanticIndex: index(),
+    });
+    expect(result.playbook.bullets).toHaveLength(1);
+    const b = result.playbook.bullets[0];
+    expect(b.helpfulCount).toBe(1);
+    expect(b.feedbackEvents.at(-1)?.sessionPath).toBe("/session/2.jsonl");
+  });
+
+  it("adds rules below the threshold, and everything when no index is given", () => {
+    const config = createTestConfig();
+    const p1 = createTestPlaybook([createTestBullet({ content: existingContent })]);
+    expect(
+      curatePlaybook(p1, [addDelta(unrelated)], config, undefined, { semanticIndex: index() })
+        .playbook.bullets,
+    ).toHaveLength(2);
+    const p2 = createTestPlaybook([createTestBullet({ content: existingContent })]);
+    expect(curatePlaybook(p2, [addDelta(reworded)], config).playbook.bullets).toHaveLength(2);
+    const p3 = createTestPlaybook([createTestBullet({ content: existingContent })]);
+    expect(
+      curatePlaybook(p3, [addDelta(reworded)], config, undefined, {
+        semanticIndex: index(0.999),
+      }).playbook.bullets,
+    ).toHaveLength(2);
+  });
+
+  it("never reinforces a deprecated rule through semantic similarity", () => {
+    const deprecated = createTestBullet({ content: existingContent, deprecated: true, maturity: "deprecated" });
+    const playbook = createTestPlaybook([deprecated]);
+    const result = curatePlaybook(playbook, [addDelta(reworded)], createTestConfig(), undefined, {
+      semanticIndex: index(),
+    });
+    expect(result.playbook.bullets.find((b) => b.id === deprecated.id)?.helpfulCount).toBe(0);
+  });
+});
+
+describe("buildSemanticDedupIndex", () => {
+  it("is skipped when semantic search is disabled or nothing is incoming", async () => {
+    const { buildSemanticDedupIndex } = await import("../src/semantic");
+    const bullets = [createTestBullet({ content: "Run tests" })];
+    expect(
+      await buildSemanticDedupIndex(bullets, ["x"], createTestConfig({ semanticSearchEnabled: false })),
+    ).toBeUndefined();
+    expect(
+      await buildSemanticDedupIndex(bullets, [], createTestConfig({ semanticSearchEnabled: true })),
+    ).toBeUndefined();
+  });
+});
+
+describe("curatePlaybook semantic dedup polarity guard", () => {
+  it("does not reinforce the opposite rule even when embeddings are near-identical", () => {
+    const yes = "Always commit generated lockfiles";
+    const no = "Never commit generated lockfiles";
+    const existing = createTestBullet({ id: "b-yes", content: yes });
+    const playbook = createTestPlaybook([existing]);
+    const result = curatePlaybook(
+      playbook,
+      [
+        {
+          type: "add",
+          bullet: { content: no, category: "git", scope: "global", kind: "workflow_rule" },
+          sourceSession: "/s.jsonl",
+          reason: "test",
+        },
+      ],
+      createTestConfig(),
+      undefined,
+      {
+        semanticIndex: {
+          threshold: 0.9,
+          embeddings: new Map([
+            [hashContent(yes), [1, 0]],
+            [hashContent(no), [0.99, 0.141]],
+          ]),
+        },
+      },
+    );
+    expect(result.playbook.bullets).toHaveLength(2);
+    expect(result.playbook.bullets.find((b) => b.id === "b-yes")?.helpfulCount).toBe(0);
   });
 });

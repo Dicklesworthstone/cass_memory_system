@@ -1312,3 +1312,69 @@ export async function isModelCached(model = DEFAULT_EMBEDDING_MODEL): Promise<bo
     return false;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Curator dedup index
+// ---------------------------------------------------------------------------
+
+/** Embeddings by content hash, for the curator's semantic duplicate check. */
+export interface SemanticDedupIndex {
+  embeddings: Map<string, number[]>;
+  /** Cosine similarity at or above which two rules are the same rule reworded. */
+  threshold: number;
+}
+
+/**
+ * Embed existing bullets (through the on-disk cache) and incoming rule texts
+ * so `curatePlaybook` can catch reworded duplicates that word overlap misses.
+ *
+ * Returns undefined when semantic search is not enabled (explicitly, or in
+ * automatic mode because the backend is not ready offline) or embedding
+ * fails; curation then falls back to word overlap alone. Never mutates the
+ * given bullets, so embeddings are not written into playbook YAML.
+ */
+export async function buildSemanticDedupIndex(
+  existing: PlaybookBullet[],
+  newContents: string[],
+  config: SemanticConfigInput & { embeddingModel?: string; semanticDedupThreshold?: number },
+): Promise<SemanticDedupIndex | undefined> {
+  if (newContents.length === 0) return undefined;
+  const status = await resolveSemanticEnabled(config);
+  if (!status.enabled) return undefined;
+  const model =
+    typeof config.embeddingModel === "string" && config.embeddingModel.trim() !== ""
+      ? config.embeddingModel.trim()
+      : undefined;
+  const threshold =
+    typeof config.semanticDedupThreshold === "number" ? config.semanticDedupThreshold : 0.9;
+
+  try {
+    const clones = existing
+      .filter((b) => b?.id && b?.content)
+      .map((b) => ({ ...b, embedding: undefined }) as PlaybookBullet);
+    await loadOrComputeEmbeddingsForBullets(clones, { model });
+    const embeddings = new Map<string, number[]>();
+    for (const b of clones) {
+      if (Array.isArray(b.embedding) && b.embedding.length > 0) {
+        embeddings.set(hashContent(b.content), b.embedding);
+      }
+    }
+    const missing = Array.from(
+      new Set(newContents.filter((c) => c && !embeddings.has(hashContent(c)))),
+    );
+    if (missing.length > 0) {
+      const vectors = await batchEmbed(missing, 32, { model });
+      missing.forEach((c, i) => {
+        const v = vectors[i];
+        if (Array.isArray(v) && v.length > 0) embeddings.set(hashContent(c), v);
+      });
+    }
+    return embeddings.size > 0 ? { embeddings, threshold } : undefined;
+  } catch (err: any) {
+    warn(
+      `[curate] Semantic dedup unavailable; using word overlap only. ${err?.message ?? String(err)}`,
+    );
+    return undefined;
+  }
+}
+

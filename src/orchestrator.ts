@@ -28,6 +28,7 @@ import {
   savePlaybook,
 } from "./playbook.js";
 import { reflectOnSession } from "./reflect.js";
+import { buildSemanticDedupIndex, type SemanticDedupIndex } from "./semantic.js";
 import { containsCmSubprocessPayload, stripCmSubprocessPayloads } from "./subprocess-tag.js";
 import {
   classifySessionForReflection,
@@ -658,6 +659,21 @@ export async function orchestrateReflection(
     let repoResult: CurationResult | undefined;
     const projectResults: Array<{ playbookPath: string; result: CurationResult }> = [];
 
+    // Embeddings for the curator's reworded-duplicate check, computed before
+    // taking the merge lock (embedding can be slow). Rules a concurrent writer
+    // adds in between simply have no embedding and fall back to word overlap.
+    const incomingContents = allDeltas.flatMap((d) =>
+      d.type === "add" ? [d.bullet.content] : d.type === "merge" ? [d.mergedContent] : [],
+    );
+    let semanticIndex: SemanticDedupIndex | undefined;
+    if (incomingContents.length > 0) {
+      const existing = [
+        ...(await loadPlaybook(globalPath)).bullets,
+        ...(hasRepo ? (await loadPlaybook(repoPath!)).bullets : []),
+      ];
+      semanticIndex = await buildSemanticDedupIndex(existing, incomingContents, config);
+    }
+
     const performMerge = async () => {
       // Reload fresh playbooks under lock
       const globalPlaybook = await loadPlaybook(globalPath);
@@ -803,6 +819,7 @@ export async function orchestrateReflection(
               portable,
               config,
               mergePlaybooks(globalPlaybook, targetPlaybook),
+              { semanticIndex },
             );
             await savePlaybook(result.playbook, playbookPath, { updateLastReflection: true });
             projectResults.push({ playbookPath, result });
@@ -817,11 +834,15 @@ export async function orchestrateReflection(
 
       // Apply Curation
       if (globalDeltas.length > 0) {
-        globalResult = curatePlaybook(globalPlaybook, globalDeltas, config, freshMerged);
+        globalResult = curatePlaybook(globalPlaybook, globalDeltas, config, freshMerged, {
+          semanticIndex,
+        });
       }
 
       if (repoDeltas.length > 0 && repoPlaybook && repoPath) {
-        repoResult = curatePlaybook(repoPlaybook, repoDeltas, config, freshMerged);
+        repoResult = curatePlaybook(repoPlaybook, repoDeltas, config, freshMerged, {
+          semanticIndex,
+        });
         await savePlaybook(repoResult.playbook, repoPath, { updateLastReflection: true });
       }
 

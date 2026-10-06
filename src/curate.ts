@@ -1,5 +1,6 @@
 import { addBullet, deprecateBullet, findBullet } from "./playbook.js";
 import { checkForDemotion, checkForPromotion, getDecayedCounts } from "./scoring.js";
+import { cosineSimilarity, type SemanticDedupIndex } from "./semantic.js";
 import type {
   Config,
   CurationResult,
@@ -327,11 +328,50 @@ function invertToAntiPattern(bullet: PlaybookBullet, config: Config): PlaybookBu
 
 // --- Main Curator ---
 
+/**
+ * Most similar active bullet by embedding, at or above the index threshold.
+ * Bullets without an embedding in the index are skipped.
+ *
+ * Sentence embeddings barely register negation ("Always commit lockfiles" and
+ * "Never commit lockfiles" sit close together), so a candidate whose
+ * directives disagree with the new rule (any negating clause on one side
+ * only, or a clause-level conflict) is never treated as a duplicate:
+ * reinforcing it would credit the opposite advice.
+ */
+function findSemanticDuplicateFromMeta(
+  content: string,
+  metaList: ConflictMeta[],
+  index: SemanticDedupIndex,
+): { bullet: PlaybookBullet; similarity: number } | undefined {
+  const query = index.embeddings.get(hashContent(content));
+  if (!query) return undefined;
+  const clauses = splitDirectiveClauses(content);
+  const negates = clauses.some((c) => c.polarity === "negative");
+  let best: { bullet: PlaybookBullet; similarity: number } | undefined;
+  for (const meta of metaList) {
+    const b = meta.bullet;
+    if (b.deprecated || b.maturity === "deprecated" || b.state === "retired") continue;
+    if (meta.clauses.some((c) => c.polarity === "negative") !== negates) continue;
+    if (clauseConflict(clauses, meta.clauses)) continue;
+    const vector = index.embeddings.get(hashContent(b.content));
+    if (!vector) continue;
+    const similarity = cosineSimilarity(query, vector);
+    if (similarity >= index.threshold && (!best || similarity > best.similarity)) {
+      best = { bullet: b, similarity };
+    }
+  }
+  return best;
+}
+
 export function curatePlaybook(
   targetPlaybook: Playbook,
   deltas: PlaybookDelta[],
   config: Config,
   contextPlaybook?: Playbook,
+  options: {
+    /** Embeddings for reworded-duplicate detection (see buildSemanticDedupIndex). */
+    semanticIndex?: SemanticDedupIndex;
+  } = {},
 ): CurationResult {
   // Use context playbook (merged) for dedup checks if available, otherwise target
   const referencePlaybook = contextPlaybook || targetPlaybook;
@@ -460,11 +500,28 @@ export function curatePlaybook(
 
         // 2. Semantic duplicate check (Optimized)
         // Uses pre-computed tokens from conflictMeta (which includes newly added bullets)
-        const similar = findSimilarBulletFromMeta(
+        const lexicalSimilar = findSimilarBulletFromMeta(
           newTokenSet,
           conflictMeta,
           config.dedupSimilarityThreshold,
         );
+        // Word overlap misses rewordings ("Run tests before you push" vs
+        // "Always execute the test suite prior to pushing"); embeddings catch them.
+        const semanticMatch =
+          !lexicalSimilar && options.semanticIndex
+            ? findSemanticDuplicateFromMeta(content, conflictMeta, options.semanticIndex)
+            : undefined;
+        if (semanticMatch) {
+          logDecision(decisionLog, "dedup", "modified", "Semantic duplicate of an existing rule", {
+            bulletId: semanticMatch.bullet.id,
+            content: content.slice(0, 100),
+            details: {
+              similarity: Math.round(semanticMatch.similarity * 1000) / 1000,
+              similarTo: semanticMatch.bullet.content.slice(0, 100),
+            },
+          });
+        }
+        const similar = lexicalSimilar ?? semanticMatch?.bullet;
 
         if (similar) {
           const similarIsDeprecated =
