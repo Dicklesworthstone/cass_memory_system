@@ -8,6 +8,7 @@ import {
   findUnprocessedSessions,
   formatSessionRecords,
 } from "./cass.js";
+import { HOOK_ACTIVE_ENV } from "./commands/hook.js";
 import { curatePlaybook } from "./curate.js";
 import { generateDiary, generateDiaryFromContent } from "./diary.js";
 import type { LLMIO } from "./llm.js";
@@ -62,6 +63,9 @@ import {
 } from "./utils.js";
 import { validateDelta } from "./validate.js";
 import { normalizeWorkspacePath, resolveProjectRoot } from "./workspace.js";
+
+/** Hook-mode wait for the reflection lock: up to 30 minutes, polled every second. */
+export const HOOK_REFLECTION_LOCK_WAIT = { retries: 1800, delay: 1000 };
 
 export interface ReflectionOptions {
   days?: number;
@@ -213,6 +217,10 @@ export async function orchestrateReflection(
   // Without this, the lock can fail on fresh installs where ~/.cass-memory/reflections/ doesn't exist
   await ensureDir(path.dirname(reflectionLockPath));
 
+  // A hook-started reflect runs in the background when an agent session ends.
+  // Sessions that end together must queue behind the reflect in progress
+  // (minutes of LLM calls) instead of failing after the 2 s interactive wait.
+  const lockWait = process.env[HOOK_ACTIVE_ENV] === "1" ? HOOK_REFLECTION_LOCK_WAIT : {};
   return withLock(reflectionLockPath, async () => {
     const processedLog = new ProcessedLog(logPath);
     await processedLog.load();
@@ -901,5 +909,5 @@ export async function orchestrateReflection(
       errors,
       autoOutcome,
     };
-  });
+  }, lockWait);
 }

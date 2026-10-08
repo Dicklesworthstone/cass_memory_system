@@ -12,6 +12,7 @@ import { mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } fro
 import path from "node:path";
 import yaml from "yaml";
 
+import { withLock } from "../src/lock.js";
 import { orchestrateReflection } from "../src/orchestrator.js";
 import { tagCmSubprocessPrompt } from "../src/subprocess-tag.js";
 import { getProcessedLogPath, ProcessedLog } from "../src/tracking.js";
@@ -125,6 +126,44 @@ describe("orchestrateReflection (unit)", () => {
           },
         );
       });
+    });
+  });
+
+  test("a hook-started reflect waits for a reflect in progress instead of failing", async () => {
+    // Two agent sessions that end together each start `cm reflect --session`;
+    // the second used to give up on the reflection lock after ~2 s.
+    await withIsolatedHome(async (env) => {
+      const sessionPath = path.join(env.home, "sessions", "s1.jsonl");
+      writeJsonlSession(sessionPath, [
+        { role: "user", content: "I need help writing reliable unit tests for my CLI tool." },
+        {
+          role: "assistant",
+          content: "Sure. Let's start by identifying seams and adding deterministic fixtures.",
+        },
+      ]);
+      const config = createTestConfig({
+        playbookPath: env.playbookPath,
+        diaryDir: env.diaryDir,
+        cassPath: "/__missing__/cass",
+        validationEnabled: false,
+      });
+      const lockPath = `${expandPath(getProcessedLogPath(undefined))}.orchestrator`;
+      let released = false;
+      const inProgress = withLock(lockPath, async () => {
+        await new Promise((resolve) => setTimeout(resolve, 3500));
+        released = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      await withEnv({ CASS_MEMORY_LLM: "none", CM_HOOK_ACTIVE: "1" }, async () => {
+        await withLlmShim({ reflector: { deltas: [] } }, async (io) => {
+          const outcome = await orchestrateReflection(config, { session: sessionPath, io });
+          expect(released).toBe(true);
+          expect(outcome.errors).toEqual([]);
+          expect(outcome.sessionsProcessed).toBe(1);
+        });
+      });
+      await inProgress;
     });
   });
 
