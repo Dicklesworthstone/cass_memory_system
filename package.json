@@ -36,12 +36,12 @@
     "postinstall": "bun run scripts/patch-standalone-deps.mjs"
   },
   "dependencies": {
-    "@ai-sdk/amazon-bedrock": "^5.0.106",
-    "@ai-sdk/anthropic": "^4.0.72",
-    "@ai-sdk/google": "^4.0.88",
-    "@ai-sdk/openai": "^4.0.84",
+    "@ai-sdk/amazon-bedrock": "^5.0.111",
+    "@ai-sdk/anthropic": "^4.0.76",
+    "@ai-sdk/google": "^4.0.92",
+    "@ai-sdk/openai": "^4.0.89",
     "@xenova/transformers": "^2.17.2",
-    "ai": "^7.0.128",
+    "ai": "^7.0.133",
     "chalk": "^6.0.1",
     "commander": "^15.0.0",
     "ollama-ai-provider-v2": "^4.0.1",
