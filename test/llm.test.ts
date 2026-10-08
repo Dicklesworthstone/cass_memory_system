@@ -933,6 +933,14 @@ describe("LLM-facing schemas convert to provider-safe JSON Schema", () => {
     expect(diaryExtractionSchema({ provider: "openai", disableStructuredOutputs: true })).not.toBe(openai);
   });
 
+  it("the diary prompt asks for exactly the strict schema's keys", async () => {
+    const { StrictDiaryExtractionSchema } = await import("../src/diary.js");
+    const { PROMPTS } = await import("../src/llm.js");
+    const block = PROMPTS.diary.slice(PROMPTS.diary.indexOf("Respond with JSON matching this schema:"));
+    const prompted = [...block.matchAll(/^\s*"([A-Za-z]+)":/gm)].map((m) => m[1]).sort();
+    expect(prompted).toEqual(Object.keys(StrictDiaryExtractionSchema.shape).sort());
+  });
+
   it("a diary that auto-falls back to OpenAI also gets the strict schema", async () => {
     const { diaryExtractionSchema } = await import("../src/diary.js");
     const { resolveEffectiveLLMConfig } = await import("../src/llm.js");

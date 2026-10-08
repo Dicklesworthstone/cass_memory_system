@@ -147,23 +147,32 @@ describe("orchestrateReflection (unit)", () => {
         cassPath: "/__missing__/cass",
         validationEnabled: false,
       });
-      const lockPath = `${expandPath(getProcessedLogPath(undefined))}.orchestrator`;
-      let released = false;
-      const inProgress = withLock(lockPath, async () => {
-        await new Promise((resolve) => setTimeout(resolve, 3500));
-        released = true;
-      });
-      await new Promise((resolve) => setTimeout(resolve, 100));
-
-      await withEnv({ CASS_MEMORY_LLM: "none", CM_HOOK_ACTIVE: "1" }, async () => {
-        await withLlmShim({ reflector: { deltas: [] } }, async (io) => {
-          const outcome = await orchestrateReflection(config, { session: sessionPath, io });
-          expect(released).toBe(true);
-          expect(outcome.errors).toEqual([]);
-          expect(outcome.sessionsProcessed).toBe(1);
-        });
-      });
-      await inProgress;
+      // CASS_MEMORY_HOME / XDG_DATA_HOME would point the lock at real cm state.
+      await withEnv(
+        {
+          CASS_MEMORY_LLM: "none",
+          CM_HOOK_ACTIVE: "1",
+          CASS_MEMORY_HOME: undefined,
+          XDG_DATA_HOME: undefined,
+        },
+        async () => {
+          const lockPath = `${expandPath(getProcessedLogPath(undefined))}.orchestrator`;
+          expect(lockPath.startsWith(env.home)).toBe(true);
+          let released = false;
+          const inProgress = withLock(lockPath, async () => {
+            await new Promise((resolve) => setTimeout(resolve, 3500));
+            released = true;
+          });
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          await withLlmShim({ reflector: { deltas: [] } }, async (io) => {
+            const outcome = await orchestrateReflection(config, { session: sessionPath, io });
+            expect(released).toBe(true);
+            expect(outcome.errors).toEqual([]);
+            expect(outcome.sessionsProcessed).toBe(1);
+          });
+          await inProgress;
+        },
+      );
     });
   });
 
