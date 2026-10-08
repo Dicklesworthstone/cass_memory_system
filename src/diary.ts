@@ -13,6 +13,7 @@ import {
   type RelatedSession,
   RelatedSessionSchema,
   SanitizationConfig,
+  type SessionStatus,
   SessionStatusEnum,
 } from "./types.js";
 import {
@@ -464,6 +465,18 @@ export const StrictDiaryExtractionSchema = z
   })
   .strict();
 
+/** What the diary takes from the LLM, whichever schema produced it. */
+export interface DiaryExtraction {
+  duration?: number | null;
+  status: SessionStatus;
+  accomplishments: string[];
+  decisions: string[];
+  challenges: string[];
+  preferences: string[];
+  keyLearnings: string[];
+  tags: string[];
+}
+
 /**
  * The LLM-facing diary schema for this config: the strict one only where strict
  * json_schema is sent (provider openai without the JSON-mode fallback, #47).
@@ -472,7 +485,7 @@ export const StrictDiaryExtractionSchema = z
  */
 export function diaryExtractionSchema(
   config: Pick<Config, "provider" | "disableStructuredOutputs">,
-): typeof StrictDiaryExtractionSchema | typeof LenientDiaryExtractionSchema {
+): z.ZodType<DiaryExtraction> {
   if (config.provider === "openai" && !config.disableStructuredOutputs) {
     return StrictDiaryExtractionSchema;
   }
