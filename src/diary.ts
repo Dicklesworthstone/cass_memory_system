@@ -448,13 +448,13 @@ const LenientDiaryExtractionSchema = DiaryEntrySchema.omit({
 
 /**
  * The diary fields in the form OpenAI strict structured outputs accept (#44):
- * every property required, null instead of absent, no defaults, no extra keys.
+ * every property required, no defaults, no extra keys; exactly the keys
+ * PROMPTS.diary asks for.
  * The lenient schema's optional and defaulted fields left only `status` in
  * `required`, and OpenAI rejected every diary request with HTTP 400.
  */
 export const StrictDiaryExtractionSchema = z
   .object({
-    duration: z.number().nullable(),
     status: SessionStatusEnum,
     accomplishments: z.array(z.string()),
     decisions: z.array(z.string()),

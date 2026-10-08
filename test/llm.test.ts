@@ -937,12 +937,19 @@ describe("LLM-facing schemas convert to provider-safe JSON Schema", () => {
     const { diaryExtractionSchema } = await import("../src/diary.js");
     const { resolveEffectiveLLMConfig } = await import("../src/llm.js");
     // Default config (anthropic) with only an OpenAI key: requests go to OpenAI.
-    process.env.OPENAI_API_KEY = "sk-test-never-sent";
-    const resolved = resolveEffectiveLLMConfig(createTestConfig({ provider: "anthropic" }));
-    expect(resolved.provider).toBe("openai");
-    expect(diaryExtractionSchema(resolved)).toBe(
-      diaryExtractionSchema({ provider: "openai", disableStructuredOutputs: false }),
-    );
+    saveEnv();
+    try {
+      clearAllApiKeys();
+      __resetAutoFallbackNoticeForTest();
+      process.env.OPENAI_API_KEY = "sk-test-never-sent";
+      const resolved = resolveEffectiveLLMConfig(createTestConfig({ provider: "anthropic" }));
+      expect(resolved.provider).toBe("openai");
+      expect(diaryExtractionSchema(resolved)).toBe(
+        diaryExtractionSchema({ provider: "openai", disableStructuredOutputs: false }),
+      );
+    } finally {
+      restoreEnv();
+    }
   });
 
   // ai 4 + zod 3.25 silently sent an EMPTY schema to every provider; zod 4
