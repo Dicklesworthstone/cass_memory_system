@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import { auditCommand } from "./commands/audit.js";
 import { contextCommand } from "./commands/context.js";
 import { diaryCommand } from "./commands/diary.js";
@@ -278,6 +278,8 @@ export function createProgram(argv: string[] = process.argv): Command {
     .description("Export playbook for sharing")
     .option("-j, --json", "Output as JSON (default: YAML)")
     .option("--all", "Include deprecated bullets")
+    // YAML is the default; scripts that still pass --yaml must not break.
+    .addOption(new Option("--yaml", "Output as YAML (the default)").hideHelp())
     .addHelpText("after", () =>
       formatCommandExamples([
         "playbook export > playbook.yaml",
@@ -506,6 +508,8 @@ export function createProgram(argv: string[] = process.argv): Command {
     .description("Scientifically validate a proposed rule against history")
     .argument("<rule>", "Proposed rule text")
     .option("-j, --json", "Output JSON")
+    // Accepted for scripts that passed it before; it never changed the output.
+    .addOption(new Option("--verbose", "No effect").hideHelp())
     .addHelpText("after", () =>
       formatCommandExamples([
         'validate "Always check user input before processing"',
