@@ -933,6 +933,18 @@ describe("LLM-facing schemas convert to provider-safe JSON Schema", () => {
     expect(diaryExtractionSchema({ provider: "openai", disableStructuredOutputs: true })).not.toBe(openai);
   });
 
+  it("a diary that auto-falls back to OpenAI also gets the strict schema", async () => {
+    const { diaryExtractionSchema } = await import("../src/diary.js");
+    const { resolveEffectiveLLMConfig } = await import("../src/llm.js");
+    // Default config (anthropic) with only an OpenAI key: requests go to OpenAI.
+    process.env.OPENAI_API_KEY = "sk-test-never-sent";
+    const resolved = resolveEffectiveLLMConfig(createTestConfig({ provider: "anthropic" }));
+    expect(resolved.provider).toBe("openai");
+    expect(diaryExtractionSchema(resolved)).toBe(
+      diaryExtractionSchema({ provider: "openai", disableStructuredOutputs: false }),
+    );
+  });
+
   // ai 4 + zod 3.25 silently sent an EMPTY schema to every provider; zod 4
   // emits `oneOf` for discriminated unions, which OpenAI strict mode rejects.
   it("the reflector output schema is complete and uses anyOf, not oneOf", async () => {

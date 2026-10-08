@@ -595,7 +595,7 @@ Respond with JSON matching this schema:
   "preferences": string[],      // User style revelations
   "keyLearnings": string[],     // Reusable insights
   "tags": string[],             // Discovery keywords
-  "searchAnchors": string[]     // Search phrases for future retrieval
+  "duration": number | null     // Session length in seconds if the transcript shows it, else null
 }`,
 
   reflector: `You are analyzing a coding session diary to extract reusable lessons for a playbook.

@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { cassExport, cassSearch, safeCassSearch } from "./cass.js";
-import { extractDiary, generateSearchQueries } from "./llm.js";
+import { extractDiary, generateSearchQueries, resolveEffectiveLLMConfig } from "./llm.js";
 import { withLock } from "./lock.js";
 import { compileExtraPatterns, sanitize, verifySanitization } from "./sanitize.js";
 import {
@@ -528,7 +528,9 @@ export async function generateDiaryFromContent(
   // never asks for `agent`, so a required `agent` field made every CLI diary
   // extraction fail Zod validation with `path:["agent"], "Required"` (#54).
   // Same class of fix as the `duration: null` injection in #53.
-  const ExtractionSchema = diaryExtractionSchema(config);
+  // The provider the request really goes to: with no key for the configured
+  // one, generateObjectSafe auto-falls back (e.g. to OpenAI).
+  const ExtractionSchema = diaryExtractionSchema(resolveEffectiveLLMConfig(config));
 
   const extracted = await extractDiary(
     ExtractionSchema,
