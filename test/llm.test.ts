@@ -908,6 +908,31 @@ describe("cliGenerateObject schema hint", () => {
 });
 
 describe("LLM-facing schemas convert to provider-safe JSON Schema", () => {
+  // OpenAI strict mode (#44) requires every property in `required` and
+  // `additionalProperties: false` at every object level; the diary schema left
+  // only `status` required, so every OpenAI-provider diary/reflect got HTTP 400.
+  it("the diary schema sent with OpenAI strict structured outputs is strict-compliant", async () => {
+    const { zodSchema } = await import("ai");
+    const { diaryExtractionSchema } = await import("../src/diary.js");
+    const openai = diaryExtractionSchema({ provider: "openai", disableStructuredOutputs: false });
+    const json: any = zodSchema(openai).jsonSchema;
+    const check = (node: any, where: string) => {
+      if (node && typeof node === "object" && node.properties) {
+        const props = Object.keys(node.properties).sort();
+        expect([...(node.required ?? [])].sort(), where).toEqual(props);
+        expect(node.additionalProperties, where).toBe(false);
+        for (const [key, child] of Object.entries(node.properties)) check(child, `${where}.${key}`);
+      }
+      if (node?.items) check(node.items, `${where}[]`);
+      for (const alt of node?.anyOf ?? []) check(alt, where);
+    };
+    check(json, "diary");
+    expect(Object.keys(json.properties)).toContain("accomplishments");
+    // The CLI provider and the JSON-mode fallback keep the lenient schema (#54).
+    expect(diaryExtractionSchema({ provider: "cli", disableStructuredOutputs: false })).not.toBe(openai);
+    expect(diaryExtractionSchema({ provider: "openai", disableStructuredOutputs: true })).not.toBe(openai);
+  });
+
   // ai 4 + zod 3.25 silently sent an EMPTY schema to every provider; zod 4
   // emits `oneOf` for discriminated unions, which OpenAI strict mode rejects.
   it("the reflector output schema is complete and uses anyOf, not oneOf", async () => {

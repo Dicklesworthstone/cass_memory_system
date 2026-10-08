@@ -13,6 +13,7 @@ import {
   type RelatedSession,
   RelatedSessionSchema,
   SanitizationConfig,
+  SessionStatusEnum,
 } from "./types.js";
 import {
   atomicWrite,
@@ -435,6 +436,49 @@ async function generateDiaryFastFromContent(
   return diary;
 }
 
+const LenientDiaryExtractionSchema = DiaryEntrySchema.omit({
+  id: true,
+  sessionPath: true,
+  timestamp: true,
+  agent: true,
+  relatedSessions: true,
+  searchAnchors: true,
+});
+
+/**
+ * The diary fields in the form OpenAI strict structured outputs accept (#44):
+ * every property required, null instead of absent, no defaults, no extra keys.
+ * The lenient schema's optional and defaulted fields left only `status` in
+ * `required`, and OpenAI rejected every diary request with HTTP 400.
+ */
+export const StrictDiaryExtractionSchema = z
+  .object({
+    duration: z.number().nullable(),
+    status: SessionStatusEnum,
+    accomplishments: z.array(z.string()),
+    decisions: z.array(z.string()),
+    challenges: z.array(z.string()),
+    preferences: z.array(z.string()),
+    keyLearnings: z.array(z.string()),
+    tags: z.array(z.string()),
+  })
+  .strict();
+
+/**
+ * The LLM-facing diary schema for this config: the strict one only where strict
+ * json_schema is sent (provider openai without the JSON-mode fallback, #47).
+ * Elsewhere, the CLI provider above all, the model may omit fields (#54), so
+ * the lenient schema with its defaults stays.
+ */
+export function diaryExtractionSchema(
+  config: Pick<Config, "provider" | "disableStructuredOutputs">,
+): typeof StrictDiaryExtractionSchema | typeof LenientDiaryExtractionSchema {
+  if (config.provider === "openai" && !config.disableStructuredOutputs) {
+    return StrictDiaryExtractionSchema;
+  }
+  return LenientDiaryExtractionSchema;
+}
+
 export async function generateDiaryFromContent(
   sessionPath: string,
   sanitizedContent: string,
@@ -471,14 +515,7 @@ export async function generateDiaryFromContent(
   // never asks for `agent`, so a required `agent` field made every CLI diary
   // extraction fail Zod validation with `path:["agent"], "Required"` (#54).
   // Same class of fix as the `duration: null` injection in #53.
-  const ExtractionSchema = DiaryEntrySchema.omit({
-    id: true,
-    sessionPath: true,
-    timestamp: true,
-    agent: true,
-    relatedSessions: true,
-    searchAnchors: true,
-  });
+  const ExtractionSchema = diaryExtractionSchema(config);
 
   const extracted = await extractDiary(
     ExtractionSchema,
