@@ -10,6 +10,10 @@ All notable changes to **cass-memory** (`cm`) are documented in this file.
 
 ## [Unreleased]
 
+## [0.5.0] -- 2026-10-08
+
+Everything on `main` since [0.4.0](https://github.com/Dicklesworthstone/cass_memory_system/releases/tag/v0.4.0). New commands and an auto-reflect hook, and two changed defaults (`maxBulletsInContext`, the context history window; see Changed), so it is a minor bump.
+
 ### Added
 
 - `cm hook install --agent gemini`: the same auto-reflect hook for Gemini CLI (`.gemini/settings.json`, same SessionEnd payload). `cm hook status` and `cm doctor` cover both agents.
@@ -30,6 +34,9 @@ All notable changes to **cass-memory** (`cm`) are documented in this file.
 
 ### Fixed
 
+- **`cm reflect`, `cm diary` and hook-started reflects work with the OpenAI provider again.** The upgraded OpenAI SDK sends strict structured outputs, which rejected the diary schema with HTTP 400 on every session. Requests that really go to OpenAI with strict json_schema (also when cm auto-falls back to OpenAI because the configured provider has no key) now use a strict-compliant diary schema; other providers, the CLI provider and `disableStructuredOutputs` keep the previous one.
+- `cm playbook export --yaml` is accepted again (it is the default format). Dropping the flag broke scripts, and `cm playbook export --yaml > backup.yaml` left an empty file.
+- Auto-reflect sessions that end together queue up: a hook-started reflect waits up to 30 minutes for the reflect in progress instead of giving up after 2 seconds and dropping its session.
 - **LLMs now receive the output schema.** With ai 4 and the installed zod 3.25, the JSON schema sent to every provider was empty, so the reflector, validator, diary and audit models never saw the structure they had to produce, and only the post-hoc Zod check enforced it. After upgrading to ai 7 and zod 4, OpenAI gets strict `json_schema`, Anthropic gets native structured output where the model supports it, Google gets `responseJsonSchema`, and Ollama gets `format: <schema>`. The `cli` provider (claude/codex/gemini subprocess) now gets the full JSON Schema in its prompt instead of top-level field names.
 - OpenAI requests stay on Chat Completions (`.chat()`), because AI SDK 5+ defaults to the Responses API, which OpenAI-compatible gateways do not implement. `disableStructuredOutputs` sends `json_object` with the schema in the prompt and validates with Zod.
 - The curator's word-overlap dedup (and `cm playbook import`'s content merge) folded "Never mock the database in unit tests" into "Mock the database in unit tests" (Jaccard 0.857), crediting the opposite advice. Rules whose directives disagree are never merged now, on either the lexical or the semantic path.
@@ -53,6 +60,20 @@ All notable changes to **cass-memory** (`cm`) are documented in this file.
 - Bullets in `cm context` output are a compact projection: no feedback-event log, source-session list or embedding (`cm playbook get <id>` has the full record).
 - `cm context` history searches `historyLookbackDays` (default 90) instead of `sessionLookbackDays` (7).
 - Conflict detection works per clause, so a negation in an unrelated clause no longer flags a rule (the built-in starters went from 5 false positives to 0).
+
+### Known issues
+
+- `cm hook install` at project scope (what `cm init` offers) writes the shared `.claude/settings.json`; if that file is committed, teammates with `cm` on PATH get auto-reflection without opting in ([#90](https://github.com/Dicklesworthstone/cass_memory_system/issues/90)). Install with `--global` to keep the hook per user.
+
+### Gate
+
+- `tsc --noEmit`: clean
+- `bun test --timeout 60000 --isolate`, run file by file on Linux x64 with bun 1.4.2, compared with v0.4.0 on the same host: 2649 passed, 20 failed (the same 20 tests fail at v0.4.0 there). 13 files abort because bun 1.4.2 cannot load the `sharp` native module in a source checkout (12 of them at v0.4.0 too); compiled binaries load it optionally and are unaffected.
+- Compiled binary (`bun build --compile`): init, doctor, context, playbook add/list/export, mark, why, stats, top and similar all succeed in a fresh home.
+
+### Artifacts
+
+`cass-memory-linux-x64`, `cass-memory-linux-arm64`, `cass-memory-macos-arm64`, `cass-memory-macos-x64`, `cass-memory-windows-x64.exe`, each with a `.sha256` sidecar, plus `install.sh.sha256`. `install.sh` is unchanged since 0.4.0.
 
 ## [0.4.0] -- 2026-09-30
 
