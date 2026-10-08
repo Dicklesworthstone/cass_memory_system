@@ -508,8 +508,6 @@ export function createProgram(argv: string[] = process.argv): Command {
     .description("Scientifically validate a proposed rule against history")
     .argument("<rule>", "Proposed rule text")
     .option("-j, --json", "Output JSON")
-    // Accepted for scripts that passed it before; it never changed the output.
-    .addOption(new Option("--verbose", "No effect").hideHelp())
     .addHelpText("after", () =>
       formatCommandExamples([
         'validate "Always check user input before processing"',

@@ -128,15 +128,13 @@ describe("cm.ts CLI router (unit)", () => {
     );
   });
 
-  test("still accepts flags removed as dead (hidden, no effect)", () => {
+  test("playbook export still accepts --yaml (hidden, the default format)", () => {
     const program = createProgram(["bun", "src/cm.ts"]);
     const playbook = program.commands.find((cmd) => cmd.name() === "playbook");
     const exportCmd = playbook!.commands.find((cmd) => cmd.name() === "export");
-    const validate = program.commands.find((cmd) => cmd.name() === "validate");
     // `cm playbook export --yaml > backup.yaml` failed with "unknown option" and
     // left the redirect target truncated.
     expect(exportCmd!.options.map((o) => o.long)).toContain("--yaml");
-    expect(validate!.options.map((o) => o.long)).toContain("--verbose");
     expect(exportCmd!.helpInformation()).not.toContain("--yaml");
   });
 
