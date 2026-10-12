@@ -190,16 +190,20 @@ esac
 # The prebuilt Linux binaries are glibc builds and cannot start on musl systems
 # such as Alpine, so build from source there (Bun builds a native musl binary).
 # An explicit --artifact-url is still honoured.
+# glibc hosts can carry musl side by side (Debian/Ubuntu's `musl` package adds
+# /lib/ld-musl-*.so.1), so the musl loader alone proves nothing: glibc wins
+# whenever it is present.
 is_musl() {
   [ "$OS" = "linux" ] || return 1
-  if ls /lib/ld-musl-*.so.1 >/dev/null 2>&1; then return 0; fi
+  if getconf GNU_LIBC_VERSION >/dev/null 2>&1; then return 1; fi
   if command -v ldd >/dev/null 2>&1; then
     # musl's ldd exits non-zero for --version, so match on captured output.
     case "$(ldd --version 2>&1 || true)" in
       *musl*) return 0 ;;
+      *GLIBC*|*"GNU libc"*) return 1 ;;
     esac
   fi
-  return 1
+  ls /lib/ld-musl-*.so.1 >/dev/null 2>&1
 }
 
 if [ "$FROM_SOURCE" -eq 0 ] && [ -z "$ARTIFACT_URL" ] && [ -n "$ARTIFACT" ] && is_musl; then
