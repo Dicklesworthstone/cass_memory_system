@@ -107,7 +107,7 @@ export async function fetchLatestRelease(
   const response = await fetchImpl(LATEST_RELEASE_API_URL, {
     headers: {
       Accept: "application/vnd.github+json",
-      "User-Agent": "OpenAI File Downloader, XaiImageApiFetch/1.0",
+      "User-Agent": `cass-memory/${getVersion()} (+https://github.com/Dicklesworthstone/cass_memory_system)`,
     },
     signal: AbortSignal.timeout(15_000),
   });

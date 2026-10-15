@@ -127,6 +127,18 @@ describe("update command", () => {
       expect(info.url).toBe(`https://github.com/${UPDATE_REPO}/releases/tag/v1.2.3`);
     });
 
+    test("identifies itself as cass-memory in the User-Agent", async () => {
+      let userAgent = "";
+      const capture = (async (_url: any, init?: any) => {
+        userAgent = new Headers(init?.headers).get("User-Agent") ?? "";
+        return new Response(JSON.stringify({ tag_name: "v1.2.3" }), { status: 200 });
+      }) as typeof fetch;
+      await fetchLatestRelease(capture);
+      expect(userAgent).toBe(
+        `cass-memory/${getVersion()} (+https://github.com/Dicklesworthstone/cass_memory_system)`,
+      );
+    });
+
     test("throws on HTTP errors", async () => {
       await expect(fetchLatestRelease(stubFetch({}, 500))).rejects.toThrow(/HTTP 500/);
     });
