@@ -8,6 +8,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
+import path from "node:path";
 import yaml from "yaml";
 import { onboardCommand } from "../src/commands/onboard.js";
 import { loadOnboardState, markSessionProcessed } from "../src/onboard-state.js";
@@ -381,6 +382,118 @@ describe("onboardCommand --status", () => {
           capture.restore();
           process.chdir(originalCwd);
         }
+      });
+    });
+  });
+
+  // GH #94: status doubles as an availability check, so a slow `cass timeline`
+  // must yield a bounded, explicitly degraded result rather than block.
+  async function withTimelineStub<T>(
+    env: { home: string },
+    timelineBody: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const stubPath = path.join(env.home, "cass-timeline-stub");
+    writeFileSync(
+      stubPath,
+      `#!/bin/sh\ncase "$1" in\n  --version) exit 0 ;;\n  timeline) ${timelineBody} ;;\n  *) exit 0 ;;\nesac\n`,
+      { mode: 0o755 },
+    );
+    const saved = {
+      CASS_PATH: process.env.CASS_PATH,
+      CM_CASS_TIMELINE_TIMEOUT_SECONDS: process.env.CM_CASS_TIMELINE_TIMEOUT_SECONDS,
+    };
+    process.env.CASS_PATH = stubPath;
+    process.env.CM_CASS_TIMELINE_TIMEOUT_SECONDS = "1";
+    try {
+      return await fn();
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  }
+
+  async function statusJson(env: { home: string; playbookPath: string }) {
+    writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])));
+    const capture = captureConsole();
+    try {
+      await onboardCommand({ status: true, json: true });
+      return JSON.parse(capture.getOutput());
+    } finally {
+      capture.restore();
+    }
+  }
+
+  test("a cass timeline that outlives its budget yields a bounded TIMEOUT-degraded status (#94)", async () => {
+    await withTempCassHome(async (env) => {
+      await withTimelineStub(env, "exec sleep 30", async () => {
+        await withTempGitRepo(async (repoDir) => {
+          const originalCwd = process.cwd();
+          process.chdir(repoDir);
+          try {
+            const started = Date.now();
+            const result = await statusJson(env);
+            expect(Date.now() - started).toBeLessThan(10_000);
+            expect(result.success).toBe(true);
+            const status = result.data.status;
+            expect(status.cassAvailable).toBe(true);
+            expect(status.totalConversations).toBe(0);
+            expect(status.degraded.cass.available).toBe(true);
+            expect(status.degraded.cass.reason).toBe("TIMEOUT");
+            expect(status.degraded.cass.message).toContain("within 1s");
+          } finally {
+            process.chdir(originalCwd);
+          }
+        });
+      });
+    });
+  });
+
+  test("a failing cass timeline is reported as OTHER, not as cass being unavailable (#94)", async () => {
+    await withTempCassHome(async (env) => {
+      await withTimelineStub(env, "echo boom >&2; exit 9", async () => {
+        await withTempGitRepo(async (repoDir) => {
+          const originalCwd = process.cwd();
+          process.chdir(repoDir);
+          try {
+            const status = (await statusJson(env)).data.status;
+            expect(status.cassAvailable).toBe(true);
+            expect(status.degraded.cass.reason).toBe("OTHER");
+            expect(status.degraded.cass.message).toContain("cass timeline failed");
+          } finally {
+            process.chdir(originalCwd);
+          }
+        });
+      });
+    });
+  });
+
+  test("a timeline that answers in time is counted and reports no degradation (#94)", async () => {
+    const timeline = JSON.stringify({
+      groups: {
+        "2026-10-01": [
+          { path: "/s/a.jsonl", agent: "codex", message_count: 4 },
+          { path: "/s/b.jsonl", agent: "claude_code", message_count: 6 },
+        ],
+      },
+    });
+    await withTempCassHome(async (env) => {
+      await withTimelineStub(env, `echo '${timeline}'`, async () => {
+        await withTempGitRepo(async (repoDir) => {
+          const originalCwd = process.cwd();
+          process.chdir(repoDir);
+          try {
+            const status = (await statusJson(env)).data.status;
+            expect(status.cassAvailable).toBe(true);
+            expect(status.totalConversations).toBe(2);
+            expect(status.totalMessages).toBe(10);
+            expect(status.degraded).toBeUndefined();
+          } finally {
+            process.chdir(originalCwd);
+          }
+        });
       });
     });
   });

@@ -1258,7 +1258,14 @@ export async function cassTimeline(
     if (code === CASS_EXIT_CODES.INDEX_MISSING || code === CASS_EXIT_CODES.NOT_FOUND) {
       return { groups: [] };
     }
-    return { groups: [], error: message };
+    // execFile kills the child when the budget runs out and flags the error
+    // with `killed` (it also kills on maxBuffer overflow, which has its own
+    // code); report a timeout separately so callers can say "too slow"
+    // rather than "broken" (#94).
+    const timedOut =
+      (err as { killed?: unknown } | null)?.killed === true &&
+      code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
+    return timedOut ? { groups: [], error: message, timedOut } : { groups: [], error: message };
   }
 }
 

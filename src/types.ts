@@ -641,6 +641,8 @@ export interface CassTimelineResult {
   groups: CassTimelineGroup[];
   /** Set when the `cass timeline` call itself failed (timeout, crash, bad JSON). */
   error?: string;
+  /** True when the failure was cm's own deadline killing `cass timeline`. */
+  timedOut?: boolean;
 }
 
 // ============================================================================

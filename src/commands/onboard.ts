@@ -48,7 +48,7 @@ import { getActiveBullets, loadMergedPlaybook } from "../playbook.js";
 import { createProgress, type ProgressReporter } from "../progress.js";
 import { findSimilarBulletsSemantic, resolveSemanticEnabled } from "../semantic.js";
 import { getProcessedLogPath, ProcessedLog } from "../tracking.js";
-import { ErrorCode } from "../types.js";
+import { DegradedCassSchema, ErrorCode } from "../types.js";
 import {
   expandPath,
   formatRelativeTime,
@@ -71,9 +71,25 @@ export const OnboardStatusSchema = z
     needsOnboarding: z.boolean(),
     onboardingRatio: z.number(), // rules per 100 conversations
     recommendation: z.string(),
+    // Present when cass is available but the session inventory behind
+    // totalConversations/totalMessages could not be read in time (#94). The
+    // counts are then 0 because they are unknown, not because cass is empty.
+    degraded: z.object({ cass: DegradedCassSchema }).strict().optional(),
   })
   .strict();
 type OnboardStatus = z.infer<typeof OnboardStatusSchema>;
+
+/**
+ * Budget for the `cass timeline` call behind the status counts (#94).
+ *
+ * `cm onboard status` doubles as a quick availability check (other tools run
+ * it before `cm context`), but its counts come from a 365-day `cass timeline`,
+ * which can take minutes on a loaded host or a large archive. The counts are
+ * informational, so the status path caps the timeline at this many seconds
+ * (or the lower `cassTimelineTimeoutSeconds`) and reports a degraded result
+ * instead of blocking on it.
+ */
+export const ONBOARD_STATUS_TIMELINE_TIMEOUT_SECONDS = 15;
 
 interface SessionSample {
   path: string;
@@ -129,21 +145,51 @@ async function getOnboardStatus(): Promise<OnboardStatus> {
   const config = await loadConfig();
   const playbook = await loadMergedPlaybook(config);
   const availability = await handleCassUnavailable({ cassPath: config.cassPath });
+  const cassReady = availability.canContinue && availability.fallbackMode === "none";
 
-  // Query cassTimeline for real conversation/message counts
+  // Query cassTimeline for real conversation/message counts, within a budget
+  // short enough that a slow inventory never stalls the status check (#94).
   let totalConversations = 0;
   let totalMessages = 0;
-  if (availability.canContinue && availability.fallbackMode === "none") {
+  let degraded: OnboardStatus["degraded"];
+  if (cassReady) {
+    const timeoutSeconds = Math.min(
+      config.cassTimelineTimeoutSeconds,
+      ONBOARD_STATUS_TIMELINE_TIMEOUT_SECONDS,
+    );
+    let timelineError: string | undefined;
+    let timedOut = false;
     try {
-      const timeline = await cassTimeline(365, config.cassPath);
+      const timeline = await cassTimeline(
+        365,
+        availability.resolvedCassPath ?? config.cassPath,
+        undefined,
+        { timeoutSeconds },
+      );
+      timelineError = timeline.error;
+      timedOut = timeline.timedOut === true;
       for (const group of timeline.groups) {
         totalConversations += group.sessions.length;
         for (const session of group.sessions) {
           totalMessages += session.messageCount || 0;
         }
       }
-    } catch {
-      // If timeline query fails, counts remain 0 (unknown)
+    } catch (err) {
+      timelineError = err instanceof Error ? err.message : String(err);
+    }
+    if (timelineError !== undefined) {
+      totalConversations = 0;
+      totalMessages = 0;
+      degraded = {
+        cass: {
+          available: true,
+          reason: timedOut ? "TIMEOUT" : "OTHER",
+          message: timedOut
+            ? `cass timeline did not finish within ${timeoutSeconds}s; conversation and message counts are unknown (reported as 0). cass itself is available.`
+            : `cass timeline failed (${timelineError}); conversation and message counts are unknown (reported as 0). cass itself is available.`,
+          suggestedFix: ["cass health --json", "cass timeline --since 7d --json"],
+        },
+      };
     }
   }
 
@@ -166,13 +212,14 @@ async function getOnboardStatus(): Promise<OnboardStatus> {
   }
 
   return {
-    cassAvailable: availability.canContinue && availability.fallbackMode === "none",
+    cassAvailable: cassReady,
     totalConversations,
     totalMessages,
     playbookRules,
     needsOnboarding,
     onboardingRatio,
     recommendation,
+    ...(degraded ? { degraded } : {}),
   };
 }
 
@@ -724,6 +771,9 @@ export async function onboardCommand(
           { indent: "  ", width: maxWidth },
         ),
       );
+      if (status.degraded?.cass.message) {
+        console.log(chalk.yellow(`  ${iconPrefix("warning")}${status.degraded.cass.message}`));
+      }
 
       // Show progress if we have any
       if (progress.hasStarted) {

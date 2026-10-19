@@ -1589,7 +1589,7 @@ back to whichever file is active, in its own format.
 | `historyLookbackDays` | `90` | Days of cass history `cm context` searches for history snippets (`--days` overrides) |
 | `minRelevanceScore` | `0.1` | Min relevance to include a bullet |
 | `cassHistoryTimeoutSeconds` | `20` | Budget for the `cass search` behind `cm context` history snippets; raise it on large archives (env: `CM_CASS_HISTORY_TIMEOUT_SECONDS`) |
-| `cassTimelineTimeoutSeconds` | `120` | Budget for the `cass timeline` session discovery behind `cm reflect` (env: `CM_CASS_TIMELINE_TIMEOUT_SECONDS`) |
+| `cassTimelineTimeoutSeconds` | `120` | Budget for the `cass timeline` session discovery behind `cm reflect` (env: `CM_CASS_TIMELINE_TIMEOUT_SECONDS`). `cm onboard status` caps its own timeline call at 15 s (or this value, if lower): when that runs out it still answers, reports the conversation/message counts as 0 and explains why in `degraded.cass` |
 
 #### Reflection Settings
 

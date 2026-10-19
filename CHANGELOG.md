@@ -10,6 +10,10 @@ All notable changes to **cass-memory** (`cm`) are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- `cm onboard status` no longer blocks on a slow `cass timeline`: the call behind its conversation counts gets 15 s (or `cassTimelineTimeoutSeconds`, if lower), after which it answers with `degraded.cass` explaining why the counts are 0 (#94).
+
 ## [0.5.0] -- 2026-10-08
 
 Everything on `main` since [0.4.0](https://github.com/Dicklesworthstone/cass_memory_system/releases/tag/v0.4.0). New commands and an auto-reflect hook, and two changed defaults (`maxBulletsInContext`, the context history window; see Changed), so it is a minor bump.
