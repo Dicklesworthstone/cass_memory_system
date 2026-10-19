@@ -276,10 +276,10 @@ cm trauma remove t-abc
 cm trauma scan --days 30                      # Scan for traumas
 cm trauma import shared-traumas.yaml
 
-cm guard --install                            # Claude Code hook
+cm guard --install                            # Claude Code hook (this project)
+cm guard --install --user                     # Claude Code hook (every project)
 cm guard --git                                # Git pre-commit hook
-cm guard --install --git                      # Both
-cm guard --status                             # Check installation
+cm doctor                                     # Check installed hooks resolve here
 ```
 
 ### System Commands

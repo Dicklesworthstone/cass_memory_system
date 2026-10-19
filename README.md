@@ -869,7 +869,7 @@ cm hook session-end --transcript ~/.codex/sessions/2026/10/06/rollout.jsonl
 | `cm similar "<query>"` | Find similar rules | Search |
 | `cm stats --json` | Playbook metrics | Analytics |
 | `cm trauma list` | Show dangerous patterns | Safety |
-| `cm guard --status` | Check safety hook status | Safety |
+| `cm guard --install [--user]` | Install the safety hook (project or every project) | Safety |
 
 ### Error Output & Exit Codes
 
@@ -1048,10 +1048,10 @@ cm trauma scan --days 30
 cm trauma import shared-traumas.yaml
 
 # Install safety hooks
-cm guard --install           # Claude Code pre-tool hook
+cm guard --install           # Claude Code pre-tool hook (this project)
+cm guard --install --user    # Claude Code pre-tool hook (every project)
 cm guard --git               # Git pre-commit hook
-cm guard --install --git     # Both
-cm guard --status            # Check installation status
+cm doctor                    # Check that every registered guard hook resolves here
 ```
 
 ### Command Output Modes
@@ -2359,18 +2359,20 @@ cm trauma scan --days 30
 The trauma guard requires hooks to intercept commands before execution:
 
 ```bash
-# Install Claude Code hook (intercepts Bash commands)
+# Install Claude Code hook for this project (intercepts Bash commands)
 cm guard --install
+
+# Install it once for every project (Claude Code's user settings, ~/.claude)
+cm guard --install --user
 
 # Install Git pre-commit hook (scans commits)
 cm guard --git
 
-# Install both
-cm guard --install --git
-
-# Check installation status
-cm guard --status
+# Check that each registered hook resolves to a script in the current project
+cm doctor
 ```
+
+**Project or user scope.** `cm guard --install` writes `.claude/hooks/trauma_guard.py` and registers it in the project's `.claude/settings.json` (commit both to share the guard). `cm guard --install --user` writes `~/.claude/hooks/trauma_guard.py` (or under `$CLAUDE_CONFIG_DIR`) and registers it in your user settings, so every project, branch and worktree is guarded without its own copy; running the plain install from your home directory does the same. Both hook commands fail open: in a checkout where the script is absent (an older branch, a fresh worktree) the hook exits quietly instead of printing a "not found" hook error on every Bash call. With both scopes installed the guard simply runs twice per Bash call. Re-running either install rewrites an older cm hook command to the current form, and `cm doctor` reports any registered hook whose script does not exist in the current project, with the settings file it comes from.
 
 **What happens when a pattern matches:**
 
@@ -2430,7 +2432,12 @@ When installed via `cm guard --install`, the trauma guard integrates as a Claude
     "PreToolUse": [
       {
         "matcher": "Bash",
-        "hooks": [".claude/hooks/trauma_guard.py"]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "g=\"$CLAUDE_PROJECT_DIR/.claude/hooks/trauma_guard.py\"; [ -f \"$g\" ] || exit 0; exec python3 \"$g\""
+          }
+        ]
       }
     ]
   }

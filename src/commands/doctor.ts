@@ -17,6 +17,7 @@ import { formatCheckStatusBadge, formatSafetyBadge, icon, iconPrefix } from "../
 import { findBulletConflicts } from "../curate.js";
 import { createEmptyPlaybook, loadMergedPlaybook, loadPlaybook, savePlaybook } from "../playbook.js";
 import { isCmSubprocessTranscriptPath } from "../subprocess-tag.js";
+import { GUARD_SCRIPT_NAME, type GuardScope, inspectGuardHooks } from "./guard.js";
 import { getAutoReflectStatus, HOOK_AGENTS, type HookAgent } from "./hook.js";
 import { createProgress, type ProgressReporter } from "../progress.js";
 import { compileExtraPatterns, SECRET_PATTERNS } from "../sanitize.js";
@@ -792,56 +793,137 @@ async function computeDoctorChecks(
     });
   }
 
-  if (await fileExists(".claude")) {
-    const guardPath = ".claude/hooks/trauma_guard.py";
-    const guardExists = await fileExists(guardPath);
-    if (!guardExists) {
-      checks.push({
-        category: "Trauma System",
-        item: "Safety Guard",
-        status: "warn",
-        message: "Guard NOT installed in .claude/hooks (run 'cm guard --install')",
-      });
-    } else {
-      // File presence is not enough. Issue #45: the v0.2.4–v0.2.8 release
-      // binaries wrote a trauma_guard.py whose emoji string literals had
-      // been mangled into literal `\u{1f525}` backslash sequences. Python
-      // rejects those with `SyntaxError: (unicode error) ... truncated
-      // \uXXXX escape`, and because the hook is a non-blocking PreToolUse,
-      // Claude Code kept running commands while silently printing the
-      // traceback — doctor said "healthy" while the guard was doing nothing.
-      // Catch that and similar future breakages by actually parsing the
-      // installed file with `python3 -c "import ast; ast.parse(...)"`.
-      const parseCheck = await validateGuardParseable(guardPath);
-      // GH #82: guards installed before the fix read only
-      // ~/.cass-memory/traumas.jsonl, so with CASS_MEMORY_HOME / XDG_DATA_HOME
-      // set they allow every command while still parsing fine.
-      let outdated = false;
-      if (parseCheck.ok) {
-        try {
-          outdated = !(await fs.readFile(guardPath, "utf-8")).includes("def global_trauma_files");
-        } catch {
-          outdated = false;
-        }
-      }
-      checks.push({
-        category: "Trauma System",
-        item: "Safety Guard",
-        status: !parseCheck.ok ? "fail" : outdated ? "warn" : "pass",
-        message: !parseCheck.ok
-          ? `Guard is installed but does NOT parse as valid Python — ${parseCheck.reason}. ` +
-            "Reinstall with 'cm guard --install'."
-          : outdated
-            ? "Guard is outdated: it ignores CASS_MEMORY_HOME / XDG_DATA_HOME and may miss global traumas. " +
-              "Refresh with 'cm guard --install'."
-            : "Guard installed in .claude/hooks and parses as valid Python",
-      });
-    }
-  }
+  checks.push(...(await computeGuardChecks(process.cwd())));
 
   // 7) Memory quality: things that quietly degrade what agents are told.
   checks.push(...(await computeMemoryQualityChecks(config)));
 
+  return checks;
+}
+
+/**
+ * Problems with an installed trauma_guard.py file, or null when it is fine.
+ */
+async function inspectGuardScript(
+  guardPath: string,
+  fixCommand: string,
+): Promise<{ status: "fail" | "warn"; message: string } | null> {
+  // File presence is not enough. Issue #45: the v0.2.4–v0.2.8 release
+  // binaries wrote a trauma_guard.py whose emoji string literals had
+  // been mangled into literal `\u{1f525}` backslash sequences. Python
+  // rejects those with `SyntaxError: (unicode error) ... truncated
+  // \uXXXX escape`, and because the hook is a non-blocking PreToolUse,
+  // Claude Code kept running commands while silently printing the
+  // traceback — doctor said "healthy" while the guard was doing nothing.
+  // Catch that and similar future breakages by actually parsing the
+  // installed file with `python3 -c "import ast; ast.parse(...)"`.
+  const parseCheck = await validateGuardParseable(guardPath);
+  if (!parseCheck.ok) {
+    return {
+      status: "fail",
+      message:
+        `Guard ${guardPath} does NOT parse as valid Python — ${parseCheck.reason}. ` +
+        `Reinstall with '${fixCommand}'.`,
+    };
+  }
+  // GH #82: guards installed before the fix read only
+  // ~/.cass-memory/traumas.jsonl, so with CASS_MEMORY_HOME / XDG_DATA_HOME
+  // set they allow every command while still parsing fine.
+  let outdated = false;
+  try {
+    outdated = !(await fs.readFile(guardPath, "utf-8")).includes("def global_trauma_files");
+  } catch {
+    outdated = false;
+  }
+  if (outdated) {
+    return {
+      status: "warn",
+      message:
+        `Guard ${guardPath} is outdated: it ignores CASS_MEMORY_HOME / XDG_DATA_HOME and may miss global traumas. ` +
+        `Refresh with '${fixCommand}'.`,
+    };
+  }
+  return null;
+}
+
+/**
+ * Trauma-guard health as Claude Code will actually see it from `projectDir`
+ * (GH #93): every registered PreToolUse hook, user- or project-level, must
+ * resolve to a script that exists here, or the user gets a hook error on
+ * every Bash call and no protection.
+ */
+export async function computeGuardChecks(projectDir: string): Promise<HealthCheck[]> {
+  const cli = getCliName();
+  const checks: HealthCheck[] = [];
+  const fixFor = (scope: GuardScope) =>
+    `${cli} guard --install${scope === "user" ? " --user" : ""}`;
+  const registrations = await inspectGuardHooks(projectDir);
+
+  if (registrations.length === 0) {
+    const projectClaude = path.join(projectDir, ".claude");
+    if (!(await fileExists(projectClaude))) return checks;
+    const projectScript = path.join(projectClaude, "hooks", GUARD_SCRIPT_NAME);
+    const scriptPresent = await fileExists(projectScript);
+    const scriptProblem = scriptPresent
+      ? await inspectGuardScript(projectScript, fixFor("project"))
+      : null;
+    checks.push({
+      category: "Trauma System",
+      item: "Safety Guard",
+      status: scriptProblem?.status ?? "warn",
+      message:
+        scriptProblem?.message ??
+        (scriptPresent
+          ? `${projectScript} exists, but no PreToolUse hook in the user or project settings runs it, so nothing is guarded. Run '${fixFor("project")}' (or '${fixFor("user")}' for every project).`
+          : `Guard NOT installed (run '${fixFor("project")}' here, or '${fixFor("user")}' for every project)`),
+    });
+    return checks;
+  }
+
+  for (const reg of registrations) {
+    const where = `${reg.scope}-level hook in ${reg.settingsPath}`;
+    // cm guard writes settings.json only; a hook in settings.local.json was
+    // added by hand and has to be edited there.
+    const remedy =
+      path.basename(reg.settingsPath) === "settings.json"
+        ? `Run '${fixFor(reg.scope)}'`
+        : `Edit that hook in ${reg.settingsPath} (cm guard manages settings.json only)`;
+    const details = {
+      scope: reg.scope,
+      settingsPath: reg.settingsPath,
+      command: reg.command,
+      scriptPath: reg.scriptPath,
+      scriptExists: reg.scriptExists,
+      failOpen: reg.failOpen,
+    };
+    if (!reg.scriptExists) {
+      const script = reg.scriptPath || "(no script path)";
+      checks.push({
+        category: "Trauma System",
+        item: "Safety Guard",
+        status: reg.failOpen ? "warn" : "fail",
+        message: reg.failOpen
+          ? `Guard is not active here: the ${where} runs ${script}, which does not exist; it exits quietly. ${remedy} to restore it.`
+          : `The ${where} runs ${script}, which does not exist here, so every Bash call shows a hook error and nothing is guarded. ${remedy} to fix it.`,
+        details,
+      });
+      continue;
+    }
+    const scriptProblem = await inspectGuardScript(reg.scriptPath, fixFor(reg.scope));
+    if (scriptProblem) {
+      checks.push({ category: "Trauma System", item: "Safety Guard", ...scriptProblem, details });
+      continue;
+    }
+    checks.push({
+      category: "Trauma System",
+      item: "Safety Guard",
+      status: reg.failOpen ? "pass" : "warn",
+      message: reg.failOpen
+        ? `Guard active (${where} → ${reg.scriptPath})`
+        : `Guard active, but the ${where} errors in any checkout without ${reg.scriptPath} (other branches, new worktrees). ${remedy} to switch it to the fail-open form.`,
+      details,
+    });
+  }
   return checks;
 }
 

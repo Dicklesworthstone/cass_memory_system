@@ -10,8 +10,13 @@ All notable changes to **cass-memory** (`cm`) are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- `cm guard --install --user` installs the trauma guard into Claude Code's user settings (`~/.claude`, or `$CLAUDE_CONFIG_DIR`) so it covers every project, branch and worktree. Running the plain install from the home directory now does the same instead of registering a hook that points into the project (#93).
+
 ### Fixed
 
+- Trauma guard hook commands fail open: in a checkout without the script the hook exits quietly instead of printing a "not found" hook error on every Bash call. Re-running `cm guard --install` rewrites older hook commands, and `cm doctor` reports every registered guard hook (user or project) whose script does not exist in the current project (#93).
 - `cm onboard status` no longer blocks on a slow `cass timeline`: the call behind its conversation counts gets 15 s (or `cassTimelineTimeoutSeconds`, if lower), after which it answers with `degraded.cass` explaining why the counts are 0 (#94).
 - Codebuff/Freebuff sessions: cass reports the shared store (`~/.config/manicode`) as `codebuff`, which the default cross-agent allowlist did not include, so the advertised Freebuff opt-in admitted nothing. New opt-ins include `codebuff`; existing allowlists are unchanged. The store path is recognized as `codebuff` when cass gives no agent (#69).
 

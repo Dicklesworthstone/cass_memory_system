@@ -1033,11 +1033,16 @@ export function createProgram(argv: string[] = process.argv): Command {
     .command("guard")
     .description("Manage mechanical safety guards (Project Hot Stove)")
     .option("--install", "Install trauma guard hook to .claude/hooks")
+    .option(
+      "--user",
+      "With --install: install into Claude Code's user settings (~/.claude) to guard every project",
+    )
     .option("--git", "Install git pre-commit hook to block dangerous patterns")
     .option("-j, --json", "Output JSON")
     .addHelpText("after", () =>
       formatCommandExamples([
-        "guard --install          # Claude Code hook",
+        "guard --install          # Claude Code hook (this project)",
+        "guard --install --user   # Claude Code hook (every project)",
         "guard --git              # Git pre-commit hook",
         "guard --install --json",
       ]),

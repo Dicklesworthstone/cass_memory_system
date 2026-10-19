@@ -6,9 +6,16 @@
  * Uses isolated temp directories to avoid affecting the real system.
  */
 import { describe, expect, it } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { guardCommand, installGuard } from "../src/commands/guard.js";
+import { computeGuardChecks } from "../src/commands/doctor.js";
+import {
+  guardCommand,
+  guardHookCommand,
+  inspectGuardHooks,
+  installGuard,
+} from "../src/commands/guard.js";
 import { createE2ELogger } from "./helpers/e2e-logger.js";
 import { withTempDir } from "./helpers/temp.js";
 
@@ -920,6 +927,288 @@ npm test
             process.chdir(originalCwd);
           }
         });
+      });
+    });
+  });
+});
+
+describe("GH #93: user-scope guard install, fail-open hook commands, doctor", () => {
+  const USER_COMMAND = `g="$HOME/.claude/hooks/trauma_guard.py"; [ -f "$g" ] || exit 0; exec python3 "$g"`;
+  const PROJECT_COMMAND = `g="$CLAUDE_PROJECT_DIR/.claude/hooks/trauma_guard.py"; [ -f "$g" ] || exit 0; exec python3 "$g"`;
+  const LEGACY_COMMAND = "$CLAUDE_PROJECT_DIR/.claude/hooks/trauma_guard.py";
+
+  /** Temp HOME (with ~/.claude) and a separate project dir as cwd. */
+  async function withHomeAndProject<T>(
+    fn: (dirs: { home: string; project: string; userClaude: string }) => Promise<T>,
+  ): Promise<T> {
+    return withTempDir("guard-user-scope", async (root) => {
+      const home = path.join(root, "home");
+      const project = path.join(root, "project");
+      const userClaude = path.join(home, ".claude");
+      await mkdir(userClaude, { recursive: true });
+      await mkdir(project, { recursive: true });
+      const saved = {
+        HOME: process.env.HOME,
+        CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
+        CASS_MEMORY_HOME: process.env.CASS_MEMORY_HOME,
+      };
+      const originalCwd = process.cwd();
+      process.env.HOME = home;
+      delete process.env.CLAUDE_CONFIG_DIR;
+      process.env.CASS_MEMORY_HOME = path.join(home, ".cass-memory");
+      process.chdir(project);
+      try {
+        return await fn({ home, project, userClaude });
+      } finally {
+        process.chdir(originalCwd);
+        for (const [key, value] of Object.entries(saved)) {
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
+        }
+      }
+    });
+  }
+
+  async function guardCommands(settingsPath: string): Promise<string[]> {
+    const settings = JSON.parse(await readFile(settingsPath, "utf-8"));
+    return settings.hooks.PreToolUse.flatMap((e: any) => e.hooks.map((h: any) => h.command));
+  }
+
+  async function installJson(options: { user?: boolean } = {}) {
+    const capture = captureConsole();
+    try {
+      await installGuard(true, false, options);
+    } finally {
+      capture.restore();
+    }
+    return JSON.parse(capture.logs.find((l) => l.startsWith("{"))!);
+  }
+
+  /** Run a hook command the way Claude Code does: through sh, JSON on stdin. */
+  function runHook(command: string, env: Record<string, string | undefined>) {
+    const childEnv: Record<string, string> = {};
+    for (const [k, v] of Object.entries({ ...process.env, ...env })) {
+      if (v !== undefined) childEnv[k] = v;
+    }
+    return spawnSync("/bin/sh", ["-c", command], {
+      input: '{"tool_input":{"command":"echo hi"}}',
+      env: childEnv,
+      encoding: "utf-8",
+    });
+  }
+
+  it("--install --user writes ~/.claude and a hook command that runs that copy", async () => {
+    await withHomeAndProject(async ({ userClaude }) => {
+      const out = await installJson({ user: true });
+      expect(out.success).toBe(true);
+      expect(out.data.scope).toBe("user");
+      expect(await exists(path.join(userClaude, "hooks", "trauma_guard.py"))).toBe(true);
+      expect(await guardCommands(path.join(userClaude, "settings.json"))).toEqual([USER_COMMAND]);
+      // Nothing is written into the project.
+      expect(await exists(path.join(process.cwd(), ".claude"))).toBe(false);
+    });
+  });
+
+  it("running the plain install from the home directory is a user install", async () => {
+    await withHomeAndProject(async ({ home, userClaude }) => {
+      process.chdir(home);
+      const out = await installJson();
+      expect(out.data.scope).toBe("user");
+      expect(await guardCommands(path.join(userClaude, "settings.json"))).toEqual([USER_COMMAND]);
+    });
+  });
+
+  it("rewrites a legacy $CLAUDE_PROJECT_DIR command in the user settings instead of calling it installed", async () => {
+    await withHomeAndProject(async ({ userClaude }) => {
+      const settingsPath = path.join(userClaude, "settings.json");
+      await writeFile(
+        settingsPath,
+        JSON.stringify({
+          model: "keep-me",
+          hooks: {
+            PreToolUse: [
+              { matcher: "Bash", hooks: [{ type: "command", command: "other-hook.sh" }] },
+              { matcher: "Bash", hooks: [{ type: "command", command: LEGACY_COMMAND }] },
+            ],
+          },
+        }),
+      );
+      const out = await installJson({ user: true });
+      expect(out.data.alreadyInstalled).toBe(false);
+      expect(out.data.updated).toBe(true);
+      const settings = JSON.parse(await readFile(settingsPath, "utf-8"));
+      expect(settings.model).toBe("keep-me");
+      expect(await guardCommands(settingsPath)).toEqual(["other-hook.sh", USER_COMMAND]);
+
+      const again = await installJson({ user: true });
+      expect(again.data.alreadyInstalled).toBe(true);
+      expect(again.data.updated).toBe(false);
+    });
+  });
+
+  it("project installs register the fail-open project command", async () => {
+    await withHomeAndProject(async ({ project }) => {
+      await mkdir(path.join(project, ".claude"), { recursive: true });
+      const out = await installJson();
+      expect(out.data.scope).toBe("project");
+      expect(await guardCommands(path.join(project, ".claude", "settings.json"))).toEqual([
+        PROJECT_COMMAND,
+      ]);
+    });
+  });
+
+  it("--user without --install is rejected", async () => {
+    const capture = captureConsole();
+    try {
+      await guardCommand({ user: true, json: true });
+    } finally {
+      capture.restore();
+      process.exitCode = 0;
+    }
+    const out = JSON.parse(capture.logs.concat(capture.errors).find((l) => l.startsWith("{"))!);
+    expect(out.success).toBe(false);
+    expect(out.error.code).toBe("INVALID_INPUT");
+  });
+
+  it("the generated commands fail open when the script is missing and pass stdin/exit codes through when it exists", async () => {
+    await withHomeAndProject(async ({ home, project, userClaude }) => {
+      // Missing: no output, exit 0 (also with CLAUDE_PROJECT_DIR unset).
+      for (const [command, env] of [
+        [PROJECT_COMMAND, { CLAUDE_PROJECT_DIR: project, HOME: home }],
+        [PROJECT_COMMAND, { CLAUDE_PROJECT_DIR: undefined, HOME: home }],
+        [USER_COMMAND, { CLAUDE_PROJECT_DIR: project, HOME: home }],
+      ] as const) {
+        const r = runHook(command, env);
+        expect(r.status).toBe(0);
+        expect(r.stdout).toBe("");
+        expect(r.stderr).toBe("");
+      }
+
+      // Present (and deliberately NOT executable): runs via python3, gets the
+      // hook JSON on stdin, and its blocking exit code reaches Claude Code.
+      const fake = 'import sys\nprint("got:" + sys.stdin.read())\nsys.exit(2)\n';
+      for (const dir of [path.join(project, ".claude", "hooks"), path.join(userClaude, "hooks")]) {
+        await mkdir(dir, { recursive: true });
+        await writeFile(path.join(dir, "trauma_guard.py"), fake, { mode: 0o644 });
+      }
+      for (const command of [PROJECT_COMMAND, USER_COMMAND]) {
+        const r = runHook(command, { CLAUDE_PROJECT_DIR: project, HOME: home });
+        expect(r.status).toBe(2);
+        expect(r.stdout).toContain('got:{"tool_input"');
+      }
+    });
+  });
+
+  it("quotes a user script path outside HOME (CLAUDE_CONFIG_DIR) safely", async () => {
+    await withHomeAndProject(async ({ home, project }) => {
+      const cfg = path.join(path.dirname(home), "odd cfg's dir");
+      await mkdir(path.join(cfg, "hooks"), { recursive: true });
+      process.env.CLAUDE_CONFIG_DIR = cfg;
+      const out = await installJson({ user: true });
+      expect(out.data.scope).toBe("user");
+      const command = out.data.hookCommand as string;
+      expect(command).not.toContain("$HOME");
+      expect(await guardCommands(path.join(cfg, "settings.json"))).toEqual([command]);
+      await writeFile(
+        path.join(cfg, "hooks", "trauma_guard.py"),
+        'import sys\nprint("cfg-copy")\nsys.exit(2)\n',
+      );
+      const r = runHook(command, { CLAUDE_PROJECT_DIR: project, HOME: home });
+      expect(r.status).toBe(2);
+      expect(r.stdout).toContain("cfg-copy");
+    });
+  });
+
+  it("guardHookCommand matches the documented forms", () => {
+    const savedHome = process.env.HOME;
+    const savedCfg = process.env.CLAUDE_CONFIG_DIR;
+    try {
+      process.env.HOME = "/home/someone";
+      delete process.env.CLAUDE_CONFIG_DIR;
+      expect(guardHookCommand("project")).toBe(PROJECT_COMMAND);
+      expect(guardHookCommand("user")).toBe(USER_COMMAND);
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+      if (savedCfg === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = savedCfg;
+    }
+  });
+
+  describe("doctor (computeGuardChecks)", () => {
+    const settingsWith = (command: string) =>
+      JSON.stringify({
+        hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command }] }] },
+      });
+
+    async function writeUserSettings(userClaude: string, command: string) {
+      await writeFile(path.join(userClaude, "settings.json"), settingsWith(command));
+    }
+
+    it("fails a legacy user-level hook whose script does not exist in this project, naming the scope", async () => {
+      await withHomeAndProject(async ({ project, userClaude }) => {
+        await mkdir(path.join(project, ".claude"), { recursive: true });
+        await writeUserSettings(userClaude, LEGACY_COMMAND);
+        const checks = await computeGuardChecks(project);
+        expect(checks).toHaveLength(1);
+        expect(checks[0].status).toBe("fail");
+        expect(checks[0].message).toContain("user-level hook");
+        expect(checks[0].message).toContain(path.join(project, ".claude", "hooks", "trauma_guard.py"));
+        expect(checks[0].message).toContain("guard --install --user");
+        expect((checks[0].details as any).scope).toBe("user");
+      });
+    });
+
+    it("passes a fail-open user-level guard in a project that has no copy of its own", async () => {
+      await withHomeAndProject(async ({ project, userClaude }) => {
+        await mkdir(path.join(project, ".claude"), { recursive: true });
+        await installJson({ user: true });
+        const checks = await computeGuardChecks(project);
+        expect(checks.map((c) => c.status)).toEqual(["pass"]);
+        expect(checks[0].message).toContain(path.join(userClaude, "hooks", "trauma_guard.py"));
+      });
+    });
+
+    it("warns (not fails) when a fail-open hook's script is missing, and when a legacy hook still has its script", async () => {
+      await withHomeAndProject(async ({ project, userClaude }) => {
+        await writeUserSettings(userClaude, USER_COMMAND);
+        let checks = await computeGuardChecks(project);
+        expect(checks.map((c) => c.status)).toEqual(["warn"]);
+        expect(checks[0].message).toContain("not active here");
+
+        await mkdir(path.join(project, ".claude"), { recursive: true });
+        await installJson(); // project copy, fail-open project command
+        await writeFile(
+          path.join(project, ".claude", "settings.json"),
+          settingsWith(LEGACY_COMMAND),
+        );
+        checks = await computeGuardChecks(project);
+        const projectCheck = checks.find((c) => (c.details as any)?.scope === "project");
+        expect(projectCheck?.status).toBe("warn");
+        expect(projectCheck?.message).toContain("fail-open");
+      });
+    });
+
+    it("warns when the project has the script but no hook runs it", async () => {
+      await withHomeAndProject(async ({ project }) => {
+        await mkdir(path.join(project, ".claude"), { recursive: true });
+        await installJson();
+        await writeFile(path.join(project, ".claude", "settings.json"), "{}");
+        const checks = await computeGuardChecks(project);
+        expect(checks.map((c) => c.status)).toEqual(["warn"]);
+        expect(checks[0].message).toContain("no PreToolUse hook");
+      });
+    });
+
+    it("finds both candidates of a hand-written project-then-user fallback command", async () => {
+      await withHomeAndProject(async ({ project, userClaude }) => {
+        await installJson({ user: true });
+        const fallback = `g="$CLAUDE_PROJECT_DIR/.claude/hooks/trauma_guard.py"; [ -x "$g" ] || g="$HOME/.claude/hooks/trauma_guard.py"; if [ -x "$g" ]; then exec "$g"; fi; exit 0`;
+        await writeUserSettings(userClaude, fallback);
+        const [reg] = await inspectGuardHooks(project);
+        expect(reg.failOpen).toBe(true);
+        expect(reg.scriptExists).toBe(true);
+        expect(reg.scriptPath).toBe(path.join(userClaude, "hooks", "trauma_guard.py"));
       });
     });
   });
