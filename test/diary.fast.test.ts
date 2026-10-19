@@ -2,7 +2,14 @@ import { describe, expect, test } from "bun:test";
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { diaryCommand } from "../src/commands/diary.js";
-import { formatRawSession, generateDiaryFromContent, inferOutcome } from "../src/diary.js";
+import {
+  formatRawSession,
+  generateDiaryFromContent,
+  inferOutcome,
+  selectCrossAgentRelated,
+} from "../src/diary.js";
+import type { CassHit } from "../src/types.js";
+import { DEFAULT_CROSS_AGENT_ALLOWLIST } from "../src/utils.js";
 import { createTestConfig, withTempCassHome, withTempDir } from "./helpers/index.js";
 
 describe("Fast Diary Extraction", () => {
@@ -145,6 +152,19 @@ describe("Fast Diary Extraction", () => {
 
           const nothing = await generateDiaryFromContent("/tmp/nowhere/s.jsonl", content, config);
           expect(nothing.agent).toBe("unknown");
+        });
+      });
+
+      test("keeps cass's codebuff attribution for the shared Codebuff/Freebuff store (#69)", async () => {
+        await withFastDiary(async (config) => {
+          const chat = "/home/u/.config/manicode/projects/app/chats/1/chat-messages.json";
+          const hinted = await generateDiaryFromContent(chat, content, config, {
+            agent: "codebuff",
+          });
+          expect(hinted.agent).toBe("codebuff");
+          // Passed directly (no cass hint): the default store path says the same.
+          const fromPath = await generateDiaryFromContent(chat, content, config);
+          expect(fromPath.agent).toBe("codebuff");
         });
       });
 
@@ -323,5 +343,38 @@ describe("Fast Diary Extraction", () => {
         }
       }
     });
+  });
+});
+
+describe("selectCrossAgentRelated (cross-agent enrichment allowlist)", () => {
+  // Shaped like cass's own search hits; cass names the shared Codebuff/Freebuff
+  // (Manicode) store `codebuff` (#69).
+  const hit = (agent: string, n: number): CassHit => ({
+    source_path: `/s/${agent}-${n}.jsonl`,
+    sessionPath: `/s/${agent}-${n}.jsonl`,
+    line_number: n,
+    agent,
+    snippet: `snippet ${n}`,
+    score: 0.5,
+    timestamp: undefined,
+  });
+  const hits = [hit("codebuff", 1), hit("claude_code", 2), hit("codex", 3)];
+
+  test("the default opt-in allowlist admits codebuff sessions (#69)", () => {
+    const related = selectCrossAgentRelated(hits, "codex", [...DEFAULT_CROSS_AGENT_ALLOWLIST]);
+    expect(related.map((r) => r.agent)).toEqual(["codebuff", "claude_code"]);
+  });
+
+  test("an allowlist saved before #69 (freebuff, no codebuff) still excludes them", () => {
+    const savedEarlier = ["claude", "cursor", "codex", "aider", "pi_agent", "freebuff"];
+    const related = selectCrossAgentRelated(hits, "codex", savedEarlier);
+    expect(related.map((r) => r.agent)).toEqual(["claude_code"]);
+  });
+
+  test("an empty allowlist admits every other agent; the diary's own agent never", () => {
+    expect(selectCrossAgentRelated(hits, "codebuff", []).map((r) => r.agent)).toEqual([
+      "claude_code",
+      "codex",
+    ]);
   });
 });

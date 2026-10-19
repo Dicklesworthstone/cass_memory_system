@@ -1605,7 +1605,7 @@ back to whichever file is active, in its own format.
 |--------|---------|-------------|
 | `crossAgent.enabled` | `false` | Enable cross-agent diary enrichment |
 | `crossAgent.consentGiven` | `false` | Explicit consent flag |
-| `crossAgent.agents` | `[]` | Allowlist; empty means "all agents" |
+| `crossAgent.agents` | `[]` | Allowlist; empty means "all agents". Codebuff and Freebuff share one session store (`~/.config/manicode`) that cass reports as `codebuff`, so `codebuff` admits sessions from either app |
 | `crossAgent.auditLog` | `true` | Log enrichment events |
 
 #### Remote History (SSH)

@@ -210,6 +210,30 @@ function extractSessionMetadata(
   return workspace ? { agent, workspace } : { agent };
 }
 
+/**
+ * The cass hits a diary may cite as related sessions: other agents only, and
+ * only agents on the consented allowlist (empty = every agent). Agent names
+ * are compared as cm slugs, so cass's `claude_code` matches `claude`.
+ * @public - Exported for testing
+ */
+export function selectCrossAgentRelated(
+  hits: CassHit[],
+  diaryAgent: string | undefined,
+  allowlistAgents: string[] | undefined,
+): RelatedSession[] {
+  const allowlist = (allowlistAgents || []).map(normalizeAgentName).filter(Boolean);
+  const own = normalizeAgentName(diaryAgent);
+  return hits
+    .filter((h) => normalizeAgentName(h.agent) !== own) // Cross-agent only
+    .filter((h) => allowlist.length === 0 || allowlist.includes(normalizeAgentName(h.agent)))
+    .map((h) => ({
+      sessionPath: h.source_path,
+      agent: h.agent,
+      relevanceScore: h.score || 0,
+      snippet: h.snippet,
+    }));
+}
+
 async function enrichWithRelatedSessions(diary: DiaryEntry, config: Config): Promise<DiaryEntry> {
   const cross = config.crossAgent;
   if (!cross?.enabled || !cross.consentGiven) return diary;
@@ -234,19 +258,8 @@ async function enrichWithRelatedSessions(diary: DiaryEntry, config: Config): Pro
     config,
   );
 
-  const allowlist = (cross.agents || []).map(normalizeAgentName).filter(Boolean);
-  const diaryAgent = normalizeAgentName(diary.agent);
-
   // 3. Filter and Format
-  const related: RelatedSession[] = hits
-    .filter((h) => normalizeAgentName(h.agent) !== diaryAgent) // Cross-agent only
-    .filter((h) => allowlist.length === 0 || allowlist.includes(normalizeAgentName(h.agent)))
-    .map((h) => ({
-      sessionPath: h.source_path,
-      agent: h.agent,
-      relevanceScore: h.score || 0,
-      snippet: h.snippet,
-    }));
+  const related = selectCrossAgentRelated(hits, diary.agent, cross.agents);
 
   // 4. Attach to diary
   await appendCrossAgentAuditLog(diary, related, config);

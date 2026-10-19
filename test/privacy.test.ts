@@ -117,6 +117,7 @@ describe("privacy command (unit)", () => {
         "codex",
         "aider",
         "pi_agent",
+        "codebuff",
         "freebuff",
       ]);
 
@@ -128,6 +129,7 @@ describe("privacy command (unit)", () => {
         "codex",
         "aider",
         "pi_agent",
+        "codebuff",
         "freebuff",
       ]);
     }, "privacy-enable-default");

@@ -13,6 +13,7 @@ All notable changes to **cass-memory** (`cm`) are documented in this file.
 ### Fixed
 
 - `cm onboard status` no longer blocks on a slow `cass timeline`: the call behind its conversation counts gets 15 s (or `cassTimelineTimeoutSeconds`, if lower), after which it answers with `degraded.cass` explaining why the counts are 0 (#94).
+- Codebuff/Freebuff sessions: cass reports the shared store (`~/.config/manicode`) as `codebuff`, which the default cross-agent allowlist did not include, so the advertised Freebuff opt-in admitted nothing. New opt-ins include `codebuff`; existing allowlists are unchanged. The store path is recognized as `codebuff` when cass gives no agent (#69).
 
 ## [0.5.0] -- 2026-10-08
 

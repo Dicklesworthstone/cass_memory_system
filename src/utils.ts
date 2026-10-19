@@ -2169,6 +2169,10 @@ const AGENT_ALIASES: Record<string, string> = {
   gemini_cli: "gemini",
   "gemini-cli": "gemini",
   "free-buff": "freebuff",
+  // Codebuff and Freebuff share one session store, named after their old
+  // branding (Manicode); cass reports it as `codebuff` (#69).
+  "code-buff": "codebuff",
+  manicode: "codebuff",
   "pi-agent": "pi_agent",
   piagent: "pi_agent",
   pi: "pi_agent",
@@ -2270,6 +2274,11 @@ export async function readStdinText(options: { firstByteTimeoutMs?: number } = {
  * markers must precede any prefix they share with another agent.
  */
 const AGENT_PATH_MARKERS: ReadonlyArray<readonly [string, string]> = [
+  // Codebuff and Freebuff write one shared store, ~/.config/manicode/projects/
+  // <project>/chats/<id>/, with nothing that tells the two apps apart; cass
+  // indexes it as `codebuff` (#69). First, because <project> is a directory
+  // basename that may itself look like another agent's marker (e.g. ".claude").
+  ["/.config/manicode/", "codebuff"],
   ["/.claude/", "claude"],
   ["/.claude-code/", "claude"],
   ["/.cursor/", "cursor"],
@@ -2305,13 +2314,20 @@ const AGENT_PATH_MARKERS: ReadonlyArray<readonly [string, string]> = [
   ["/github.copilot-chat/", "github-copilot"],
   ["/.copilot/", "copilot_cli"],
   ["/shelley.db", "shelley"],
-  ["/.freebuff/", "freebuff"], // Freebuff (Codebuff fork): ~/.freebuff/ and project .freebuff/
+  // Fork- or version-specific Freebuff markers, kept for compatibility.
+  ["/.freebuff/", "freebuff"],
   ["/.config/freebuff/", "freebuff"],
 ];
 
 /**
  * Agents enabled by default when the user opts into cross-agent enrichment
- * (`cm init` prompt, `cm privacy enable` with no list).
+ * (`cm init` prompt, `cm privacy enable` with no list and no cass inventory).
+ * The list is copied into the config at opt-in time, so changing it never
+ * widens an allowlist a user already has.
+ *
+ * `codebuff` admits the shared Codebuff/Freebuff store (cass cannot tell the
+ * two apps apart, so it admits both); `freebuff` covers sessions attributed
+ * by the legacy `.freebuff` path markers (#69).
  */
 export const DEFAULT_CROSS_AGENT_ALLOWLIST: readonly string[] = [
   "claude",
@@ -2319,6 +2335,7 @@ export const DEFAULT_CROSS_AGENT_ALLOWLIST: readonly string[] = [
   "codex",
   "aider",
   "pi_agent",
+  "codebuff",
   "freebuff",
 ];
 

@@ -125,6 +125,24 @@ describe("utils.extractAgentFromPath", () => {
     expect(canonicalAgentName("Free-Buff")).toBe("freebuff");
   });
 
+  it("recognizes the shared Codebuff/Freebuff (Manicode) store as codebuff, like cass (#69)", () => {
+    const chat = "/home/u/.config/manicode/projects/app/chats/2026-10-01T12-00-00/chat-messages.json";
+    expect(extractAgentFromPath(chat)).toBe("codebuff");
+    expect(extractAgentFromPath(chat.replace("chat-messages", "run-state"))).toBe("codebuff");
+    expect(
+      extractAgentFromPath("C:\\Users\\u\\.config\\manicode\\projects\\app\\chats\\1\\chat-messages.json"),
+    ).toBe("codebuff");
+    // A project whose basename looks like another agent's store stays codebuff.
+    expect(
+      extractAgentFromPath("/home/u/.config/manicode/projects/.claude/chats/1/chat-messages.json"),
+    ).toBe("codebuff");
+    expect(canonicalAgentName("Code-Buff")).toBe("codebuff");
+    expect(canonicalAgentName("manicode")).toBe("codebuff");
+    // Not folded together: the allowlist decides whether Freebuff-marked
+    // sessions and the shared store are admitted, separately.
+    expect(canonicalAgentName("freebuff")).toBe("freebuff");
+  });
+
   it("falls back to unknown and is case-insensitive", () => {
     expect(extractAgentFromPath("/tmp/random/session.jsonl")).toBe("unknown");
     expect(extractAgentFromPath("")).toBe("unknown");

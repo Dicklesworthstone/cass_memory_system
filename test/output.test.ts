@@ -112,6 +112,9 @@ describe("output.ts", () => {
     expect(withEnv({ CASS_MEMORY_NO_EMOJI: undefined }, () => agentIcon("cursor"))).toBe("🔵");
     expect(withEnv({ CASS_MEMORY_NO_EMOJI: undefined }, () => agentIcon("aider"))).toBe("🟡");
     expect(withEnv({ CASS_MEMORY_NO_EMOJI: undefined }, () => agentIcon("pi_agent"))).toBe("🟠");
+    // One shared Codebuff/Freebuff store (#69): both slugs render alike.
+    expect(withEnv({ CASS_MEMORY_NO_EMOJI: undefined }, () => agentIcon("codebuff"))).toBe("🟤");
+    expect(withEnv({ CASS_MEMORY_NO_EMOJI: undefined }, () => agentIcon("freebuff"))).toBe("🟤");
     expect(withEnv({ CASS_MEMORY_NO_EMOJI: undefined }, () => agentIconPrefix("cursor"))).toBe(
       "🔵 ",
     );

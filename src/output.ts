@@ -94,7 +94,8 @@ export function agentIcon(agent: string): string {
   if (key.includes("cursor")) return "🔵";
   if (key.includes("codex")) return "🟢";
   if (key.includes("aider")) return "🟡";
-  if (key.includes("freebuff")) return "🟤";
+  // One shared Codebuff/Freebuff store (#69): one icon for both slugs.
+  if (key.includes("codebuff") || key.includes("freebuff")) return "🟤";
   return "";
 }
 
