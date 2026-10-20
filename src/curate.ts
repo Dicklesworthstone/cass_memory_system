@@ -12,6 +12,7 @@ import type {
   PlaybookDelta,
 } from "./types.js";
 import {
+  extractAgentFromPath,
   generateBulletId,
   hashContent,
   jaccardSimilarity,
@@ -834,6 +835,56 @@ export function curatePlaybook(
     decisionLog,
   };
 
+  const reinforceDuplicate = (
+    bullet: PlaybookBullet,
+    delta: Extract<PlaybookDelta, { type: "add" }>,
+    match: "exact" | "similar" | "semantic",
+    details?: Record<string, unknown>,
+  ): boolean => {
+    const sourceSession = delta.sourceSession || undefined;
+    // Learning a rule already consumes its source session. Re-reflecting that
+    // session (including after a failed processed-log write) is not independent
+    // evidence, even when the wording changes. Legacy rules may retain only
+    // their feedback history, so check that as well as source provenance.
+    const sourceAlreadyKnown = sourceSession !== undefined && bullet.sourceSessions.includes(sourceSession);
+    const alreadyObserved = sourceAlreadyKnown || (sourceSession !== undefined && bullet.feedbackEvents.some(
+      event => event.type === "helpful" && event.sessionPath === sourceSession,
+    ));
+    const addedProvenance = sourceSession !== undefined && !sourceAlreadyKnown;
+    if (addedProvenance) {
+      bullet.sourceSessions.push(sourceSession);
+      const agent = extractAgentFromPath(sourceSession);
+      if (!bullet.sourceAgents.includes(agent)) bullet.sourceAgents.push(agent);
+    }
+
+    if (alreadyObserved) {
+      if (addedProvenance) bullet.updatedAt = now();
+      logDecision(decisionLog, "dedup", addedProvenance ? "modified" : "skipped",
+        addedProvenance ? "Recorded source provenance for previously observed insight"
+          : "Duplicate insight already observed in this session", {
+          bulletId: bullet.id,
+          content: delta.bullet.content.slice(0, 100),
+          details,
+        });
+      return addedProvenance;
+    }
+
+    bullet.feedbackEvents.push({
+      type: "helpful",
+      timestamp: now(),
+      sessionPath: sourceSession,
+      context: match === "exact" ? "Reinforced by exact duplicate insight" : "Reinforced by similar insight",
+    });
+    bullet.helpfulCount++;
+    bullet.updatedAt = now();
+    logDecision(decisionLog, "dedup", "modified", `Reinforced existing ${match} duplicate`, {
+      bulletId: bullet.id,
+      content: delta.bullet.content.slice(0, 100),
+      details,
+    });
+    return true;
+  };
+
   // Consolidation must see the final edits and feedback from this batch. In
   // particular, a harmful/retired replacement must not retire healthy sources.
   const orderedDeltas = [...deltas.filter((d) => d.type !== "merge"), ...deltas.filter((d) => d.type === "merge")];
@@ -911,19 +962,7 @@ export function curatePlaybook(
           const targetBullet = findBullet(targetPlaybook, exactMatch.id);
 
           if (targetBullet) {
-            targetBullet.feedbackEvents.push({
-              type: "helpful",
-              timestamp: now(),
-              sessionPath: delta.sourceSession,
-              context: "Reinforced by exact duplicate insight",
-            });
-            targetBullet.helpfulCount++;
-            targetBullet.updatedAt = now();
-            applied = true;
-            logDecision(decisionLog, "dedup", "modified", "Reinforced existing exact duplicate", {
-              bulletId: targetBullet.id,
-              content: content.slice(0, 100),
-            });
+            applied = reinforceDuplicate(targetBullet, delta, "exact");
           } else {
             // It exists in the context (other layer) but not target. Skip to avoid duplication.
             logDecision(
@@ -955,16 +994,6 @@ export function curatePlaybook(
           !lexicalSimilar && options.semanticIndex
             ? findSemanticDuplicateFromMeta(content, sameScopeMeta, options.semanticIndex)
             : undefined;
-        if (semanticMatch) {
-          logDecision(decisionLog, "dedup", "modified", "Semantic duplicate of an existing rule", {
-            bulletId: semanticMatch.bullet.id,
-            content: content.slice(0, 100),
-            details: {
-              similarity: Math.round(semanticMatch.similarity * 1000) / 1000,
-              similarTo: semanticMatch.bullet.content.slice(0, 100),
-            },
-          });
-        }
         const similar = lexicalSimilar ?? semanticMatch?.bullet;
 
         if (similar) {
@@ -1011,22 +1040,10 @@ export function curatePlaybook(
               break;
             }
 
-            targetSimilar.feedbackEvents.push({
-              type: "helpful",
-              timestamp: now(),
-              sessionPath: delta.sourceSession,
-              context: "Reinforced by similar insight",
-            });
-            targetSimilar.helpfulCount++;
-            targetSimilar.updatedAt = now();
-            applied = true;
-            logDecision(decisionLog, "dedup", "modified", "Reinforced existing similar bullet", {
-              bulletId: targetSimilar.id,
-              content: content.slice(0, 100),
-              details: {
-                similarTo: similar.content.slice(0, 100),
-                similarity: config.dedupSimilarityThreshold,
-              },
+            applied = reinforceDuplicate(targetSimilar, delta, semanticMatch ? "semantic" : "similar", {
+              similarTo: similar.content.slice(0, 100),
+              similarity: semanticMatch ? Math.round(semanticMatch.similarity * 1000) / 1000
+                : config.dedupSimilarityThreshold,
             });
           } else {
             logDecision(

@@ -1310,6 +1310,127 @@ describe("curatePlaybook", () => {
   });
 });
 
+describe("curatePlaybook duplicate learning is session-idempotent", () => {
+  const original = "Run the full test suite before pushing";
+  const firstSession = "/home/test/.claude/projects/first.jsonl";
+  const secondSession = "/home/test/.codex/sessions/second.jsonl";
+  const thirdSession = "/home/test/.codex/sessions/third.jsonl";
+
+  const add = (content: string, sourceSession: string): PlaybookDelta => ({
+    type: "add",
+    bullet: { content, category: "testing", scope: "global" },
+    sourceSession,
+    reason: "Learned from this session",
+  });
+
+  for (const mode of ["exact", "lexical", "semantic"] as const) {
+    const repeated = mode === "exact" ? original
+      : mode === "lexical" ? "Run full test suite before pushing"
+        : "Always execute every test prior to a git push";
+    const options = mode === "semantic" ? {
+      semanticIndex: {
+        threshold: 0.9,
+        embeddings: new Map([
+          [hashContent(original), [1, 0, 0]],
+          [hashContent(repeated), [0.98, 0.199, 0]],
+        ]),
+      },
+    } : {};
+
+    it(`does not turn repeated ${mode} learning from the original session into helpful feedback`, () => {
+      let playbook = createTestPlaybook([]);
+      const config = createTestConfig();
+      curatePlaybook(playbook, [add(original, firstSession)], config);
+
+      for (let replay = 0; replay < 3; replay++) {
+        // Rehydrate persisted state, as a forced reflection or retry after a
+        // processed-marker failure does; idempotency cannot be process-local.
+        playbook = JSON.parse(JSON.stringify(playbook));
+        const result = curatePlaybook(playbook, [add(repeated, firstSession)], config, undefined, options);
+        expect(result.applied).toBe(0);
+        expect(result.skipped).toBe(1);
+        expect(result.decisionLog?.filter(entry => entry.phase === "dedup" && entry.action === "modified")).toEqual([]);
+      }
+
+      expect(playbook.bullets).toHaveLength(1);
+      expect(playbook.bullets[0].sourceSessions).toEqual([firstSession]);
+      expect(playbook.bullets[0].helpfulCount).toBe(0);
+      expect(playbook.bullets[0].feedbackEvents).toEqual([]);
+      expect(playbook.bullets[0].maturity).toBe("candidate");
+    });
+
+    it(`records independent ${mode} evidence and its provenance only once per new session`, () => {
+      const playbook = createTestPlaybook([]);
+      const config = createTestConfig();
+      curatePlaybook(playbook, [add(original, firstSession)], config);
+
+      const result = curatePlaybook(playbook, [
+        add(repeated, secondSession),
+        add(repeated, secondSession),
+        add(repeated, thirdSession),
+        add(repeated, firstSession),
+      ], config, undefined, options);
+
+      expect(result.applied).toBe(2);
+      expect(result.skipped).toBe(2);
+      expect(playbook.bullets).toHaveLength(1);
+      expect(playbook.bullets[0].helpfulCount).toBe(2);
+      expect(playbook.bullets[0].feedbackEvents.map(event => event.sessionPath)).toEqual([secondSession, thirdSession]);
+      expect(playbook.bullets[0].sourceSessions).toEqual([firstSession, secondSession, thirdSession]);
+      expect(playbook.bullets[0].sourceAgents).toEqual(["claude", "codex"]);
+    });
+
+    it(`recognizes legacy helpful feedback without source provenance through ${mode} dedup`, () => {
+      const existing = createTestBullet({
+        content: original,
+        helpfulCount: 1,
+        sourceSessions: [],
+        feedbackEvents: [createFeedbackEvent("helpful", { sessionPath: secondSession })],
+      });
+      const playbook = createTestPlaybook([existing]);
+      const config = createTestConfig();
+
+      const result = curatePlaybook(playbook, [add(repeated, secondSession)], config, undefined, options);
+      expect(result.applied).toBe(1); // Provenance is recovered, feedback is not repeated.
+      expect(existing.helpfulCount).toBe(1);
+      expect(existing.feedbackEvents).toHaveLength(1);
+      expect(existing.sourceSessions).toEqual([secondSession]);
+      expect(existing.sourceAgents).toEqual(["codex"]);
+
+      expect(curatePlaybook(playbook, [add(repeated, secondSession)], config, undefined, options).applied).toBe(0);
+      expect(curatePlaybook(playbook, [add(repeated, thirdSession)], config, undefined, options).applied).toBe(1);
+      expect(existing.helpfulCount).toBe(2);
+      expect(existing.sourceSessions).toEqual([secondSession, thirdSession]);
+    });
+
+    it(`keeps source-less ${mode} additions explicit rather than guessing a shared session`, () => {
+      const playbook = createTestPlaybook([createTestBullet({ content: original })]);
+      const result = curatePlaybook(playbook, [add(repeated, ""), add(repeated, "")], createTestConfig(), undefined, options);
+      expect(result.applied).toBe(2);
+      expect(playbook.bullets[0].helpfulCount).toBe(2);
+      expect(playbook.bullets[0].feedbackEvents).toHaveLength(2);
+      expect(playbook.bullets[0].sourceSessions).toEqual([]);
+    });
+  }
+
+  it("still accepts explicit helpful feedback from the originating session and source-less manual feedback", () => {
+    const playbook = createTestPlaybook([]);
+    const config = createTestConfig();
+    curatePlaybook(playbook, [add(original, firstSession)], config);
+    const bullet = playbook.bullets[0];
+    const result = curatePlaybook(playbook, [
+      { type: "helpful", bulletId: bullet.id, sourceSession: firstSession },
+      { type: "helpful", bulletId: bullet.id, sourceSession: firstSession },
+      { type: "helpful", bulletId: bullet.id },
+      { type: "helpful", bulletId: bullet.id },
+    ], config);
+    expect(result.applied).toBe(3);
+    expect(result.skipped).toBe(1);
+    expect(bullet.helpfulCount).toBe(3);
+    expect(bullet.feedbackEvents).toHaveLength(3);
+  });
+});
+
 describe("curatePlaybook semantic dedup", () => {
   const existingContent = "Run the full test suite before pushing";
   const reworded = "Always execute every test prior to a git push";

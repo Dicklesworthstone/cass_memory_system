@@ -2091,6 +2091,12 @@ before optional semantic matches, and imports preserve rules with different
 applicability. Opposing instructions and meaningful condition differences remain
 protected from similarity-based merging even when their embeddings are identical.
 
+A source session contributes evidence to a duplicate rule only once. Replaying or
+forcing reflection of the session that first taught a rule does not raise its
+helpful count or maturity. A different session can reinforce that rule once;
+curation records its provenance for exact, lexical, and semantic matches. Explicit
+helpful feedback remains a separate signal.
+
 Explicit merges require distinct, active sources with the same applicability and
 compatible rule types. They preserve scope, selectors, tags, and source provenance.
 Retirement and anti-pattern inversion are resolved before choosing a replacement;
