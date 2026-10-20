@@ -1,5 +1,9 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { NoObjectGeneratedError } from "ai";
+import fs from "node:fs/promises";
+import path from "node:path";
 import { z } from "zod";
+import { checkBudget, getUsageStats, recordCost, type CostEntry } from "../src/cost.js";
 import {
   __resetAutoFallbackNoticeForTest,
   fillPrompt,
@@ -20,6 +24,7 @@ import {
 } from "../src/llm.js";
 import { truncateForContext } from "../src/utils.js";
 import { createTestConfig } from "./helpers/factories.js";
+import { withTempDir } from "./helpers/temp.js";
 
 // ============================================================================
 // Test Setup - Environment Variable Management
@@ -443,6 +448,218 @@ describe("generateObjectSafe with disableStructuredOutputs", () => {
     expect(captured.options.schema).toBe(schema);
     expect(captured.options.output).toBeUndefined();
   });
+});
+
+describe("LLM usage accounting across failed outputs", () => {
+  const schema = z.object({ value: z.string() });
+  const usage = { inputTokens: 1000, outputTokens: 100 };
+  const estimatedCallCost = 0.0035; // Existing gpt-4o estimate, not a provider invoice.
+  const config = () => createTestConfig({
+    provider: "openai",
+    model: "gpt-4o",
+    budget: { dailyLimit: 1, monthlyLimit: 20, warningThreshold: 80, currency: "USD" },
+  });
+
+  beforeEach(() => {
+    saveEnv();
+    clearAllApiKeys();
+  });
+  afterEach(() => restoreEnv());
+
+  async function withUsageHome(run: (home: string) => Promise<void>): Promise<void> {
+    await withTempDir("llm-usage", async (home) => {
+      const previousHome = process.env.HOME;
+      process.env.HOME = home;
+      try {
+        await run(home);
+      } finally {
+        if (previousHome === undefined) delete process.env.HOME;
+        else process.env.HOME = previousHome;
+      }
+    });
+  }
+
+  async function costRows(home: string): Promise<Array<Omit<CostEntry, "context">>> {
+    const log = Bun.file(path.join(home, ".cass-memory", "cost", `monthly-${new Date().toISOString().slice(0, 7)}.jsonl`));
+    return await log.exists() ? (await log.text()).trim().split("\n").filter(Boolean).map(line => JSON.parse(line)) : [];
+  }
+
+  function invalidOutput(): NoObjectGeneratedError {
+    return new NoObjectGeneratedError({
+      message: "Invalid JSON output",
+      text: '{"value":',
+      response: { id: "response-fixture", modelId: "gpt-4o", timestamp: new Date(0), body: { privateMetadata: "response-body-sentinel" } },
+      usage: {
+        ...usage,
+        totalTokens: 1100,
+        inputTokenDetails: { noCacheTokens: 1000, cacheReadTokens: 0, cacheWriteTokens: 0 },
+        outputTokenDetails: { textTokens: 100, reasoningTokens: 0 },
+      },
+      finishReason: "length",
+    });
+  }
+
+  for (const jsonMode of [false, true]) {
+    it(`records successful ${jsonMode ? "JSON-mode" : "structured"} output exactly once`, async () => {
+      await withUsageHome(async (home) => {
+        const settings = { ...config(), disableStructuredOutputs: jsonMode };
+        let calls = 0;
+        const io: LLMIO = { generateObject: async <T>() => {
+          calls++;
+          return { object: { value: "ok" } as T, usage };
+        } };
+        expect(await generateObjectSafe(schema, "private-prompt-sentinel", settings, 3, io)).toEqual({ value: "ok" });
+        expect(calls).toBe(1);
+        const rows = await costRows(home);
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({ provider: "openai", model: "gpt-4o", tokensIn: 1000, tokensOut: 100 });
+        expect(rows[0].cost).toBeCloseTo(estimatedCallCost);
+        expect(JSON.stringify(rows)).not.toContain("private-prompt-sentinel");
+        expect((await getUsageStats(settings)).total).toBeCloseTo(estimatedCallCost);
+      });
+    });
+  }
+
+  it("accounts for invalid JSON-mode objects before checking the retry budget", async () => {
+    await withUsageHome(async (home) => {
+      const settings = config();
+      settings.disableStructuredOutputs = true;
+      settings.budget.dailyLimit = 0.001;
+      let calls = 0;
+      const io: LLMIO = { generateObject: async <T>() => {
+        calls++;
+        return { object: { value: 42 } as T, usage };
+      } };
+      await expect(generateObjectSafe(schema, "prompt", settings, 3, io)).rejects.toThrow("budget exceeded");
+      expect(calls).toBe(1);
+      expect(await costRows(home)).toHaveLength(1);
+      expect((await getUsageStats(settings)).today).toBeCloseTo(estimatedCallCost);
+      expect((await checkBudget(settings)).allowed).toBe(false);
+    });
+  });
+
+  for (const wrapping of ["direct", "cause", "both"] as const) {
+    it(`counts SDK error usage once with ${wrapping} error metadata, then counts the successful retry`, async () => {
+      await withUsageHome(async (home) => {
+        const settings = config();
+        const providerError = invalidOutput();
+        const error = wrapping === "direct" ? providerError
+          : wrapping === "cause" ? new Error("Invalid JSON output", { cause: providerError })
+          : Object.assign(new Error("Invalid JSON output", { cause: providerError }), { usage });
+        let calls = 0;
+        const io: LLMIO = { generateObject: async <T>() => {
+          calls++;
+          if (calls === 1) throw error;
+          return { object: { value: "fixed" } as T, usage };
+        } };
+        expect(await generateObjectSafe(schema, "private-prompt-sentinel", settings, 3, io)).toEqual({ value: "fixed" });
+        expect(calls).toBe(2);
+        const rows = await costRows(home);
+        expect(rows).toHaveLength(2);
+        expect(rows.map(row => [row.tokensIn, row.tokensOut])).toEqual([[1000, 100], [1000, 100]]);
+        expect((await getUsageStats(settings)).total).toBeCloseTo(estimatedCallCost * 2);
+        expect(JSON.stringify(rows)).not.toContain("private-prompt-sentinel");
+        expect(JSON.stringify(rows)).not.toContain("response-body-sentinel");
+        expect(JSON.stringify(rows)).not.toContain("Invalid JSON output");
+      });
+    });
+  }
+
+  it("stops provider fallback after a failed output exhausts the budget", async () => {
+    await withUsageHome(async (home) => {
+      process.env.OPENAI_API_KEY = "sk-test-openai";
+      process.env.ANTHROPIC_API_KEY = "sk-ant-test-anthropic";
+      const settings = config();
+      settings.budget.dailyLimit = 0.001;
+      let calls = 0;
+      const io: LLMIO = { generateObject: async <T>() => {
+        calls++;
+        if (calls === 1) throw invalidOutput();
+        return { object: { value: "unexpected fallback" } as T, usage };
+      } };
+      await expect(llmWithFallback(schema, "prompt", settings, io)).rejects.toThrow("budget exceeded");
+      expect(calls).toBe(1);
+      expect(await costRows(home)).toHaveLength(1);
+    });
+  });
+
+  it("charges each actual failed request even if a provider rethrows the same error object", async () => {
+    await withUsageHome(async (home) => {
+      const settings = config();
+      const error = invalidOutput();
+      let calls = 0;
+      const io: LLMIO = { generateObject: async () => { calls++; throw error; } };
+      await expect(generateObjectSafe(schema, "prompt", settings, 3, io)).rejects.toThrow("Invalid JSON output");
+      expect(calls).toBe(3);
+      expect(await costRows(home)).toHaveLength(3);
+      expect((await getUsageStats(settings)).total).toBeCloseTo(estimatedCallCost * 3);
+    });
+  });
+
+  it("does not invent usage for errors with absent or invalid token counts", async () => {
+    await withUsageHome(async (home) => {
+      const settings = config();
+      const cyclicError = Object.assign(new Error("Invalid JSON output"), {
+        usage: { inputTokens: Number.NaN, outputTokens: -100 }, cause: undefined as unknown,
+      });
+      cyclicError.cause = cyclicError;
+      let calls = 0;
+      const io: LLMIO = { generateObject: async <T>() => {
+        calls++;
+        if (calls === 1) throw new Error("Invalid JSON output without usage");
+        if (calls === 2) throw cyclicError;
+        return { object: { value: "ok" } as T, usage };
+      } };
+      await generateObjectSafe(schema, "prompt", settings, 3, io);
+      expect(calls).toBe(3);
+      expect(await costRows(home)).toHaveLength(1);
+      expect((await getUsageStats(settings)).total).toBeCloseTo(estimatedCallCost);
+    });
+  });
+
+  it("retains a valid reported token count when the other count is missing or invalid", async () => {
+    await withUsageHome(async (home) => {
+      const settings = config();
+      const error = Object.assign(new Error("Invalid JSON output"), { usage: { inputTokens: -1, outputTokens: 100 } });
+      const io: LLMIO = { generateObject: async () => { throw error; } };
+      await expect(generateObjectSafe(schema, "prompt", settings, 1, io)).rejects.toThrow("Invalid JSON output");
+      const rows = await costRows(home);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ tokensIn: 0, tokensOut: 100 });
+      expect((await getUsageStats(settings)).total).toBeCloseTo(0.001);
+    });
+  });
+
+  it("makes no provider request when the budget is already exhausted", async () => {
+    await withUsageHome(async (home) => {
+      const settings = config();
+      settings.budget.dailyLimit = 0.001;
+      await recordCost(settings, { provider: "openai", model: "gpt-4o", tokensIn: 1000, tokensOut: 100, context: "previous request" });
+      let calls = 0;
+      const io: LLMIO = { generateObject: async <T>() => { calls++; return { object: { value: "unexpected" } as T, usage }; } };
+      await expect(generateObjectSafe(schema, "prompt", settings, 3, io)).rejects.toThrow("budget exceeded");
+      expect(calls).toBe(0);
+      expect(await costRows(home)).toHaveLength(1);
+    });
+  });
+
+  for (const fallback of [false, true]) {
+    it(`does not ${fallback ? "fall back to another provider" : "retry the model"} when usage persistence fails`, async () => {
+      await withUsageHome(async (home) => {
+        const settings = config();
+        process.env.OPENAI_API_KEY = "sk-test-openai";
+        process.env.ANTHROPIC_API_KEY = "sk-ant-test-anthropic";
+        await fs.mkdir(path.join(home, ".cass-memory"), { recursive: true });
+        await fs.writeFile(path.join(home, ".cass-memory", "cost"), "A file blocks the accounting directory");
+        let calls = 0;
+        const io: LLMIO = { generateObject: async <T>() => { calls++; return { object: { value: "ok" } as T, usage }; } };
+        const result = fallback ? llmWithFallback(schema, "prompt", settings, io)
+          : generateObjectSafe(schema, "prompt", settings, 3, io);
+        await expect(result).rejects.toThrow("Failed to record LLM usage");
+        expect(calls).toBe(1);
+      });
+    });
+  }
 });
 
 // ============================================================================

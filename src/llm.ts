@@ -894,6 +894,59 @@ export async function llmWithRetry<T>(
   }
 }
 
+class LLMBudgetExceededError extends Error {}
+
+class LLMUsageAccountingError extends Error {
+  constructor(cause: unknown) {
+    super("Failed to record LLM usage; refusing further requests because the budget could not be updated.", { cause });
+    this.name = "LLMUsageAccountingError";
+  }
+}
+
+/** Accept only reported token counts; never infer usage from response text. */
+function reportedUsage(value: unknown): LLMUsage | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const usage = value as Record<string, unknown>;
+  const tokenCount = (count: unknown): number | undefined =>
+    typeof count === "number" && Number.isFinite(count) && count >= 0 ? count : undefined;
+  const inputTokens = tokenCount(usage.inputTokens);
+  const outputTokens = tokenCount(usage.outputTokens);
+  return inputTokens === undefined && outputTokens === undefined
+    ? undefined
+    : { inputTokens, outputTokens };
+}
+
+/** SDK validation errors carry usage even when no valid object was returned. */
+function usageFromError(error: unknown): LLMUsage | undefined {
+  const seen = new Set<object>();
+  let current = error;
+  while (current && typeof current === "object" && !seen.has(current)) {
+    seen.add(current);
+    const details = current as { usage?: unknown; cause?: unknown };
+    const usage = reportedUsage(details.usage);
+    if (usage) return usage;
+    current = details.cause;
+  }
+  return undefined;
+}
+
+async function recordReportedUsage(config: Config, usage: LLMUsage | undefined, context: string): Promise<void> {
+  if (!usage) return;
+  try {
+    await recordCost(config, {
+      provider: config.provider,
+      model: config.model,
+      tokensIn: usage.inputTokens ?? 0,
+      tokensOut: usage.outputTokens ?? 0,
+      context,
+    });
+  } catch (error) {
+    // A successful provider call must not be repeated as a schema retry or a
+    // provider fallback merely because local accounting failed.
+    throw new LLMUsageAccountingError(error);
+  }
+}
+
 // Explicitly type monitoredGenerateObject to return GenerateObjectResult<T>
 async function monitoredGenerateObject<T>(
   options: any,
@@ -903,37 +956,39 @@ async function monitoredGenerateObject<T>(
 ): Promise<LLMGenerateObjectResult<T>> {
   const budgetCheck = await checkBudget(config);
   if (!budgetCheck.allowed) {
-    throw new Error(`LLM budget exceeded: ${budgetCheck.reason}`);
+    throw new LLMBudgetExceededError(`LLM budget exceeded: ${budgetCheck.reason}`);
   }
 
   const { jsonModeFallback, ...requestOptions } = options ?? {};
-  let result: LLMGenerateObjectResult<T>;
+  let generationOptions = requestOptions;
+  let outputSchema: z.ZodSchema<T> | undefined;
   if (jsonModeFallback && requestOptions.schema) {
     // JSON mode: no schema in the request (the provider sends json_object),
     // the schema goes in the prompt, and Zod validates the reply here.
     const { schema, prompt, ...rest } = requestOptions;
     const jsonSchema = JSON.stringify(zodSchema(schema).jsonSchema);
-    const raw = await io.generateObject<unknown>({
+    outputSchema = schema;
+    generationOptions = {
       ...rest,
       output: "no-schema",
       prompt: `${prompt}\n\nRespond with only a JSON object that matches this JSON Schema exactly:\n${jsonSchema}`,
-    });
-    result = { ...raw, object: schema.parse(raw.object) as T };
-  } else {
-    result = await io.generateObject<T>(requestOptions);
+    };
   }
 
-  if (result.usage) {
-    await recordCost(config, {
-      provider: config.provider,
-      model: config.model,
-      tokensIn: result.usage.inputTokens ?? 0,
-      tokensOut: result.usage.outputTokens ?? 0,
-      context,
-    });
+  let result: LLMGenerateObjectResult<T>;
+  try {
+    result = await io.generateObject<T>(generationOptions);
+  } catch (error) {
+    // Parsing/schema failures from the SDK can still represent paid model
+    // work. Count the reported usage once before another attempt is allowed.
+    await recordReportedUsage(config, usageFromError(error), context);
+    throw error;
   }
 
-  return result;
+  // Account before local validation as well. Keep validation outside the
+  // provider catch so one response cannot be recorded twice.
+  await recordReportedUsage(config, reportedUsage(result.usage), context);
+  return outputSchema ? { ...result, object: outputSchema.parse(result.object) } : result;
 }
 
 // Warn once per process when auto-fallback reroutes a request, so a
@@ -1070,6 +1125,7 @@ export async function generateObjectSafe<T>(
       return result.object;
     } catch (err: any) {
       lastError = err;
+      if (err instanceof LLMUsageAccountingError) throw err;
 
       const errorMsg = err.message || String(err);
       const isBudgetError = errorMsg.includes("budget exceeded");
@@ -1550,6 +1606,7 @@ export async function llmWithFallback<T>(
 
       return result.object;
     } catch (err: any) {
+      if (err instanceof LLMBudgetExceededError || err instanceof LLMUsageAccountingError) throw err;
       const errorMsg = err.message || String(err);
       errors.push({ provider, error: errorMsg });
 

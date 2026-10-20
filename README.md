@@ -1604,6 +1604,13 @@ back to whichever file is active, in its own format.
 
 #### Reflection Settings
 
+LLM budget accounting includes provider-reported token usage from failed JSON
+or schema outputs before another request is attempted. A failed response can
+therefore exhaust the budget and stop a retry or provider fallback. If local
+usage accounting cannot be saved, the request stops instead of repeating paid
+work. Costs use CM's model-rate estimates; responses without reported usage
+cannot be priced, and the ledger is not a provider invoice.
+
 | Option | Default | Description |
 |--------|---------|-------------|
 | `diaryMaxInputChars` | `50000` | How much of a session's transcript the diary step reads (10,000 to 2,000,000). A longer transcript keeps its first 60% and last 40% of this budget. Raise it if your reflection model has a large context window; the cost of each diary call grows with it. |
