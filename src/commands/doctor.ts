@@ -17,7 +17,7 @@ import { formatCheckStatusBadge, formatSafetyBadge, icon, iconPrefix } from "../
 import { findBulletConflicts } from "../curate.js";
 import { createEmptyPlaybook, loadMergedPlaybook, loadPlaybook, savePlaybook } from "../playbook.js";
 import { isCmSubprocessTranscriptPath } from "../subprocess-tag.js";
-import { GUARD_SCRIPT_NAME, type GuardScope, inspectGuardHooks } from "./guard.js";
+import { GUARD_SCRIPT_NAME, type GuardScope, inspectGuardHooks, resolveUserClaudeDir } from "./guard.js";
 import { getAutoReflectStatus, HOOK_AGENTS, type HookAgent } from "./hook.js";
 import { createProgress, type ProgressReporter } from "../progress.js";
 import { compileExtraPatterns, SECRET_PATTERNS } from "../sanitize.js";
@@ -989,7 +989,8 @@ export async function computeMemoryQualityChecks(config: Config): Promise<Health
   // Agents in use (project or user config dir present) that support the hook.
   const agentsInUse: HookAgent[] = [];
   for (const [agent, { dir }] of Object.entries(HOOK_AGENTS) as [HookAgent, { dir: string }][]) {
-    if ((await fileExists(dir)) || (await fileExists(expandPath(`~/${dir}`)))) agentsInUse.push(agent);
+    const userDir = agent === "claude" ? resolveUserClaudeDir() : expandPath(`~/${dir}`);
+    if ((await fileExists(dir)) || (await fileExists(userDir))) agentsInUse.push(agent);
   }
   if (agentsInUse.length > 0) {
     const hook = await getAutoReflectStatus();

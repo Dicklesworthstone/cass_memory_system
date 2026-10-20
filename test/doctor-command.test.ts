@@ -1252,6 +1252,26 @@ describe("computeMemoryQualityChecks", () => {
     });
   });
 
+  test("finds user auto-reflection in CLAUDE_CONFIG_DIR and keeps missing hooks optional", async () => {
+    await withTempCassHome(async (env) => {
+      const userDir = path.join(env.home, "claude-profile");
+      await mkdir(userDir);
+      await withEnvAsync({ CLAUDE_CONFIG_DIR: userDir }, async () => {
+        const missing = (await checksFor(env, [])).find((check) => check.item === "Auto-reflection");
+        expect(missing).toBeDefined();
+        expect(missing?.status).toBe("pass");
+        expect(missing?.details).toMatchObject({ installed: false, missingAgents: ["claude"] });
+
+        const { hookCommand } = await import("../src/commands/hook.js");
+        await captureConsoleLog(() => hookCommand("install", { json: true, command: "cm hook session-end" }));
+        const installed = (await checksFor(env, [])).find((check) => check.item === "Auto-reflection");
+        expect(installed?.status).toBe("pass");
+        expect(installed?.message).toContain("claude/user");
+        expect(installed?.details).toMatchObject({ installed: true, missingAgents: [] });
+      });
+    });
+  });
+
   test("does not degrade memory quality for issue #95 excerpts or compatible conditional guidance", async () => {
     await withTempCassHome(async (env) => {
       const { createTestBullet } = await import("./helpers/factories.js");

@@ -331,12 +331,13 @@ export async function initCommand(options: InitOptions) {
 
       console.log("");
       console.log(chalk.bold("Auto-Reflection (Optional):"));
-      console.log("Reflect each finished Claude Code session in the background, so rules are");
-      console.log("learned without running `cm reflect` by hand? (Uses your LLM budget.)");
+      console.log("Reflect your finished Claude Code sessions across projects in the background?");
+      console.log("This sends session content to your configured LLM provider and uses your LLM budget.");
+      console.log("The hook is installed in your user settings; teammates are not opted in.");
       console.log("");
-      const installReflect = await promptYesNo("Install SessionEnd auto-reflect hook? [y/N]: ");
+      const installReflect = await promptYesNo("Install SessionEnd auto-reflect hook for your user? [y/N]: ");
       if (installReflect) {
-        await hookCommand("install", {});
+        await hookCommand("install", { global: true });
       } else {
         console.log(chalk.gray(`Skipped. You can install later with: ${cli} hook install`));
       }

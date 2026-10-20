@@ -831,15 +831,20 @@ cm reflect --workspace ~/code/api --agent claude,codex --json
 0 2 * * * /usr/local/bin/cm reflect --days 7 >> ~/.cass-memory/reflect.log 2>&1
 ```
 
-For Claude Code and Gemini CLI, install the auto-reflect hook once and every finished session is reflected in the background:
+For Claude Code and Gemini CLI, opt into automatic reflection for your user. Finished sessions across your projects are reflected in the background using your configured LLM provider and budget:
 
 ```bash
-cm hook install                  # Claude Code, this project (.claude/settings.json)
-cm hook install --global         # Claude Code, every project (~/.claude/settings.json)
-cm hook install --agent gemini   # Gemini CLI (.gemini/settings.json; --global for ~/.gemini)
-cm hook status                   # where it is installed, per agent and scope
-cm hook uninstall [--agent gemini] [--global]   # remove it (other hooks are left alone)
+cm hook install                  # Claude Code, your user across projects
+cm hook install --agent gemini   # Gemini CLI, your user across projects
+cm hook install --global         # Explicit user scope (the default)
+cm hook status                   # Show user and shared project installations
+cm hook uninstall               # Remove your Claude Code user hook
+cm hook uninstall --agent gemini # Remove your Gemini user hook
 ```
+
+User settings are `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR/settings.json`) and `~/.gemini/settings.json`. Reflection sends session content to the configured provider, subject to the usual privacy and budget settings. Installing the default hook does not change shared repository settings.
+
+Use `cm hook install --project [--agent gemini]` only when you intend to share the hook through the repository's `.claude/settings.json` or `.gemini/settings.json`. Committing that file enables the hook for teammates who load those settings; the default shared command requires `cm` on their PATH. `cm hook uninstall --project [--agent gemini]` removes shared installations, including those created by older versions. Status lists both scopes, and removing cm's hook preserves unrelated hooks and matcher settings.
 
 This adds a `SessionEnd` hook that runs `cm hook session-end`. It reads the transcript path from the hook payload and starts `cm reflect --session <transcript>` detached, so the agent never waits on it. Output goes to `~/.cass-memory/hooks.log`. It skips sessions cm itself started as its LLM (detected by transcript folder and by an environment marker the hook inherits, so it also covers Gemini's hashed folders), and sessions that end inside a background reflect, so it cannot loop. Codex has no session-end event, only a per-turn `Stop`, so it is not offered; use the `--transcript` entry point below from a wrapper. Reflection keeps your usual budget limits and processed-session tracking, so re-running a session costs nothing.
 

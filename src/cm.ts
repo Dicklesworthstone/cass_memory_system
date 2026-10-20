@@ -573,10 +573,11 @@ export function createProgram(argv: string[] = process.argv): Command {
   hook
     .command("install")
     .description(
-      "Install a SessionEnd hook (Claude Code or Gemini CLI) that runs `cm reflect` on each finished session",
+      "Reflect finished sessions using your configured LLM provider (user settings by default)",
     )
     .option("--agent <name>", "claude (default) or gemini")
-    .option("--global", "Install into the user settings (~/.claude or ~/.gemini) instead of this project")
+    .option("--global", "Install for your user across projects (the default)")
+    .option("--project", "Install into shared project settings; committing the file enables the hook for teammates")
     .option("--command <cmd>", "Command the hook runs (default: resolved `cm hook session-end`)")
     .option("-j, --json", "Output JSON")
     .addHelpText("after", () =>
@@ -584,6 +585,7 @@ export function createProgram(argv: string[] = process.argv): Command {
         "hook install",
         "hook install --global --json",
         "hook install --agent gemini",
+        "hook install --project   # shared project settings; requires cm on each teammate's PATH",
         "hook status",
       ]),
     )
@@ -592,12 +594,13 @@ export function createProgram(argv: string[] = process.argv): Command {
     .command("uninstall")
     .description("Remove cm's SessionEnd hook (other hooks are left alone)")
     .option("--agent <name>", "claude (default) or gemini")
-    .option("--global", "Remove from the user settings (~/.claude or ~/.gemini)")
+    .option("--global", "Remove from your user settings (the default)")
+    .option("--project", "Remove from shared project settings, including installations made by older cm versions")
     .option("-j, --json", "Output JSON")
     .action(async (opts: any) => await hookCommand("uninstall", opts));
   hook
     .command("status")
-    .description("Show whether auto-reflection is installed (project and user scope)")
+    .description("Show auto-reflection in user and shared project settings")
     .option("-j, --json", "Output JSON")
     .action(async (opts: any) => await hookCommand("status", opts));
   hook

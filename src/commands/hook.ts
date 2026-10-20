@@ -16,6 +16,7 @@ import {
   isCmSubprocessTranscriptPath,
 } from "../subprocess-tag.js";
 import { ErrorCode } from "../types.js";
+import { resolveUserClaudeDir } from "./guard.js";
 import {
   atomicWrite,
   ensureDir,
@@ -29,8 +30,11 @@ import {
   resolveGlobalDir,
 } from "../utils.js";
 
-/** Marks the hook entry cm owns inside settings.json, so install is idempotent and uninstall precise. */
+/** The legacy command suffix, retained when recognizing installations made before ownership markers. */
 export const SESSION_END_HOOK_ARGS = "hook session-end";
+/** Stable attribution in each provider's documented hook metadata. */
+export const SESSION_END_HOOK_NAME = "cass-memory-reflect";
+export const SESSION_END_HOOK_STATUS = "cass-memory: reflecting finished session";
 /** Set in the background reflect's environment; a nested SessionEnd seeing it does nothing. */
 export const HOOK_ACTIVE_ENV = "CM_HOOK_ACTIVE";
 
@@ -56,8 +60,10 @@ export function parseHookAgent(value: string | undefined): HookAgent | null {
 
 export interface HookFlags {
   json?: boolean;
-  /** Install into the user-level settings (~/.claude, ~/.gemini) instead of the project's. */
+  /** Explicitly select user-level settings (the default). */
   global?: boolean;
+  /** Explicitly select shared project settings, which can be committed for teammates. */
+  project?: boolean;
   /** Which agent's settings to edit: claude (default) or gemini. */
   agent?: string;
   /** Override the command the hook runs (default: resolved cm invocation). */
@@ -102,19 +108,85 @@ export async function resolveSettingsPath(
 ): Promise<string | null> {
   const dir = HOOK_AGENTS[agent].dir;
   // expandPath honours HOME (os.homedir() is cached at startup under Bun).
-  if (scope === "user") return expandPath(`~/${dir}/settings.json`);
+  if (scope === "user") {
+    return agent === "claude"
+      ? path.join(resolveUserClaudeDir(), "settings.json")
+      : expandPath(`~/${dir}/settings.json`);
+  }
   const root = await resolveGitRoot();
   return path.join(root ?? process.cwd(), dir, "settings.json");
 }
 
-function isCmHookEntry(entry: unknown): boolean {
-  const hooks = (entry as any)?.hooks;
-  return (
-    Array.isArray(hooks) &&
-    hooks.some(
-      (h: any) => typeof h?.command === "string" && h.command.includes(SESSION_END_HOOK_ARGS),
-    )
-  );
+/** Recognize only the simple argv forms older cm versions wrote, never quoted
+ * mentions, shell substitutions, or compound commands owned by another tool.
+ */
+function isLegacyCmHookCommand(command: string): boolean {
+  const words: string[] = [];
+  let word = "";
+  let quote: "'" | '"' | null = null;
+  let started = false;
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i];
+    if (quote === "'") {
+      if (char === "'") quote = null;
+      else word += char;
+      continue;
+    }
+    if (char === "\\") {
+      const next = command[++i];
+      if (next === undefined || next === "\n" || next === "\r") return false;
+      if (quote === '"' && !'$`"\\'.includes(next)) word += "\\";
+      word += next;
+      started = true;
+      continue;
+    }
+    if (quote === '"') {
+      if (char === '"') quote = null;
+      else if (char === "$" || char === "`") return false;
+      else word += char;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      started = true;
+    } else if (char === " " || char === "\t") {
+      if (started) {
+        words.push(word);
+        if (words.length > 4) return false;
+        word = "";
+        started = false;
+      }
+    } else if (!/[A-Za-z0-9_./:=@%+-]/.test(char)) {
+      return false;
+    } else {
+      word += char;
+      started = true;
+    }
+  }
+  if (quote) return false;
+  if (started) words.push(word);
+  const basename = (value: string) => path.basename(value.replace(/\\/g, "/"));
+  if (words.length === 3) {
+    return /^(?:cm|cass-memory(?:-(?:linux|macos|windows)-(?:x64|arm64))?)(?:\.exe)?$/i.test(basename(words[0])) &&
+      words[1] === "hook" && words[2] === "session-end";
+  }
+  return words.length === 4 && /^bun(?:\.exe)?$/i.test(basename(words[0])) &&
+    /^(?:cm|cass-memory)\.(?:ts|js|mjs|cjs)$/i.test(basename(words[1])) &&
+    words[2] === "hook" && words[3] === "session-end";
+}
+
+function isCmHookCommand(hook: unknown): hook is Record<string, unknown> & { command: string } {
+  if (!hook || typeof hook !== "object") return false;
+  const entry = hook as Record<string, unknown>;
+  if (entry.type !== "command" || typeof entry.command !== "string") return false;
+  return entry.name === SESSION_END_HOOK_NAME || entry.statusMessage === SESSION_END_HOOK_STATUS ||
+    isLegacyCmHookCommand(entry.command);
+}
+
+function isCmHookEntry(entry: unknown): entry is Record<string, unknown> & { hooks: unknown[] } {
+  if (!entry || typeof entry !== "object") return false;
+  const hooks = (entry as Record<string, unknown>).hooks;
+  return Array.isArray(hooks) && hooks.some(isCmHookCommand);
 }
 
 async function readSettings(settingsPath: string): Promise<Record<string, any>> {
@@ -144,17 +216,20 @@ export function upsertSessionEndHook(
     ? settings.hooks.SessionEnd
     : [];
   const had = existing.some(isCmHookEntry);
-  settings.hooks.SessionEnd = [
-    ...existing.filter((e) => !isCmHookEntry(e)),
-    {
-      hooks: [
-        // Gemini CLI lists hooks by name (`/hooks`); Claude Code ignores it.
-        agent === "gemini"
-          ? { name: "cass-memory-reflect", type: "command", command }
-          : { type: "command", command },
-      ],
-    },
-  ];
+  // Use documented provider fields; attribution must survive a custom --command.
+  const replacement = agent === "gemini"
+    ? { name: SESSION_END_HOOK_NAME, type: "command", command }
+    : { statusMessage: SESSION_END_HOOK_STATUS, type: "command", command };
+  settings.hooks.SessionEnd = had
+    ? existing.map((entry) => isCmHookEntry(entry)
+      ? {
+          ...entry,
+          hooks: entry.hooks.map((hook) => isCmHookCommand(hook)
+            ? { ...hook, ...replacement }
+            : hook),
+        }
+      : entry)
+    : [...existing, { hooks: [replacement] }];
   return had;
 }
 
@@ -163,8 +238,14 @@ export function removeSessionEndHook(settings: Record<string, any>): boolean {
   const existing: unknown[] = Array.isArray(settings?.hooks?.SessionEnd)
     ? settings.hooks.SessionEnd
     : [];
-  const kept = existing.filter((e) => !isCmHookEntry(e));
-  if (kept.length === existing.length) return false;
+  let removed = false;
+  const kept = existing.flatMap((entry) => {
+    if (!isCmHookEntry(entry)) return [entry];
+    removed = true;
+    const hooks = entry.hooks.filter((hook) => !isCmHookCommand(hook));
+    return hooks.length > 0 ? [{ ...entry, hooks }] : [];
+  });
+  if (!removed) return false;
   if (kept.length > 0) settings.hooks.SessionEnd = kept;
   else delete settings.hooks.SessionEnd;
   if (settings.hooks && Object.keys(settings.hooks).length === 0) delete settings.hooks;
@@ -305,9 +386,12 @@ function reportBadAgent(flags: HookFlags, startedAtMs: number): void {
 async function install(flags: HookFlags, startedAtMs: number): Promise<void> {
   const agent = parseHookAgent(flags.agent);
   if (!agent) return reportBadAgent(flags, startedAtMs);
-  const scope: HookScope = flags.global ? "user" : "project";
+  const scope: HookScope = flags.project ? "project" : "user";
   const settingsPath = (await resolveSettingsPath(scope, agent))!;
-  const hookCommand = flags.command?.trim() || defaultHookCommand();
+  // Shared settings must not contain the installing user's absolute executable path.
+  const hookCommand = flags.command?.trim() || (scope === "project"
+    ? `cm ${SESSION_END_HOOK_ARGS}`
+    : defaultHookCommand());
   const cli = getCliName();
 
   let settings: Record<string, any>;
@@ -334,6 +418,7 @@ async function install(flags: HookFlags, startedAtMs: number): Promise<void> {
     replaced,
     agent,
     scope,
+    shared: scope === "project",
     settingsPath,
     hookCommand,
     logPath: hookLogPath(),
@@ -350,9 +435,13 @@ async function install(flags: HookFlags, startedAtMs: number): Promise<void> {
   console.log(chalk.gray(`  Runs: ${hookCommand}`));
   const label = HOOK_AGENTS[agent].label;
   const agentFlag = agent === "claude" ? "" : ` --agent ${agent}`;
-  console.log(chalk.gray(`  Each finished ${label} session is reflected in the background.`));
+  console.log(chalk.gray(`  Each finished ${label} session ${scope === "user" ? "for your user across projects" : "in this project"} is reflected in the background.`));
+  console.log(chalk.gray("  Reflection sends session content to your configured LLM provider and uses your LLM budget."));
+  if (scope === "project") {
+    console.log(chalk.yellow("  Shared project settings: committing this file enables the hook for teammates who use it."));
+  }
   console.log(
-    chalk.gray(`  Log: ${result.logPath}   Remove: ${cli} hook uninstall${agentFlag}${flags.global ? " --global" : ""}`),
+    chalk.gray(`  Log: ${result.logPath}   Remove: ${cli} hook uninstall${agentFlag}${scope === "project" ? " --project" : ""}`),
   );
   console.log(chalk.yellow(`  Restart ${label} for the hook to take effect.`));
 }
@@ -360,7 +449,7 @@ async function install(flags: HookFlags, startedAtMs: number): Promise<void> {
 async function uninstall(flags: HookFlags, startedAtMs: number): Promise<void> {
   const agent = parseHookAgent(flags.agent);
   if (!agent) return reportBadAgent(flags, startedAtMs);
-  const scope: HookScope = flags.global ? "user" : "project";
+  const scope: HookScope = flags.project ? "project" : "user";
   const settingsPath = (await resolveSettingsPath(scope, agent))!;
   let removed = false;
   if (await fileExists(settingsPath)) {
@@ -395,6 +484,7 @@ export interface AutoReflectScopeStatus {
   agent: HookAgent;
   scope: HookScope;
   settingsPath: string;
+  shared: boolean;
   installed: boolean;
   hookCommand?: string;
   error?: string;
@@ -409,15 +499,20 @@ export async function getAutoReflectStatus(): Promise<{
   for (const agent of Object.keys(HOOK_AGENTS) as HookAgent[]) {
     for (const scope of ["project", "user"] as HookScope[]) {
       const settingsPath = (await resolveSettingsPath(scope, agent))!;
-      const entry: AutoReflectScopeStatus = { agent, scope, settingsPath, installed: false };
+      const entry: AutoReflectScopeStatus = {
+        agent,
+        scope,
+        settingsPath,
+        shared: scope === "project",
+        installed: false,
+      };
       try {
         const settings = await readSettings(settingsPath);
         const found = (Array.isArray(settings?.hooks?.SessionEnd) ? settings.hooks.SessionEnd : []).find(
           isCmHookEntry,
         );
         entry.installed = Boolean(found);
-        const command = found?.hooks?.find((h: any) => h?.command?.includes(SESSION_END_HOOK_ARGS))
-          ?.command;
+        const command = found?.hooks?.find(isCmHookCommand)?.command;
         if (command) entry.hookCommand = command;
       } catch (err: any) {
         entry.error = err?.message ?? String(err);
@@ -439,11 +534,15 @@ async function status(flags: HookFlags, startedAtMs: number): Promise<void> {
     console.log(
       `${e.agent.padEnd(7)} ${e.scope.padEnd(8)} ${mark}  ${chalk.gray(e.settingsPath)}${e.error ? chalk.red(` (${e.error})`) : ""}`,
     );
+    if (e.installed && e.shared) {
+      const agentFlag = e.agent === "claude" ? "" : ` --agent ${e.agent}`;
+      console.log(chalk.yellow(`  Shared project hook. Remove it with: ${getCliName()} hook uninstall${agentFlag} --project`));
+    }
   }
   if (!result.autoReflect) {
     console.log(
       chalk.gray(
-        `\nEnable: ${getCliName()} hook install [--agent gemini] [--global]   (default: Claude Code, this project)`,
+        `\nEnable: ${getCliName()} hook install [--agent gemini]   (default: your user, across projects; --project shares it with the project)`,
       ),
     );
   }
@@ -455,6 +554,16 @@ export async function hookCommand(
 ): Promise<void> {
   const startedAtMs = Date.now();
   try {
+    if ((action === "install" || action === "uninstall") && flags.global && flags.project) {
+      reportError("--global and --project cannot be used together", {
+        code: ErrorCode.INVALID_INPUT,
+        hint: "User settings are the default; use --project only for shared project settings.",
+        json: flags.json,
+        command: "hook",
+        startedAtMs,
+      });
+      return;
+    }
     if (action === "install") return await install(flags, startedAtMs);
     if (action === "uninstall") return await uninstall(flags, startedAtMs);
     if (action === "status") return await status(flags, startedAtMs);
