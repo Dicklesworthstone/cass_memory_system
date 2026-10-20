@@ -8,7 +8,8 @@
  * - Error handling paths
  */
 import { describe, expect, test } from "bun:test";
-import { realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import yaml from "yaml";
 import {
   buildCassHistoryQuery,
@@ -21,6 +22,7 @@ import {
 import { createTestBullet, createTestConfig, createTestPlaybook } from "./helpers/factories.js";
 import { withTempGitRepo } from "./helpers/git.js";
 import { withTempCassHome } from "./helpers/temp.js";
+import { ContextResultSchema } from "../src/types.js";
 
 /**
  * Capture console output during async function execution.
@@ -53,6 +55,19 @@ function captureConsole() {
 }
 
 describe("contextCommand input validation", () => {
+  for (const key of ["language", "framework", "taskType"] as const) {
+    test(`rejects empty ${key} applicability selector`, async () => {
+      const capture = captureConsole();
+      try {
+        await contextCommand("review database migrations", { json: true, [key]: "  " });
+        const output = JSON.parse(capture.getOutput());
+        expect(output.success).toBe(false);
+        expect(JSON.stringify(output.error)).toContain(key);
+      } finally {
+        capture.restore();
+      }
+    });
+  }
   test("rejects empty task", async () => {
     await withTempCassHome(async (env) => {
       writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])));
@@ -1411,6 +1426,93 @@ describe("getContext wrapper", () => {
       } finally {
         capture.restore();
       }
+    });
+  });
+});
+
+describe("context applicability", () => {
+  test("filters named scopes before ranking and preserves selectors in normal and degraded output", async () => {
+    await withTempCassHome(async (env) => {
+      const config = createTestConfig({
+        playbookPath: env.playbookPath, cassPath: "cm-applicability-missing-cass",
+        semanticSearchEnabled: false, minRelevanceScore: 0, minRelativeRelevance: 0,
+        contextTokenBudget: 0, maxBulletsInContext: 50,
+      });
+      writeFileSync(env.configPath, JSON.stringify(config));
+      const content = "Review database migration changes before deployment";
+      const bullets = [
+        createTestBullet({ id: "global", content }),
+        createTestBullet({ id: "python", content, scope: "language", scopeKey: "python" }),
+        createTestBullet({ id: "typescript", content, scope: "language", scopeKey: "typescript", pinned: true }),
+        createTestBullet({ id: "unknown-language", content, scope: "language" }),
+        createTestBullet({ id: "react", content, scope: "framework", scopeKey: "react" }),
+        createTestBullet({ id: "vue", content, scope: "framework", scopeKey: "vue" }),
+        createTestBullet({ id: "review", content, scope: "task", scopeKey: "review" }),
+        createTestBullet({ id: "deploy", content, scope: "task", scopeKey: "deploy" }),
+        createTestBullet({ id: "python-warning", content, scope: "language", scopeKey: "python", isNegative: true }),
+        createTestBullet({ id: "typescript-warning", content, scope: "language", scopeKey: "typescript", isNegative: true }),
+      ];
+      writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook(bullets)));
+      const filters = { language: " python ", framework: "react", taskType: "review" };
+      const normal = await generateContextResult(content, { ...filters, json: true });
+      const degraded = await contextWithoutCass(content, config, filters);
+      for (const result of [normal.result, degraded]) {
+        expect(result.relevantBullets.map((b) => b.id).sort()).toEqual(["global", "python", "react", "review"]);
+        expect(result.antiPatterns.map((b) => b.id)).toEqual(["python-warning"]);
+        expect(result.retrieval?.candidates).toBe(5);
+        const parsed = ContextResultSchema.parse(result);
+        expect(parsed.relevantBullets.find((b) => b.id === "python")?.scopeKey).toBe("python");
+        expect(parsed.antiPatterns[0].scopeKey).toBe("python");
+      }
+      // Without an explicit selector, keep the scope visible and tell callers
+      // which named applicability belongs to each rule.
+      const open = await generateContextResult(content, { json: true });
+      expect(open.result.relevantBullets).toHaveLength(8);
+      expect(open.result.relevantBullets.find((b) => b.id === "typescript")?.scopeKey).toBe("typescript");
+      expect(open.result.antiPatterns).toHaveLength(2);
+    });
+  });
+
+  test("uses requested workspace config and logs sanitized context to that repository", async () => {
+    await withTempCassHome(async (env) => {
+      await withTempGitRepo(async (launchRepo) => {
+        await withTempGitRepo(async (requestedRepo) => {
+          const config = createTestConfig({
+            playbookPath: env.playbookPath, cassPath: "cm-applicability-missing-cass",
+            semanticSearchEnabled: false, minRelevanceScore: 0, minRelativeRelevance: 0,
+            contextTokenBudget: 0,
+          });
+          writeFileSync(env.configPath, JSON.stringify(config));
+          writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])));
+          for (const repo of [launchRepo, requestedRepo]) mkdirSync(path.join(repo, ".cass"));
+          writeFileSync(path.join(launchRepo, ".cass/config.json"), JSON.stringify({ maxBulletsInContext: 5 }));
+          writeFileSync(path.join(requestedRepo, ".cass/config.json"), JSON.stringify({
+            maxBulletsInContext: 1,
+            sanitization: { enabled: false, extraPatterns: ["PROJECT_SECRET_123"] },
+          }));
+          writeFileSync(path.join(requestedRepo, ".cass/playbook.yaml"), yaml.stringify(createTestPlaybook([
+            createTestBullet({ id: "requested-1", content: "Review database migrations before deployment", scope: "workspace" }),
+            createTestBullet({ id: "requested-2", content: "Review database migrations after deployment", scope: "workspace" }),
+          ])));
+          const originalCwd = process.cwd();
+          try {
+            process.chdir(launchRepo);
+            const { result } = await generateContextResult("Review database migrations PROJECT_SECRET_123", {
+              workspace: requestedRepo, json: true, logContext: true, session: "scope-log-session",
+            });
+            expect(result.relevantBullets).toHaveLength(1);
+            expect(result.retrieval?.candidates).toBe(2);
+            const log = readFileSync(path.join(requestedRepo, ".cass/context-log.jsonl"), "utf8");
+            expect(log).not.toContain("PROJECT_SECRET_123");
+            expect(JSON.parse(log).ruleIds).toEqual(result.relevantBullets.map((b) => b.id));
+            expect(JSON.parse(log).workspace).toBe(realpathSync(requestedRepo));
+            expect(existsSync(path.join(launchRepo, ".cass/context-log.jsonl"))).toBe(false);
+            expect(process.cwd()).toBe(realpathSync(launchRepo));
+          } finally {
+            process.chdir(originalCwd);
+          }
+        });
+      });
     });
   });
 });

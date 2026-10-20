@@ -7,11 +7,14 @@
  * - computePlaybookStats calculation
  */
 import { describe, expect, it } from "bun:test";
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import yaml from "yaml";
 
 import { __test, computePlaybookStats, serveCommand } from "../src/commands/serve.js";
 import { withTempCassHome } from "./helpers/temp.js";
+import { withTempGitRepo } from "./helpers/git.js";
+import { createTestBullet, createTestConfig, createTestPlaybook } from "./helpers/factories.js";
 
 const {
   buildError,
@@ -933,6 +936,91 @@ describe("tool call validation", () => {
 });
 
 describe("successful tool calls", () => {
+  it("memory_search reads and filters the requested workspace instead of the server launch directory", async () => {
+    await withTempCassHome(async (env) => {
+      await withTempGitRepo(async (launchRepo) => {
+        await withTempGitRepo(async (requestedRepo) => {
+          await writeFile(env.configPath, JSON.stringify(createTestConfig({ playbookPath: env.playbookPath })));
+          await writeFile(env.playbookPath, yaml.stringify(createTestPlaybook([
+            createTestBullet({ id: "global-migration", content: "Review migration safety" }),
+            createTestBullet({ id: "launch-only", content: "Review migration safety", scope: "workspace", workspace: launchRepo }),
+            createTestBullet({ id: "requested-only", content: "Review migration safety", scope: "workspace", workspace: requestedRepo }),
+            createTestBullet({ id: "unresolved", content: "Review migration safety", scope: "workspace" }),
+          ])));
+          for (const [repo, label] of [[launchRepo, "launch"], [requestedRepo, "requested"]]) {
+            await mkdir(path.join(repo, ".cass"));
+            await writeFile(path.join(repo, ".cass/playbook.yaml"), yaml.stringify(createTestPlaybook([
+              createTestBullet({ id: "same-id", content: `Review ${label} migration safety`, scope: "workspace" }),
+            ])));
+          }
+          const cwd = process.cwd();
+          try {
+            process.chdir(launchRepo);
+            const response = await routeRequest({
+              jsonrpc: "2.0", id: 1, method: "tools/call",
+              params: { name: "memory_search", arguments: { query: "migration", scope: "playbook", workspace: requestedRepo } },
+            });
+            expect("result" in response).toBe(true);
+            if (!("result" in response)) throw new Error(JSON.stringify(response));
+            const payload = unwrapToolResult(response.result);
+            expect(payload.playbook.map((b: any) => b.id).sort()).toEqual(["global-migration", "requested-only", "same-id"]);
+            expect(payload.playbook.find((b: any) => b.id === "same-id").content).toContain("requested");
+            expect(process.cwd()).toBe(launchRepo);
+          } finally {
+            process.chdir(cwd);
+          }
+        });
+      });
+    });
+  });
+
+  it("context and memory_search honor named applicability and return scope selectors", async () => {
+    await withTempCassHome(async (env) => {
+      await writeFile(env.configPath, JSON.stringify(createTestConfig({
+        playbookPath: env.playbookPath, cassPath: "cm-scope-missing-cass", semanticSearchEnabled: false,
+        minRelevanceScore: 0, minRelativeRelevance: 0, contextTokenBudget: 0,
+      })));
+      const content = "Review migration safety";
+      await writeFile(env.playbookPath, yaml.stringify(createTestPlaybook([
+        createTestBullet({ id: "global", content }),
+        createTestBullet({ id: "python", content, scope: "language", scopeKey: "python" }),
+        createTestBullet({ id: "typescript", content, scope: "language", scopeKey: "typescript" }),
+        createTestBullet({ id: "react", content, scope: "framework", scopeKey: "react" }),
+        createTestBullet({ id: "vue", content, scope: "framework", scopeKey: "vue" }),
+        createTestBullet({ id: "review", content, scope: "task", scopeKey: "review" }),
+        createTestBullet({ id: "deployment", content, scope: "task", scopeKey: "deployment" }),
+      ])));
+      for (const name of ["cm_context", "memory_search"]) {
+        const response = await routeRequest({
+          jsonrpc: "2.0", id: 1, method: "tools/call",
+          params: { name, arguments: {
+            ...(name === "cm_context" ? { task: content } : { query: "migration", scope: "playbook" }),
+            language: "python", framework: "react", taskType: "review", limit: 20,
+          } },
+        });
+        expect("result" in response).toBe(true);
+        if (!("result" in response)) throw new Error(JSON.stringify(response));
+        const payload = unwrapToolResult(response.result);
+        const bullets = name === "cm_context" ? payload.relevantBullets : payload.playbook;
+        expect(bullets.map((b: any) => b.id).sort()).toEqual(["global", "python", "react", "review"]);
+        expect(bullets.find((b: any) => b.id === "python").scopeKey).toBe("python");
+      }
+    });
+  });
+
+  for (const name of ["cm_context", "memory_search"]) {
+    for (const key of ["language", "framework", "taskType"]) {
+      it(`${name} rejects invalid ${key} selectors`, async () => {
+        const response = await routeRequest({
+          jsonrpc: "2.0", id: 1, method: "tools/call",
+          params: { name, arguments: { task: "review migrations", query: "migration", [key]: [] } },
+        });
+        expect("error" in response).toBe(true);
+        if ("error" in response) expect(response.error.message).toContain(key);
+      });
+    }
+  }
+
   it("memory_search with playbook scope returns playbook bullets", async () => {
     await withTempCassHome(async (env) => {
       // Create a playbook with a bullet to search

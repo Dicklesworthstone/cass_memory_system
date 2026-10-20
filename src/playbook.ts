@@ -385,6 +385,29 @@ export async function loadMergedPlaybook(
 }
 
 /**
+ * Resolve the repository playbook used for both retrieval and feedback.
+ * A linked worktree prefers its own playbook, then the main worktree's file.
+ * Returning the expected local path when neither exists preserves the
+ * repository's block-log location without creating a playbook during lookup.
+ */
+export async function resolveRepoPlaybookPath(
+  options: { cwd?: string } = {},
+): Promise<string | null> {
+  const repoDir = await resolveRepoDir(options.cwd);
+  if (!repoDir) return null;
+  const repoPath = path.join(repoDir, "playbook.yaml");
+  if (await fileExists(repoPath)) return repoPath;
+
+  const gitRoot = path.dirname(repoDir);
+  const mainRoot = resolveProjectRoot(gitRoot);
+  if (mainRoot !== normalizeWorkspacePath(gitRoot)) {
+    const mainRepoPath = path.join(mainRoot, ".cass", "playbook.yaml");
+    if (await fileExists(mainRepoPath)) return mainRepoPath;
+  }
+  return repoPath;
+}
+
+/**
  * Load the global playbook merged with the repo playbook of the git checkout
  * containing `options.cwd` (default: the process cwd), and report which
  * bullets came from the repo playbook.
@@ -396,23 +419,8 @@ export async function loadMergedPlaybookWithSources(
   const globalPlaybook = await loadPlaybook(config.playbookPath);
 
   let repoPlaybook: Playbook | null = null;
-
-  let repoDir = await resolveRepoDir(options.cwd);
-  let repoPath = repoDir ? path.join(repoDir, "playbook.yaml") : null;
-
-  // A linked worktree without its own `.cass/playbook.yaml` (e.g. the file is
-  // not committed) uses the main worktree's repo playbook (#81).
-  if (repoDir && repoPath && !(await fileExists(repoPath))) {
-    const gitRoot = path.dirname(repoDir);
-    const mainRoot = resolveProjectRoot(gitRoot);
-    if (mainRoot !== normalizeWorkspacePath(gitRoot)) {
-      const mainRepoPath = path.join(mainRoot, ".cass", "playbook.yaml");
-      if (await fileExists(mainRepoPath)) {
-        repoDir = path.join(mainRoot, ".cass");
-        repoPath = mainRepoPath;
-      }
-    }
-  }
+  const repoPath = await resolveRepoPlaybookPath(options);
+  const repoDir = repoPath ? path.dirname(repoPath) : null;
 
   if (repoPath && (await fileExists(repoPath))) {
     repoPlaybook = await loadPlaybook(repoPath);

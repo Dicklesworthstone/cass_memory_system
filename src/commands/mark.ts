@@ -1,9 +1,8 @@
-import path from "node:path";
 import chalk from "chalk";
 import { loadConfig } from "../config.js";
 import { withLock } from "../lock.js";
 import { icon } from "../output.js";
-import { findBullet, loadPlaybook, savePlaybook } from "../playbook.js";
+import { findBullet, loadPlaybook, resolveRepoPlaybookPath, savePlaybook } from "../playbook.js";
 import { calculateMaturityState, getEffectiveScore } from "../scoring.js";
 import { ErrorCode, type FeedbackEvent, type HarmfulReason, HarmfulReasonEnum } from "../types.js";
 import {
@@ -12,14 +11,16 @@ import {
   now,
   printJsonResult,
   reportError,
-  resolveRepoDir,
+  validateNonEmptyString,
 } from "../utils.js";
+import { normalizeWorkspacePath } from "../workspace.js";
 
 type MarkFlags = {
   helpful?: boolean;
   harmful?: boolean;
   reason?: string;
   session?: string;
+  workspace?: string;
   json?: boolean;
 };
 
@@ -36,12 +37,14 @@ export async function recordFeedback(
     throw new Error("Must specify exactly one of --helpful or --harmful");
   }
 
-  const config = await loadConfig();
+  const workspaceCheck = validateNonEmptyString(flags.workspace, "workspace", { allowUndefined: true });
+  if (!workspaceCheck.ok) throw new Error(workspaceCheck.message);
+  const workspace = normalizeWorkspacePath(workspaceCheck.value ?? process.cwd());
+  const config = await loadConfig({}, { cwd: workspace });
 
   const globalPath = expandPath(config.playbookPath);
 
-  const repoDir = await resolveRepoDir();
-  const repoPath = repoDir ? path.join(repoDir, "playbook.yaml") : null;
+  const repoPath = await resolveRepoPlaybookPath({ cwd: workspace });
   const repoPlaybookExists = repoPath ? await fileExists(repoPath) : false;
 
   const type: "helpful" | "harmful" = helpful ? "helpful" : "harmful";

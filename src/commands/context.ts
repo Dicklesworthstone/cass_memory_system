@@ -131,6 +131,31 @@ export function bulletAppliesToWorkspace(
   return workspaceMatches(scopeDir, effectiveWorkspace);
 }
 
+/** Explicit applicability selectors; omitted selectors leave that scope open. */
+export interface NamedScopeFilters {
+  language?: string;
+  framework?: string;
+  taskType?: string;
+}
+
+export function parseNamedScopeFilters(input: NamedScopeFilters): NamedScopeFilters {
+  const filters: NamedScopeFilters = {};
+  for (const key of ["language", "framework", "taskType"] as const) {
+    const checked = validateNonEmptyString(input[key], key, { allowUndefined: true, trim: true });
+    if (!checked.ok) throw new Error(checked.message);
+    if (checked.value !== undefined) filters[key] = checked.value;
+  }
+  return filters;
+}
+
+export function bulletAppliesToNamedScopes(bullet: PlaybookBullet, filters: NamedScopeFilters): boolean {
+  const selector = bullet.scope === "language" ? filters.language
+    : bullet.scope === "framework" ? filters.framework
+    : bullet.scope === "task" ? filters.taskType
+    : undefined;
+  return selector === undefined || bullet.scopeKey?.trim() === selector;
+}
+
 /**
  * ReDoS-safe matcher for deprecated patterns.
  * Supports both literal substring patterns and regex-like patterns.
@@ -178,6 +203,7 @@ export function toContextBullet(b: ScoredBullet): ContextBullet {
   return {
     id: b.id,
     scope: b.scope,
+    ...(b.scopeKey ? { scopeKey: b.scopeKey } : {}),
     ...(b.workspace ? { workspace: b.workspace } : {}),
     category: b.category,
     content: b.content,
@@ -372,7 +398,7 @@ export function buildCassHistoryQuery(
   return keywords.join(" OR ");
 }
 
-export interface ContextFlags {
+export interface ContextFlags extends NamedScopeFilters {
   json?: boolean;
   limit?: number;
   top?: number;
@@ -617,12 +643,13 @@ export async function generateContextResult(
   flags: ContextFlags,
   options: { onProgress?: (event: ContextProgressEvent) => void } = {},
 ): Promise<ContextComputation> {
-  const config = await loadConfig();
+  const namedScopes = parseNamedScopeFilters(flags);
 
   // Default workspace to cwd and canonicalize so repo-local (workspace-scoped)
   // rules surface automatically, and `--workspace .`/relative paths match the
   // absolute paths stored on bullets.
   const effectiveWorkspace = resolveWorkspaceFilter(flags.workspace);
+  const config = await loadConfig({}, { cwd: effectiveWorkspace });
 
   // The repo playbook comes from the workspace being asked about, not from
   // wherever this process happens to run (matters for `cm serve`, #81).
@@ -636,7 +663,7 @@ export async function generateContextResult(
   const cassQuery = buildCassHistoryQuery(task);
 
   const activeBullets = getActiveBullets(playbook).filter((b) =>
-    bulletAppliesToWorkspace(b, effectiveWorkspace, sources),
+    bulletAppliesToWorkspace(b, effectiveWorkspace, sources) && bulletAppliesToNamedScopes(b, namedScopes),
   );
 
   const scoringMeta: ScoreBulletsMeta = { semanticMode: "keyword" };
@@ -758,9 +785,9 @@ export async function generateContextResult(
       task,
       ruleIds: rules.map((r) => r.id),
       antiPatternIds: antiPatterns.map((r) => r.id),
-      workspace: flags.workspace,
+      workspace: effectiveWorkspace,
       session: flags.session,
-    });
+    }, config, sources.repoRoot);
   }
 
   return { result, rules, antiPatterns, cassHits, warnings, suggestedQueries };
@@ -772,10 +799,10 @@ async function appendContextLog(entry: {
   antiPatternIds: string[];
   workspace?: string;
   session?: string;
-}) {
+}, config: Config, repoRoot: string | null) {
   try {
     // Resolve log path: prefer repo-local .cass/ if available
-    const repoDir = await resolveRepoDir();
+    const repoDir = repoRoot ? path.join(repoRoot, ".cass") : await resolveRepoDir(entry.workspace);
     const useRepoLog = repoDir ? await fileExists(repoDir) : false;
     const repoLog = useRepoLog ? path.join(repoDir!, "context-log.jsonl") : null;
 
@@ -784,7 +811,6 @@ async function appendContextLog(entry: {
     await ensureDir(path.dirname(logPath));
 
     // Sanitize content before logging
-    const config = await loadConfig();
     const sanitizeConfig = getSanitizeConfig(config);
     const safeTask = sanitize(entry.task, sanitizeConfig);
 
@@ -810,9 +836,10 @@ async function appendContextLog(entry: {
 export async function contextWithoutCass(
   task: string,
   config: Config,
-  options: { workspace?: string; maxBullets?: number; reason?: string } = {},
+  options: NamedScopeFilters & { workspace?: string; maxBullets?: number; reason?: string } = {},
 ): Promise<ContextResult> {
   const { workspace, maxBullets, reason } = options;
+  const namedScopes = parseNamedScopeFilters(options);
 
   warn(`cass unavailable - showing playbook only${reason ? ` (${reason})` : ""}`);
 
@@ -829,7 +856,7 @@ export async function contextWithoutCass(
     const keywords = extractKeywords(task);
 
     const activeBullets = getActiveBullets(playbook).filter((b) =>
-      bulletAppliesToWorkspace(b, effectiveWorkspace, sources),
+      bulletAppliesToWorkspace(b, effectiveWorkspace, sources) && bulletAppliesToNamedScopes(b, namedScopes),
     );
 
     const scoredBullets = scoreBulletsKeyword(activeBullets, keywords, config);
@@ -1085,8 +1112,23 @@ export async function contextCommand(task: string | undefined, flags: ContextFla
     return;
   }
 
+  let namedScopes: NamedScopeFilters;
+  try {
+    namedScopes = parseNamedScopeFilters(flags);
+  } catch (err) {
+    reportError(err instanceof Error ? err : String(err), {
+      code: ErrorCode.INVALID_INPUT,
+      json: wantsJsonForErrors,
+      format: flags.format,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+
   const normalizedFlags: ContextFlags = {
     ...flags,
+    ...namedScopes,
     ...((limitCheck.value ?? topCheck.value) !== undefined
       ? { limit: limitCheck.value ?? topCheck.value }
       : {}),

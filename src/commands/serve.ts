@@ -24,7 +24,13 @@ import {
   validatePositiveInt,
   warn,
 } from "../utils.js";
-import { generateContextResult } from "./context.js";
+import {
+  bulletAppliesToNamedScopes,
+  bulletAppliesToWorkspace,
+  generateContextResult,
+  parseNamedScopeFilters,
+  resolveWorkspaceFilter,
+} from "./context.js";
 import { recordFeedback } from "./mark.js";
 import { buildWhyResult, resolveWhyBullet } from "./why.js";
 
@@ -302,6 +308,9 @@ const TOOL_DEFS = [
       properties: {
         task: { type: "string", description: "Task description" },
         workspace: { type: "string" },
+        language: { type: "string", description: "Exact scopeKey for language-scoped rules; omit to leave this scope open" },
+        framework: { type: "string", description: "Exact scopeKey for framework-scoped rules; omit to leave this scope open" },
+        taskType: { type: "string", description: "Exact scopeKey for task-scoped rules; omit to leave this scope open" },
         limit: { type: "integer", minimum: 1, description: "Max rules to return" },
         top: { type: "integer", minimum: 1, description: "DEPRECATED: use limit" },
         history: { type: "integer", minimum: 1 },
@@ -326,6 +335,7 @@ const TOOL_DEFS = [
         harmful: { type: "boolean" },
         reason: { type: "string" },
         session: { type: "string" },
+        workspace: { type: "string", description: "Workspace used to retrieve the rule; defaults to the server's working directory" },
       },
       required: ["bulletId"],
     },
@@ -357,7 +367,10 @@ const TOOL_DEFS = [
         limit: { type: "integer", minimum: 1, maximum: 100, default: 10 },
         days: { type: "integer", minimum: 1, description: "Limit cass search to lookback days" },
         agent: { type: "string", description: "Filter cass search by agent" },
-        workspace: { type: "string", description: "Filter cass search by workspace" },
+        workspace: { type: "string", description: "Workspace whose repo rules and cass history to search" },
+        language: { type: "string", description: "Exact scopeKey for language-scoped playbook rules" },
+        framework: { type: "string", description: "Exact scopeKey for framework-scoped playbook rules" },
+        taskType: { type: "string", description: "Exact scopeKey for task-scoped playbook rules" },
       },
       required: ["query"],
     },
@@ -585,8 +598,10 @@ async function handleToolCall(name: string, args: any): Promise<any> {
       if (!workspace.ok) throw new Error(workspace.message);
 
       // cm_context fans out to cass history — gate it under the admission limiter.
+      const namedScopes = parseNamedScopeFilters(args);
       const context = await withCassAdmission("cm_context", () =>
         generateContextResult(taskCheck.value, {
+          ...namedScopes,
           limit: limit.value ?? top.value,
           history: history.value,
           days: days.value,
@@ -644,11 +659,14 @@ async function handleToolCall(name: string, args: any): Promise<any> {
       if (!reason.ok) throw new Error(reason.message);
       const session = validateNonEmptyString(args?.session, "session", { allowUndefined: true });
       if (!session.ok) throw new Error(session.message);
+      const workspace = validateNonEmptyString(args?.workspace, "workspace", { allowUndefined: true });
+      if (!workspace.ok) throw new Error(workspace.message);
       const result = await recordFeedback(args.bulletId, {
         helpful,
         harmful,
         reason: reason.value,
         session: session.value,
+        workspace: workspace.value,
       });
       return { success: true, ...result };
     }
@@ -712,17 +730,22 @@ async function handleToolCall(name: string, args: any): Promise<any> {
       });
       if (!workspaceCheck.ok) throw new Error(workspaceCheck.message);
       const workspace = workspaceCheck.value;
-      const config = await loadConfig();
+      const effectiveWorkspace = resolveWorkspaceFilter(workspace);
+      const namedScopes = parseNamedScopeFilters(args);
+      const config = await loadConfig({}, { cwd: effectiveWorkspace });
 
       const result: { playbook?: any[]; cass?: any[] } = {};
       const q = queryCheck.value.toLowerCase();
 
       if (scope === "playbook" || scope === "both") {
         const t0 = performance.now();
-        const playbook = await loadMergedPlaybook(config);
-        const bullets = getActiveBullets(playbook);
+        const sources = await loadMergedPlaybookWithSources(config, { cwd: effectiveWorkspace });
+        const bullets = getActiveBullets(sources.playbook);
         result.playbook = bullets
           .filter((b) => {
+            if (!bulletAppliesToWorkspace(b, effectiveWorkspace, sources) || !bulletAppliesToNamedScopes(b, namedScopes)) {
+              return false;
+            }
             const haystack = `${b.content} ${b.category ?? ""} ${b.scope ?? ""}`.toLowerCase();
             return haystack.includes(q);
           })
@@ -732,6 +755,8 @@ async function handleToolCall(name: string, args: any): Promise<any> {
             content: b.content,
             category: b.category,
             scope: b.scope,
+            ...(b.scopeKey ? { scopeKey: b.scopeKey } : {}),
+            ...(b.workspace ? { workspace: b.workspace } : {}),
             maturity: b.maturity,
           }));
         maybeProfile("memory_search playbook scan", t0);

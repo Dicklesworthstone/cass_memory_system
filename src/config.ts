@@ -177,7 +177,10 @@ async function loadConfigFromDir(dir: string): Promise<{
   return { config, source: file.path };
 }
 
-export async function loadConfig(cliOverrides: Partial<Config> = {}): Promise<Config> {
+export async function loadConfig(
+  cliOverrides: Partial<Config> = {},
+  options: { cwd?: string } = {},
+): Promise<Config> {
   const defaults = getCachedDefaults();
   const { config: globalConfigRaw } = await loadConfigFromDir(resolveGlobalDir());
 
@@ -189,7 +192,7 @@ export async function loadConfig(cliOverrides: Partial<Config> = {}): Promise<Co
   // sanitization/budget protections.
   let repoConfig: Partial<Config> = {};
   let repoSanitizationExtraPatterns: string[] = [];
-  const repoCassDir = await resolveRepoDir();
+  const repoCassDir = await resolveRepoDir(options.cwd);
 
   if (repoCassDir) {
     const { config: repoConfigRaw } = await loadConfigFromDir(repoCassDir);

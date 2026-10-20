@@ -916,6 +916,9 @@ Exit codes are categorized for scripting:
 # Get context before starting a task (THE MAIN COMMAND)
 cm context "implement user authentication" --json
 
+# Select a project's rules and explicit applicability selectors
+cm context "review Python changes" --workspace ~/code/api --language python --task-type review --json
+
 # Self-documenting explanation of the system
 cm quickstart --json
 
@@ -929,6 +932,19 @@ cm robot-docs schemas
 ```
 
 `cm robot-docs` always prints one JSON document to stdout (`data.schemaVersion`, `data.version`, `data.topics`). `commands` is read from the live CLI definition, so it lists exactly the commands, arguments and options this build accepts. `schemas` gives JSON Schema (draft-07) for the JSON envelope (success and error) and for the `data` of `context`, `quickstart` and `onboard status`; the schemas are open, so ignore fields you don't know.
+
+`cm context --workspace` selects the repository playbook, repository configuration,
+history, and context-log location for that project. In a linked worktree, an
+existing local playbook takes precedence; otherwise the main worktree's playbook
+is used. Context logging and outcome feedback follow that same playbook owner.
+
+Use `--language`, `--framework`, and `--task-type` to filter rules with the
+corresponding named scope before ranking. Values match the rule's `scopeKey`
+exactly after trimming whitespace. A supplied selector excludes other values and
+rules missing that selector; global and applicable workspace rules remain
+eligible. Omitting a selector keeps all values for that scope eligible, and does
+not infer the language or framework from the task text. JSON output retains
+`scope` and `scopeKey` so callers can inspect applicability.
 
 ### Playbook Commands (Inspect & Manage Rules)
 
@@ -985,6 +1001,9 @@ cm reflect --days 7 --json
 # Manual feedback on a rule
 cm mark b-8f3a2c --helpful
 cm mark b-xyz789 --harmful --reason "Caused regression"
+
+# Attribute feedback to the same project used for context retrieval
+cm mark b-8f3a2c --helpful --workspace ~/code/api
 
 # Record session outcome (positional: status, rules)
 cm outcome success b-8f3a2c,b-def456
@@ -1133,7 +1152,7 @@ async function generateContext(task: string): Promise<ContextResult> {
 }
 ```
 
-Bullets in `cm context` output are a compact projection (id, content, category, kind, maturity, tags, counts, scores, reasoning). The full record, including the feedback-event log and source sessions, is one `cm playbook get <id>` away.
+Bullets in `cm context` output are a compact projection (id, content, category, kind, scope, scopeKey, maturity, tags, counts, scores, reasoning). The full record, including the feedback-event log and source sessions, is one `cm playbook get <id>` away.
 
 ### Stage 2: Reflector (`cm reflect`)
 
@@ -1264,6 +1283,8 @@ interface PlaybookBullet {
 
   // Classification
   scope: "global" | "workspace" | "language" | "framework" | "task";
+  scopeKey?: string;             // Exact language, framework, or task selector
+  workspace?: string;            // Explicit project scope; repo rules may omit it
   type: "rule" | "anti-pattern";
   kind: "project_convention" | "stack_pattern" | "workflow_rule" | "anti_pattern";
   isNegative: boolean;
@@ -1807,13 +1828,22 @@ When `MCP_HTTP_TOKEN` is set, clients must send either `Authorization: Bearer <t
 
 | Tool | Purpose | Parameters |
 |------|---------|------------|
-| `cm_context` | Get relevant rules + history for a task | `task: string, limit?: number, top?: number (deprecated), history?: number, days?: number, workspace?: string, maxTokens?: number` |
-| `cm_feedback` | Record helpful/harmful feedback | `bulletId: string, helpful?: boolean, harmful?: boolean, reason?: string, session?: string` |
+| `cm_context` | Get relevant rules + history for a task | `task: string, limit?: number, top?: number (deprecated), history?: number, days?: number, workspace?: string, language?: string, framework?: string, taskType?: string, maxTokens?: number` |
+| `cm_feedback` | Record helpful/harmful feedback | `bulletId: string, helpful?: boolean, harmful?: boolean, reason?: string, session?: string, workspace?: string` |
 | `cm_outcome` | Record a session outcome with rules used | `sessionId: string, outcome: "success" \| "failure" \| "mixed" \| "partial", rulesUsed?: string[]` |
-| `memory_search` | Search playbook bullets and/or cass history | `query: string, scope?: "playbook" \| "cass" \| "both", limit?: number, days?: number` |
+| `memory_search` | Search playbook bullets and/or cass history | `query: string, scope?: "playbook" \| "cass" \| "both", limit?: number, days?: number, workspace?: string, language?: string, framework?: string, taskType?: string` |
 | `memory_reflect` | Trigger reflection on recent sessions | `days?: number, maxSessions?: number, dryRun?: boolean, workspace?: string, agent?: string, session?: string` |
 | `cm_why` | Explain a rule: reasoning, sources, feedback, and cass history found by its search pointer | `bulletId: string, history?: boolean, verbose?: boolean` |
 | `cm_conflicts` | List directly opposing instructions with clause evidence for scope review | `category?: string, workspace?: string` |
+
+For a server serving several projects, pass the same `workspace` to `cm_context`,
+`memory_search`, and `cm_feedback`. These tools resolve that project's playbook
+and configuration without changing the server's working directory. Feedback
+prefers the selected repository rule, then a global rule with the requested ID;
+it does not fall back to another project's rule. An unreadable repository
+playbook is an error, since silently updating a global rule could credit the
+wrong instruction. Named scope filters on `cm_context` and `memory_search`
+have the same exact-match behavior as the CLI flags.
 
 ### Resources Exposed
 

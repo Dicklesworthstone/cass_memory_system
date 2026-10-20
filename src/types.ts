@@ -666,6 +666,7 @@ export type ScoredBullet = z.infer<typeof ScoredBulletSchema>;
 export const ContextBulletSchema = z.object({
   id: z.string(),
   scope: BulletScopeEnum,
+  scopeKey: z.string().optional(),
   workspace: z.string().optional(),
   category: z.string(),
   content: z.string(),

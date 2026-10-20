@@ -103,6 +103,9 @@ export function createProgram(argv: string[] = process.argv): Command {
     .argument("[task]", "Description of the task to perform ('-' or omitted: read from stdin)")
     .option("-j, --json", "Output JSON")
     .option("--workspace <path>", "Filter by workspace")
+    .option("--language <name>", "Match this exact scopeKey for language-scoped rules")
+    .option("--framework <name>", "Match this exact scopeKey for framework-scoped rules")
+    .option("--task-type <name>", "Match this exact scopeKey for task-scoped rules")
     .option("--limit <n>", "Number of rules to show", toInt)
     .option("--top <n>", "DEPRECATED: use --limit", toInt)
     .option("--history <n>", "Number of history snippets", toInt)
@@ -164,6 +167,7 @@ export function createProgram(argv: string[] = process.argv): Command {
       "Optional reason/note (free text, or one of: caused_bug|wasted_time|contradicted_requirements|wrong_context|outdated|other)",
     )
     .option("--session <path>", "Associated session path")
+    .option("--workspace <path>", "Workspace used to retrieve the rule (defaults to cwd)")
     .option("-j, --json", "Output JSON")
     .addHelpText("after", () =>
       formatCommandExamples([

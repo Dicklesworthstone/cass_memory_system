@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import yaml from "yaml";
 import {
   ContextFlags,
@@ -95,6 +96,36 @@ function createTestBullet(
 }
 
 describe("E2E: CLI context command", () => {
+  it("accepts named scope selectors through the real CLI", async () => {
+    await withTempCassHome(async (env) => {
+      const content = "Review migration safety before deployment";
+      await writeFile(env.configPath, JSON.stringify(createTestConfig({
+        playbookPath: env.playbookPath, semanticSearchEnabled: false,
+        minRelevanceScore: 0, minRelativeRelevance: 0, contextTokenBudget: 0,
+      })));
+      await writeFile(env.playbookPath, yaml.stringify(createTestPlaybook([
+        createTestBullet({ id: "global", content }),
+        ...[["language", "python"], ["language", "typescript"], ["framework", "react"],
+          ["framework", "vue"], ["task", "review"], ["task", "deployment"]].map(([scope, scopeKey]) => ({
+            ...createTestBullet({ id: scopeKey, content, scope }), scopeKey,
+          })),
+      ])));
+      const result = Bun.spawnSync([
+        process.execPath, fileURLToPath(new URL("../src/cm.ts", import.meta.url)),
+        "context", content, "--language", "python", "--framework", "react", "--task-type", "review", "--json",
+      ], {
+        cwd: env.home,
+        env: { ...process.env, HOME: env.home, CASS_PATH: "cm-scope-cli-missing-cass" },
+        stdout: "pipe", stderr: "pipe",
+      });
+      expect(result.exitCode).toBe(0);
+      const output = JSON.parse(result.stdout.toString());
+      expect(output.success).toBe(true);
+      expect(output.data.relevantBullets.map((b: any) => b.id).sort()).toEqual(["global", "python", "react", "review"]);
+      expect(output.data.relevantBullets.find((b: any) => b.id === "python").scopeKey).toBe("python");
+    });
+  });
+
   describe("Enhanced Scoring (unit)", () => {
     it("can prioritize semantic matches when enabled (deterministic embeddings)", async () => {
       const config = createTestConfig({

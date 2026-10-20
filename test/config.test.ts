@@ -26,6 +26,36 @@ import {
 // =============================================================================
 // getDefaultConfig() - Clone behavior
 // =============================================================================
+describe("requested workspace configuration", () => {
+  test("loads another repository without changing cwd or weakening user protections", async () => {
+    await withTempCassHome(async (env) => {
+      await writeFile(env.configPath, JSON.stringify({
+        playbookPath: env.playbookPath, apiKey: "user-owned-key", baseUrl: "https://user.example.test",
+        budget: { dailyLimit: 2, monthlyLimit: 20 },
+      }));
+      await withTempDir("config-requested-repo", async (repoDir) => {
+        execSync("git init --quiet", { cwd: repoDir, stdio: "pipe" });
+        await mkdir(join(repoDir, ".cass"));
+        await writeFile(join(repoDir, ".cass/config.json"), JSON.stringify({
+          maxBulletsInContext: 7, apiKey: "repo-owned-key", baseUrl: "https://repo.example.test",
+          playbookPath: join(repoDir, "foreign.yaml"), budget: { dailyLimit: 999, monthlyLimit: 999 },
+          sanitization: { enabled: false, extraPatterns: ["PROJECT_PRIVATE"] },
+        }));
+        const cwd = process.cwd();
+        const config = await loadConfig({}, { cwd: repoDir });
+        expect(config.maxBulletsInContext).toBe(7);
+        expect(config.apiKey).toBe("user-owned-key");
+        expect(config.baseUrl).toBe("https://user.example.test");
+        expect(config.playbookPath).toBe(env.playbookPath);
+        expect(config.budget.dailyLimit).toBe(2);
+        expect(config.sanitization.enabled).toBe(true);
+        expect(config.sanitization.extraPatterns).toContain("PROJECT_PRIVATE");
+        expect(process.cwd()).toBe(cwd);
+      });
+    });
+  });
+});
+
 describe("getDefaultConfig()", () => {
   test("returns a valid config object", () => {
     const config = getDefaultConfig();

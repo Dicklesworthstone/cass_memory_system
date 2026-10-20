@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { getSanitizeConfig } from "./config.js";
 import { withLock } from "./lock.js";
-import { findBullet, loadPlaybook, savePlaybook } from "./playbook.js";
+import { findBullet, loadPlaybook, resolveRepoPlaybookPath, savePlaybook } from "./playbook.js";
 import { sanitize } from "./sanitize.js";
 import { calculateMaturityState } from "./scoring.js";
 import type { Config, DiaryEntry, FeedbackEvent } from "./types.js";
@@ -248,7 +248,8 @@ export async function resolveOutcomeLogPath(): Promise<string> {
 }
 
 async function resolveContextLogPath(): Promise<string> {
-  const repoDir = await resolveRepoDir();
+  const repoPath = await resolveRepoPlaybookPath();
+  const repoDir = repoPath ? path.dirname(repoPath) : null;
   const useRepoLog = repoDir ? await fileExists(repoDir) : false;
   if (useRepoLog) return path.join(repoDir!, "context-log.jsonl");
   return path.join(resolveGlobalDir(), "context-log.jsonl");
@@ -354,13 +355,11 @@ async function resolveTargetPath(
 ): Promise<string | null> {
   // Prefer repo
   if (repoPath && (await fileExists(repoPath))) {
-    try {
-      const repoPlaybook = await loadPlaybook(repoPath);
-      if (findBullet(repoPlaybook, bulletId)) {
-        return repoPath;
-      }
-    } catch {
-      // Ignore load error, fall back
+    // An unreadable repository playbook may shadow this ID globally. Abort
+    // rather than attributing its feedback to a different rule.
+    const repoPlaybook = await loadPlaybook(repoPath);
+    if (findBullet(repoPlaybook, bulletId)) {
+      return repoPath;
     }
   }
   // Fallback to global
@@ -382,8 +381,7 @@ export async function applyOutcomeFeedback(
   const list = Array.isArray(outcomes) ? outcomes : [outcomes];
 
   const globalPath = expandPath(config.playbookPath);
-  const repoDir = await resolveRepoDir();
-  const repoPath = repoDir ? path.join(repoDir, "playbook.yaml") : null;
+  const repoPath = await resolveRepoPlaybookPath();
 
   let applied = 0;
   const missing: string[] = [];

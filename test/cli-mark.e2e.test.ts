@@ -11,7 +11,9 @@ import os from "node:os";
 import path from "node:path";
 import yaml from "yaml";
 
+import { generateContextResult } from "../src/commands/context.js";
 import { markCommand, recordFeedback } from "../src/commands/mark.js";
+import { __test as serveTest } from "../src/commands/serve.js";
 import { createEmptyPlaybook, findBullet, loadPlaybook, savePlaybook } from "../src/playbook.js";
 import { Playbook } from "../src/types.js";
 import { createTestBullet, createTestConfig } from "./helpers/index.js";
@@ -89,6 +91,51 @@ async function setupTestEnvironment() {
   await writeFile(path.join(cassMemoryDir, "config.json"), JSON.stringify(config));
 
   return { dir, home, repo, cassMemoryDir, repoCassDir };
+}
+
+async function withFeedbackWorkspace(
+  run: (env: Awaited<ReturnType<typeof setupTestEnvironment>>) => Promise<void>,
+): Promise<void> {
+  const env = await setupTestEnvironment();
+  const previousCwd = process.cwd();
+  const previousMemoryHome = process.env.CASS_MEMORY_HOME;
+  try {
+    process.env.CASS_MEMORY_HOME = env.cassMemoryDir;
+    process.chdir(env.repo);
+    const config = createTestConfig({
+      playbookPath: path.join(env.cassMemoryDir, "playbook.yaml"),
+      diaryDir: path.join(env.cassMemoryDir, "diary"),
+      cassPath: "/__missing__/cass",
+      semanticSearchEnabled: false,
+    });
+    await writeFile(path.join(env.cassMemoryDir, "config.json"), JSON.stringify(config));
+    await savePlaybook(createEmptyPlaybook(), config.playbookPath);
+    await run(env);
+  } finally {
+    process.chdir(previousCwd);
+    if (previousMemoryHome === undefined) delete process.env.CASS_MEMORY_HOME;
+    else process.env.CASS_MEMORY_HOME = previousMemoryHome;
+  }
+}
+
+function runGit(...args: string[]): void {
+  const result = Bun.spawnSync(["git", ...args], { stdout: "pipe", stderr: "pipe" });
+  if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+}
+
+async function writeRule(playbookPath: string, content: string, id = "shared-rule"): Promise<void> {
+  const playbook = createEmptyPlaybook();
+  playbook.bullets = [createTestBullet({ id, content, scope: "workspace" })];
+  await savePlaybook(playbook, playbookPath);
+}
+
+async function callMcpTool(name: string, args: Record<string, unknown>): Promise<any> {
+  const response = await serveTest.routeRequest({
+    jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args },
+  });
+  expect("error" in response).toBe(false);
+  if ("error" in response) throw new Error(response.error.message);
+  return JSON.parse((response.result as any).content[0].text);
 }
 
 // --- Test Suites ---
@@ -643,5 +690,133 @@ describe("E2E: CLI mark command", () => {
         process.env.HOME = originalHome;
       }
     });
+  });
+});
+
+describe("feedback follows the workspace used for retrieval", () => {
+  it("MCP feedback updates the requested repository and its scoring config, even with colliding IDs", async () => {
+    await withFeedbackWorkspace(async ({ dir, repo, repoCassDir, cassMemoryDir }) => {
+      const requested = path.join(dir, "requested-project");
+      runGit("init", "--quiet", requested);
+      const requestedCass = path.join(requested, ".cass");
+      const requestedPlaybook = path.join(requestedCass, "playbook.yaml");
+      const launchPlaybook = path.join(repoCassDir, "playbook.yaml");
+      const globalPlaybook = path.join(cassMemoryDir, "playbook.yaml");
+      await writeRule(launchPlaybook, "Run migration checks with alpha scripts");
+      await writeRule(requestedPlaybook, "Run migration checks with beta scripts");
+      await writeRule(globalPlaybook, "Run migration checks with unrelated global scripts");
+      await writeFile(path.join(requestedCass, "config.json"), JSON.stringify({
+        schema_version: 1,
+        scoring: { minFeedbackForActive: 1, minHelpfulForProven: 1 },
+      }));
+
+      const context = await callMcpTool("cm_context", {
+        task: "Run migration checks with beta scripts", workspace: requested,
+      });
+      expect(context.relevantBullets.map((b: any) => b.content)).toEqual([
+        "Run migration checks with beta scripts",
+      ]);
+      const feedback = await callMcpTool("cm_feedback", {
+        bulletId: context.relevantBullets[0].id, helpful: true, workspace: requested,
+        session: "/sessions/beta.jsonl",
+      });
+      expect(feedback.success).toBe(true);
+      expect(feedback.state).toBe("proven");
+      const target = (await loadPlaybook(requestedPlaybook)).bullets[0];
+      expect(target.helpfulCount).toBe(1);
+      expect(target.feedbackEvents[0].sessionPath).toBe("/sessions/beta.jsonl");
+      expect((await loadPlaybook(launchPlaybook)).bullets[0].helpfulCount).toBe(0);
+      expect((await loadPlaybook(globalPlaybook)).bullets[0].helpfulCount).toBe(0);
+      expect(process.cwd()).toBe(repo);
+    });
+  });
+
+  it("the CLI accepts a relative --workspace path and updates that repository only", async () => {
+    await withFeedbackWorkspace(async ({ dir, repo, repoCassDir }) => {
+      const requested = path.join(dir, "requested project");
+      runGit("init", "--quiet", requested);
+      const launchPlaybook = path.join(repoCassDir, "playbook.yaml");
+      const requestedPlaybook = path.join(requested, ".cass", "playbook.yaml");
+      await writeRule(launchPlaybook, "Run alpha migration checks");
+      await writeRule(requestedPlaybook, "Run beta migration checks");
+
+      const result = Bun.spawnSync([
+        process.execPath, path.join(import.meta.dir, "..", "src", "cm.ts"),
+        "mark", "shared-rule", "--helpful", "--workspace", path.relative(repo, requested), "--json",
+      ], { cwd: repo, stdout: "pipe", stderr: "pipe" });
+      expect(result.exitCode).toBe(0);
+      const output = JSON.parse(result.stdout.toString());
+      expect(output.success).toBe(true);
+      expect(output.data.bulletId).toBe("shared-rule");
+      expect((await loadPlaybook(requestedPlaybook)).bullets[0].helpfulCount).toBe(1);
+      expect((await loadPlaybook(launchPlaybook)).bullets[0].helpfulCount).toBe(0);
+    });
+  });
+
+  it("does not fall back to the launch repository when a requested workspace lacks the rule", async () => {
+    await withFeedbackWorkspace(async ({ dir, repoCassDir }) => {
+      const requested = path.join(dir, "empty-project");
+      runGit("init", "--quiet", requested);
+      const launchPlaybook = path.join(repoCassDir, "playbook.yaml");
+      await writeRule(launchPlaybook, "Run alpha migration checks", "only-in-launch-repo");
+      await expect(recordFeedback("only-in-launch-repo", { helpful: true, workspace: requested }))
+        .rejects.toThrow("not found");
+      expect((await loadPlaybook(launchPlaybook)).bullets[0].helpfulCount).toBe(0);
+      expect(await exists(path.join(requested, ".cass", "playbook.yaml"))).toBe(false);
+    });
+  });
+
+  for (const localPlaybook of [false, true]) {
+    it(`linked-worktree feedback updates the ${localPlaybook ? "local" : "main"} playbook that supplied context`, async () => {
+      await withFeedbackWorkspace(async ({ dir, repo, repoCassDir, cassMemoryDir }) => {
+        runGit("-C", repo, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+          "commit", "--allow-empty", "--quiet", "-m", "fixture");
+        const linked = path.join(dir, "linked-worktree");
+        runGit("-C", repo, "worktree", "add", "--detach", "--quiet", linked);
+        const mainPlaybook = path.join(repoCassDir, "playbook.yaml");
+        const linkedPlaybook = path.join(linked, ".cass", "playbook.yaml");
+        const globalPlaybook = path.join(cassMemoryDir, "playbook.yaml");
+        await writeRule(mainPlaybook, "Run migration checks with main checkout scripts");
+        await writeRule(globalPlaybook, "Run migration checks with unrelated global scripts");
+        if (localPlaybook) await writeRule(linkedPlaybook, "Run migration checks with linked checkout scripts");
+        process.chdir(linked);
+
+        const expectedContent = localPlaybook
+          ? "Run migration checks with linked checkout scripts"
+          : "Run migration checks with main checkout scripts";
+        const context = await generateContextResult("Run migration checks", { history: 0 });
+        expect(context.result.relevantBullets.map(b => b.content)).toEqual([expectedContent]);
+        await recordFeedback(context.result.relevantBullets[0].id, { helpful: true });
+        expect((await loadPlaybook(localPlaybook ? linkedPlaybook : mainPlaybook)).bullets[0].helpfulCount).toBe(1);
+        expect((await loadPlaybook(globalPlaybook)).bullets[0].helpfulCount).toBe(0);
+        if (localPlaybook) {
+          expect((await loadPlaybook(mainPlaybook)).bullets[0].helpfulCount).toBe(0);
+        } else {
+          expect(await exists(linkedPlaybook)).toBe(false);
+        }
+      });
+    });
+  }
+
+  it("validates workspace before recording feedback through either API", async () => {
+    for (const workspace of ["", " \t ", 42, null]) {
+      await expect(recordFeedback("shared-rule", { helpful: true, workspace: workspace as any }))
+        .rejects.toThrow("workspace");
+      const response = await serveTest.routeRequest({
+        jsonrpc: "2.0", id: 1, method: "tools/call",
+        params: { name: "cm_feedback", arguments: { bulletId: "shared-rule", helpful: true, workspace } },
+      });
+      expect("error" in response).toBe(true);
+      if ("error" in response) expect(response.error.message).toContain("workspace");
+    }
+  });
+
+  it("advertises the feedback workspace argument to MCP clients", async () => {
+    const response = await serveTest.routeRequest({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+    expect("result" in response).toBe(true);
+    if ("result" in response) {
+      const feedback = (response.result as any).tools.find((tool: any) => tool.name === "cm_feedback");
+      expect(feedback.inputSchema.properties.workspace.type).toBe("string");
+    }
   });
 });
