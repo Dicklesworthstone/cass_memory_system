@@ -376,7 +376,7 @@ describe("cm playbook scrub / conflicts human output", () => {
         } finally {
           cap.restore();
         }
-        expect(cap.text()).toContain("No contradicting rules");
+        expect(cap.text()).toContain("No direct rule conflicts detected");
       });
     });
   });

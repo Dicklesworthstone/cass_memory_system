@@ -1328,6 +1328,36 @@ describe("E2E: cm playbook conflicts", () => {
       );
       expect(pair).toBeDefined();
       expect(pair.suggestion).toContain("retire b-yes");
+      expect(pair.suggestion).toContain("Review scope first");
+      expect(pair.evidence).toEqual(expect.objectContaining({
+        kind: "opposite-directives",
+        aClause: expect.any(String),
+        bClause: expect.any(String),
+        action: expect.any(String),
+        condition: null,
+      }));
+    });
+  });
+
+  it("does not report compatible exceptions or related testing instructions as conflicts", async () => {
+    await withTempCassHome(async (env) => {
+      await writeFile(env.playbookPath, yaml.stringify(createTestPlaybook([
+        createTestBullet({ id: "b-expiry", content: "Never cache tokens without expiry" }),
+        createTestBullet({ id: "b-speed", content: "Must cache tokens to improve speed" }),
+        createTestBullet({ id: "b-sanitize", content: "Always sanitize logs before storing" }),
+        createTestBullet({ id: "b-local", content: "Sanitize logs except when running locally" }),
+        createTestBullet({ id: "b-full", content: "When a required full-suite run times out, run the directly changed test file separately" }),
+        createTestBullet({ id: "b-review", content: "When testing uncommitted changes through tools/review/pool.py, supply the edited files with --include" }),
+      ])));
+      const capture = captureConsole();
+      try {
+        await playbookCommand("conflicts", [], { json: true });
+      } finally {
+        capture.restore();
+      }
+      const payload = JSON.parse(capture.logs.join("\n"));
+      expect(payload.data.count).toBe(0);
+      expect(payload.data.conflicts).toEqual([]);
     });
   });
 });
@@ -1403,8 +1433,32 @@ describe("E2E: cm playbook import merges teammates' rules by content", () => {
       expect(result.mergedInto).toEqual([{ importedId: "b-lock2", existingId: "b-lock", how: "similar" }]);
       expect(result.added).toBe(2);
       expect(result.conflicts).toEqual([
-        expect.objectContaining({ importedId: "b-never", existingId: "b-lock" }),
+        expect.objectContaining({
+          importedId: "b-never",
+          existingId: "b-lock",
+          evidence: expect.objectContaining({
+            kind: "opposite-directives",
+            aClause: expect.stringMatching(/never commit/i),
+            bClause: expect.stringMatching(/always commit/i),
+          }),
+        }),
       ]);
+    });
+  });
+
+  it("keeps a complementary requirement separate without reporting an import conflict", async () => {
+    await withTempCassHome(async (env) => {
+      await writeFile(env.playbookPath, yaml.stringify(createTestPlaybook([
+        createTestBullet({ id: "b-cache", content: "Must cache tokens to improve speed" }),
+      ])));
+      const result = await importJson(env, {
+        bullets: [createTestBullet({ id: "b-expiry", content: "Never cache tokens without expiry" })],
+      });
+      expect(result.added).toBe(1);
+      expect(result.merged).toBe(0);
+      expect(result.conflicts).toEqual([]);
+      const saved = yaml.parse(await readFile(env.playbookPath, "utf-8"));
+      expect(saved.bullets.map((b: any) => b.id)).toEqual(["b-cache", "b-expiry"]);
     });
   });
 });

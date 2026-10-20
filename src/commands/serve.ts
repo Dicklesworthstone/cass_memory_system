@@ -418,7 +418,7 @@ const TOOL_DEFS = [
   },
   {
     name: "cm_conflicts",
-    description: "List pairs of active playbook rules that contradict each other",
+    description: "List directly opposing instructions in active playbook rules, with evidence for manual scope review",
     inputSchema: {
       type: "object",
       properties: {

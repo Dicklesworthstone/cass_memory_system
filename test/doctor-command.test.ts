@@ -8,7 +8,7 @@ import path from "node:path";
 import yaml from "yaml";
 import { doctorCommand } from "../src/commands/doctor.js";
 import { createTestConfig } from "./helpers/factories.js";
-import { type TestEnv, withTempCassHome } from "./helpers/temp.js";
+import { makeCassStub, type TestEnv, withTempCassHome } from "./helpers/temp.js";
 
 // --- Test Helpers ---
 
@@ -1232,6 +1232,11 @@ describe("computeMemoryQualityChecks", () => {
       const conflict = checks.find((c) => c.item === "Conflicting rules")!;
       expect(conflict.status).toBe("warn");
       expect((conflict.details as any).pairs).toEqual([["b-yes", "b-no"]]);
+      expect((conflict.details as any).evidence).toEqual([
+        expect.objectContaining({ kind: "opposite-directives", condition: null }),
+      ]);
+      expect(conflict.message).toContain("directly opposing instructions");
+      expect(conflict.message).toContain("Review their scope");
       const self = checks.find((c) => c.item === "Self-generated feedback")!;
       expect(self.status).toBe("warn");
       expect((self.details as any).events).toBe(1);
@@ -1244,6 +1249,114 @@ describe("computeMemoryQualityChecks", () => {
       const checks = await checksFor(env, [createTestBullet({ content: "Prefer small pull requests" })]);
       expect(checks.find((c) => c.item === "Conflicting rules")!.status).toBe("pass");
       expect(checks.find((c) => c.item === "Self-generated feedback")!.status).toBe("pass");
+    });
+  });
+
+  test("does not degrade memory quality for issue #95 excerpts or compatible conditional guidance", async () => {
+    await withTempCassHome(async (env) => {
+      const { createTestBullet } = await import("./helpers/factories.js");
+      // The issue publishes abbreviated excerpts, not the complete original rules.
+      const contents = [
+        "When reviewing whether a change caused a defect, reproduce the defect against the base revision too...",
+        "Before attributing or excluding responsibility for a nightly regression, establish the actual last-green and first-red revisions...",
+        "When a required full-suite run times out, run the directly changed test file separately...",
+        "When testing uncommitted changes through tools/review/pool.py, supply the edited files with --include...",
+        "When converting exact or bounded values to float, re-check finiteness after rounding...",
+        "Apply the review contract's blocking threshold explicitly...",
+        "Never cache tokens without expiry",
+        "Must cache tokens to improve speed",
+        "Always sanitize logs before storing",
+        "Sanitize logs except when running locally",
+      ];
+      const checks = await checksFor(
+        env,
+        contents.map((content, i) => createTestBullet({ id: `b-compatible-${i}`, content, state: "draft" })),
+      );
+      const conflict = checks.find((c) => c.item === "Conflicting rules")!;
+      expect(conflict.status).toBe("pass");
+      expect(conflict.message).toBe("No direct rule conflicts detected among 10 active rule(s)");
+      expect(conflict.details).toEqual(expect.objectContaining({ count: 0, pairs: [], evidence: [] }));
+    });
+  });
+
+  test("excludes retired and deprecated rules from conflict checks and the active count", async () => {
+    await withTempCassHome(async (env) => {
+      const { createTestBullet } = await import("./helpers/factories.js");
+      const checks = await checksFor(env, [
+        createTestBullet({ id: "b-active", content: "Always commit generated lockfiles" }),
+        createTestBullet({ id: "b-retired", content: "Never commit generated lockfiles", state: "retired" }),
+        createTestBullet({ id: "b-deprecated", content: "Never commit generated lockfiles", deprecated: true }),
+        createTestBullet({ id: "b-mature-deprecated", content: "Never commit generated lockfiles", maturity: "deprecated" }),
+      ]);
+      const conflict = checks.find((c) => c.item === "Conflicting rules")!;
+      expect(conflict.status).toBe("pass");
+      expect(conflict.message).toContain("among 1 active rule(s)");
+    });
+  });
+
+  test("does not warn about opposing conventions belonging to different workspaces", async () => {
+    await withTempCassHome(async (env) => {
+      const { createTestBullet } = await import("./helpers/factories.js");
+      const a = createTestBullet({
+        id: "b-repo-a", content: "Always commit generated lockfiles",
+        scope: "workspace", workspace: "/scope-a",
+      });
+      const b = createTestBullet({
+        id: "b-repo-b", content: "Never commit generated lockfiles",
+        scope: "workspace", workspace: "/scope-b",
+      });
+      const separate = await checksFor(env, [a, b]);
+      expect(separate.find((c) => c.item === "Conflicting rules")!.status).toBe("pass");
+      const same = await checksFor(env, [a, { ...b, workspace: a.workspace }]);
+      expect(same.find((c) => c.item === "Conflicting rules")!.status).toBe("warn");
+    });
+  });
+
+  test("doctor stays healthy for compatible guidance, degrades for direct opposition, and preserves real failures", async () => {
+    await withEnvAsync({ CASS_PATH: undefined, CASS_MEMORY_HOME: undefined, XDG_DATA_HOME: undefined }, async () => {
+      await withTempCassHome(async (env) => {
+        const { createTestBullet, createTestPlaybook } = await import("./helpers/factories.js");
+        const cassPath = await makeCassStub(env.home, { exitCode: 0 });
+        const initialized = Bun.spawnSync(["git", "init", "--initial-branch=main", env.home]);
+        expect(initialized.exitCode).toBe(0);
+        const repoCass = path.join(env.home, ".cass");
+        await mkdir(repoCass);
+        await writeFile(path.join(repoCass, "playbook.yaml"), yaml.stringify(createTestPlaybook()));
+        await writeFile(path.join(repoCass, "blocked.log"), "");
+        await writeFile(env.configPath, JSON.stringify({ cassPath, provider: "ollama", embeddingModel: "none" }));
+
+        const compatible = [
+          createTestBullet({ id: "b-expiry", content: "Never cache tokens without expiry", state: "draft" }),
+          createTestBullet({ id: "b-cache", content: "Must cache tokens to improve speed", state: "draft" }),
+        ];
+        await writeFile(env.playbookPath, yaml.stringify(createTestPlaybook(compatible)));
+        await withCwd(env.home, async () => {
+          const run = async () => {
+            const { output } = await captureConsoleLog(() => doctorCommand({ json: true }));
+            return JSON.parse(output).data;
+          };
+          const healthy = await run();
+          expect(healthy.overallStatus).toBe("healthy");
+          expect(healthy.checks.every((c: any) => c.status === "pass")).toBe(true);
+          expect(healthy.recommendedActions.some((a: any) => a.command?.endsWith("playbook conflicts"))).toBe(false);
+
+          await writeFile(env.playbookPath, yaml.stringify(createTestPlaybook([
+            ...compatible,
+            createTestBullet({ id: "b-yes", content: "Always commit generated lockfiles" }),
+            createTestBullet({ id: "b-no", content: "Never commit generated lockfiles" }),
+          ])));
+          const degraded = await run();
+          expect(degraded.overallStatus).toBe("degraded");
+          expect(degraded.checks.filter((c: any) => c.status !== "pass").map((c: any) => c.item)).toEqual(["Conflicting rules"]);
+          expect(degraded.recommendedActions.some((a: any) => a.command?.endsWith("playbook conflicts"))).toBe(true);
+
+          // A broken playbook remains a genuine health failure, independently of this warning.
+          await writeFile(env.playbookPath, "bullets: [unterminated\n");
+          const unhealthy = await run();
+          expect(unhealthy.overallStatus).toBe("unhealthy");
+          expect(unhealthy.checks.find((c: any) => c.category === "Playbook").status).toBe("fail");
+        });
+      });
     });
   });
 });

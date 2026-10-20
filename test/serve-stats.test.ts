@@ -1053,6 +1053,29 @@ describe("serve: cm_why and cm_conflicts tools", () => {
       expect(
         result.conflicts.some((c: any) => [c.a.id, c.b.id].sort().join() === "b-a,b-b"),
       ).toBe(true);
+      const pair = result.conflicts.find((c: any) => [c.a.id, c.b.id].sort().join() === "b-a,b-b");
+      expect(pair.evidence).toEqual(expect.objectContaining({
+        kind: "opposite-directives",
+        aClause: expect.any(String),
+        bClause: expect.any(String),
+        action: expect.any(String),
+        condition: null,
+      }));
+    });
+  });
+
+  test("cm_conflicts excludes compatible conditional requirements", async () => {
+    await withTempCassHome(async (env) => {
+      writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([
+        createTestBullet({ id: "b-expiry", content: "Never cache tokens without expiry" }),
+        createTestBullet({ id: "b-speed", content: "Must cache tokens to improve speed" }),
+        createTestBullet({ id: "b-logs", content: "Always sanitize logs before storing" }),
+        createTestBullet({ id: "b-local", content: "Sanitize logs except when running locally" }),
+      ])));
+      const res = await call("cm_conflicts", {});
+      const result = parseToolResult<any>((res as any).result);
+      expect(result.count).toBe(0);
+      expect(result.conflicts).toEqual([]);
     });
   });
 });

@@ -352,9 +352,9 @@ function buildRecommendedActions(params: {
   );
   if (conflictCheck?.status === "warn") {
     actions.push({
-      label: "Resolve contradicting rules",
+      label: "Review opposing rule instructions",
       command: `${cli} playbook conflicts`,
-      reason: "Contradicting rules can hand an agent opposing advice for the same task.",
+      reason: "Directly opposing instructions were detected. Check their scope before changing either rule.",
       urgency: "medium",
     });
   }
@@ -928,7 +928,7 @@ export async function computeGuardChecks(projectDir: string): Promise<HealthChec
 }
 
 /**
- * Contradicting rules, feedback learned from cm's own LLM subprocess calls
+ * Directly opposing instructions, feedback learned from cm's own LLM subprocess calls
  * (#76/#77), and whether finished sessions are reflected automatically.
  */
 export async function computeMemoryQualityChecks(config: Config): Promise<HealthCheck[]> {
@@ -941,7 +941,9 @@ export async function computeMemoryQualityChecks(config: Config): Promise<Health
     // Playbook problems are reported by the Playbook checks above.
     return checks;
   }
-  const active = bullets.filter((b) => !b.deprecated && b.maturity !== "deprecated");
+  const active = bullets.filter(
+    (b) => !b.deprecated && b.maturity !== "deprecated" && b.state !== "retired",
+  );
 
   const conflicts = findBulletConflicts(active);
   checks.push({
@@ -950,11 +952,13 @@ export async function computeMemoryQualityChecks(config: Config): Promise<Health
     status: conflicts.length > 0 ? "warn" : "pass",
     message:
       conflicts.length > 0
-        ? `${conflicts.length} pair(s) of active rules contradict each other; agents may get opposing advice. Review with '${cli} playbook conflicts'.`
-        : `No contradicting rules among ${active.length} active rule(s)`,
+        ? `${conflicts.length} pair(s) have directly opposing instructions. Review their scope with '${cli} playbook conflicts' before changing either rule.`
+        : `No direct rule conflicts detected among ${active.length} active rule(s)`,
     details: {
       count: conflicts.length,
       pairs: conflicts.slice(0, 10).map((c) => [c.a.id, c.b.id]),
+      evidence: conflicts.slice(0, 10).map((c) => c.evidence),
+      method: "conservative text matching; unsupported wording is not assessed",
     },
   });
 

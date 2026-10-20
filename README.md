@@ -939,10 +939,10 @@ cm playbook export > playbook-backup.yaml
 
 # Import playbook from file. Rules matching an existing one by text (exact,
 # or near-identical wording) merge their feedback into it instead of becoming
-# duplicates; contradictions with existing rules are reported.
+# duplicates; direct instruction conflicts are reported for review.
 cm playbook import shared-playbook.yaml
 
-# Find rules that contradict each other (with a keep/retire suggestion)
+# Review directly opposing instructions and their matched clause evidence
 cm playbook conflicts --json
 
 # Strip feedback that came from cm's own LLM subprocess transcripts (or any
@@ -1795,7 +1795,7 @@ When `MCP_HTTP_TOKEN` is set, clients must send either `Authorization: Bearer <t
 | `memory_search` | Search playbook bullets and/or cass history | `query: string, scope?: "playbook" \| "cass" \| "both", limit?: number, days?: number` |
 | `memory_reflect` | Trigger reflection on recent sessions | `days?: number, maxSessions?: number, dryRun?: boolean, workspace?: string, agent?: string, session?: string` |
 | `cm_why` | Explain a rule: reasoning, sources, feedback, and cass history found by its search pointer | `bulletId: string, history?: boolean, verbose?: boolean` |
-| `cm_conflicts` | List pairs of active rules that contradict each other | `category?: string, workspace?: string` |
+| `cm_conflicts` | List directly opposing instructions with clause evidence for scope review | `category?: string, workspace?: string` |
 
 ### Resources Exposed
 
@@ -2060,56 +2060,41 @@ function normalize(content: string): string {
 
 ### Conflict Detection
 
-Finding contradicting rules:
+Conflict reporting uses conservative, deterministic instruction matching in
+`src/curate.ts`. It requires opposing guidance about the same action and object,
+with matching actors and overlapping conditions and rule scopes. Shared topic
+words, a negative word in an explanation, or an exception marker alone are not
+evidence of a contradiction. This works offline without an LLM or embedding model.
+
+For example, **"Always commit generated lockfiles"** and **"Never commit generated
+lockfiles"** are reported. **"Never cache tokens without expiry"** and **"Must
+cache tokens to improve speed"** are compatible: caching with an expiry satisfies
+both. An `only if` prerequisite does not by itself require taking the action, and
+an `unless` or `except` clause does not by itself recommend the opposite action.
+Quoted examples and nested parenthetical text are kept separate from instructions.
 
 ```typescript
-function findConflicts(playbook: Playbook, newRule: ProposedRule): PlaybookBullet[] {
-  const conflicts: PlaybookBullet[] = [];
+import { detectConflicts, findBulletConflicts } from "./src/curate.js";
 
-  // Check for direct contradictions
-  const newNormalized = normalize(newRule.content);
-  const newNegated = negateRule(newNormalized);
-
-  for (const bullet of playbook.bullets.filter(b => b.state === 'active')) {
-    const bulletNormalized = normalize(bullet.content);
-
-    // Check if new rule is negation of existing
-    if (bulletNormalized === newNegated || normalize(negateRule(bullet.content)) === newNormalized) {
-      conflicts.push(bullet);
-      continue;
-    }
-
-    // Semantic contradiction check (same resolved posture as above)
-    if (semanticEnabled) {
-      const contradictionScore = await checkSemanticContradiction(newRule, bullet);
-      if (contradictionScore > 0.8) {
-        conflicts.push(bullet);
-      }
-    }
-  }
-
-  return conflicts;
-}
-
-function negateRule(rule: string): string {
-  const negations: [RegExp, string][] = [
-    [/^always /i, 'never '],
-    [/^never /i, 'always '],
-    [/^do /i, "don't "],
-    [/^don't /i, 'do '],
-    [/^use /i, "don't use "],
-    [/^avoid /i, 'use '],
-  ];
-
-  for (const [pattern, replacement] of negations) {
-    if (pattern.test(rule)) {
-      return rule.replace(pattern, replacement);
-    }
-  }
-
-  return `don't ${rule}`;
-}
+const pairs = findBulletConflicts(playbook.bullets);
+const conflictsForNewRule = detectConflicts(newRule.content, playbook.bullets, newRule);
 ```
+
+`cm playbook conflicts --json`, import conflict reports, and MCP `cm_conflicts`
+include `evidence` with the matched `aClause`, `bClause`, normalized `action`, and
+`condition`. Review the full rules and their applicability before retiring either
+one. Curation still accepts opposing rules and reports them for review; it does
+not automatically delete or choose between them. Deprecated and retired rules
+are excluded, while draft candidates remain eligible for checking.
+
+Only directly opposing matches produce the doctor conflict warning that can make
+health `degraded`. **"No direct rule conflicts detected" does not certify that
+every rule is consistent**: unsupported wording, uncertain conditions, and
+workspace scopes without resolvable paths are not assessed as contradictions.
+Duplicate protection is deliberately more cautious than conflict reporting, so
+differently conditioned or qualified rules can remain separate even when their
+embeddings are very similar. The scan indexes actions before comparing opposing
+clauses to avoid an all-pairs topic scan on large, mostly compatible playbooks.
 
 ### cass Integration
 

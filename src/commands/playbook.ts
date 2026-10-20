@@ -4,7 +4,12 @@ import chalk from "chalk";
 import yaml from "yaml";
 import { z } from "zod";
 import { loadConfig } from "../config.js";
-import { directivesDisagree, findBulletConflicts, splitDirectiveClauses } from "../curate.js";
+import {
+  type BulletConflictPair,
+  directivesDisagree,
+  findBulletConflicts,
+  splitDirectiveClauses,
+} from "../curate.js";
 import { withLock } from "../lock.js";
 import {
   formatKv,
@@ -659,7 +664,13 @@ export async function playbookCommand(
     let feedbackMerged = 0;
     const mergedInto: Array<{ importedId: string; existingId: string; how: "exact" | "similar" }> =
       [];
-    let conflicts: Array<{ importedId: string; existingId: string; reason: string }> = [];
+    let conflicts: Array<{
+      importedId: string;
+      existingId: string;
+      reason: string;
+      /** Clause a is the imported rule; clause b is the existing rule. */
+      evidence: BulletConflictPair["evidence"];
+    }> = [];
 
     // Merge with existing playbook. Beyond ids, rules are matched by content
     // (exact, or word overlap >= dedupSimilarityThreshold) so a teammate's
@@ -739,8 +750,17 @@ export async function playbookCommand(
         .filter((p) => addedIds.has(p.a.id) !== addedIds.has(p.b.id))
         .map((p) =>
           addedIds.has(p.a.id)
-            ? { importedId: p.a.id, existingId: p.b.id, reason: p.reason }
-            : { importedId: p.b.id, existingId: p.a.id, reason: p.reason },
+            ? { importedId: p.a.id, existingId: p.b.id, reason: p.reason, evidence: p.evidence }
+            : {
+                importedId: p.b.id,
+                existingId: p.a.id,
+                reason: p.reason,
+                evidence: {
+                  ...p.evidence,
+                  aClause: p.evidence.bClause,
+                  bClause: p.evidence.aClause,
+                },
+              },
         );
 
       mergeProgress.update(importedBullets.length, "Saving playbook...");
@@ -1520,12 +1540,13 @@ async function handleConflicts(
       a,
       b,
       reason: p.reason,
+      evidence: p.evidence,
       ...(weaker
         ? {
-            suggestion: `Keep ${weaker === a ? b.id : a.id} (better supported); retire ${weaker.id}: ${cli} playbook remove ${weaker.id} --reason "Contradicts ${weaker === a ? b.id : a.id}"`,
+            suggestion: `Review scope first. If both rules apply to the same situation, consider keeping ${weaker === a ? b.id : a.id} (better supported) and retire ${weaker.id}: ${cli} playbook remove ${weaker.id} --reason "Contradicts ${weaker === a ? b.id : a.id}"`,
           }
         : {
-            suggestion: `Equal support: decide which applies, or merge them into one rule with an explicit exception`,
+            suggestion: `Equal support: review scope and decide which applies, or rewrite them with explicit conditions`,
           }),
     };
   });
@@ -1543,9 +1564,10 @@ async function handleConflicts(
   console.log(chalk.bold(`PLAYBOOK CONFLICTS (${conflicts.length})`));
   console.log(chalk.gray(formatRule("─", { maxWidth: style.width })));
   if (conflicts.length === 0) {
-    console.log(chalk.green(`No contradicting rules among ${bullets.length} active bullet(s).`));
+    console.log(chalk.green(`No direct rule conflicts detected among ${bullets.length} active bullet(s).`));
     return;
   }
+  console.log(chalk.gray("Directly opposing instructions detected; review each pair in context before changing rules."));
   const width = Math.max(40, style.width - 6);
   for (const c of conflicts) {
     console.log(chalk.yellow(c.reason));
