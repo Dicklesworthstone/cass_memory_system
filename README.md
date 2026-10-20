@@ -745,22 +745,26 @@ curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/cass_memory_syst
 ```bash
 # Full options
 install.sh [--version vX.Y.Z] [--dest DIR] [--system] [--easy-mode] [--verify]
-           [--from-source] [--quiet]
+           [--from-source] [--artifact-url URL] [--checksum HEX]
+           [--checksum-url URL] [--quiet]
 
 # Examples
 install.sh --version v0.2.2 --verify    # Specific version
 install.sh --system --verify             # Install to /usr/local/bin (requires sudo)
-install.sh --from-source                 # Build from source (requires bun)
+install.sh --from-source --version v0.5.0 # Build that release from source (requires bun)
 ```
 
 | Flag | Effect |
 |------|--------|
-| `--version` | Install specific version (default: latest) |
+| `--version` | Install a specific release, including source builds (default: latest) |
 | `--dest DIR` | Install to custom directory (default: ~/.local/bin) |
 | `--system` | Install to /usr/local/bin (requires sudo) |
 | `--easy-mode` | Non-interactive, auto-configure PATH |
 | `--verify` | Run self-test after install |
-| `--from-source` | Build from source instead of downloading binary |
+| `--from-source` | Build the selected release with its frozen Bun lockfile |
+| `--artifact-url URL` | Download this exact custom artifact; failure does not fall back to repository source |
+| `--checksum HEX` | Require this 64-character SHA256 digest before installing a downloaded artifact |
+| `--checksum-url URL` | Require a valid SHA256 digest from this URL and verify the downloaded artifact |
 | `--quiet` | Suppress output |
 
 ### Installer Robustness
@@ -768,10 +772,12 @@ install.sh --from-source                 # Build from source (requires bun)
 The installer is designed for reliability:
 
 - **No API rate limits**: Uses GitHub redirect detection instead of API calls, avoiding the 60 requests/hour unauthenticated limit
-- **Checksum verification**: Downloads `.sha256` files and verifies binary integrity before installation
+- **Checksum verification**: Downloads release `.sha256` sidecars. An explicit checksum or checksum URL is mandatory: missing data, malformed digests, missing verification tools, and mismatches stop installation. Without an explicit requirement, unavailable sidecars or tools retain the existing warning-only behavior.
 - **Concurrent install protection**: Lock file prevents multiple installers from running simultaneously
-- **Graceful fallbacks**: If binary download fails, automatically falls back to building from source
+- **Version-preserving fallbacks**: If a standard release binary cannot be used, builds the same selected release from source. A missing source ref fails instead of substituting `main`.
 - **Cross-platform checksums**: Uses `sha256sum` on Linux, `shasum -a 256` on macOS
+
+Source builds cannot satisfy a downloaded binary's checksum or an explicit artifact URL, so combining those requirements with source mode (including automatic musl fallback) fails before building. The `ARTIFACT_URL`, `CHECKSUM`, and `CHECKSUM_URL` environment variables enforce the same requirements as their command-line options.
 
 ### From Source
 

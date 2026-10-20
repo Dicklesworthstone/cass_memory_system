@@ -121,12 +121,12 @@ Usage: install.sh [--version vX.Y.Z] [--dest DIR] [--system] [--easy-mode] [--ve
                   [--artifact-url URL] [--checksum HEX] [--checksum-url URL] [--quiet]
 
 Options:
-  --version vX.Y.Z    Install specific version (default: latest)
+  --version vX.Y.Z    Install this release, including source builds (default: latest)
   --dest DIR          Install to DIR (default: ~/.local/bin)
   --system            Install to /usr/local/bin (requires sudo)
   --easy-mode         Non-interactive, auto-configure PATH
   --verify            Run self-test after install
-  --from-source       Build from source (requires bun)
+  --from-source       Build the selected release from source (requires bun)
   --artifact-url URL  Use custom artifact URL
   --checksum HEX      Expected SHA256 checksum
   --checksum-url URL  URL to fetch checksum from
@@ -141,16 +141,23 @@ Examples:
 EOFU
 }
 
+require_value() {
+  if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+    err "Missing value for $1"
+    exit 1
+  fi
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
-    --version) VERSION="$2"; shift 2;;
-    --dest) DEST="$2"; shift 2;;
+    --version) require_value "$@"; VERSION="$2"; shift 2;;
+    --dest) require_value "$@"; DEST="$2"; shift 2;;
     --system) SYSTEM=1; DEST="/usr/local/bin"; shift;;
     --easy-mode) EASY=1; shift;;
     --verify) VERIFY=1; shift;;
-    --artifact-url) ARTIFACT_URL="$2"; shift 2;;
-    --checksum) CHECKSUM="$2"; shift 2;;
-    --checksum-url) CHECKSUM_URL="$2"; shift 2;;
+    --artifact-url) require_value "$@"; ARTIFACT_URL="$2"; shift 2;;
+    --checksum) require_value "$@"; CHECKSUM="$2"; shift 2;;
+    --checksum-url) require_value "$@"; CHECKSUM_URL="$2"; shift 2;;
     --from-source) FROM_SOURCE=1; shift;;
     --quiet|-q) QUIET=1; shift;;
     -h|--help) usage; exit 0;;
@@ -158,7 +165,17 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-resolve_version
+# Remember explicit integrity requirements before deriving a release sidecar URL.
+# CLI and environment options have the same semantics.
+CHECKSUM_REQUIRED=0
+if [ -n "$CHECKSUM" ] || [ -n "$CHECKSUM_URL" ]; then CHECKSUM_REQUIRED=1; fi
+if [ -n "$CHECKSUM" ] && ! [[ "$CHECKSUM" =~ ^[[:xdigit:]]{64}$ ]]; then
+  err "Expected a single 64-character SHA256 checksum"
+  exit 1
+fi
+
+# Custom artifacts do not depend on the repository's latest release.
+if [ -z "$ARTIFACT_URL" ]; then resolve_version; fi
 
 # Create destination directory (use sudo for system installs)
 if [ "$SYSTEM" -eq 1 ]; then
@@ -247,16 +264,24 @@ trap cleanup EXIT
 if [ "$FROM_SOURCE" -eq 0 ]; then
   info "Downloading $URL"
   if ! curl -fsSL "$URL" -o "$TMP/$ARTIFACT"; then
+    if [ -n "$ARTIFACT_URL" ] || [ "$CHECKSUM_REQUIRED" -eq 1 ]; then
+      err "Artifact download failed; cannot replace an explicit artifact or checksum with a source build"
+      exit 1
+    fi
     warn "Artifact download failed; falling back to build-from-source"
     FROM_SOURCE=1
   fi
 fi
 
 if [ "$FROM_SOURCE" -eq 1 ]; then
-  info "Building from source (requires git, bun)"
+  if [ -n "$ARTIFACT_URL" ] || [ "$CHECKSUM_REQUIRED" -eq 1 ]; then
+    err "Source builds cannot satisfy --artifact-url, --checksum, or --checksum-url; binary checksums apply only to downloaded artifacts"
+    exit 1
+  fi
+  info "Building release $VERSION from source (requires git, bun; release binary checksums do not apply)"
   ensure_bun || { err "Bun required for source build"; exit 1; }
-  git clone --depth 1 "https://github.com/${OWNER}/${REPO}.git" "$TMP/src"
-  (cd "$TMP/src" && bun install && bun run build)
+  git clone --depth 1 --single-branch --branch "$VERSION" "https://github.com/${OWNER}/${REPO}.git" "$TMP/src"
+  (cd "$TMP/src" && bun install --frozen-lockfile && bun run build)
   BIN="$TMP/src/dist/cass-memory"
   [ -x "$BIN" ] || { err "Build failed"; exit 1; }
   if [ "$SYSTEM" -eq 1 ]; then
@@ -283,11 +308,18 @@ if [ -z "$CHECKSUM" ]; then
   info "Fetching checksum from ${CHECKSUM_URL}"
   CHECKSUM_FILE="$TMP/checksum.sha256"
   if curl -fsSL "$CHECKSUM_URL" -o "$CHECKSUM_FILE" 2>/dev/null; then
-    CHECKSUM=$(awk '{print $1}' "$CHECKSUM_FILE")
+    CHECKSUM=$(awk 'NF {print $1}' "$CHECKSUM_FILE")
+  elif [ "$CHECKSUM_REQUIRED" -eq 1 ]; then
+    err "Could not download the requested checksum from $CHECKSUM_URL"
+    exit 1
   fi
 fi
 
 if [ -n "$CHECKSUM" ]; then
+  if ! [[ "$CHECKSUM" =~ ^[[:xdigit:]]{64}$ ]]; then
+    err "Expected a single 64-character SHA256 checksum"
+    exit 1
+  fi
   # Use shasum on macOS, sha256sum on Linux
   if command -v sha256sum >/dev/null 2>&1; then
     echo "$CHECKSUM  $TMP/$ARTIFACT" | sha256sum -c - || { err "Checksum mismatch"; exit 1; }
@@ -296,9 +328,17 @@ if [ -n "$CHECKSUM" ]; then
     echo "$CHECKSUM  $TMP/$ARTIFACT" | shasum -a 256 -c - || { err "Checksum mismatch"; exit 1; }
     ok "Checksum verified"
   else
+    if [ "$CHECKSUM_REQUIRED" -eq 1 ]; then
+      err "Cannot verify the requested checksum: install sha256sum or shasum"
+      exit 1
+    fi
     warn "No sha256 tool found; skipping checksum verification"
   fi
 else
+  if [ "$CHECKSUM_REQUIRED" -eq 1 ]; then
+    err "The requested checksum file did not contain a SHA256 checksum"
+    exit 1
+  fi
   warn "No checksum available; skipping verification"
 fi
 
