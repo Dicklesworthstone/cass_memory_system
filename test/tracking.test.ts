@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import crypto from "node:crypto";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import { join, resolve } from "node:path";
 import { getProcessedLogPath, ProcessedLog } from "../src/tracking.js";
@@ -315,6 +315,170 @@ describe("ProcessedLog - Save", () => {
       const content = await readFile(logPath, "utf-8");
       expect(content).not.toContain("old content");
       expect(content).toContain("/new/session.jsonl");
+    });
+  });
+});
+
+describe("ProcessedLog - durable outcome recovery", () => {
+  const pendingOutcome = {
+    id: "outcome-recovery-test",
+    sessionId: "/sessions/queued.jsonl",
+    outcome: "success" as const,
+    rulesUsed: ["b-recover"],
+    recordedAt: "2026-01-01T00:00:00.000Z",
+    workspace: "/projects/original",
+    path: "/projects/original/.cass/outcomes.jsonl",
+    ruleTargets: [{ ruleId: "b-recover", playbookPath: "/projects/original/.cass/playbook.yaml" }],
+  };
+  const queuedEntry = {
+    sessionPath: pendingOutcome.sessionId,
+    processedAt: pendingOutcome.recordedAt,
+    deltasGenerated: 0,
+    recordCount: 2,
+    pendingOutcomes: [pendingOutcome],
+  };
+
+  it("retains entries when appending after save", async () => {
+    await withTempDir("tracking-save-append", async (tempDir) => {
+      const logPath = join(tempDir, "processed.log");
+      const log = new ProcessedLog(logPath);
+      log.add({ sessionPath: "/sessions/first.jsonl", processedAt: pendingOutcome.recordedAt, deltasGenerated: 0 });
+      await log.save();
+      await log.append(queuedEntry);
+
+      const reloaded = new ProcessedLog(logPath);
+      await reloaded.load();
+      expect(reloaded.has("/sessions/first.jsonl")).toBe(true);
+      expect(reloaded.get(queuedEntry.sessionPath)).toEqual(queuedEntry);
+    });
+  });
+
+  it.each(["complete legacy entry", "interrupted tail"])("separates a new recovery record from an unterminated %s", async (kind) => {
+    await withTempDir("tracking-tail-recovery", async (tempDir) => {
+      const logPath = join(tempDir, "processed.log");
+      const first = { sessionPath: "/sessions/earlier.jsonl", processedAt: pendingOutcome.recordedAt, deltasGenerated: 0 };
+      await writeFile(logPath, kind === "interrupted tail" ? '{"sessionPath":"/sessions/truncated' : JSON.stringify(first));
+      await new ProcessedLog(logPath).append(queuedEntry);
+
+      const reloaded = new ProcessedLog(logPath);
+      await reloaded.load();
+      expect(reloaded.get(queuedEntry.sessionPath)).toEqual(queuedEntry);
+      if (kind === "complete legacy entry") expect(reloaded.has(first.sessionPath)).toBe(true);
+    });
+  });
+
+  it("does not mark an entry processed in memory when its append fails", async () => {
+    await withTempDir("tracking-failed-append", async (tempDir) => {
+      const logPath = join(tempDir, "blocked.log");
+      await mkdir(logPath);
+      const log = new ProcessedLog(logPath);
+      await expect(log.append(queuedEntry)).rejects.toThrow();
+      expect(log.has(queuedEntry.sessionPath)).toBe(false);
+      expect(log.getPendingOutcomeEntries()).toEqual([]);
+    });
+  });
+
+  it("does not acknowledge pending work in memory when its append fails", async () => {
+    await withTempDir("tracking-failed-ack", async (tempDir) => {
+      const logPath = join(tempDir, "processed.log");
+      const log = new ProcessedLog(logPath);
+      await log.append(queuedEntry);
+      await rename(logPath, `${logPath}.preserved`);
+      await mkdir(logPath);
+
+      await expect(log.acknowledgeOutcomes([{ sessionPath: queuedEntry.sessionPath, outcomeIds: [pendingOutcome.id] }])).rejects.toThrow();
+      expect(log.getPendingOutcomeEntries()).toEqual([queuedEntry]);
+    });
+  });
+
+  it("retains recovery data for failed sessions and clears only acknowledged records", async () => {
+    await withTempDir("tracking-pending-roundtrip", async (tempDir) => {
+      const logPath = join(tempDir, "processed.log");
+      await new ProcessedLog(logPath).append({ ...queuedEntry, status: "failed", failures: 1 });
+      const loaded = new ProcessedLog(logPath);
+      await loaded.load();
+      expect(loaded.has(queuedEntry.sessionPath)).toBe(false);
+      expect(loaded.getPendingOutcomeEntries()[0]?.pendingOutcomes).toEqual([pendingOutcome]);
+      await loaded.acknowledgeOutcomes([{ sessionPath: queuedEntry.sessionPath, outcomeIds: [pendingOutcome.id] }]);
+
+      const acknowledged = new ProcessedLog(logPath);
+      await acknowledged.load();
+      expect(acknowledged.getPendingOutcomeEntries()).toEqual([]);
+      expect(acknowledged.get(queuedEntry.sessionPath)?.recordCount).toBe(2);
+    });
+  });
+
+  it("reports invalid pending records instead of silently losing recovery work", async () => {
+    await withTempDir("tracking-invalid-recovery", async (tempDir) => {
+      const logPath = join(tempDir, "processed.log");
+      await writeFile(logPath, JSON.stringify({ ...queuedEntry, pendingOutcomes: [{ id: "truncated-record" }] }) + "\n");
+      await expect(new ProcessedLog(logPath).load()).rejects.toThrow("invalid pending outcomes");
+    });
+  });
+
+  it("reports a processed-log read failure instead of treating its recovery state as empty", async () => {
+    await withTempDir("tracking-unreadable-recovery", async (tempDir) => {
+      const logPath = join(tempDir, "processed.log");
+      await mkdir(logPath);
+      await expect(new ProcessedLog(logPath).load()).rejects.toThrow();
+    });
+  });
+
+  it.each([undefined, 42, "   "])("reports a pending queue with invalid session owner %s instead of discarding it", async (sessionPath) => {
+    await withTempDir("tracking-invalid-pending-owner", async (tempDir) => {
+      const logPath = join(tempDir, "processed.log");
+      await writeFile(logPath, JSON.stringify({ ...queuedEntry, sessionPath }) + "\n");
+      await expect(new ProcessedLog(logPath).load()).rejects.toThrow("pending outcomes without a valid session path");
+    });
+  });
+
+  it("keeps a pending queue when a stale manual marker omits it", async () => {
+    await withTempDir("tracking-manual-marker", async (tempDir) => {
+      const logPath = join(tempDir, "processed.log");
+      const staleMarker = new ProcessedLog(logPath);
+      await staleMarker.load();
+      await new ProcessedLog(logPath).append(queuedEntry);
+      await staleMarker.append({
+        sessionPath: queuedEntry.sessionPath,
+        processedAt: "2026-01-02T00:00:00.000Z",
+        deltasGenerated: 0,
+      });
+      const loaded = new ProcessedLog(logPath);
+      await loaded.load();
+      expect(loaded.getPendingOutcomeEntries()[0]?.pendingOutcomes).toEqual([pendingOutcome]);
+    });
+  });
+
+  it("acknowledges only completed IDs without overwriting a newer watermark or queued outcome", async () => {
+    await withTempDir("tracking-stale-ack", async (tempDir) => {
+      const logPath = join(tempDir, "processed.log");
+      await new ProcessedLog(logPath).append(queuedEntry);
+      const staleReader = new ProcessedLog(logPath);
+      await staleReader.load();
+      const newerOutcome = { ...pendingOutcome, id: "outcome-later-segment", recordedAt: "2026-01-02T00:00:00.000Z" };
+      await new ProcessedLog(logPath).append({ ...queuedEntry, recordCount: 4, pendingOutcomes: [newerOutcome] });
+      await staleReader.acknowledgeOutcomes([{ sessionPath: queuedEntry.sessionPath, outcomeIds: [pendingOutcome.id] }]);
+
+      const loaded = new ProcessedLog(logPath);
+      await loaded.load();
+      expect(loaded.get(queuedEntry.sessionPath)?.recordCount).toBe(4);
+      expect(loaded.getPendingOutcomeEntries()[0]?.pendingOutcomes).toEqual([newerOutcome]);
+      expect(staleReader.get(queuedEntry.sessionPath)?.recordCount).toBe(4);
+    });
+  });
+
+  it("does not clear pending work through an empty queue on append or a stale save", async () => {
+    await withTempDir("tracking-queue-ownership", async (tempDir) => {
+      const logPath = join(tempDir, "processed.log");
+      const staleWriter = new ProcessedLog(logPath);
+      await staleWriter.load();
+      await new ProcessedLog(logPath).append(queuedEntry);
+      await new ProcessedLog(logPath).append({ ...queuedEntry, pendingOutcomes: [] });
+      await staleWriter.save();
+
+      const loaded = new ProcessedLog(logPath);
+      await loaded.load();
+      expect(loaded.getPendingOutcomeEntries()[0]?.pendingOutcomes).toEqual([pendingOutcome]);
     });
   });
 });

@@ -352,6 +352,7 @@ const TOOL_DEFS = [
         notes: { type: "string" },
         task: { type: "string" },
         durationSec: { type: "integer", minimum: 0 },
+        workspace: { type: "string", description: "Workspace used to retrieve the rules; defaults to the server's working directory" },
       },
       required: ["sessionId", "outcome"],
     },
@@ -685,7 +686,10 @@ async function handleToolCall(name: string, args: any): Promise<any> {
         allowUndefined: true,
       });
       if (!durationSec.ok) throw new Error(durationSec.message);
-      const config = await loadConfig();
+      const workspaceCheck = validateNonEmptyString(args?.workspace, "workspace", { allowUndefined: true });
+      if (!workspaceCheck.ok) throw new Error(workspaceCheck.message);
+      const workspace = resolveWorkspaceFilter(workspaceCheck.value);
+      const config = await loadConfig({}, { cwd: workspace });
       return recordOutcome(
         {
           sessionId: args?.sessionId,
@@ -694,6 +698,7 @@ async function handleToolCall(name: string, args: any): Promise<any> {
           notes: typeof args?.notes === "string" ? args.notes : undefined,
           task: typeof args?.task === "string" ? args.task : undefined,
           durationSec: durationSec.value,
+          workspace,
         },
         config,
       );

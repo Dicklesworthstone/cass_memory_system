@@ -63,6 +63,8 @@ export const FeedbackEventSchema = z.object({
   reason: HarmfulReasonEnum.optional(),
   context: z.string().optional(),
   decayedValue: z.number().optional(),
+  // Stable identity for replaying a persisted outcome after partial failure.
+  outcomeId: z.string().optional(),
 });
 export type FeedbackEvent = z.infer<typeof FeedbackEventSchema>;
 
@@ -877,8 +879,33 @@ export const ValidationResultSchema = z.object({
 export type ValidationResult = z.infer<typeof ValidationResultSchema>;
 
 // ============================================================================
-// PROCESSED LOG
+// OUTCOME RECORDS AND PROCESSED LOG
 // ============================================================================
+
+export const OutcomeInputSchema = z.object({
+  sessionId: z.string().min(1),
+  outcome: z.enum(["success", "failure", "partial", "mixed"]),
+  rulesUsed: z.array(z.string().min(1)).optional(),
+  workspace: z.string().min(1).optional(),
+  notes: z.string().optional(),
+  durationSec: z.number().nonnegative().optional(),
+  task: z.string().optional(),
+  errorCount: z.number().nonnegative().optional(),
+  hadRetries: z.boolean().optional(),
+  sentiment: z.enum(["positive", "negative", "neutral"]).optional(),
+  autoGraded: z.boolean().optional(),
+});
+export const OutcomeRecordSchema = OutcomeInputSchema.extend({
+  id: z.string().min(1).optional(),
+  recordedAt: z.string().min(1),
+  path: z.string().min(1),
+  // Freeze ownership at recording time. Null means the ID was unresolved;
+  // a later rule with the same ID must not inherit that session's feedback.
+  ruleTargets: z.array(z.object({
+    ruleId: z.string().min(1),
+    playbookPath: z.string().min(1).nullable(),
+  })).optional(),
+});
 
 export const ProcessedEntrySchema = z.object({
   sessionPath: z.string(),
@@ -907,6 +934,9 @@ export const ProcessedEntrySchema = z.object({
   failures: z.number().int().nonnegative().optional(),
   lastFailureAt: z.string().optional(),
   lastError: z.string().optional(),
+  // Prepared outcomes remain durable until their log records and feedback
+  // have both been persisted. Recovery never re-runs session reflection.
+  pendingOutcomes: z.array(OutcomeRecordSchema).optional(),
 });
 export type ProcessedEntry = z.infer<typeof ProcessedEntrySchema>;
 

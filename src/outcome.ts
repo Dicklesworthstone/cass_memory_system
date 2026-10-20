@@ -1,11 +1,13 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { getSanitizeConfig } from "./config.js";
 import { withLock } from "./lock.js";
-import { findBullet, loadPlaybook, resolveRepoPlaybookPath, savePlaybook } from "./playbook.js";
+import { loadPlaybook, resolveRepoPlaybookPath, savePlaybook } from "./playbook.js";
 import { sanitize } from "./sanitize.js";
 import { calculateMaturityState } from "./scoring.js";
-import type { Config, DiaryEntry, FeedbackEvent } from "./types.js";
+import { OutcomeInputSchema, OutcomeRecordSchema, type Config, type DiaryEntry, type FeedbackEvent } from "./types.js";
+import { normalizeWorkspacePath, resolveProjectRoot } from "./workspace.js";
 import {
   ensureDir,
   expandPath,
@@ -13,6 +15,7 @@ import {
   now,
   resolveGlobalDir,
   resolveRepoDir,
+  validateNonEmptyString,
 } from "./utils.js";
 
 // --- Types ---
@@ -63,6 +66,8 @@ export interface OutcomeInput {
   sessionId: string;
   outcome: OutcomeStatus;
   rulesUsed?: string[];
+  /** Workspace where the rules were retrieved; persisted for later replay. */
+  workspace?: string;
   notes?: string;
   durationSec?: number;
   task?: string;
@@ -83,8 +88,10 @@ export interface OutcomeInput {
 }
 
 export interface OutcomeRecord extends OutcomeInput {
+  id?: string;
   recordedAt: string;
   path: string;
+  ruleTargets?: Array<{ ruleId: string; playbookPath: string | null }>;
 }
 
 export interface ContextLogEntry {
@@ -239,51 +246,152 @@ export function scoreImplicitFeedback(signals: OutcomeInput): {
 
 // --- Persistence ---
 
-export async function resolveOutcomeLogPath(): Promise<string> {
-  const repoDir = await resolveRepoDir();
+function outcomeWorkspace(workspace?: string): string {
+  const checked = validateNonEmptyString(workspace, "workspace", { allowUndefined: true });
+  if (!checked.ok) throw new Error(checked.message);
+  return normalizeWorkspacePath(checked.value ?? process.cwd());
+}
+
+export async function resolveOutcomeLogPath(workspace?: string): Promise<string> {
+  const repoPath = await resolveRepoPlaybookPath({ cwd: outcomeWorkspace(workspace) });
+  const repoDir = repoPath ? path.dirname(repoPath) : null;
   const useRepoLog = repoDir ? await fileExists(repoDir) : false;
   if (useRepoLog) return path.join(repoDir!, "outcomes.jsonl");
 
   return path.join(resolveGlobalDir(), "outcomes.jsonl");
 }
 
-async function resolveContextLogPath(): Promise<string> {
-  const repoPath = await resolveRepoPlaybookPath();
+async function resolveContextLogPath(workspace?: string): Promise<string> {
+  const repoPath = await resolveRepoPlaybookPath({ cwd: outcomeWorkspace(workspace) });
   const repoDir = repoPath ? path.dirname(repoPath) : null;
   const useRepoLog = repoDir ? await fileExists(repoDir) : false;
   if (useRepoLog) return path.join(repoDir!, "context-log.jsonl");
   return path.join(resolveGlobalDir(), "context-log.jsonl");
 }
 
-export async function recordOutcome(input: OutcomeInput, config: Config): Promise<OutcomeRecord> {
-  const targetPath = await resolveOutcomeLogPath();
-  const sanitizeConfig = getSanitizeConfig(config);
-
-  // Sanitize user input fields
-  const cleanedNotes = input.notes ? sanitize(input.notes, sanitizeConfig) : undefined;
-  const cleanedTask = input.task ? sanitize(input.task, sanitizeConfig) : undefined;
-
-  const record: OutcomeRecord = {
-    ...input,
-    notes: cleanedNotes,
-    task: cleanedTask,
-    rulesUsed: input.rulesUsed || [],
-    recordedAt: new Date().toISOString(),
-    path: targetPath,
+/** Locations a recorded workspace may own, including either worktree playbook. */
+async function outcomeLocations(workspace: string, config: Config) {
+  const repoDir = await resolveRepoDir(workspace);
+  const repoDirs = repoDir
+    ? [repoDir, path.join(resolveProjectRoot(path.dirname(repoDir)), ".cass")]
+    : [];
+  return {
+    playbooks: new Set([
+      normalizeWorkspacePath(config.playbookPath),
+      ...repoDirs.map(dir => normalizeWorkspacePath(path.join(dir, "playbook.yaml"))),
+    ]),
+    logs: new Set([
+      normalizeWorkspacePath(path.join(resolveGlobalDir(), "outcomes.jsonl")),
+      ...repoDirs.map(dir => normalizeWorkspacePath(path.join(dir, "outcomes.jsonl"))),
+    ]),
   };
-
-  await ensureDir(path.dirname(targetPath));
-
-  // Use withLock for consistent concurrent access safety
-  await withLock(targetPath, async () => {
-    await fs.appendFile(targetPath, JSON.stringify(record) + "\n", "utf-8");
-  });
-
-  return record;
 }
 
-export async function loadOutcomes(config: Config, limit = 100): Promise<OutcomeRecord[]> {
-  const targetPath = await resolveOutcomeLogPath();
+async function targetLookup(workspace: string, config: Config): Promise<Map<string, string>> {
+  const targets = new Map<string, string>();
+  const globalPath = path.resolve(expandPath(config.playbookPath));
+  const repoPath = await resolveRepoPlaybookPath({ cwd: workspace });
+  // Read each playbook once, then let repository IDs shadow global IDs.
+  // Corrupt files abort attribution instead of redirecting feedback.
+  for (const candidate of [globalPath, repoPath]) {
+    if (!candidate || !(await fileExists(candidate))) continue;
+    // Freeze the configured address, not the final file's symlink target:
+    // savePlaybook atomically replaces that address during normal curation.
+    // Ownership checks canonicalize paths separately.
+    const resolved = path.resolve(expandPath(candidate));
+    for (const bullet of (await loadPlaybook(resolved)).bullets) targets.set(bullet.id, resolved);
+  }
+  return targets;
+}
+
+function sanitizeOutcome(record: OutcomeRecord, config: Config): OutcomeRecord {
+  const sanitizeConfig = getSanitizeConfig(config);
+  return {
+    ...record,
+    notes: record.notes ? sanitize(record.notes, sanitizeConfig) : record.notes,
+    task: record.task ? sanitize(record.task, sanitizeConfig) : record.task,
+  };
+}
+
+/**
+ * Prepare an immutable retry record without mutating the log or playbooks.
+ * Callers resolve workspace policy; the supplied Config remains authoritative.
+ */
+export async function prepareOutcome(input: OutcomeInput, config: Config): Promise<OutcomeRecord> {
+  const parsed = OutcomeInputSchema.parse(input);
+  const workspace = outcomeWorkspace(parsed.workspace);
+  const record = enrichOutcomeWithContext({
+    ...parsed,
+    workspace,
+    id: randomUUID(),
+    rulesUsed: [...new Set(parsed.rulesUsed ?? [])],
+    recordedAt: new Date().toISOString(),
+    path: await resolveOutcomeLogPath(workspace),
+  }, await loadContextLog(200, workspace));
+  const targets = await targetLookup(workspace, config);
+  record.ruleTargets = [...new Set(record.rulesUsed ?? [])].map(ruleId => ({
+    ruleId,
+    playbookPath: targets.get(ruleId) ?? null,
+  }));
+  return sanitizeOutcome(record, config);
+}
+
+function outcomeIdentity(record: OutcomeRecord): string {
+  // Sanitization may become stricter between retries; free text is not the
+  // identity of a feedback event. All grading and ownership fields are.
+  return JSON.stringify({ ...OutcomeRecordSchema.parse(record), notes: undefined, task: undefined });
+}
+
+/** Persist the same prepared event at most once, even after an uncertain write. */
+export async function persistOutcomeRecord(record: OutcomeRecord, config: Config): Promise<OutcomeRecord> {
+  const parsed = OutcomeRecordSchema.parse(record);
+  if (!parsed.id || !parsed.workspace || !parsed.ruleTargets) {
+    throw new Error("Outcome persistence requires a prepared record with identity and ownership");
+  }
+  const cleaned = sanitizeOutcome(parsed, config);
+  const locations = await outcomeLocations(parsed.workspace, config);
+  if (!locations.logs.has(normalizeWorkspacePath(parsed.path))) {
+    throw new Error("Outcome log does not belong to its recorded workspace");
+  }
+  await ensureDir(path.dirname(parsed.path));
+  await withLock(parsed.path, async () => {
+    let content = "";
+    try {
+      content = await fs.readFile(parsed.path, "utf8");
+    } catch (error: any) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    for (const line of content.split("\n")) {
+      let existing: unknown;
+      try { existing = JSON.parse(line); } catch { continue; }
+      if (existing && typeof existing === "object" && "id" in existing && existing.id === parsed.id) {
+        const prior = OutcomeRecordSchema.parse(existing);
+        if (outcomeIdentity(prior) !== outcomeIdentity(cleaned)) {
+          throw new Error("Outcome ID already belongs to a different event");
+        }
+        return;
+      }
+    }
+    const handle = await fs.open(parsed.path, "a");
+    try {
+      // Preserve an interrupted tail, but keep it from consuming the next
+      // valid JSONL record. Never truncate or silently rewrite the log.
+      const separator = content.length > 0 && !content.endsWith("\n") ? "\n" : "";
+      await handle.writeFile(separator + JSON.stringify(cleaned) + "\n", "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  });
+  return cleaned;
+}
+
+export async function recordOutcome(input: OutcomeInput, config: Config): Promise<OutcomeRecord> {
+  return persistOutcomeRecord(await prepareOutcome(input, config), config);
+}
+
+export async function loadOutcomes(config: Config, limit = 100, workspace?: string): Promise<OutcomeRecord[]> {
+  const targetPath = await resolveOutcomeLogPath(workspace);
   if (!(await fileExists(targetPath))) return [];
 
   const content = await fs.readFile(targetPath, "utf-8");
@@ -292,27 +400,22 @@ export async function loadOutcomes(config: Config, limit = 100): Promise<Outcome
     .slice(-limit)
     .map((line) => {
       try {
-        return JSON.parse(line) as OutcomeRecord;
+        const parsed = OutcomeRecordSchema.safeParse(JSON.parse(line));
+        return parsed.success ? parsed.data : null;
       } catch {
         return null;
       }
     })
     .filter((x): x is OutcomeRecord => Boolean(x));
 
-  const sanitizeConfig = getSanitizeConfig(config);
-
   // Sanitize again on read for defense in depth
-  return parsed.map((o) => ({
-    ...o,
-    notes: o.notes ? sanitize(o.notes, sanitizeConfig) : o.notes,
-    task: o.task ? sanitize(o.task, sanitizeConfig) : o.task,
-  }));
+  return parsed.map(o => sanitizeOutcome(o, config));
 }
 
 // --- Feedback Application (Safe) ---
 
-async function loadContextLog(limit = 200): Promise<ContextLogEntry[]> {
-  const logPath = await resolveContextLogPath();
+async function loadContextLog(limit = 200, workspace?: string): Promise<ContextLogEntry[]> {
+  const logPath = await resolveContextLogPath(workspace);
   if (!(await fileExists(logPath))) return [];
   const content = await fs.readFile(logPath, "utf-8");
   const lines = content.split("\n").filter(Boolean);
@@ -320,7 +423,12 @@ async function loadContextLog(limit = 200): Promise<ContextLogEntry[]> {
     .slice(-limit)
     .map((line) => {
       try {
-        return JSON.parse(line) as ContextLogEntry;
+        const value = JSON.parse(line);
+        if (!value || typeof value !== "object" || !Array.isArray(value.ruleIds)
+          || !value.ruleIds.every((id: unknown) => typeof id === "string" && id.length > 0)
+          || typeof value.timestamp !== "string"
+          || (value.workspace !== undefined && typeof value.workspace !== "string")) return null;
+        return value as ContextLogEntry;
       } catch {
         return null;
       }
@@ -337,7 +445,9 @@ function enrichOutcomeWithContext(
 
   const match = contextLog
     .filter(
-      (e) => e.session === outcome.sessionId && Array.isArray(e.ruleIds) && e.ruleIds.length > 0,
+      (e) => e.session === outcome.sessionId && Array.isArray(e.ruleIds) && e.ruleIds.length > 0
+        && (!e.workspace || !outcome.workspace
+          || resolveProjectRoot(e.workspace) === resolveProjectRoot(outcome.workspace)),
     )
     .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0];
 
@@ -348,57 +458,59 @@ function enrichOutcomeWithContext(
   return { ...outcome, rulesUsed: match.ruleIds, autoGraded: true };
 }
 
-async function resolveTargetPath(
-  bulletId: string,
-  globalPath: string,
-  repoPath: string | null,
-): Promise<string | null> {
-  // Prefer repo
-  if (repoPath && (await fileExists(repoPath))) {
-    // An unreadable repository playbook may shadow this ID globally. Abort
-    // rather than attributing its feedback to a different rule.
-    const repoPlaybook = await loadPlaybook(repoPath);
-    if (findBullet(repoPlaybook, bulletId)) {
-      return repoPath;
-    }
-  }
-  // Fallback to global
-  if (await fileExists(globalPath)) {
-    try {
-      const globalPlaybook = await loadPlaybook(globalPath);
-      if (findBullet(globalPlaybook, bulletId)) return globalPath;
-    } catch {
-      // Ignore
-    }
-  }
-  return null;
-}
-
 export async function applyOutcomeFeedback(
   outcomes: OutcomeRecord | OutcomeRecord[],
   config: Config,
+  workspace?: string,
 ): Promise<{ applied: number; missing: string[] }> {
   const list = Array.isArray(outcomes) ? outcomes : [outcomes];
-
-  const globalPath = expandPath(config.playbookPath);
-  const repoPath = await resolveRepoPlaybookPath();
+  const fallbackWorkspace = outcomeWorkspace(workspace);
 
   let applied = 0;
   const missing: string[] = [];
 
   // Pre-calculate updates: Map<PlaybookPath, Array<{ bulletId, feedback }>>
   const updates = new Map<string, Array<{ bulletId: string; feedback: FeedbackEvent }>>();
-  const contextLog = await loadContextLog();
+  const contexts = new Map<string, ContextLogEntry[]>();
+  const targets = new Map<string, Map<string, string>>();
 
-  for (const outcome of list) {
-    const enriched = enrichOutcomeWithContext(outcome, contextLog);
+  for (const raw of list) {
+    const outcome = OutcomeRecordSchema.parse(raw);
+    const owner = outcomeWorkspace(outcome.workspace ?? fallbackWorkspace);
+    let enriched = outcome;
+    if (!outcome.ruleTargets) {
+      let contextLog = contexts.get(owner);
+      if (!contextLog) {
+        contextLog = await loadContextLog(200, owner);
+        contexts.set(owner, contextLog);
+      }
+      enriched = enrichOutcomeWithContext({ ...outcome, workspace: owner }, contextLog);
+    }
     if (!enriched.rulesUsed || enriched.rulesUsed.length === 0) continue;
 
     const scored = scoreImplicitFeedback(enriched);
     if (!scored) continue;
 
-    for (const ruleId of enriched.rulesUsed) {
-      const targetPath = await resolveTargetPath(ruleId, globalPath, repoPath);
+    let lookup: Map<string, string | null>;
+    if (enriched.ruleTargets) {
+      const allowed = (await outcomeLocations(owner, config)).playbooks;
+      lookup = new Map(enriched.ruleTargets.map(target => {
+        if (target.playbookPath && !allowed.has(normalizeWorkspacePath(target.playbookPath))) {
+          throw new Error("Outcome feedback target does not belong to its recorded workspace");
+        }
+        return [target.ruleId, target.playbookPath];
+      }));
+    } else {
+      let resolved = targets.get(owner);
+      if (!resolved) {
+        resolved = await targetLookup(owner, config);
+        targets.set(owner, resolved);
+      }
+      lookup = resolved;
+    }
+
+    for (const ruleId of new Set(enriched.rulesUsed)) {
+      const targetPath = lookup.get(ruleId);
 
       if (!targetPath) {
         missing.push(ruleId);
@@ -409,6 +521,7 @@ export async function applyOutcomeFeedback(
         bulletId: ruleId,
         feedback: {
           type: scored.type,
+          ...(enriched.id ? { outcomeId: enriched.id } : {}),
           // Use the outcome's recordedAt for stable idempotency across replays of the outcome log.
           timestamp: enriched.recordedAt,
           sessionPath: enriched.sessionId,
@@ -428,11 +541,15 @@ export async function applyOutcomeFeedback(
   // Apply updates with locking, per playbook file
   for (const [targetPath, items] of updates.entries()) {
     await withLock(targetPath, async () => {
+      if (!(await fileExists(targetPath))) {
+        throw new Error(`Outcome playbook is unavailable: ${targetPath}`);
+      }
       const playbook = await loadPlaybook(targetPath);
+      const bullets = new Map(playbook.bullets.map(bullet => [bullet.id, bullet]));
       let modified = false;
 
       for (const item of items) {
-        const bullet = findBullet(playbook, item.bulletId);
+        const bullet = bullets.get(item.bulletId);
         if (!bullet) {
           // Could happen if deleted between check and lock
           missing.push(item.bulletId);
@@ -442,9 +559,11 @@ export async function applyOutcomeFeedback(
         bullet.feedbackEvents = bullet.feedbackEvents || [];
         const alreadyRecorded = bullet.feedbackEvents.some(
           (e) =>
-            e.type === item.feedback.type &&
-            e.sessionPath === item.feedback.sessionPath &&
-            e.timestamp === item.feedback.timestamp,
+            item.feedback.outcomeId
+              ? e.outcomeId === item.feedback.outcomeId
+              : !e.outcomeId && e.type === item.feedback.type
+                && e.sessionPath === item.feedback.sessionPath
+                && e.timestamp === item.feedback.timestamp,
         );
         if (alreadyRecorded) {
           continue;

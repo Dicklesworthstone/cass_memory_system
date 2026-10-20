@@ -868,6 +868,7 @@ export function createProgram(argv: string[] = process.argv): Command {
     .argument("<status>", "Outcome status: success|failure|mixed|partial")
     .argument("<rules>", "Comma-separated rule ids that were shown")
     .option("--session <path>", "Session path for provenance")
+    .option("--workspace <path>", "Workspace used to retrieve the rules (defaults to cwd)")
     .option("--duration <seconds>", "Task duration in seconds", toInt)
     .option("--errors <count>", "Number of errors encountered", toInt)
     .option("--retries", "Whether there were retries")
@@ -891,6 +892,7 @@ export function createProgram(argv: string[] = process.argv): Command {
     .command("outcome-apply")
     .description("Apply recorded outcomes to playbook feedback (implicit marks)")
     .option("--session <id>", "Apply only outcomes for this session id")
+    .option("--workspace <path>", "Workspace whose outcome log to apply (defaults to cwd)")
     .option("--limit <n>", "Max outcomes to load (default 50)", toInt)
     .option("-j, --json", "Output JSON")
     .addHelpText("after", () =>

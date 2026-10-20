@@ -9,6 +9,7 @@ import {
   formatSessionRecords,
 } from "./cass.js";
 import { HOOK_ACTIVE_ENV } from "./commands/hook.js";
+import { getSanitizeConfig, loadConfig } from "./config.js";
 import { curatePlaybook, directivesDisagree, splitDirectiveClauses, validateMergeSources } from "./curate.js";
 import { generateDiary, generateDiaryFromContent } from "./diary.js";
 import type { LLMIO } from "./llm.js";
@@ -18,7 +19,8 @@ import {
   classifySessionOutcome,
   extractRuleIdsFromTranscript,
   type OutcomeInput,
-  recordOutcome,
+  prepareOutcome,
+  persistOutcomeRecord,
 } from "./outcome.js";
 import {
   findBullet,
@@ -227,11 +229,33 @@ export async function orchestrateReflection(
   config: Config,
   options: ReflectionOptions,
 ): Promise<ReflectionOutcome> {
+  const runWorkspace = normalizeWorkspacePath(process.cwd());
   const logPath = expandPath(getProcessedLogPath(options.workspace));
   const globalPath = expandPath(config.playbookPath);
-  const repoDir = await resolveRepoDir();
+  const repoDir = await resolveRepoDir(runWorkspace);
   const repoPath = repoDir ? path.join(repoDir, "playbook.yaml") : null;
   const hasRepo = repoPath ? await fileExists(repoPath) : false;
+  const outcomeConfigs = new Map<string, Promise<Config>>([[runWorkspace, Promise.resolve(config)]]);
+  const configForOutcomeWorkspace = (workspace?: string): Promise<Config> => {
+    const owner = normalizeWorkspacePath(workspace ?? runWorkspace);
+    let pending = outcomeConfigs.get(owner);
+    if (!pending) {
+      pending = loadConfig({ playbookPath: globalPath }, { cwd: owner }).then((targetConfig) => {
+        const runSanitization = getSanitizeConfig(config);
+        const targetSanitization = getSanitizeConfig(targetConfig);
+        return {
+          ...targetConfig,
+          sanitization: {
+            ...targetSanitization,
+            enabled: runSanitization.enabled || targetSanitization.enabled,
+            extraPatterns: [...new Set([...runSanitization.extraPatterns, ...targetSanitization.extraPatterns])],
+          },
+        };
+      });
+      outcomeConfigs.set(owner, pending);
+    }
+    return pending;
+  };
 
   // 1. Lock the Workspace Log to serialize reflection for this specific workspace
   // Use a specific lock suffix to allow ProcessedLog internal locking to work independently
@@ -248,6 +272,54 @@ export async function orchestrateReflection(
   return withLock(reflectionLockPath, async () => {
     const processedLog = new ProcessedLog(logPath);
     await processedLog.load();
+    const errors: string[] = [];
+    let autoOutcome: ReflectionOutcome["autoOutcome"] | undefined;
+    const outcomeSummary = () => autoOutcome ??= {
+      outcomesRecorded: 0,
+      feedbackApplied: 0,
+      missingRules: [],
+      inlineFeedbackDeltas: 0,
+    };
+    // A failed recovery is retried on the next invocation, not repeatedly
+    // during this run when newly reflected sessions are committed below.
+    const attemptedOutcomes = new Set<string>();
+    const drainPendingOutcomes = async () => {
+      const acknowledgements: Array<{ sessionPath: string; outcomeIds: string[] }> = [];
+      for (const entry of processedLog.getPendingOutcomeEntries()) {
+        const completed = new Set<string>();
+        const identity = (record: NonNullable<ProcessedEntry["pendingOutcomes"]>[number]) =>
+          record.id ?? JSON.stringify([record.path, record.sessionId, record.recordedAt]);
+        for (const pending of entry.pendingOutcomes ?? []) {
+          const id = identity(pending);
+          if (attemptedOutcomes.has(id)) continue;
+          attemptedOutcomes.add(id);
+          const summary = outcomeSummary();
+          try {
+            const outcomeConfig = await configForOutcomeWorkspace(pending.workspace);
+            const record = await persistOutcomeRecord(pending, outcomeConfig);
+            summary.outcomesRecorded++;
+            const feedback = await applyOutcomeFeedback(record, outcomeConfig);
+            summary.feedbackApplied += feedback.applied;
+            summary.missingRules = [...new Set([...summary.missingRules, ...feedback.missing])];
+            completed.add(id);
+          } catch (err: any) {
+            errors.push(`Auto-outcome recovery failed for ${entry.sessionPath}: ${err?.message || String(err)}`);
+          }
+        }
+        if (completed.size === 0) continue;
+        acknowledgements.push({ sessionPath: entry.sessionPath, outcomeIds: [...completed] });
+      }
+      try {
+        await processedLog.acknowledgeOutcomes(acknowledgements);
+      } catch (err: any) {
+        // The persisted queue still contains the exact same outcome IDs.
+        // Replaying after an interrupted acknowledgement is idempotent.
+        errors.push(`Auto-outcome acknowledgement failed: ${err?.message || String(err)}`);
+      }
+    };
+    // Recovery must run even when discovery finds no new sessions. A dry run
+    // leaves both the pending queue and its outcome/feedback destinations alone.
+    if (!options.dryRun) await drainPendingOutcomes();
 
     // 2. Snapshot Phase: Load playbook context (without locking playbook yet)
     // We need the playbook to give context to the LLM.
@@ -261,7 +333,6 @@ export async function orchestrateReflection(
     const agentHints = new Map<string, string>();
     // Everything discovery learned per session (growth signals, workspace).
     const discoveryInfo = new Map<string, DiscoveredSession>();
-    const errors: string[] = [];
 
     const retryPolicy: SessionRetryPolicy = {
       maxFailures: config.sessionRetryMaxFailures ?? 3,
@@ -312,7 +383,7 @@ export async function orchestrateReflection(
         }
       } catch (err: any) {
         errors.push(`Session discovery failed: ${err.message}`);
-        return { sessionsProcessed: 0, deltasGenerated: 0, errors };
+        return { sessionsProcessed: 0, deltasGenerated: 0, errors, autoOutcome };
       }
     }
 
@@ -326,7 +397,7 @@ export async function orchestrateReflection(
       return entry.recordCount !== undefined;
     });
     if (unprocessed.length === 0) {
-      return { sessionsProcessed: 0, deltasGenerated: 0, errors };
+      return { sessionsProcessed: 0, deltasGenerated: 0, errors, autoOutcome };
     }
 
     options.onProgress?.({ phase: "discovery", totalSessions: unprocessed.length });
@@ -341,7 +412,7 @@ export async function orchestrateReflection(
     const pendingFailureEntries: ProcessedEntry[] = [];
     // "repo" routing (#81): add deltas bound for another repo's playbook.
     const projectTargets = new Map<PlaybookDelta, { playbookPath: string; projectRoot: string }>();
-    const pendingOutcomes: OutcomeInput[] = [];
+    const pendingOutcomes = new Map<string, OutcomeInput[]>();
     let sessionsProcessed = 0;
     let inlineFeedbackDeltaCount = 0;
 
@@ -408,6 +479,7 @@ export async function orchestrateReflection(
                 processedAt: prior?.processedAt ?? now(),
                 ...(prior?.diaryId ? { diaryId: prior.diaryId } : {}),
                 deltasGenerated: prior?.deltasGenerated ?? 0,
+                pendingOutcomes: prior?.pendingOutcomes,
                 ...watermarkFor(records),
                 ...growthSignals,
               });
@@ -478,6 +550,7 @@ export async function orchestrateReflection(
             sessionPath,
             processedAt: now(),
             deltasGenerated: 0,
+            pendingOutcomes: prior?.pendingOutcomes,
             ...watermarkFields,
             ...growthSignals,
           });
@@ -500,6 +573,7 @@ export async function orchestrateReflection(
             sessionPath,
             processedAt: now(),
             deltasGenerated: 0,
+            pendingOutcomes: prior?.pendingOutcomes,
             ...watermarkFields,
             ...growthSignals,
           });
@@ -596,7 +670,10 @@ export async function orchestrateReflection(
           if (ruleIds.length > 0) {
             const outcomeInput = classifySessionOutcome(gradableContent, diary, ruleIds);
             if (outcomeInput) {
-              pendingOutcomes.push(outcomeInput);
+              pendingOutcomes.set(sessionPath, [
+                ...(pendingOutcomes.get(sessionPath) ?? []),
+                { ...outcomeInput, workspace: sessionWorkspace ?? options.workspace ?? runWorkspace },
+              ]);
             }
           }
         }
@@ -607,6 +684,7 @@ export async function orchestrateReflection(
           processedAt: now(),
           diaryId: diary.id,
           deltasGenerated: validatedDeltas.length,
+          pendingOutcomes: prior?.pendingOutcomes,
           ...watermarkFields,
           ...growthSignals,
         });
@@ -656,12 +734,32 @@ export async function orchestrateReflection(
       };
     }
 
+    if (inlineFeedbackDeltaCount > 0) outcomeSummary().inlineFeedbackDeltas = inlineFeedbackDeltaCount;
+
+    // Freeze sanitized outcome identity and ownership before curation writes
+    // anything. A preparation failure leaves the session eligible for retry
+    // without having applied its rule changes or feedback.
+    for (const entry of pendingProcessedEntries) {
+      const inputs = pendingOutcomes.get(entry.sessionPath);
+      if (!inputs?.length) continue;
+      try {
+        const prepared = [];
+        for (const input of inputs) {
+          prepared.push(await prepareOutcome(input, await configForOutcomeWorkspace(input.workspace)));
+        }
+        entry.pendingOutcomes = [...(entry.pendingOutcomes ?? []), ...prepared];
+      } catch (err: any) {
+        errors.push(`Auto-outcome preparation failed for ${entry.sessionPath}: ${err?.message || String(err)}`);
+        return { sessionsProcessed: 0, deltasGenerated: 0, errors, autoOutcome };
+      }
+    }
+
     if (allDeltas.length === 0 && pendingProcessedEntries.length === 0) {
       // Nothing reflected (every session failed or had nothing new): no
       // playbook change and nothing to count, but retry state and refreshed
       // growth signals are still recorded.
       await processedLog.appendBatch([...pendingRefreshEntries, ...pendingFailureEntries]);
-      return { sessionsProcessed, deltasGenerated: 0, errors };
+      return { sessionsProcessed, deltasGenerated: 0, errors, autoOutcome };
     }
 
     // Sessions that will be committed to the processed log by this run. Even
@@ -946,49 +1044,20 @@ export async function orchestrateReflection(
       }
     });
 
-    // Final log save - only mark processed AFTER rules are persisted
+    // Persist the watermark and prepared outcome queue together, only after
+    // curation succeeds. Losing outcome I/O later cannot lose the retry work.
     await processedLog.appendBatch([
       ...pendingProcessedEntries,
       ...pendingRefreshEntries,
       ...pendingFailureEntries,
     ]);
 
-    // 6. Auto-record rule outcomes (post-merge, best-effort)
-    let autoOutcome: ReflectionOutcome["autoOutcome"] | undefined;
-    if (pendingOutcomes.length > 0) {
-      try {
-        const records = [];
-        for (const input of pendingOutcomes) {
-          const record = await recordOutcome(input, config);
-          records.push(record);
-        }
-        const feedbackResult = await applyOutcomeFeedback(records, config);
-        autoOutcome = {
-          outcomesRecorded: records.length,
-          feedbackApplied: feedbackResult.applied,
-          missingRules: feedbackResult.missing,
-          inlineFeedbackDeltas: inlineFeedbackDeltaCount,
-        };
-        log(
-          `Auto-recorded ${records.length} outcome(s): ${feedbackResult.applied} feedback event(s) applied`,
-        );
-      } catch (err: any) {
-        const msg = err?.message || String(err);
-        errors.push(`Auto-outcome recording failed: ${msg}`);
-        autoOutcome = {
-          outcomesRecorded: 0,
-          feedbackApplied: 0,
-          missingRules: [],
-          inlineFeedbackDeltas: inlineFeedbackDeltaCount,
-        };
-      }
-    } else if (inlineFeedbackDeltaCount > 0) {
-      autoOutcome = {
-        outcomesRecorded: 0,
-        feedbackApplied: 0,
-        missingRules: [],
-        inlineFeedbackDeltas: inlineFeedbackDeltaCount,
-      };
+    // 6. Persist and apply outcomes from their durable queue. Completion is
+    // acknowledged only after both operations succeed; replays use their
+    // original IDs, timestamps and rule owners without invoking the LLM.
+    await drainPendingOutcomes();
+    if (autoOutcome?.outcomesRecorded) {
+      log(`Auto-recorded ${autoOutcome.outcomesRecorded} outcome(s): ${autoOutcome.feedbackApplied} feedback event(s) applied`);
     }
 
     return {

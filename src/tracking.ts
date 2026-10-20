@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { sanitize } from "./sanitize.js";
-import type { ProcessedEntry } from "./types.js";
+import { OutcomeRecordSchema, type ProcessedEntry } from "./types.js";
 import {
   atomicWrite,
   ensureDir,
@@ -411,6 +411,21 @@ function normalizeSessionPathForLog(sessionPath: string): string {
   return path.resolve(expandPath(trimmed));
 }
 
+class PendingOutcomeRecoveryError extends Error {}
+
+function mergePendingOutcomes(
+  existing: ProcessedEntry["pendingOutcomes"],
+  additions: ProcessedEntry["pendingOutcomes"],
+): ProcessedEntry["pendingOutcomes"] {
+  if (existing === undefined && additions === undefined) return undefined;
+  const pending = new Map<string, NonNullable<ProcessedEntry["pendingOutcomes"]>[number]>();
+  for (const record of [...(existing ?? []), ...(additions ?? [])]) {
+    const key = record.id ?? JSON.stringify([record.path, record.sessionId, record.recordedAt]);
+    if (!pending.has(key)) pending.set(key, record);
+  }
+  return [...pending.values()];
+}
+
 export class ProcessedLog {
   private entries: Map<string, ProcessedEntry> = new Map();
   private logPath: string;
@@ -420,8 +435,6 @@ export class ProcessedLog {
   }
 
   async load(): Promise<void> {
-    if (!(await fileExists(this.logPath))) return;
-
     try {
       const content = await fs.readFile(this.logPath, "utf-8");
       const lines = content.split("\n").filter((line) => line.trim() && !line.startsWith("#"));
@@ -431,6 +444,10 @@ export class ProcessedLog {
         if (line.trim().startsWith("{")) {
           try {
             const entry = JSON.parse(line);
+            if (entry && typeof entry === "object" && entry.pendingOutcomes !== undefined
+              && (typeof entry.sessionPath !== "string" || !entry.sessionPath.trim())) {
+              throw new PendingOutcomeRecoveryError("Processed log contains pending outcomes without a valid session path; repair the recovery records before reflecting");
+            }
             if (entry.sessionPath) {
               const normalizedSessionPath = normalizeSessionPathForLog(entry.sessionPath);
               if (!normalizedSessionPath) continue;
@@ -444,7 +461,8 @@ export class ProcessedLog {
               });
             }
             continue;
-          } catch {
+          } catch (error) {
+            if (error instanceof PendingOutcomeRecoveryError) throw error;
             // Fall through to TSV if JSON parse fails (hybrid file?)
           }
         }
@@ -468,19 +486,29 @@ export class ProcessedLog {
         } catch {}
       }
     } catch (error) {
-      warn(`Failed to load processed log: ${error}`);
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") return;
+      // Treating an unreadable log as empty could repeat reflection and lose
+      // its pending outcomes. Only a genuinely absent log starts empty.
+      throw error;
     }
   }
 
   async save(): Promise<void> {
-    const lines = ['# JSONL format: {"sessionPath":..., "processedAt":...}'];
-
-    for (const entry of this.entries.values()) {
-      lines.push(JSON.stringify(entry));
-    }
-
     await withLock(this.logPath, async () => {
-      await atomicWrite(this.logPath, lines.join("\n"));
+      const current = new ProcessedLog(this.logPath);
+      await current.load();
+      const entries = new Map(this.entries);
+      for (const entry of current.getPendingOutcomeEntries()) {
+        const update = entries.get(entry.sessionPath) ?? entry;
+        entries.set(entry.sessionPath, {
+          ...update,
+          pendingOutcomes: mergePendingOutcomes(entry.pendingOutcomes, update.pendingOutcomes),
+        });
+      }
+      const lines = ['# JSONL format: {"sessionPath":..., "processedAt":...}'];
+      for (const entry of entries.values()) lines.push(JSON.stringify(entry));
+      await atomicWrite(this.logPath, lines.join("\n") + "\n");
+      this.entries = entries;
     });
   }
 
@@ -491,30 +519,34 @@ export class ProcessedLog {
   async appendBatch(entries: ProcessedEntry[], options?: { skipLock?: boolean }): Promise<void> {
     if (entries.length === 0) return;
 
-    const lines: string[] = [];
+    const normalizedEntries: ProcessedEntry[] = [];
 
     for (const entry of entries) {
       const normalizedSessionPath = normalizeSessionPathForLog(entry.sessionPath);
       if (!normalizedSessionPath) continue;
 
       const normalizedEntry: ProcessedEntry = { ...entry, sessionPath: normalizedSessionPath };
-      this.entries.set(normalizedSessionPath, normalizedEntry);
-      lines.push(JSON.stringify(normalizedEntry));
+      normalizedEntries.push(normalizedEntry);
     }
 
-    if (lines.length === 0) return;
-
+    if (normalizedEntries.length === 0) return;
     await ensureDir(path.dirname(this.logPath));
 
     const doAppend = async () => {
-      // Check if file exists to add header if needed
-      const exists = await fileExists(this.logPath);
-      if (!exists) {
-        const header = '# JSONL format: {"sessionPath":..., "processedAt":...}\n';
-        await fs.writeFile(this.logPath, header + lines.join("\n") + "\n", "utf-8");
-      } else {
-        await fs.appendFile(this.logPath, lines.join("\n") + "\n", "utf-8");
-      }
+      // A manual marker or stale writer must not erase another invocation's
+      // recovery queue. Only acknowledgeOutcomes can remove pending records.
+      const current = new ProcessedLog(this.logPath);
+      await current.load();
+      const merged = normalizedEntries.map((entry) => {
+        const update = {
+          ...entry,
+          pendingOutcomes: mergePendingOutcomes(current.get(entry.sessionPath)?.pendingOutcomes, entry.pendingOutcomes),
+        };
+        current.add(update);
+        return update;
+      });
+      await this.writeEntries(merged);
+      this.entries = current.entries;
     };
 
     // Skip lock if caller already holds it (e.g., orchestrator)
@@ -524,6 +556,54 @@ export class ProcessedLog {
       // Use withLock to safely append to the log
       await withLock(this.logPath, doAppend);
     }
+  }
+
+  /** Remove only completed outcome IDs from the latest durable session state. */
+  async acknowledgeOutcomes(
+    acknowledgements: Array<{ sessionPath: string; outcomeIds: string[] }>,
+  ): Promise<void> {
+    if (acknowledgements.length === 0) return;
+    await withLock(this.logPath, async () => {
+      const current = new ProcessedLog(this.logPath);
+      await current.load();
+      const updates: ProcessedEntry[] = [];
+      for (const acknowledgement of acknowledgements) {
+        const entry = current.get(acknowledgement.sessionPath);
+        if (!entry?.pendingOutcomes?.length) continue;
+        const completed = new Set(acknowledgement.outcomeIds);
+        const pendingOutcomes = entry.pendingOutcomes.filter((record) => !record.id || !completed.has(record.id));
+        if (pendingOutcomes.length === entry.pendingOutcomes.length) continue;
+        const update = { ...entry, pendingOutcomes };
+        updates.push(update);
+        current.add(update);
+      }
+      await this.writeEntries(updates);
+      this.entries = current.entries;
+    });
+  }
+
+  /** Called only while the processed-log lock is held. */
+  private async writeEntries(entries: ProcessedEntry[]): Promise<void> {
+    if (entries.length === 0) return;
+    const handle = await fs.open(this.logPath, "a+", 0o600);
+    try {
+      const { size } = await handle.stat();
+      let prefix = '# JSONL format: {"sessionPath":..., "processedAt":...}\n';
+      if (size > 0) {
+        const tail = Buffer.alloc(1);
+        await handle.read(tail, 0, 1, size - 1);
+        // A legacy save or interrupted append must not swallow the next
+        // complete entry, including its pending outcome recovery records.
+        prefix = tail[0] === 10 ? "" : "\n";
+      }
+      await handle.writeFile(prefix + entries.map(entry => JSON.stringify(entry)).join("\n") + "\n", "utf-8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    // Failed writes must not acknowledge pending work in memory: the same
+    // orchestrator run may still commit a newer watermark for this session.
+    for (const entry of entries) this.entries.set(entry.sessionPath, entry);
   }
 
   /**
@@ -542,6 +622,13 @@ export class ProcessedLog {
     const normalized = normalizeSessionPathForLog(sessionPath);
     if (!normalized) return undefined;
     return this.entries.get(normalized);
+  }
+
+  /** Pending outcome work is independent of session discovery and growth. */
+  getPendingOutcomeEntries(): ProcessedEntry[] {
+    return [...this.entries.values()]
+      .filter((entry) => (entry.pendingOutcomes?.length ?? 0) > 0)
+      .map((entry) => ({ ...entry, pendingOutcomes: [...entry.pendingOutcomes!] }));
   }
 
   add(entry: ProcessedEntry): void {
@@ -575,6 +662,15 @@ function pickIncrementalFields(raw: Record<string, unknown>): Partial<ProcessedE
   if (nonNegInt(raw.failures)) out.failures = raw.failures;
   if (str(raw.lastFailureAt)) out.lastFailureAt = raw.lastFailureAt;
   if (str(raw.lastError)) out.lastError = raw.lastError;
+  if (raw.pendingOutcomes !== undefined) {
+    const pending = OutcomeRecordSchema.array().safeParse(raw.pendingOutcomes);
+    if (!pending.success) {
+      // Silently discarding a malformed recovery record would make a
+      // processed session permanently lose its outcome again.
+      throw new PendingOutcomeRecoveryError("Processed log contains invalid pending outcomes; repair the recovery records before reflecting");
+    }
+    out.pendingOutcomes = pending.data;
+  }
   return out;
 }
 

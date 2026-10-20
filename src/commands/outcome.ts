@@ -5,22 +5,23 @@ import {
   detectSentiment,
   loadOutcomes,
   type OutcomeInput,
+  type OutcomeRecord,
   type OutcomeStatus,
   recordOutcome,
   type Sentiment,
   scoreImplicitFeedback,
 } from "../outcome.js";
 import { icon } from "../output.js";
-import { ErrorCode } from "../types.js";
+import { type Config, ErrorCode } from "../types.js";
 import {
   getCliName,
-  error as logError,
   printJsonResult,
   reportError,
   validateNonEmptyString,
   validateOneOf,
   validatePositiveInt,
 } from "../utils.js";
+import { normalizeWorkspacePath } from "../workspace.js";
 
 // Re-export for backward compat if needed
 export { detectSentiment, scoreImplicitFeedback } from "../outcome.js";
@@ -34,6 +35,7 @@ export async function outcomeCommand(flags: {
   retries?: boolean;
   sentiment?: string;
   text?: string;
+  workspace?: string;
   json?: boolean;
 }) {
   const startedAtMs = Date.now();
@@ -149,6 +151,19 @@ export async function outcomeCommand(flags: {
     return;
   }
 
+  const workspaceCheck = validateNonEmptyString(flags.workspace, "workspace", { allowUndefined: true });
+  if (!workspaceCheck.ok) {
+    reportError(workspaceCheck.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: workspaceCheck.details,
+      json: flags.json,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+  const workspace = normalizeWorkspacePath(workspaceCheck.value ?? process.cwd());
+
   const status = statusCheck.value as OutcomeStatus;
 
   const sentiment =
@@ -182,6 +197,7 @@ export async function outcomeCommand(flags: {
     hadRetries: flags.retries,
     sentiment,
     notes: textCheck.value,
+    workspace,
   };
 
   // 2. Preview Score (User Feedback)
@@ -203,29 +219,25 @@ export async function outcomeCommand(flags: {
     return;
   }
 
-  const config = await loadConfig();
+  const config = await loadConfig({}, { cwd: workspace });
 
   // 3. Record (Log)
-  let recordedOutcome: Awaited<ReturnType<typeof recordOutcome>> | null = null;
+  let recordedOutcome: Awaited<ReturnType<typeof recordOutcome>>;
   try {
     recordedOutcome = await recordOutcome(input, config);
-  } catch (err: any) {
-    logError(`Failed to log outcome: ${err.message}`);
-    // Continue to apply feedback even if logging fails? Probably yes.
+  } catch (err) {
+    reportError(err instanceof Error ? err : String(err), {
+      code: ErrorCode.FILE_WRITE_FAILED,
+      json: flags.json,
+      command,
+      startedAtMs,
+    });
+    return;
   }
 
   // 4. Apply Feedback (Learn)
-  // Prefer the persisted record so outcome-apply can be idempotent across replays.
-  // If logging failed, fall back to an in-memory record.
-  const recordForApply =
-    recordedOutcome ??
-    ({
-      ...input,
-      recordedAt: new Date().toISOString(),
-      path: "cli-transient",
-    } as any);
-
-  const result = await applyOutcomeFeedback([recordForApply], config);
+  // The persisted record supplies stable ownership and replay identity.
+  const result = await applyOutcomeFeedback([recordedOutcome], config, workspace);
 
   // 5. Report
   if (flags.json) {
@@ -256,9 +268,31 @@ export async function outcomeCommand(flags: {
   }
 }
 
+async function applyWorkspaceOutcomes(outcomes: OutcomeRecord[], config: Config, workspace: string) {
+  const groups = new Map<string, OutcomeRecord[]>();
+  for (const outcome of outcomes) {
+    const owner = normalizeWorkspacePath(outcome.workspace ?? workspace);
+    const group = groups.get(owner);
+    if (group) group.push(outcome);
+    else groups.set(owner, [outcome]);
+  }
+
+  const result = { applied: 0, missing: [] as string[] };
+  for (const [owner, records] of groups) {
+    // A shared log may contain outcomes from worktrees with different policy.
+    // Keep the caller's designated global playbook while loading that policy.
+    const scopedConfig = await loadConfig({ playbookPath: config.playbookPath }, { cwd: owner });
+    const applied = await applyOutcomeFeedback(records, scopedConfig, owner);
+    result.applied += applied.applied;
+    result.missing.push(...applied.missing);
+  }
+  return result;
+}
+
 export async function applyOutcomeLogCommand(flags: {
   session?: string;
   limit?: number;
+  workspace?: string;
   json?: boolean;
 }) {
   const startedAtMs = Date.now();
@@ -291,8 +325,20 @@ export async function applyOutcomeLogCommand(flags: {
     return;
   }
 
-  const config = await loadConfig();
-  const outcomes = await loadOutcomes(config, limitCheck.value ?? 50);
+  const workspaceCheck = validateNonEmptyString(flags.workspace, "workspace", { allowUndefined: true });
+  if (!workspaceCheck.ok) {
+    reportError(workspaceCheck.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: workspaceCheck.details,
+      json: flags.json,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
+  const workspace = normalizeWorkspacePath(workspaceCheck.value ?? process.cwd());
+  const config = await loadConfig({}, { cwd: workspace });
+  const outcomes = await loadOutcomes(config, limitCheck.value ?? 50, workspace);
 
   if (sessionCheck.value !== undefined) {
     const filtered = outcomes.filter((o) => o.sessionId === sessionCheck.value);
@@ -312,7 +358,7 @@ export async function applyOutcomeLogCommand(flags: {
       console.error(chalk.yellow(`No outcomes found for session ${sessionCheck.value}`));
       return;
     }
-    const result = await applyOutcomeFeedback(filtered, config);
+    const result = await applyWorkspaceOutcomes(filtered, config, workspace);
     if (flags.json) {
       printJsonResult(command, { ...result, session: sessionCheck.value }, { startedAtMs });
       return;
@@ -329,7 +375,7 @@ export async function applyOutcomeLogCommand(flags: {
   }
 
   // No session filter: apply latest (limit) outcomes.
-  const result = await applyOutcomeFeedback(outcomes, config);
+  const result = await applyWorkspaceOutcomes(outcomes, config, workspace);
   if (flags.json) {
     printJsonResult(command, { ...result, totalOutcomes: outcomes.length }, { startedAtMs });
     return;

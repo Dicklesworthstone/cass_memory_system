@@ -353,7 +353,27 @@ cm outcome failure b-x7k9p1 --summary "Rule led to wrong approach"
 
 # Apply recorded outcomes to playbook
 cm outcome-apply
+
+# Use the same workspace that supplied the rules
+cm outcome success b-8f3a2c --workspace ~/code/api --summary "Fixed auth bug"
+cm outcome-apply --workspace ~/code/api
 ```
+
+The CLI saves the outcome before applying feedback. `--workspace` defaults to the
+current directory; pass the same project used for context retrieval. Each new
+record retains its workspace, event ID, and the playbook owning each rule, so
+replaying the log from another directory cannot redirect feedback. Replaying an
+event applies it at most once per rule. An ID that was unknown when recorded does
+not later credit an unrelated rule created with that ID.
+
+Automatic reflection saves prepared outcomes with the session's processed marker.
+If outcome logging or feedback fails, the next non-dry reflection using that
+processed log retries the pending work, even when there are no new sessions. The
+retry uses the original event and does not call the reflector again. Partial
+feedback application and interrupted acknowledgements can be retried safely;
+errors remain visible while work is pending. This recovery covers outcome
+delivery after curation; it is not a transaction spanning all playbook and
+processed-log writes.
 
 ### What NOT to Do
 
@@ -1008,9 +1028,10 @@ cm mark b-8f3a2c --helpful --workspace ~/code/api
 # Record session outcome (positional: status, rules)
 cm outcome success b-8f3a2c,b-def456
 cm outcome failure b-x7k9p1 --summary "Auth approach failed"
+cm outcome success b-8f3a2c --workspace ~/code/api
 
 # Apply recorded outcomes to playbook
-cm outcome-apply
+cm outcome-apply --workspace ~/code/api
 
 # Validate a proposed rule against history
 cm validate "Always check null before dereferencing"
@@ -1365,28 +1386,35 @@ interface DiaryEntry {
 
 ### Session Outcome
 
-Explicit outcome recording:
+Outcome records use the following fields (older logs may omit event identity and
+workspace ownership):
 
 ```typescript
-interface SessionOutcome {
-  id: string;                    // UUID
-  timestamp: string;             // ISO 8601
-  status: "success" | "failure" | "mixed";
-
-  // Associated rules
-  rulesUsed: string[];           // Bullet IDs that were followed
-  rulesViolated?: string[];      // Bullet IDs that were ignored
-
-  // Context
-  task?: string;                 // What was attempted
-  summary?: string;              // Brief description
-  sessionPath?: string;          // Source session
-
-  // Feedback impact
-  applied: boolean;              // Whether outcome-apply has processed this
-  appliedAt?: string;            // When it was applied
+interface OutcomeRecord {
+  id?: string;                   // Stable UUID for new events
+  sessionId: string;
+  recordedAt: string;            // ISO 8601
+  outcome: "success" | "failure" | "mixed" | "partial";
+  workspace?: string;            // Absolute source workspace
+  path: string;                  // Outcome log destination
+  rulesUsed?: string[];
+  ruleTargets?: Array<{
+    ruleId: string;
+    playbookPath: string | null; // Recorded owner; null means unresolved
+  }>;
+  task?: string;
+  notes?: string;
+  durationSec?: number;
+  errorCount?: number;
+  hadRetries?: boolean;
+  sentiment?: "positive" | "negative" | "neutral";
+  autoGraded?: boolean;          // Shown rules need stricter harm attribution
 }
 ```
+
+Applied events carry their `outcomeId` in each rule's feedback history. Legacy
+events retain timestamp/session deduplication and use the requested workspace
+when no recorded workspace is available.
 
 ---
 
@@ -1836,20 +1864,24 @@ When `MCP_HTTP_TOKEN` is set, clients must send either `Authorization: Bearer <t
 |------|---------|------------|
 | `cm_context` | Get relevant rules + history for a task | `task: string, limit?: number, top?: number (deprecated), history?: number, days?: number, workspace?: string, language?: string, framework?: string, taskType?: string, maxTokens?: number` |
 | `cm_feedback` | Record helpful/harmful feedback | `bulletId: string, helpful?: boolean, harmful?: boolean, reason?: string, session?: string, workspace?: string` |
-| `cm_outcome` | Record a session outcome with rules used | `sessionId: string, outcome: "success" \| "failure" \| "mixed" \| "partial", rulesUsed?: string[]` |
+| `cm_outcome` | Record a session outcome with rules used | `sessionId: string, outcome: "success" \| "failure" \| "mixed" \| "partial", rulesUsed?: string[], workspace?: string` |
 | `memory_search` | Search playbook bullets and/or cass history | `query: string, scope?: "playbook" \| "cass" \| "both", limit?: number, days?: number, workspace?: string, language?: string, framework?: string, taskType?: string` |
 | `memory_reflect` | Trigger reflection on recent sessions | `days?: number, maxSessions?: number, dryRun?: boolean, workspace?: string, agent?: string, session?: string` |
 | `cm_why` | Explain a rule: reasoning, sources, feedback, and cass history found by its search pointer | `bulletId: string, history?: boolean, verbose?: boolean` |
 | `cm_conflicts` | List directly opposing instructions with clause evidence for scope review | `category?: string, workspace?: string` |
 
 For a server serving several projects, pass the same `workspace` to `cm_context`,
-`memory_search`, and `cm_feedback`. These tools resolve that project's playbook
+`memory_search`, `cm_feedback`, and `cm_outcome`. These tools resolve that project's playbook
 and configuration without changing the server's working directory. Feedback
 prefers the selected repository rule, then a global rule with the requested ID;
 it does not fall back to another project's rule. An unreadable repository
 playbook is an error, since silently updating a global rule could credit the
 wrong instruction. Named scope filters on `cm_context` and `memory_search`
 have the same exact-match behavior as the CLI flags.
+
+`cm_outcome` records the event without applying feedback immediately. Apply these
+records with `cm outcome-apply --workspace <project>`; each record uses its stored
+owner and that workspace's scoring policy.
 
 ### Resources Exposed
 

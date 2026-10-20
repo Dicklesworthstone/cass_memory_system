@@ -8,15 +8,17 @@
  * - Pointing `config.cassPath` at a non-existent binary so `cassExport` uses fallback parsing
  */
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import yaml from "yaml";
 
 import { withLock } from "../src/lock.js";
+import type { LLMIO } from "../src/llm.js";
 import { orchestrateReflection } from "../src/orchestrator.js";
+import { prepareOutcome } from "../src/outcome.js";
 import { tagCmSubprocessPrompt } from "../src/subprocess-tag.js";
 import { getProcessedLogPath, ProcessedLog } from "../src/tracking.js";
-import type { PlaybookBullet, PlaybookDelta } from "../src/types.js";
+import type { Config, PlaybookBullet, PlaybookDelta, ProcessedEntry } from "../src/types.js";
 import { expandPath, jaccardSimilarity, now } from "../src/utils.js";
 import { createBullet, createTestConfig, createTestFeedbackEvent, createTestPlaybook } from "./helpers/factories.js";
 import { type LlmShimConfig, withLlmShim } from "./helpers/llm-shim.js";
@@ -1508,6 +1510,320 @@ describe("orchestrateReflection project-scoped rules (#81)", () => {
       const saved = readPlaybook(env.playbookPath);
       const rule = saved.bullets.find((b: any) => b.content.includes("task runner"));
       expect(rule.scope).toBe("global");
+    });
+  });
+});
+
+interface QueuedOutcomeFixture {
+  env: TestEnv;
+  config: Config;
+  io: LLMIO;
+  sessionPath: string;
+  logPath: string;
+  outcomePath: string;
+  repoPath?: string;
+  entry: () => Promise<ProcessedEntry>;
+  reflectorCalls: () => number;
+}
+
+async function withQueuedAutoOutcome(
+  check: (fixture: QueuedOutcomeFixture) => Promise<void>,
+  options: { repoRule?: boolean; inlineFeedback?: boolean } = {},
+): Promise<void> {
+  await withIsolatedHome(async (env) => {
+    const rules = [createBullet({
+      id: "b-global1", content: "Validate exporter output with deterministic tests.",
+      helpfulCount: 0, feedbackEvents: [],
+    })];
+    if (options.inlineFeedback) rules.push(createBullet({
+      id: "b-inline1", content: "Keep the fixture data small and explicit.",
+      helpfulCount: 0, feedbackEvents: [],
+    }));
+    writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook(rules)));
+    let repoPath: string | undefined;
+    if (options.repoRule) {
+      const repoRoot = path.join(env.home, "original-project");
+      repoPath = path.join(repoRoot, ".cass", "playbook.yaml");
+      mkdirSync(path.dirname(repoPath), { recursive: true });
+      expect(Bun.spawnSync(["git", "init", "--quiet", repoRoot]).exitCode).toBe(0);
+      writeFileSync(repoPath, yaml.stringify(createTestPlaybook([createBullet({
+        id: "b-repo222", content: "Check the project exporter schema before release.",
+        helpfulCount: 0, feedbackEvents: [],
+      })])));
+      process.chdir(repoRoot);
+    }
+    const sessionPath = path.join(env.home, "sessions", "recoverable.jsonl");
+    writeJsonlSession(sessionPath, [
+      { role: "user", content: `Following b-global1${options.repoRule ? " and b-repo222" : ""}, refactor the exporter and verify the output with deterministic tests.` },
+      { role: "assistant", content: `The work is complete and all tests passed. Perfect, thanks!${options.inlineFeedback ? "\n// [cass: helpful b-inline1] - the fixture rule helped" : ""}` },
+    ]);
+    const config = createTestConfig({
+      playbookPath: env.playbookPath, diaryDir: env.diaryDir,
+      cassPath: "/__missing__/cass", validationEnabled: false, semanticSearchEnabled: false,
+    });
+    const outcomePath = path.join(repoPath ? path.dirname(repoPath) : path.dirname(env.playbookPath), "outcomes.jsonl");
+    // A directory at the log path causes a deterministic real I/O error.
+    // Renaming it later repairs storage without deleting any fixture data.
+    mkdirSync(outcomePath);
+    const logPath = expandPath(getProcessedLogPath());
+    const entry = async () => {
+      const log = new ProcessedLog(logPath);
+      await log.load();
+      const saved = log.get(sessionPath);
+      expect(saved).toBeDefined();
+      return saved!;
+    };
+    let calls = 0;
+    await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
+      await withLlmShim({ reflector: () => { calls++; return { deltas: [] }; } }, async (io) => {
+        const first = await orchestrateReflection(config, { session: sessionPath, io });
+        expect(first.sessionsProcessed).toBe(1);
+        expect(first.errors).toHaveLength(1);
+        expect(first.errors[0]).toContain("Auto-outcome recovery failed");
+        expect((await entry()).pendingOutcomes).toHaveLength(1);
+        await check({ env, config, io, sessionPath, logPath, outcomePath, repoPath, entry, reflectorCalls: () => calls });
+      });
+    });
+  });
+}
+
+describe("orchestrateReflection durable outcome recovery", () => {
+  test.each(["same workspace", "recorded project"])("uses the %s policy and current sanitization protections during recovery", async (owner) => {
+    await withIsolatedHome(async (env) => {
+      writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([createBullet({
+        id: "b-global1", content: "Check the exporter with deterministic fixtures.",
+        helpfulCount: 0, feedbackEvents: [], maturity: "candidate",
+      })])));
+      let workspace = env.home;
+      if (owner === "recorded project") {
+        workspace = path.join(env.home, "recorded-project");
+        mkdirSync(path.join(workspace, ".cass"), { recursive: true });
+        expect(Bun.spawnSync(["git", "init", "--quiet", workspace]).exitCode).toBe(0);
+        writeFileSync(path.join(workspace, ".cass", "config.json"), JSON.stringify({
+          scoring: { minFeedbackForActive: 1, minHelpfulForProven: 99 },
+          sanitization: { extraPatterns: ["TARGET_PRIVATE"] },
+        }));
+      }
+      const defaults = createTestConfig();
+      const config = createTestConfig({
+        playbookPath: env.playbookPath, diaryDir: env.diaryDir, cassPath: "/__missing__/cass",
+        scoring: { ...defaults.scoring, minFeedbackForActive: owner === "same workspace" ? 1 : 99, minHelpfulForProven: 99 },
+        sanitization: { ...defaults.sanitization, enabled: true, extraPatterns: ["RUN_PRIVATE"] },
+      });
+      const sessionPath = path.join(env.home, "already-processed.jsonl");
+      // This record was legitimately prepared under an earlier less strict
+      // policy. Recovery must apply the protections configured now.
+      const prepared = await prepareOutcome({
+        sessionId: sessionPath, workspace, outcome: "success", rulesUsed: ["b-global1"],
+        task: "RUN_PRIVATE TARGET_PRIVATE",
+      }, { ...config, sanitization: { ...defaults.sanitization, enabled: false, extraPatterns: [] } });
+      const logPath = expandPath(getProcessedLogPath());
+      await new ProcessedLog(logPath).append({
+        sessionPath, processedAt: prepared.recordedAt, deltasGenerated: 0,
+        pendingOutcomes: [prepared],
+      });
+
+      const result = await orchestrateReflection(config, { session: sessionPath });
+      expect(result.errors).toEqual([]);
+      expect(result.autoOutcome?.feedbackApplied).toBe(1);
+      expect(readPlaybook(env.playbookPath).bullets[0].maturity).toBe("established");
+      const recorded = JSON.parse(readFileSync(prepared.path, "utf8").trim());
+      expect(recorded.task).not.toContain("RUN_PRIVATE");
+      if (owner === "recorded project") expect(recorded.task).not.toContain("TARGET_PRIVATE");
+      expect(process.cwd()).toBe(env.home);
+    });
+  });
+
+  test("replays a failed outcome after repair without repeating reflection or inline feedback, and leaves dry runs unchanged", async () => {
+    await withQueuedAutoOutcome(async ({ env, config, io, sessionPath, logPath, outcomePath, entry, reflectorCalls }) => {
+      const pending = (await entry()).pendingOutcomes![0]!;
+      expect(pending.id).toBeDefined();
+      expect(pending.ruleTargets).toEqual([{ ruleId: "b-global1", playbookPath: env.playbookPath }]);
+      expect(readPlaybook(env.playbookPath).bullets.find((b: PlaybookBullet) => b.id === "b-inline1").helpfulCount).toBe(1);
+      const beforeLog = readFileSync(logPath, "utf8");
+      const beforePlaybook = readFileSync(env.playbookPath, "utf8");
+      renameSync(outcomePath, `${outcomePath}.blocked-directory`);
+
+      const dryRun = await orchestrateReflection(config, { session: sessionPath, io, dryRun: true });
+      expect(dryRun.errors).toEqual([]);
+      expect(readFileSync(logPath, "utf8")).toBe(beforeLog);
+      expect(readFileSync(env.playbookPath, "utf8")).toBe(beforePlaybook);
+      expect(existsSync(outcomePath)).toBe(false);
+
+      const recovered = await orchestrateReflection(config, { session: sessionPath, io });
+      expect(recovered.errors).toEqual([]);
+      expect(recovered.sessionsProcessed).toBe(0);
+      expect(recovered.autoOutcome?.feedbackApplied).toBe(1);
+      expect(reflectorCalls()).toBe(1);
+      expect((await entry()).pendingOutcomes).toEqual([]);
+      const records = readFileSync(outcomePath, "utf8").trim().split("\n").map(line => JSON.parse(line));
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({ id: pending.id, recordedAt: pending.recordedAt });
+      const saved = readPlaybook(env.playbookPath);
+      expect(saved.bullets.find((b: PlaybookBullet) => b.id === "b-global1").helpfulCount).toBe(1);
+      expect(saved.bullets.find((b: PlaybookBullet) => b.id === "b-inline1").helpfulCount).toBe(1);
+
+      const again = await orchestrateReflection(config, { session: sessionPath, io });
+      expect(again.errors).toEqual([]);
+      expect(again.autoOutcome).toBeUndefined();
+      expect(readFileSync(outcomePath, "utf8").trim().split("\n")).toHaveLength(1);
+    }, { inlineFeedback: true });
+  });
+
+  test("retries an interrupted acknowledgement without duplicating the persisted record or feedback", async () => {
+    await withQueuedAutoOutcome(async ({ env, config, io, sessionPath, logPath, outcomePath, entry, reflectorCalls }) => {
+      const original = (await entry()).pendingOutcomes;
+      renameSync(outcomePath, `${outcomePath}.blocked-directory`);
+      const interrupted = await withLock(logPath, () => orchestrateReflection(config, { session: sessionPath, io }));
+      expect(interrupted.errors.some(message => message.includes("acknowledgement failed"))).toBe(true);
+      expect((await entry()).pendingOutcomes).toEqual(original);
+      expect(readPlaybook(env.playbookPath).bullets[0].helpfulCount).toBe(1);
+
+      const retried = await orchestrateReflection(config, { session: sessionPath, io });
+      expect(retried.errors).toEqual([]);
+      expect(retried.autoOutcome?.feedbackApplied).toBe(0);
+      expect((await entry()).pendingOutcomes).toEqual([]);
+      expect(readPlaybook(env.playbookPath).bullets[0].helpfulCount).toBe(1);
+      expect(readFileSync(outcomePath, "utf8").trim().split("\n")).toHaveLength(1);
+      expect(reflectorCalls()).toBe(1);
+    });
+  });
+
+  test("recovers feedback after one playbook saved and a second playbook was temporarily locked", async () => {
+    await withQueuedAutoOutcome(async ({ env, config, io, sessionPath, outcomePath, repoPath, entry, reflectorCalls }) => {
+      renameSync(outcomePath, `${outcomePath}.blocked-directory`);
+      const interrupted = await withLock(repoPath!, () => orchestrateReflection(config, { session: sessionPath, io }));
+      expect(interrupted.errors.some(message => message.includes("Auto-outcome recovery failed"))).toBe(true);
+      expect(readPlaybook(env.playbookPath).bullets[0].helpfulCount).toBe(1);
+      expect(readPlaybook(repoPath!).bullets[0].helpfulCount).toBe(0);
+      expect((await entry()).pendingOutcomes).toHaveLength(1);
+
+      const recovered = await orchestrateReflection(config, { session: sessionPath, io });
+      expect(recovered.errors).toEqual([]);
+      expect(recovered.autoOutcome?.feedbackApplied).toBe(1);
+      expect(readPlaybook(env.playbookPath).bullets[0].helpfulCount).toBe(1);
+      expect(readPlaybook(repoPath!).bullets[0].helpfulCount).toBe(1);
+      expect((await entry()).pendingOutcomes).toEqual([]);
+      expect(readFileSync(outcomePath, "utf8").trim().split("\n")).toHaveLength(1);
+      expect(reflectorCalls()).toBe(1);
+    }, { repoRule: true });
+  });
+
+  test("preserves old pending work when the transcript grows and queues the new segment separately", async () => {
+    await withQueuedAutoOutcome(async ({ env, config, io, sessionPath, outcomePath, entry, reflectorCalls }) => {
+      const firstId = (await entry()).pendingOutcomes![0]!.id;
+      appendJsonl(sessionPath, [
+        { role: "user", content: "Apply b-global1 again to validate the new exporter format added in this continuation." },
+        { role: "assistant", content: "The new format is complete and all tests passed. Perfect!" },
+      ]);
+      const grown = await orchestrateReflection(config, { session: sessionPath, io });
+      expect(grown.sessionsProcessed).toBe(1);
+      expect(grown.errors).toHaveLength(2);
+      const queued = await entry();
+      expect(queued.recordCount).toBe(4);
+      expect(queued.pendingOutcomes).toHaveLength(2);
+      expect(queued.pendingOutcomes![0]!.id).toBe(firstId);
+      expect(queued.pendingOutcomes![1]!.id).not.toBe(firstId);
+
+      renameSync(outcomePath, `${outcomePath}.blocked-directory`);
+      const recovered = await orchestrateReflection(config, { session: sessionPath, io });
+      expect(recovered.errors).toEqual([]);
+      expect(recovered.autoOutcome?.feedbackApplied).toBe(2);
+      expect(readPlaybook(env.playbookPath).bullets[0].helpfulCount).toBe(2);
+      expect((await entry()).pendingOutcomes).toEqual([]);
+      expect(readFileSync(outcomePath, "utf8").trim().split("\n")).toHaveLength(2);
+      expect(reflectorCalls()).toBe(2);
+    });
+  });
+
+  test.each(["rewritten transcript", "failed reflection", "short continuation", "self-call continuation"])("retains pending outcomes through a %s", async (kind) => {
+    await withQueuedAutoOutcome(async ({ env, config, io, sessionPath, entry }) => {
+      const original = (await entry()).pendingOutcomes;
+      if (kind === "rewritten transcript") {
+        writeJsonlSession(sessionPath, [{ role: "user", content: "A compacted replacement for the already reflected transcript." }]);
+      } else {
+        appendJsonl(sessionPath, [{
+          role: "user",
+          content: kind === "short continuation" ? "ok"
+            : kind === "self-call continuation" ? tagCmSubprocessPrompt("Reflect on the previous session and its rules.")
+            : "Continue the exporter refactoring with another substantial task that must reach reflection.",
+        }]);
+      }
+      const result = kind === "failed reflection"
+        ? await withLlmShim({ errors: { reflector: new Error("temporary provider failure") } }, failedIo =>
+          orchestrateReflection(config, { session: sessionPath, io: failedIo }))
+        : await orchestrateReflection(config, { session: sessionPath, io });
+      expect(result.errors.some(message => message.includes("Auto-outcome recovery failed"))).toBe(true);
+      expect((await entry()).pendingOutcomes).toEqual(original);
+      if (kind === "failed reflection") expect((await entry()).status).toBe("failed");
+      expect(readPlaybook(env.playbookPath).bullets[0].helpfulCount).toBe(0);
+    });
+  });
+
+  test("recovers an unchanged legacy entry before the no-eligible-session return", async () => {
+    await withQueuedAutoOutcome(async ({ config, io, sessionPath, logPath, outcomePath, entry, reflectorCalls }) => {
+      const saved = await entry();
+      await new ProcessedLog(logPath).append({ ...saved, recordCount: undefined, lastRecordHash: undefined });
+      renameSync(outcomePath, `${outcomePath}.blocked-directory`);
+      const recovered = await orchestrateReflection(config, { session: sessionPath, io });
+      expect(recovered.sessionsProcessed).toBe(0);
+      expect(recovered.errors).toEqual([]);
+      expect(recovered.autoOutcome?.feedbackApplied).toBe(1);
+      expect((await entry()).pendingOutcomes).toEqual([]);
+      expect(reflectorCalls()).toBe(1);
+    });
+  });
+
+  test("replays against the original repository after the caller changes working directory", async () => {
+    await withQueuedAutoOutcome(async ({ env, config, io, sessionPath, outcomePath, repoPath, entry }) => {
+      const otherRoot = path.join(env.home, "other-project");
+      const otherPlaybook = path.join(otherRoot, ".cass", "playbook.yaml");
+      mkdirSync(path.dirname(otherPlaybook), { recursive: true });
+      expect(Bun.spawnSync(["git", "init", "--quiet", otherRoot]).exitCode).toBe(0);
+      writeFileSync(otherPlaybook, yaml.stringify(createTestPlaybook([createBullet({
+        id: "b-repo222", content: "An unrelated rule with the same ID in another project.",
+        helpfulCount: 0, feedbackEvents: [],
+      })])));
+      renameSync(outcomePath, `${outcomePath}.blocked-directory`);
+      process.chdir(otherRoot);
+
+      const recovered = await orchestrateReflection(config, { session: sessionPath, io });
+      expect(recovered.errors).toEqual([]);
+      expect(readPlaybook(repoPath!).bullets[0].helpfulCount).toBe(1);
+      expect(readPlaybook(otherPlaybook).bullets[0].helpfulCount).toBe(0);
+      expect(existsSync(path.join(otherRoot, ".cass", "outcomes.jsonl"))).toBe(false);
+      expect((await entry()).pendingOutcomes).toEqual([]);
+    }, { repoRule: true });
+  });
+
+  test("preparation failure stops before curation and before advancing the watermark", async () => {
+    await withIsolatedHome(async (env) => {
+      writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([createBullet({
+        id: "b-global1", content: "Validate exporter output with deterministic tests.",
+        helpfulCount: 0, feedbackEvents: [],
+      })])));
+      const sessionPath = path.join(env.home, "sessions", "prepare-fails.jsonl");
+      writeJsonlSession(sessionPath, [
+        { role: "user", content: "Following b-global1, refactor the exporter and validate the output carefully." },
+        { role: "assistant", content: "The work is complete and all tests passed. Perfect!" },
+      ]);
+      mkdirSync(path.join(env.home, ".cass-memory", "context-log.jsonl"));
+      const config = createTestConfig({
+        playbookPath: env.playbookPath, diaryDir: env.diaryDir,
+        cassPath: "/__missing__/cass", validationEnabled: false,
+      });
+      const before = readFileSync(env.playbookPath, "utf8");
+      await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
+        await withLlmShim({ reflector: { deltas: [{ type: "helpful", bulletId: "b-global1", sourceSession: sessionPath }] } }, async (io) => {
+          const result = await orchestrateReflection(config, { session: sessionPath, io });
+          expect(result.errors.some(message => message.includes("Auto-outcome preparation failed"))).toBe(true);
+          expect(result.sessionsProcessed).toBe(0);
+          expect(readFileSync(env.playbookPath, "utf8")).toBe(before);
+          const processed = new ProcessedLog(expandPath(getProcessedLogPath()));
+          await processed.load();
+          expect(processed.has(sessionPath)).toBe(false);
+        });
+      });
     });
   });
 });
