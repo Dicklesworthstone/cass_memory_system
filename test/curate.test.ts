@@ -104,6 +104,86 @@ describe("curatePlaybook", () => {
       expect(result.playbook.bullets).toHaveLength(2);
     });
 
+    it("checks the incoming rule's workspace before reporting a curation conflict", () => {
+      for (const [workspace, scope, expectedConflicts] of [
+        ["/scope-b", "workspace", 0],
+        ["/scope-a", "workspace", 1],
+        ["/scope-a/src", "workspace", 1],
+        [undefined, "global", 1],
+      ] as const) {
+        const playbook = createTestPlaybook([createTestBullet({
+          id: "b-existing",
+          content: "Always commit generated lockfiles",
+          scope: "workspace",
+          workspace: "/scope-a",
+        })]);
+        const delta: PlaybookDelta = {
+          type: "add",
+          bullet: { content: "Never commit generated lockfiles", category: "git", scope, workspace },
+          sourceSession: "/session/scoped.jsonl",
+          reason: "Workspace-specific guidance",
+        };
+        const result = curatePlaybook(playbook, [delta], config);
+        expect(result.conflicts).toHaveLength(expectedConflicts);
+        expect(result.applied).toBe(1);
+        expect(result.playbook.bullets).toHaveLength(2);
+      }
+    });
+
+    it("does not report a conflict between explicit different language selectors", () => {
+      const playbook = createTestPlaybook([createTestBullet({
+        id: "b-existing",
+        content: "Always commit generated lockfiles",
+        scope: "language",
+        scopeKey: "typescript",
+      })]);
+      const result = curatePlaybook(playbook, [{
+        type: "add",
+        bullet: {
+          content: "Never commit generated lockfiles",
+          category: "git",
+          scope: "language",
+          scopeKey: "python",
+        },
+        sourceSession: "/session/scoped.jsonl",
+        reason: "Different language policy",
+      }], config);
+      expect(result.conflicts).toEqual([]);
+      expect(result.applied).toBe(1);
+      expect(result.playbook.bullets).toHaveLength(2);
+      expect(result.playbook.bullets[1].scopeKey).toBe("python");
+    });
+
+    it("preserves scope selectors when checking other rules added in the same batch", () => {
+      const result = curatePlaybook(emptyPlaybook, [
+        {
+          type: "add",
+          bullet: {
+            content: "Always commit generated lockfiles",
+            category: "git",
+            scope: "language",
+            scopeKey: "typescript",
+          },
+          sourceSession: "/session/typescript.jsonl",
+          reason: "TypeScript policy",
+        },
+        {
+          type: "add",
+          bullet: {
+            content: "Never commit generated lockfiles",
+            category: "git",
+            scope: "language",
+            scopeKey: "python",
+          },
+          sourceSession: "/session/python.jsonl",
+          reason: "Python policy",
+        },
+      ], config);
+      expect(result.conflicts).toEqual([]);
+      expect(result.applied).toBe(2);
+      expect(result.playbook.bullets.map((b) => b.scopeKey)).toEqual(["typescript", "python"]);
+    });
+
     it("reinforces similar bullet instead of adding duplicate", () => {
       const existingBullet = createTestBullet({
         id: "existing-1",
@@ -1365,5 +1445,135 @@ describe("curatePlaybook lexical dedup polarity guard", () => {
     );
     expect(result.playbook.bullets).toHaveLength(2);
     expect(result.playbook.bullets.find((b) => b.id === "b-mock")?.helpfulCount).toBe(0);
+  });
+});
+
+describe("curatePlaybook conflict and dedup scope guards", () => {
+  const distinctRules: Array<[string, string, string]> = [
+    [
+      "negative rules with different qualifiers",
+      "Never cache tokens without expiry",
+      "Never cache tokens with expiry",
+    ],
+    [
+      "positive rules with different when conditions",
+      "Use local caching when the server is online",
+      "Use local caching when the server is offline",
+    ],
+    [
+      "positive rules with different if conditions",
+      "Run integration tests if the database is available",
+      "Run integration tests if the database is unavailable",
+    ],
+    [
+      "a prerequisite and an exception",
+      "Cache tokens only if expiry is configured",
+      "Cache tokens unless expiry is configured",
+    ],
+  ];
+
+  for (const mode of ["lexical", "semantic"] as const) {
+    for (const [name, existingContent, incomingContent] of distinctRules) {
+      it(`preserves ${name} under ${mode} deduplication`, () => {
+        const existing = createTestBullet({
+          id: "b-existing",
+          content: existingContent,
+          helpfulCount: 0,
+          feedbackEvents: [],
+        });
+        const playbook = createTestPlaybook([existing]);
+        const config = createTestConfig({
+          // Exercise lexical matching directly, or force the semantic path
+          // past lexical matching with an intentionally identical vector.
+          dedupSimilarityThreshold: mode === "lexical" ? 0.5 : 1,
+        });
+        const result = curatePlaybook(
+          playbook,
+          [{
+            type: "add",
+            bullet: {
+              content: incomingContent,
+              category: "testing",
+              scope: "global",
+              kind: "workflow_rule",
+            },
+            sourceSession: "/session/scope-regression.jsonl",
+            reason: "Distinct conditions must remain independently reviewable",
+          }],
+          config,
+          undefined,
+          mode === "semantic"
+            ? {
+                semanticIndex: {
+                  threshold: 0.9,
+                  embeddings: new Map([
+                    [hashContent(existingContent), [1, 0]],
+                    [hashContent(incomingContent), [1, 0]],
+                  ]),
+                },
+              }
+            : undefined,
+        );
+
+        expect(result.applied).toBe(1);
+        expect(result.skipped).toBe(0);
+        expect(result.playbook.bullets.map((b) => b.content)).toEqual([
+          existingContent,
+          incomingContent,
+        ]);
+        expect(result.playbook.bullets[0].helpfulCount).toBe(0);
+        expect(result.playbook.bullets[0].feedbackEvents).toEqual([]);
+        // Distinct conditions justify retaining both rules, but do not by
+        // themselves establish opposing instructions in the same situation.
+        expect(result.conflicts).toEqual([]);
+      });
+    }
+  }
+
+  it("adds complementary defect-investigation guidance without a conflict warning", () => {
+    const existingContent = "Reproduce the defect on the base revision before attributing responsibility";
+    const incomingContent = "Never attribute responsibility for the defect without reproducing it on the base revision";
+    const playbook = createTestPlaybook([
+      createTestBullet({ id: "b-investigate", content: existingContent }),
+    ]);
+    const result = curatePlaybook(
+      playbook,
+      [{
+        type: "add",
+        bullet: {
+          content: incomingContent,
+          category: "debugging",
+          scope: "global",
+          kind: "workflow_rule",
+        },
+        sourceSession: "/session/compatible-investigation.jsonl",
+        reason: "Complementary requirement",
+      }],
+      createTestConfig(),
+    );
+
+    expect(result.applied).toBe(1);
+    expect(result.conflicts).toEqual([]);
+    expect(result.decisionLog?.filter((entry) => entry.phase === "conflict")).toEqual([]);
+    expect(result.playbook.bullets.map((b) => b.content)).toEqual([existingContent, incomingContent]);
+  });
+
+  it("still reports direct opposition introduced within one curation batch", () => {
+    const contents = ["Always commit generated lockfiles", "Never commit generated lockfiles"];
+    const deltas: PlaybookDelta[] = contents.map((content, index) => ({
+      type: "add",
+      bullet: { content, category: "git", scope: "global", kind: "workflow_rule" },
+      sourceSession: `/session/batch-${index}.jsonl`,
+      reason: "Distinct incoming guidance",
+    }));
+    const result = curatePlaybook(createTestPlaybook(), deltas, createTestConfig());
+
+    expect(result.applied).toBe(2);
+    expect(result.playbook.bullets.map((b) => b.content)).toEqual(contents);
+    expect(result.conflicts).toHaveLength(1);
+    expect(result.conflicts[0].newBulletContent).toBe(contents[1]);
+    expect(result.conflicts[0].conflictingContent).toBe(contents[0]);
+    expect(result.conflicts[0].conflictingBulletId).toBe(result.playbook.bullets[0].id);
+    expect(result.playbook.bullets[0].helpfulCount).toBe(0);
   });
 });

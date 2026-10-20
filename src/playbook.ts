@@ -529,6 +529,7 @@ export function addBullet(
     type: data.type || "rule",
     isNegative: data.isNegative || false,
     scope: data.scope || "global",
+    scopeKey: data.scopeKey,
     workspace: data.workspace,
     source: data.source || "learned",
     tags: data.tags || [],

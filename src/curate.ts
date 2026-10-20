@@ -1,3 +1,4 @@
+import path from "node:path";
 import { addBullet, deprecateBullet, findBullet } from "./playbook.js";
 import { checkForDemotion, checkForPromotion, getDecayedCounts } from "./scoring.js";
 import { cosineSimilarity, type SemanticDedupIndex } from "./semantic.js";
@@ -21,6 +22,7 @@ import {
   now,
   tokenize,
 } from "./utils.js";
+import { canonicalWorkspacePath, workspaceMatches } from "./workspace.js";
 
 function findSimilarBulletFromMeta(
   newTokens: Set<string>,
@@ -66,13 +68,11 @@ function findSimilarBulletFromMeta(
 
 // --- Helper: Conflict Detection ---
 //
-// Rules are compared clause by clause. A rule such as "Set explicit timeouts on
-// HTTP calls; never rely on defaults" makes two directives with different
-// polarity, and judging the rule as one bag of words (any "never" anywhere ->
-// negative) flagged it against every timeout rule. Each clause gets its own
-// polarity and topic (content words minus stop words and directive markers);
-// two rules conflict only when an affirming and a negating clause, or an
-// "always" and an "except/unless" clause, share most of their topic.
+// Topic overlap is useful for protecting deduplication, but is not evidence of
+// a contradiction (#95). Reporting requires parsed instructions with the same
+// actor, action, object and overlapping conditions, and opposite polarity.
+// This deliberately recognizes a limited grammar: an unparsed instruction is
+// unknown, not a confirmed conflict and not proof that it is safe to merge.
 
 const NEGATIVE_MARKERS = [
   "never",
@@ -134,9 +134,9 @@ const DIRECTIVE_WORDS = new Set([
   "sure",
 ]);
 
-/** Minimum shared topic words, and shared fraction of the smaller topic, for two clauses to be about the same thing. */
-const CONFLICT_MIN_SHARED = 2;
-const CONFLICT_MIN_OVERLAP = 0.5;
+/** Topic overlap protects deduplication only; it cannot establish a conflict. */
+const DEDUP_GUARD_MIN_SHARED = 2;
+const DEDUP_GUARD_MIN_OVERLAP = 0.5;
 
 function hasMarker(text: string, markers: string[]): boolean {
   // Use word boundaries to avoid substring matches (e.g., "use" matching "user")
@@ -147,18 +147,217 @@ function hasMarker(text: string, markers: string[]): boolean {
 type ClausePolarity = "negative" | "positive" | "neutral";
 
 interface DirectiveClause {
+  text: string;
   polarity: ClausePolarity;
   exception: boolean;
   topic: Set<string>;
+  directive: ParsedDirective | null;
+}
+
+interface ParsedDirective {
+  actor: string;
+  verb: string;
+  object: string;
+  negative: boolean;
+  universal: boolean;
+  condition: string | null;
+  requiresAction: boolean;
+}
+
+export interface ConflictEvidence {
+  kind: "opposite-directives";
+  aClause: string;
+  bClause: string;
+  action: string;
+  condition: string | null;
+}
+
+// A bounded command vocabulary prevents descriptive prose ("The tests do not
+// fail") from being mistaken for an imperative. Inflections apply to the verb
+// only; retrieval stemming must never erase object qualifiers or identifiers.
+const ACTION_VERBS = new Set([
+  "accept", "add", "allow", "apply", "attribute", "block", "cache", "check",
+  "commit", "compare", "configure", "copy", "create", "delete", "deploy",
+  "disable", "document", "drop", "emit", "enable", "encrypt", "enforce",
+  "establish", "exclude", "execute", "include", "inspect", "install", "keep",
+  "load", "log", "merge", "mock", "omit", "pin", "preserve", "publish",
+  "push", "read", "record", "reject", "release", "remove", "reproduce",
+  "require", "retain", "retry", "review", "run", "sanitize", "save", "set",
+  "sign", "skip", "start", "stop", "store", "supply", "test", "update",
+  "use", "validate", "verify", "wait", "write",
+]);
+
+function actionVerb(word: string): string | null {
+  if (ACTION_VERBS.has(word)) return word;
+  for (const verb of ACTION_VERBS) {
+    if (
+      word === `${verb}s` || word === `${verb}ing` ||
+      (verb.endsWith("e") && word === `${verb.slice(0, -1)}ing`) ||
+      word === `${verb}${verb.at(-1)}ing`
+    ) return verb;
+  }
+  return null;
+}
+
+/** Keep order, negation, prepositions, numbers and code intact. */
+function instructionText(text: string): string {
+  return text
+    .split(/(`[^`]*`)/)
+    .map((part) => part.startsWith("`") ? part : part.toLowerCase().replace(/\bthe\s+/g, ""))
+    .join("")
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function conditionText(text: string): string {
+  return instructionText(text).replace(/^when\b/, "if");
+}
+
+function parseDirective(clause: string): ParsedDirective | null {
+  let text = instructionText(clause);
+  const conditions: string[] = [];
+
+  // A leading condition must have an unambiguous boundary. Never borrow its
+  // negation ("If tests do not pass, ...") as the action's polarity.
+  if (/^(?:if|when|unless|before|after|while|once|until|during|in|for)\b/.test(text)) {
+    const comma = text.indexOf(",");
+    if (comma < 0) return null;
+    conditions.push(conditionText(text.slice(0, comma)));
+    text = text.slice(comma + 1).trim();
+  }
+
+  // Ignore the rationale, not restrictions such as "without expiry". These
+  // purpose constructions account for many unrelated negations in long rules.
+  text = text.split(/\s+(?:because|so that|in order to|to (?:avoid|prevent|improve|reduce|increase|keep|save)|for performance)\b/, 1)[0].trim();
+
+  // Only-if/except/unless restrict applicability; they do not instruct the
+  // opposite behavior in the exception. Preserve the marker in the condition.
+  const only = text.startsWith("only ");
+  if (only) text = text.slice(5);
+  const suffix = /\s+(only if|only when|except(?: when| if)?|unless|if|when|while|until)\s+/.exec(text);
+  if (suffix) {
+    conditions.push(conditionText(`${only ? "only " : ""}${text.slice(suffix.index).trim()}`));
+    text = text.slice(0, suffix.index).trim();
+  } else if (only) {
+    return null;
+  }
+
+  // Combinations, quotations and subordinate predicates are outside this
+  // grammar. Guessing their scope would reintroduce the bag-of-words bug.
+  if (!text || /[,;!?\n"“”()[\]{}]|\b(?:and|or|that|which|who|whether|why|how)\b/.test(text)) return null;
+
+  let actor = "";
+  let negative = false;
+  let universal = false;
+  const modal = /^(?:(.+?)\s+)?(must|should|shall)\s+/.exec(text);
+  if (modal) {
+    actor = modal[1] === "you" ? "" : (modal[1] ?? "");
+    if (actor && !/^[a-z][a-z0-9 _-]*$/.test(actor)) return null;
+    if (actor && actionVerb(actor.split(" ")[0])) return null;
+    universal = modal[2] === "must" || modal[2] === "shall";
+    text = text.slice(modal[0].length);
+  }
+  if (/^(?:always|never)\s+/.test(text)) {
+    negative = text.startsWith("never ");
+    universal = true;
+    text = text.replace(/^(?:always|never)\s+/, "");
+  } else {
+    const negation = /^(?:do not|don't|dont|must not|mustn't|should not|shouldn't|shall not|not)\s+/.exec(text);
+    if (negation) {
+      negative = true;
+      universal = true;
+      text = text.slice(negation[0].length);
+    }
+  }
+
+  const avoid = /^(?:avoid|forbid|prevent)[:\s]+/.exec(text);
+  if (avoid) {
+    negative = !negative;
+    universal = true;
+    text = text.slice(avoid[0].length);
+    // Avoiding a named feature is directly opposed to enabling that feature.
+    // Do not generalize this to arbitrary nouns or equate "use" with "enable".
+    if (!actionVerb(text.split(" ")[0]) && /^[a-z -]+\b(?:validation|logging|caching|authentication|authorization|encryption)$/.test(text)) {
+      text = `enable ${text}`;
+    }
+  }
+  text = text.replace(/^use mocks? (?:for|of)\s+/, "mock ");
+  const command = /^([a-z]+)\s+(.+)$/.exec(text);
+  if (!command) return null;
+  let verb = actionVerb(command[1]);
+  if (!verb) return null;
+  if (command[1] !== verb && !avoid) return null;
+  // Only this explicit state inverse is normalized. "Skip tests" and "run
+  // tests" need not mean exact opposites (e.g. skip a particular test phase).
+  if (verb === "disable") {
+    verb = "enable";
+    negative = !negative;
+  }
+  return {
+    actor, verb, object: command[2], negative, universal,
+    condition: conditions.length > 0 ? conditions.join("; ") : null,
+    // "Only do X if Y" is a prerequisite, not a requirement to do X. Never
+    // infer an affirmative duty from it; not doing X can satisfy both rules.
+    requiresAction: negative || !conditions.some((c) => /^only (?:if|when)\b/.test(c)),
+  };
+}
+
+/** Keep punctuation inside quotations/code/nested examples out of clause splitting. */
+function protectedDirectiveSpans(content: string): { spans: [number, number][]; unclosed: boolean } {
+  const spans: [number, number][] = [];
+  const brackets: string[] = [];
+  let quote: string | null = null;
+  let start = 0;
+  for (let i = 0; i < content.length; i++) {
+    const char = content[i];
+    if (quote !== null) {
+      if (char === "\\") { i++; continue; }
+      if ((quote === "'" || quote === "’") && char === quote &&
+          /\w/.test(content[i - 1] ?? "") && /\w/.test(content[i + 1] ?? "")) continue;
+      if (char === quote) {
+        quote = null;
+        if (brackets.length === 0) spans.push([start, i + 1]);
+      }
+      continue;
+    }
+    if (char === "`" || char === '"' || char === "“" || char === "‘" ||
+        (char === "'" && (i === 0 || !/\w/.test(content[i - 1])))) {
+      if (brackets.length === 0) start = i;
+      quote = char === "“" ? "”" : char === "‘" ? "’" : char;
+    } else if ("([{".includes(char)) {
+      if (brackets.length === 0) start = i;
+      brackets.push(char === "(" ? ")" : char === "[" ? "]" : "}");
+    } else if (brackets.length > 0 && char === brackets.at(-1)) {
+      brackets.pop();
+      if (brackets.length === 0) spans.push([start, i + 1]);
+    }
+  }
+  const unclosed = quote !== null || brackets.length > 0;
+  if (unclosed) spans.push([start, content.length]);
+  return { spans, unclosed };
 }
 
 /** Split a rule into directive clauses: sentence ends, semicolons, and "but"/"however". */
 export function splitDirectiveClauses(content: string): DirectiveClause[] {
-  return content
-    .split(/[;!?\n]+|\.(?=\s|$)|\s[-\u2013\u2014]\s|\bbut\b|\bhowever\b/i)
-    .map((c) => c.trim())
-    .filter((c) => c.length > 0)
-    .map((clause) => {
+  const { spans: protectedSpans, unclosed } = protectedDirectiveSpans(content);
+  const fragments: { text: string; newSentence: boolean }[] = [];
+  let start = 0;
+  let newSentence = true;
+  for (const match of content.matchAll(/[;!?\n]+|\.(?=\s|$)|\s[-\u2013\u2014]\s|\bbut\b|\bhowever\b/gi)) {
+    const position = match.index!;
+    if (protectedSpans.some(([from, to]) => position >= from && position < to)) continue;
+    fragments.push({ text: content.slice(start, position), newSentence });
+    newSentence = /[.!?\n]/.test(match[0]);
+    start = position + match[0].length;
+  }
+  fragments.push({ text: content.slice(start), newSentence });
+
+  let inheritedCondition: string | null = null;
+  return fragments
+    .map((fragment) => {
+      const clause = fragment.text.trim();
+      if (fragment.newSentence) inheritedCondition = null;
       const negative = hasMarker(clause, NEGATIVE_MARKERS);
       const positive = !negative && hasMarker(clause, POSITIVE_MARKERS);
       const topic = new Set(
@@ -166,19 +365,32 @@ export function splitDirectiveClauses(content: string): DirectiveClause[] {
           .filter((t) => !STOP_WORDS.has(t) && !DIRECTIVE_WORDS.has(t))
           .map(stemToken),
       );
+      const directive = unclosed ? null : parseDirective(clause);
+      if (directive) {
+        if (directive.condition === null && inheritedCondition !== null) directive.condition = inheritedCondition;
+        if (!directive.negative && /^only (?:if|when)\b/.test(directive.condition ?? "")) directive.requiresAction = false;
+        inheritedCondition = directive.condition;
+      } else {
+        // Even an unsupported action can introduce a condition governing the
+        // remaining clauses in its sentence.
+        const prefix = /^(if|when|unless|before|after|while|once|until|during|in|for)\b[^,]*,/i.exec(clause);
+        if (prefix) inheritedCondition = conditionText(prefix[0].slice(0, -1));
+      }
       return {
+        text: clause,
         polarity: negative ? "negative" : positive ? "positive" : "neutral",
         exception: hasMarker(clause, EXCEPTION_MARKERS),
         topic,
+        directive,
       } as DirectiveClause;
     })
-    .filter((c) => c.topic.size > 0);
+    .filter((c) => c.topic.size > 0 || c.directive !== null);
 }
 
 function sameTopic(a: Set<string>, b: Set<string>): boolean {
   let shared = 0;
   for (const t of a) if (b.has(t)) shared++;
-  return shared >= CONFLICT_MIN_SHARED && shared / Math.min(a.size, b.size) >= CONFLICT_MIN_OVERLAP;
+  return shared >= DEDUP_GUARD_MIN_SHARED && shared / Math.min(a.size, b.size) >= DEDUP_GUARD_MIN_OVERLAP;
 }
 
 /**
@@ -190,25 +402,71 @@ function sameTopic(a: Set<string>, b: Set<string>): boolean {
 export function directivesDisagree(a: DirectiveClause[], b: DirectiveClause[]): boolean {
   const aNeg = a.some((c) => c.polarity === "negative");
   const bNeg = b.some((c) => c.polarity === "negative");
-  return aNeg !== bNeg || clauseConflict(a, b) !== null;
-}
-
-/** First conflicting clause pair between two rules, or null. */
-function clauseConflict(a: DirectiveClause[], b: DirectiveClause[]): string | null {
+  if (aNeg !== bNeg || clauseConflict(a, b) !== null) return true;
+  // The evidence needed to *merge* is stronger than the evidence needed to
+  // abstain from reporting a conflict. Preserve uncertain polarity/exception
+  // differences and differently qualified versions of the same action.
   for (const ca of a) {
     for (const cb of b) {
       if (!sameTopic(ca.topic, cb.topic)) continue;
-      const aNeg = ca.polarity === "negative";
-      const bNeg = cb.polarity === "negative";
-      if (aNeg !== bNeg) {
-        return "Negation conflict: one rule says to do what the other says to avoid";
+      if (ca.exception !== cb.exception || (ca.polarity === "negative") !== (cb.polarity === "negative")) return true;
+      const da = ca.directive;
+      const db = cb.directive;
+      if (da && db && da.verb === db.verb && da.actor === db.actor) {
+        if (da.negative !== db.negative || da.condition !== db.condition) return true;
+        const qualifiers = (object: string) => {
+          const match = /\b(?:with|without|before|after|only)\b.*$/.exec(object);
+          return (match?.[0] ?? "").replace(/\b(with|without) any\b/g, "$1");
+        };
+        if (qualifiers(da.object) !== qualifiers(db.object)) return true;
       }
-      if (
-        (ca.polarity === "positive" && cb.exception && !ca.exception) ||
-        (cb.polarity === "positive" && ca.exception && !cb.exception)
-      ) {
-        return "Scope conflict: one rule says always, the other names an exception";
-      }
+    }
+  }
+  return false;
+}
+
+function opposingObjects(a: ParsedDirective, b: ParsedDirective): boolean {
+  if (a.object === b.object) return true;
+  const prohibition = a.negative ? a : b;
+  const instruction = a.negative ? b : a;
+  if (!prohibition.universal) return false;
+  // A prohibition on committing a lockfile also covers committing it with a
+  // dependency change. The other direction would incorrectly erase limits
+  // such as "without expiry" from a prohibition.
+  if (instruction.object.startsWith(`${prohibition.object} `) &&
+      /^(?:with|without|before|after|for|to|in|on|during|at|using)\b/.test(instruction.object.slice(prohibition.object.length + 1))) return true;
+  // A blanket prohibition on a bare plural object covers an adjective-qualified
+  // subset: "never drop columns" / "drop unused columns". The reverse is not
+  // true: "never delete production logs" allows deleting other logs.
+  return /^[a-z]+s$/.test(prohibition.object) &&
+    /^[a-z -]+$/.test(instruction.object) &&
+    !/\b(?:with|without|before|after|for|from|to|in|on|of|at|by|not|no|only)\b/.test(instruction.object) &&
+    instruction.object.endsWith(` ${prohibition.object}`);
+}
+
+function overlappingConditions(a: ParsedDirective, b: ParsedDirective): boolean {
+  if (a.condition === b.condition) return true;
+  // Exact matching is intentional. Different conditions might overlap, but
+  // lexical similarity cannot prove that. An explicit universal instruction
+  // does cover a scoped instruction, including an explicitly scoped opposite.
+  return (a.condition === null && a.universal) || (b.condition === null && b.universal);
+}
+
+/** First directly opposing clause pair between two rules, or null. */
+function clauseConflict(a: DirectiveClause[], b: DirectiveClause[]): { reason: string; evidence: ConflictEvidence } | null {
+  for (const ca of a) {
+    const da = ca.directive;
+    if (!da) continue;
+    for (const cb of b) {
+      const db = cb.directive;
+      if (!db || !da.requiresAction || !db.requiresAction || da.negative === db.negative || da.verb !== db.verb || da.actor !== db.actor) continue;
+      if (!opposingObjects(da, db) || !overlappingConditions(da, db)) continue;
+      const action = `${da.verb} ${da.negative ? db.object : da.object}`;
+      const condition = da.condition ?? db.condition;
+      return {
+        reason: `Direct instruction conflict: opposing guidance to ${action}${condition ? ` (${condition})` : ""}; review applicability`,
+        evidence: { kind: "opposite-directives", aClause: ca.text, bClause: cb.text, action, condition },
+      };
     }
   }
   return null;
@@ -229,28 +487,87 @@ export function computeConflictMeta(bullet: PlaybookBullet): ConflictMeta {
   };
 }
 
+type ConflictScope = Partial<Pick<PlaybookBullet, "scope" | "scopeKey" | "workspace">>;
+
+/** Scope metadata is part of applicability, independently of the rule's words. */
+function createScopeMatcher(): (a: ConflictScope, b: ConflictScope) => boolean {
+  const canonicalPaths = new Map<string, string>();
+  const workspacePairs = new Map<string, boolean>();
+  const canonical = (workspace: string): string => {
+    let resolved = canonicalPaths.get(workspace);
+    if (resolved === undefined) {
+      resolved = canonicalWorkspacePath(workspace);
+      canonicalPaths.set(workspace, resolved);
+    }
+    return resolved;
+  };
+  const within = (child: string, parent: string): boolean => {
+    const relative = path.relative(parent, child);
+    return relative === "" ||
+      (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+  };
+
+  return (a, b) => {
+    const aScope = a.scope ?? "global";
+    const bScope = b.scope ?? "global";
+    const aWorkspace = a.workspace?.trim();
+    const bWorkspace = b.workspace?.trim();
+    // A missing workspace may be implicit in a repo playbook. Its provenance
+    // is unavailable here, so do not invent a scope for a confirmed match.
+    if ((aScope === "workspace" && !aWorkspace) || (bScope === "workspace" && !bWorkspace)) {
+      return false;
+    }
+    if (aScope !== bScope || aScope === "global") return true;
+    if (aScope !== "workspace") {
+      const aKey = a.scopeKey?.trim();
+      const bKey = b.scopeKey?.trim();
+      return !aKey || !bKey || aKey === bKey;
+    }
+
+    const aPath = canonical(aWorkspace!);
+    const bPath = canonical(bWorkspace!);
+    if (aPath === bPath) return true;
+    // Most distinct projects are disjoint. Reject them without pairwise
+    // filesystem work or storing an O(n^2) cache of negative comparisons.
+    if (!within(aPath, bPath) && !within(bPath, aPath)) return false;
+    const key = JSON.stringify([aPath, bPath].sort());
+    const cached = workspacePairs.get(key);
+    if (cached !== undefined) return cached;
+    // Ancestor scopes can overlap, except across an independent nested repo.
+    const overlaps = workspaceMatches(aWorkspace!, bWorkspace!) || workspaceMatches(bWorkspace!, aWorkspace!);
+    if (workspacePairs.size >= 1024) workspacePairs.clear();
+    workspacePairs.set(key, overlaps);
+    return overlaps;
+  };
+}
+
 export function detectConflicts(
   newContent: string,
   existingBullets: PlaybookBullet[],
-): { id: string; content: string; reason: string }[] {
+  newScope: ConflictScope = {},
+): { id: string; content: string; reason: string; evidence: ConflictEvidence }[] {
   const meta = existingBullets.map(computeConflictMeta);
-  return detectConflictsWithMeta(newContent, meta);
+  return detectConflictsWithMeta(newContent, meta, newScope);
 }
 
 export function detectConflictsWithMeta(
   newContent: string,
   existingMeta: ConflictMeta[],
-): { id: string; content: string; reason: string }[] {
-  const conflicts: { id: string; content: string; reason: string }[] = [];
+  newScope: ConflictScope = {},
+): { id: string; content: string; reason: string; evidence: ConflictEvidence }[] {
+  const conflicts: { id: string; content: string; reason: string; evidence: ConflictEvidence }[] = [];
   const newClauses = splitDirectiveClauses(newContent);
   if (newClauses.length === 0) return conflicts;
+  const scopesOverlap = createScopeMatcher();
 
   for (const m of existingMeta) {
     // Skip deprecated/retired bullets - consistent with isDeprecated helper
     if (m.bullet.deprecated || m.bullet.maturity === "deprecated" || m.bullet.state === "retired")
       continue;
-    const reason = clauseConflict(newClauses, m.clauses);
-    if (reason) conflicts.push({ id: m.bullet.id, content: m.bullet.content, reason });
+    const match = clauseConflict(newClauses, m.clauses);
+    if (match && scopesOverlap(newScope, m.bullet)) {
+      conflicts.push({ id: m.bullet.id, content: m.bullet.content, ...match });
+    }
   }
 
   return conflicts;
@@ -260,26 +577,57 @@ export interface BulletConflictPair {
   a: { id: string; content: string };
   b: { id: string; content: string };
   reason: string;
+  evidence: ConflictEvidence;
 }
 
 /**
- * Every conflicting pair among active bullets (deprecated/retired skipped),
- * each pair reported once. O(n^2) clause comparisons on precomputed clauses;
- * fine for playbooks of a few thousand rules.
+ * Directly opposing pairs among active bullets, each pair reported once.
+ * Index by actor/action/object head and compare only opposite polarities. This
+ * avoids all-pairs topic scans on large, mostly compatible playbooks. Dense
+ * genuinely conflicting groups still require work proportional to the output.
  */
 export function findBulletConflicts(bullets: PlaybookBullet[]): BulletConflictPair[] {
   const active = bullets
     .filter((b) => !(b.deprecated || b.maturity === "deprecated" || b.state === "retired"))
     .map(computeConflictMeta);
   const pairs: BulletConflictPair[] = [];
+  const scopesOverlap = createScopeMatcher();
+  const index = new Map<string, { positive: Set<number>; negative: Set<number> }>();
+  const key = (d: ParsedDirective) => {
+    const object = d.object.split(/\s+(?:with|without|before|after|for|from|to|in|on|during|at|using)\b/, 1)[0];
+    return `${d.actor}\0${d.verb}\0${object.split(" ").at(-1)}`;
+  };
   for (let i = 0; i < active.length; i++) {
-    for (let j = i + 1; j < active.length; j++) {
-      const reason = clauseConflict(active[i].clauses, active[j].clauses);
-      if (!reason) continue;
+    for (const clause of active[i].clauses) {
+      const d = clause.directive;
+      if (!d) continue;
+      const k = key(d);
+      let group = index.get(k);
+      if (!group) {
+        group = { positive: new Set(), negative: new Set() };
+        index.set(k, group);
+      }
+      (d.negative ? group.negative : group.positive).add(i);
+    }
+  }
+  for (let i = 0; i < active.length; i++) {
+    const candidates = new Set<number>();
+    for (const clause of active[i].clauses) {
+      const d = clause.directive;
+      if (!d) continue;
+      const group = index.get(key(d))!;
+      for (const j of d.negative ? group.positive : group.negative) {
+        if (j > i) candidates.add(j);
+      }
+    }
+    for (const j of [...candidates].sort((a, b) => a - b)) {
+      if (!scopesOverlap(active[i].bullet, active[j].bullet)) continue;
+      const match = clauseConflict(active[i].clauses, active[j].clauses);
+      if (!match) continue;
       pairs.push({
         a: { id: active[i].bullet.id, content: active[i].bullet.content },
         b: { id: active[j].bullet.id, content: active[j].bullet.content },
-        reason,
+        ...match,
       });
     }
   }
@@ -440,7 +788,7 @@ export function curatePlaybook(
         // We can't easily pass Set to detectConflictsWithMeta without changing its signature or logic duplication.
         // For now, letting it re-tokenize is fine (it's fast), or we can refactor.
         // To be safe and minimal diff, we'll let it re-tokenize or just pass string.
-        const conflicts = detectConflictsWithMeta(content, conflictMeta);
+        const conflicts = detectConflictsWithMeta(content, conflictMeta, delta.bullet);
 
         for (const c of conflicts) {
           result.conflicts.push({
@@ -627,6 +975,7 @@ export function curatePlaybook(
             type: delta.bullet.type,
             isNegative: delta.bullet.isNegative,
             scope: delta.bullet.scope,
+            scopeKey: delta.bullet.scopeKey,
             workspace: delta.bullet.workspace,
             searchPointer: delta.bullet.searchPointer,
           },
