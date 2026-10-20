@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, statSync } from "node:fs";
-import { EMBEDDED_ORT_WASM_PATHS, ensureOnnxWasmRuntime } from "../src/wasm-runtime.js";
+import { EMBEDDED_ORT_WASM_PATHS } from "../src/wasm-runtime.js";
 
 /**
  * Guards for issue #42: Bun-compiled standalone binary crashed on
@@ -48,16 +48,47 @@ describe("wasm-runtime: embedded ORT WASM files (issue #42)", () => {
     });
   }
 
-  // NOTE: skipped under `bun test` on Linux kernel 6.17+ because it
-  // triggers the libuv/sharp crash (oven-sh/bun#18546). The binary
-  // itself does not exhibit this — it's a bun-test-only issue with the
-  // static sharp NAPI module load order. The integration path is
-  // covered by the CLI e2e tests and the manual standalone binary
-  // verification documented in the v0.2.6 release notes.
-  test.skip("ensureOnnxWasmRuntime() does not throw", async () => {
-    await expect(ensureOnnxWasmRuntime()).resolves.toBeUndefined();
-    // Idempotent: second call should also complete cleanly.
-    await expect(ensureOnnxWasmRuntime()).resolves.toBeUndefined();
+  // Keep native dependency initialization in a fresh process: loading Sharp
+  // inside bun test has crashed some Bun/kernel combinations (issue #92).
+  test("concurrent initialization callers all see configured runtime paths", () => {
+    const child = Bun.spawnSync([process.execPath, "--eval", `
+      import { env } from "@xenova/transformers";
+      const { ensureOnnxWasmRuntime, EMBEDDED_ORT_WASM_PATHS } = await import("./src/wasm-runtime.ts");
+      const first = ensureOnnxWasmRuntime();
+      await ensureOnnxWasmRuntime();
+      const observed = { paths: env.backends.onnx.wasm.wasmPaths, threads: env.backends.onnx.wasm.numThreads };
+      await first;
+      console.log(JSON.stringify({ observed, expectedPaths: EMBEDDED_ORT_WASM_PATHS }));
+    `], { cwd: `${import.meta.dir}/..`, stdout: "pipe", stderr: "pipe" });
+    expect(child.exitCode, child.stderr.toString()).toBe(0);
+    const result = JSON.parse(child.stdout.toString());
+    expect(result.observed.paths).toEqual(result.expectedPaths);
+    expect(result.observed.threads).toBe(1);
+  });
+
+  test("failed runtime configuration is observable and can be retried", () => {
+    const child = Bun.spawnSync([process.execPath, "--eval", `
+      import { env } from "@xenova/transformers";
+      const { ensureOnnxWasmRuntime, EMBEDDED_ORT_WASM_PATHS } = await import("./src/wasm-runtime.ts");
+      let cacheDir = env.cacheDir;
+      let failures = 1;
+      Object.defineProperty(env, "cacheDir", {
+        configurable: true,
+        get: () => cacheDir,
+        set: value => {
+          if (failures-- > 0) throw new Error("temporary runtime configuration failure");
+          cacheDir = value;
+        },
+      });
+      let error;
+      try { await ensureOnnxWasmRuntime(); } catch (err) { error = err.message; }
+      await ensureOnnxWasmRuntime();
+      console.log(JSON.stringify({ error, paths: env.backends.onnx.wasm.wasmPaths, expectedPaths: EMBEDDED_ORT_WASM_PATHS }));
+    `], { cwd: `${import.meta.dir}/..`, stdout: "pipe", stderr: "pipe" });
+    expect(child.exitCode, child.stderr.toString()).toBe(0);
+    const result = JSON.parse(child.stdout.toString());
+    expect(result.error).toBe("temporary runtime configuration failure");
+    expect(result.paths).toEqual(result.expectedPaths);
   });
 
   test("embedded files start with WebAssembly magic bytes", async () => {

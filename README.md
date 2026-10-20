@@ -1693,6 +1693,12 @@ A one-shot `cm` command runs the probe at most once. A long-lived process
 "not ready" answer — so starting Ollama or finishing a model download takes
 effect without a restart.
 
+Concurrent local-model readiness checks share a probe. If the inference model
+is already loaded, readiness reuses it without creating another ONNX session;
+otherwise the temporary probe releases its session before returning. Concurrent
+callers also wait for WASM initialization to finish, and failed initialization
+can be retried on a later request.
+
 ##### How do I tell whether semantic search actually ran?
 
 The `cm context` command emits a `semanticMode` field in JSON/TOON output

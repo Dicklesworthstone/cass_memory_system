@@ -62,7 +62,7 @@ import ortWasmThreadedPath from "../node_modules/onnxruntime-web/dist/ort-wasm-t
   type: "file",
 };
 
-let configured = false;
+let configurationPromise: Promise<void> | null = null;
 
 /**
  * Directory where `@xenova/transformers` caches downloaded model files for
@@ -90,74 +90,65 @@ export function getTransformersCacheDir(): string | null {
  * and emit noisy "EACCES: permission denied, mkdir '/$bunfs'" lines on
  * every command invocation.
  *
- * Safe to call repeatedly (first-call guard).
+ * Concurrent callers share initialization and all wait for it to finish.
+ * Failed initialization can be retried on the next call.
  *
  * IMPORTANT: must be awaited AFTER `await import("@xenova/transformers")`,
  * because transformers' `env.js` clobbers `onnx_env.wasm.wasmPaths` at
  * module-evaluation time.
  */
-export async function ensureOnnxWasmRuntime(): Promise<void> {
-  if (configured) return;
-  configured = true;
+export function ensureOnnxWasmRuntime(): Promise<void> {
+  if (configurationPromise) return configurationPromise;
+  const pending = configureOnnxWasmRuntime();
+  configurationPromise = pending;
+  pending.catch(() => {
+    if (configurationPromise === pending) configurationPromise = null;
+  });
+  return pending;
+}
 
+async function configureOnnxWasmRuntime(): Promise<void> {
   // Redirect the @xenova/transformers cache to a writable directory.
   // In a Bun standalone binary the default cacheDir and localModelPath
   // both resolve inside /$bunfs (read-only virtual FS), which makes the
   // library emit misleading "permission denied" warnings on every call.
-  try {
-    const transformers: any = await import("@xenova/transformers");
-    const tEnv = transformers?.env ?? transformers?.default?.env;
-    const cacheDir = getTransformersCacheDir();
-    if (tEnv && cacheDir) {
-      tEnv.cacheDir = cacheDir;
-      tEnv.localModelPath = cacheDir;
-    }
-  } catch {
-    // non-fatal — cache redirection is a polish, not a correctness fix
+  const transformers: any = await import("@xenova/transformers");
+  const tEnv = transformers?.env ?? transformers?.default?.env;
+  const cacheDir = getTransformersCacheDir();
+  if (tEnv && cacheDir) {
+    tEnv.cacheDir = cacheDir;
+    tEnv.localModelPath = cacheDir;
   }
 
-  try {
-    // onnxruntime-web may have been loaded already via @xenova/transformers;
-    // either way, importing it a second time returns the cached module, so
-    // the `env.wasm.wasmPaths` we set here applies to future session
-    // creations.
-    const ortWeb: any = await import("onnxruntime-web");
-    const env = ortWeb?.env ?? ortWeb?.default?.env;
-    if (!env?.wasm) {
-      // Nothing to configure — not fatal, let embedding proceed and report
-      // the real error at embed time if it still fails.
-      return;
-    }
+  // onnxruntime-web may have been loaded already via @xenova/transformers;
+  // either way, importing it a second time returns the cached module, so
+  // the `env.wasm.wasmPaths` we set here applies to future session creations.
+  const ortWeb: any = await import("onnxruntime-web");
+  const env = ortWeb?.env ?? ortWeb?.default?.env;
+  if (!env?.wasm) throw new Error("ONNX Web runtime is missing its WASM environment");
 
-    // Disable multi-threading. The threaded Emscripten factory requires
-    // `URL.createObjectURL(new Blob(...))`, which is not available in a
-    // Bun standalone binary.
-    env.wasm.numThreads = 1;
+  // Disable multi-threading. The threaded Emscripten factory requires
+  // `URL.createObjectURL(new Blob(...))`, which is not available in a
+  // Bun standalone binary.
+  env.wasm.numThreads = 1;
 
-    // Disable SIMD path. We embed both simd and non-simd variants, but
-    // picking the plain `ort-wasm.wasm` is the most conservative default
-    // and matches the file we always expect to be available on every
-    // supported CPU.
-    env.wasm.simd = false;
+  // Disable SIMD path. We embed both simd and non-simd variants, but
+  // picking the plain `ort-wasm.wasm` is the most conservative default
+  // and matches the file we always expect to be available on every
+  // supported CPU.
+  env.wasm.simd = false;
 
-    // Map each expected WASM filename to its extracted on-disk path.
-    // `onnxruntime-web` supports `wasmPaths` as either a string prefix or
-    // an object map; we use the object form because Bun rewrites the
-    // embedded filenames (e.g. `ort-wasm-abc123.wasm`) so a directory
-    // prefix would not match.
-    env.wasm.wasmPaths = {
-      "ort-wasm.wasm": ortWasmPath,
-      "ort-wasm-simd.wasm": ortWasmSimdPath,
-      "ort-wasm-threaded.wasm": ortWasmThreadedPath,
-      "ort-wasm-simd-threaded.wasm": ortWasmSimdThreadedPath,
-    };
-  } catch (err) {
-    // Swallow configuration errors — if this fails, the caller will see
-    // the original ENOENT / fetch error and surface it to the user.
-    // We intentionally do not log here because in non-standalone runs the
-    // import above may fail on systems where onnxruntime-web is not
-    // installed (e.g. the @xenova/transformers node-only path is chosen).
-  }
+  // Map each expected WASM filename to its extracted on-disk path.
+  // `onnxruntime-web` supports `wasmPaths` as either a string prefix or
+  // an object map; we use the object form because Bun rewrites the
+  // embedded filenames (e.g. `ort-wasm-abc123.wasm`) so a directory
+  // prefix would not match.
+  env.wasm.wasmPaths = {
+    "ort-wasm.wasm": ortWasmPath,
+    "ort-wasm-simd.wasm": ortWasmSimdPath,
+    "ort-wasm-threaded.wasm": ortWasmThreadedPath,
+    "ort-wasm-simd-threaded.wasm": ortWasmSimdThreadedPath,
+  };
 }
 
 /**

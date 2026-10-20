@@ -22,8 +22,8 @@ export const DEFAULT_EMBEDDING_MODEL = "Xenova/all-MiniLM-L6-v2";
 export const EMBEDDING_CACHE_VERSION = "1.0";
 const OLLAMA_EMBED_TIMEOUT_MS = 30_000;
 
-let embedderPromise: Promise<any> | null = null;
-let embedderModel: string | null = null;
+let embedderCache: { model: string; promise: Promise<any>; ready: boolean } | null = null;
+const modelCacheProbes = new Map<string, Promise<boolean>>();
 
 // ============================================================================
 // OLLAMA EMBEDDING BACKEND
@@ -406,18 +406,19 @@ export async function getEmbedder(
   model = DEFAULT_EMBEDDING_MODEL,
   options: GetEmbedderOptions = {},
 ): Promise<any> {
-  if (embedderPromise && embedderModel === model) return embedderPromise;
+  if (embedderCache?.model === model) return embedderCache.promise;
 
-  embedderModel = model;
-  embedderPromise = loadEmbedder(model, options);
+  const entry = { model, promise: loadEmbedder(model, options), ready: false };
+  embedderCache = entry;
+  entry.promise.then(
+    () => { entry.ready = true; },
+    () => {
+      // A failed older load must not evict a newer model's in-flight cache.
+      if (embedderCache === entry) embedderCache = null;
+    },
+  );
 
-  // If the model load fails, allow retry on the next call.
-  embedderPromise.catch(() => {
-    embedderPromise = null;
-    embedderModel = null;
-  });
-
-  return embedderPromise;
+  return entry.promise;
 }
 
 export async function embedText(text: string, options: { model?: string } = {}): Promise<number[]> {
@@ -1298,19 +1299,35 @@ export async function warmupEmbeddings(
  * Useful for doctor checks and status reporting.
  */
 export async function isModelCached(model = DEFAULT_EMBEDDING_MODEL): Promise<boolean> {
-  try {
-    // See loadEmbedder for why WASM runtime setup must happen AFTER
-    // @xenova/transformers import (env.js clobbers wasmPaths at import).
-    const { pipeline } = await import("@xenova/transformers");
-    await ensureOnnxWasmRuntime();
-    // Try to load with local_files_only - will fail if not cached
-    await pipeline("feature-extraction", model, {
-      local_files_only: true,
+  if (model === "none") return false;
+  // A loaded model is already ready offline. Do not allocate another ONNX
+  // session every time a server's automatic-readiness memo expires.
+  if (embedderCache?.model === model && embedderCache.ready) return true;
+
+  let pending = modelCacheProbes.get(model);
+  if (!pending) {
+    const probe = async (): Promise<boolean> => {
+      try {
+        // Import first: transformers' env.js otherwise clobbers wasmPaths.
+        const { pipeline } = await import("@xenova/transformers");
+        await ensureOnnxWasmRuntime();
+        // This temporary pipeline belongs to the probe, not the inference
+        // cache. Transformers v2 does not dispose its ONNX sessions for us.
+        const candidate = await pipeline("feature-extraction", model, {
+          local_files_only: true,
+        });
+        await candidate.dispose();
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    pending = probe().finally(() => {
+      if (modelCacheProbes.get(model) === pending) modelCacheProbes.delete(model);
     });
-    return true;
-  } catch {
-    return false;
+    modelCacheProbes.set(model, pending);
   }
+  return pending;
 }
 
 // ---------------------------------------------------------------------------

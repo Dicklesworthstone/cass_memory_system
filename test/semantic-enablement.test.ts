@@ -186,6 +186,79 @@ describe("resolveSemanticEnabled: tri-state posture (#75)", () => {
   });
 });
 
+describe("local embedding runtime ownership", () => {
+  test("concurrent local-only probes share and dispose their temporary pipeline, and retry failures", () => {
+    const child = Bun.spawnSync([process.execPath, "--eval", `
+      import { spyOn } from "bun:test";
+      import * as transformers from "@xenova/transformers";
+      const { isModelCached } = await import("./src/semantic.ts");
+      let calls = 0, disposed = 0, downloads = 0, failures = 1;
+      const localOnly = [];
+      globalThis.fetch = async () => { downloads++; throw new Error("network forbidden in readiness probe"); };
+      spyOn(transformers, "pipeline").mockImplementation(async (_task, model, options) => {
+        calls++;
+        localOnly.push(options.local_files_only);
+        if (model === "retry-model" && failures-- > 0) throw new Error("cache incomplete");
+        return { dispose: async () => { disposed++; } };
+      });
+      const ready = await Promise.all([isModelCached("probe-model"), isModelCached("probe-model"), isModelCached("probe-model")]);
+      const concurrent = { calls, disposed };
+      await isModelCached("probe-model");
+      const firstRetry = await isModelCached("retry-model");
+      const secondRetry = await isModelCached("retry-model");
+      console.log(JSON.stringify({ ready, concurrent, firstRetry, secondRetry, calls, disposed, downloads, localOnly }));
+    `], { cwd: `${import.meta.dir}/..`, stdout: "pipe", stderr: "pipe" });
+    expect(child.exitCode, child.stderr.toString()).toBe(0);
+    const result = JSON.parse(child.stdout.toString());
+    expect(result.ready).toEqual([true, true, true]);
+    expect(result.concurrent).toEqual({ calls: 1, disposed: 1 });
+    expect(result.firstRetry).toBe(false);
+    expect(result.secondRetry).toBe(true);
+    expect(result.calls).toBe(4);
+    expect(result.disposed).toBe(3);
+    expect(result.downloads).toBe(0);
+    expect(result.localOnly).toEqual([true, true, true, true]);
+  });
+
+  test("readiness reuses an active embedder and older failed loads cannot evict its cache", async () => {
+    await withTempCassHome(async () => {
+      const child = Bun.spawnSync([process.execPath, "--eval", `
+        import { spyOn } from "bun:test";
+        import * as transformers from "@xenova/transformers";
+        const { getEmbedder, isModelCached } = await import("./src/semantic.ts");
+        let calls = 0, disposed = 0, startOlder, rejectOlder;
+        const olderStarted = new Promise(resolve => { startOlder = resolve; });
+        const newerPipeline = { dispose: async () => { disposed++; } };
+        spyOn(transformers, "pipeline").mockImplementation(async (_task, model) => {
+          calls++;
+          if (model === "older-model") {
+            startOlder();
+            return new Promise((_resolve, reject) => { rejectOlder = reject; });
+          }
+          return newerPipeline;
+        });
+        const older = getEmbedder("older-model").catch(error => error.message);
+        await olderStarted;
+        const newer = getEmbedder("newer-model");
+        rejectOlder(new Error("older model failed"));
+        const olderError = await older;
+        const loaded = await newer;
+        const reused = await getEmbedder("newer-model");
+        const ready = await isModelCached("newer-model");
+        console.log(JSON.stringify({ olderError, reused: loaded === reused, ready, calls, disposed }));
+      `], { cwd: `${import.meta.dir}/..`, stdout: "pipe", stderr: "pipe" });
+      expect(child.exitCode, child.stderr.toString()).toBe(0);
+      expect(JSON.parse(child.stdout.toString())).toEqual({
+        olderError: "older model failed",
+        reused: true,
+        ready: true,
+        calls: 2,
+        disposed: 0,
+      });
+    });
+  });
+});
+
 describe("resolveSemanticEnabled: Ollama auto-on (#75)", () => {
   /** Stand up a throwaway daemon that answers /api/tags with `models`. */
   async function withTagServer<T>(
