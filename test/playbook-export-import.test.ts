@@ -449,6 +449,103 @@ describe("playbook import command", () => {
     });
   });
 
+  it("merges feedback only into the matching scope and preserves other scoped copies", async () => {
+    await withTempDir("playbook-import-scopes", async (dir) => {
+      const playbookPath = path.join(dir, "playbook.yaml");
+      const content = "Run the full test suite before pushing";
+      const existing = [
+        createTestBullet({ id: "project-a", content, scope: "workspace", workspace: "/projects/a" }),
+        createTestBullet({ id: "project-b", content, scope: "workspace", workspace: "/projects/b" }),
+        createTestBullet({ id: "global-anti", content, type: "anti-pattern", isNegative: true, kind: "anti_pattern" }),
+      ];
+      await savePlaybookToPath(createTestPlaybook(existing), playbookPath);
+      await mkdir(path.join(dir, ".cass-memory"), { recursive: true });
+      await writeFile(path.join(dir, ".cass-memory", "config.json"), JSON.stringify(createTestConfig({ playbookPath })));
+      process.env.HOME = dir;
+      const feedback = [{ type: "helpful" as const, timestamp: new Date().toISOString(), sessionPath: "/session/import.jsonl" }];
+      const importFile = path.join(dir, "import.yaml");
+      await writeFile(importFile, yaml.stringify({ bullets: [
+        createTestBullet({ id: "copy-a", content, scope: "workspace", workspace: "/projects/a/../a", feedbackEvents: feedback, helpfulCount: 1 }),
+        createTestBullet({ id: "project-c", content, scope: "workspace", workspace: "/projects/c", feedbackEvents: feedback, helpfulCount: 1 }),
+        createTestBullet({ id: "python", content: "Run full test suite before pushing", scope: "language", scopeKey: "python", feedbackEvents: feedback, helpfulCount: 1 }),
+        createTestBullet({ id: "global-rule", content, feedbackEvents: feedback, helpfulCount: 1 }),
+      ] }));
+      const capture = captureConsole();
+      try {
+        await playbookCommand("import", [importFile], { json: true });
+      } finally {
+        capture.restore();
+      }
+      const payload = JSON.parse(capture.logs.join("\n"));
+      expect(payload.data.added).toBe(3);
+      expect(payload.data.merged).toBe(1);
+      const saved = yaml.parse(await readFile(playbookPath, "utf-8"));
+      expect(saved.bullets).toHaveLength(6);
+      expect(saved.bullets.find((b: any) => b.id === "project-a").helpfulCount).toBe(1);
+      expect(saved.bullets.find((b: any) => b.id === "project-b").helpfulCount).toBe(0);
+      expect(saved.bullets.find((b: any) => b.id === "python").scopeKey).toBe("python");
+      expect(saved.bullets.find((b: any) => b.id === "global-anti").helpfulCount).toBe(0);
+      expect(saved.bullets.find((b: any) => b.id === "global-rule").type).toBe("rule");
+    });
+  });
+
+  it("does not combine same-id feedback when the imported scope has changed", async () => {
+    await withTempDir("playbook-import-scope-collision", async (dir) => {
+      const playbookPath = path.join(dir, "playbook.yaml");
+      const existing = createTestBullet({ id: "same-id", content: "Run tests before pushing", scope: "workspace", workspace: "/projects/a" });
+      await savePlaybookToPath(createTestPlaybook([existing]), playbookPath);
+      await mkdir(path.join(dir, ".cass-memory"), { recursive: true });
+      await writeFile(path.join(dir, ".cass-memory", "config.json"), JSON.stringify(createTestConfig({ playbookPath })));
+      process.env.HOME = dir;
+      const importFile = path.join(dir, "import.yaml");
+      await writeFile(importFile, yaml.stringify({ bullets: [{ ...existing, workspace: "/projects/b", helpfulCount: 5 }] }));
+      const capture = captureConsole();
+      try {
+        await playbookCommand("import", [importFile], { json: true });
+      } finally {
+        capture.restore();
+      }
+      const payload = JSON.parse(capture.logs.join("\n"));
+      expect(payload.data.merged).toBe(0);
+      expect(payload.data.skipped).toBe(1);
+      const saved = yaml.parse(await readFile(playbookPath, "utf-8"));
+      expect(saved.bullets[0].workspace).toBe("/projects/a");
+      expect(saved.bullets[0].helpfulCount).toBe(0);
+    });
+  });
+
+  it("updates the import identity index and conflict report after replacing a rule", async () => {
+    await withTempDir("playbook-import-replacement-index", async (dir) => {
+      const playbookPath = path.join(dir, "playbook.yaml");
+      const original = createTestBullet({ id: "changed", content: "Run the full test suite before pushing" });
+      const opposing = createTestBullet({ id: "other", content: "Always commit generated lockfiles" });
+      await savePlaybookToPath(createTestPlaybook([original, opposing]), playbookPath);
+      await mkdir(path.join(dir, ".cass-memory"), { recursive: true });
+      await writeFile(path.join(dir, ".cass-memory", "config.json"), JSON.stringify(createTestConfig({ playbookPath })));
+      process.env.HOME = dir;
+      const importFile = path.join(dir, "import.yaml");
+      await writeFile(importFile, yaml.stringify({ bullets: [
+        { ...original, content: "Never commit generated lockfiles" },
+        { ...original, id: "restored-copy" },
+      ] }));
+      const capture = captureConsole();
+      try {
+        await playbookCommand("import", [importFile], { json: true, replace: true });
+      } finally {
+        capture.restore();
+      }
+      const payload = JSON.parse(capture.logs.join("\n"));
+      expect(payload.data.updated).toBe(1);
+      expect(payload.data.added).toBe(1);
+      expect(payload.data.merged).toBe(0);
+      expect(payload.data.conflicts).toHaveLength(1);
+      expect(payload.data.conflicts[0].importedId).toBe("changed");
+      const saved = yaml.parse(await readFile(playbookPath, "utf-8"));
+      expect(saved.bullets).toHaveLength(3);
+      expect(saved.bullets.find((b: any) => b.id === "restored-copy").content).toBe(original.content);
+    });
+  });
+
   it("handles non-existent file", async () => {
     await withTempDir("playbook-import", async (dir) => {
       const playbookPath = path.join(dir, "playbook.yaml");

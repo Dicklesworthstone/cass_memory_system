@@ -1638,7 +1638,7 @@ Remote cass is **opt-in** and queries other machines via SSH (using your existin
 | `embeddingBackend` | `xenova` | Embedding backend: `xenova` (local WASM) or `ollama` |
 | `ollamaBaseUrl` | `http://localhost:11434` | Base URL when `embeddingBackend: "ollama"` |
 | `dedupSimilarityThreshold` | `0.85` | Threshold for duplicate detection |
-| `semanticDedupThreshold` | `0.75` | Embedding similarity at which `cm reflect` treats a new rule as a rewording of an existing one and reinforces that rule instead of adding a duplicate. Only used while semantic search is on, and never across rules whose directives disagree ("always X" vs "never X") |
+| `semanticDedupThreshold` | `0.75` | Embedding similarity at which `cm reflect` reinforces an existing rule with the same applicability instead of adding a rewording. Only used while semantic search is on, and never across rules whose directives disagree ("always X" vs "never X") |
 
 ##### When does semantic search turn itself on?
 
@@ -2031,43 +2031,32 @@ function extractKeywords(text: string): Set<string> {
 
 ### Duplicate Detection
 
-Preventing duplicate rules uses both hash-based and semantic approaches:
+Rule identity includes applicability. Exact text, word overlap, and embedding
+similarity can reinforce an existing rule only within the same scope:
 
-```typescript
-function findDuplicate(playbook: Playbook, newRule: ProposedRule): PlaybookBullet | null {
-  // 1. Exact hash match (fast)
-  const newHash = hashContent(normalize(newRule.content));
-  for (const bullet of playbook.bullets) {
-    if (hashContent(normalize(bullet.content)) === newHash) {
-      return bullet;
-    }
-  }
+- Global advice stays distinct from workspace, language, framework, and task rules.
+- Workspace identities normalize paths, symlinks, and linked worktrees. A parent
+  directory and one of its subdirectories remain distinct scopes.
+- Language, framework, and task selectors use `scopeKey`; different selectors
+  retain separate rules and feedback histories.
+- Portable repository rules may omit an absolute workspace. They are deduplicated
+  against other implicit workspace rules only when their shared owner is known;
+  a global import cannot infer that ownership.
 
-  // 2. Semantic similarity (if embeddings available)
-  //    `semanticEnabled` is the resolveSemanticEnabled(config) answer, not the
-  //    raw tri-state flag.
-  if (semanticEnabled && newRule.embedding) {
-    for (const bullet of playbook.bullets) {
-      if (bullet.embedding) {
-        const similarity = cosineSimilarity(newRule.embedding, bullet.embedding);
-        if (similarity > config.dedupSimilarityThreshold) {
-          return bullet;
-        }
-      }
-    }
-  }
+The reflector retains scope selectors, curation checks exact and lexical matches
+before optional semantic matches, and imports preserve rules with different
+applicability. Opposing instructions and meaningful condition differences remain
+protected from similarity-based merging even when their embeddings are identical.
 
-  return null;
-}
-
-function normalize(content: string): string {
-  return content
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-```
+Explicit merges require distinct, active sources with the same applicability and
+compatible rule types. They preserve scope, selectors, tags, and source provenance.
+Retirement and anti-pattern inversion are resolved before choosing a replacement;
+originals are retired only after a valid replacement is retained. Repository-only
+merges stay in the repository playbook. A merge across storage layers keeps its
+replacement in the global playbook with an explicit workspace when needed, and
+saves that replacement before retiring repository sources. Missing sources,
+conflicting scopes, and unsafe replacements produce a rejected decision while
+preserving the original rules.
 
 ### Conflict Detection
 

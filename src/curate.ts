@@ -22,7 +22,7 @@ import {
   now,
   tokenize,
 } from "./utils.js";
-import { canonicalWorkspacePath, workspaceMatches } from "./workspace.js";
+import { canonicalWorkspacePath, ruleScopeKey, sameRuleInterpretation, sameRuleScope, workspaceMatches } from "./workspace.js";
 
 function findSimilarBulletFromMeta(
   newTokens: Set<string>,
@@ -472,6 +472,37 @@ function clauseConflict(a: DirectiveClause[], b: DirectiveClause[]): { reason: s
   return null;
 }
 
+/** Validate a merge before creating replacements or retiring any source. */
+export function validateMergeSources(
+  bullets: PlaybookBullet[],
+  mergedContent: string,
+  options: { allowImplicitWorkspace?: boolean } = {},
+): string | null {
+  if (bullets.length < 2 || new Set(bullets.map((b) => b.id)).size !== bullets.length) {
+    return "A merge requires at least two distinct source rules";
+  }
+  if (!mergedContent.trim()) return "Merged content must not be empty";
+  if (bullets.some((b) => b.deprecated || b.maturity === "deprecated" || b.state === "retired")) {
+    return "A merge cannot retire or revive already inactive source rules";
+  }
+  const first = bullets[0];
+  if (bullets.some((b) => !sameRuleScope(first, b, options))) {
+    return "A merge requires source rules with the same applicability";
+  }
+  if (bullets.some((b) => !sameRuleInterpretation(first, b))) {
+    return "A merge cannot combine rules and anti-patterns";
+  }
+  const replacement = splitDirectiveClauses(mergedContent);
+  const clauses = bullets.map((b) => splitDirectiveClauses(b.content));
+  for (let i = 0; i < clauses.length; i++) {
+    if (clauseConflict(clauses[i], replacement)) return "Merged content directly opposes a source rule";
+    for (let j = i + 1; j < clauses.length; j++) {
+      if (clauseConflict(clauses[i], clauses[j])) return "Opposing source rules require review before merging";
+    }
+  }
+  return null;
+}
+
 // Optimized metadata structure for conflict detection (and token-based dedup)
 export interface ConflictMeta {
   bullet: PlaybookBullet;
@@ -671,6 +702,7 @@ function invertToAntiPattern(bullet: PlaybookBullet, config: Config): PlaybookBu
     type: "anti-pattern",
     isNegative: true,
     scope: bullet.scope,
+    scopeKey: bullet.scopeKey,
     workspace: bullet.workspace,
     source: "learned", // Derived from existing rule, so implicitly learned/inferred
     state: "active",
@@ -733,6 +765,8 @@ export function curatePlaybook(
   options: {
     /** Embeddings for reworded-duplicate detection (see buildSemanticDedupIndex). */
     semanticIndex?: SemanticDedupIndex;
+    /** Only a known repo target can give pathless workspace rules one owner. */
+    allowImplicitWorkspace?: boolean;
   } = {},
 ): CurationResult {
   // Use context playbook (merged) for dedup checks if available, otherwise target
@@ -740,14 +774,52 @@ export function curatePlaybook(
 
   // Optimization: Pre-compute maps for O(1) lookups and conflict detection.
   // This map tracks content hashes from BOTH the reference playbook AND newly added bullets in this batch.
-  const bulletContentMap = new Map<string, PlaybookBullet>();
-  for (const b of referencePlaybook.bullets) {
-    bulletContentMap.set(hashContent(b.content), b);
+  const bulletContentMap = new Map<string, PlaybookBullet[]>();
+  const indexedHashes = new Map<string, string>();
+  const conflictMeta: ConflictMeta[] = [];
+  const metadataById = new Map<string, ConflictMeta>();
+  const targetBulletIds = new Set(targetPlaybook.bullets.map((b) => b.id));
+  const scopeKeys = new Map<PlaybookBullet, string | undefined>();
+  const scopeKeyFor = (bullet: PlaybookBullet): string | undefined => {
+    if (!scopeKeys.has(bullet)) scopeKeys.set(bullet, ruleScopeKey(bullet));
+    return scopeKeys.get(bullet);
+  };
+  const inScope = (bullet: PlaybookBullet, incomingKey: string | undefined): boolean => {
+    const existingKey = scopeKeyFor(bullet);
+    if (existingKey === undefined || incomingKey === undefined) {
+      // Portable repo rules have no absolute workspace. Their shared owner is
+      // established only for the target layer, never an arbitrary merged layer.
+      return options.allowImplicitWorkspace === true && existingKey === undefined && incomingKey === undefined
+        && targetBulletIds.has(bullet.id);
+    }
+    return existingKey === incomingKey;
+  };
+  const indexBullet = (bullet: PlaybookBullet): void => {
+    const oldHash = indexedHashes.get(bullet.id);
+    if (oldHash !== undefined) {
+      const remaining = (bulletContentMap.get(oldHash) ?? []).filter((b) => b.id !== bullet.id);
+      if (remaining.length > 0) bulletContentMap.set(oldHash, remaining);
+      else bulletContentMap.delete(oldHash);
+    }
+    const hash = hashContent(bullet.content);
+    const bucket = bulletContentMap.get(hash) ?? [];
+    bucket.push(bullet);
+    bulletContentMap.set(hash, bucket);
+    indexedHashes.set(bullet.id, hash);
+    const next = computeConflictMeta(bullet);
+    const previous = metadataById.get(bullet.id);
+    if (previous) Object.assign(previous, next);
+    else {
+      conflictMeta.push(next);
+      metadataById.set(bullet.id, next);
+    }
+  };
+  for (const bullet of referencePlaybook.bullets) indexBullet(bullet);
+  // A merged context can shadow an id with a different rule from another
+  // layer. Writes and feedback must use the target's actual object/content.
+  if (referencePlaybook !== targetPlaybook) {
+    for (const bullet of targetPlaybook.bullets) indexBullet(bullet);
   }
-
-  // Pre-compute conflict metadata for the reference playbook once.
-  // We will append to this array as we add new bullets to ensure conflicts are caught within the batch.
-  const conflictMeta = referencePlaybook.bullets.map(computeConflictMeta);
 
   const decisionLog: DecisionLogEntry[] = [];
 
@@ -762,7 +834,10 @@ export function curatePlaybook(
     decisionLog,
   };
 
-  for (const delta of deltas) {
+  // Consolidation must see the final edits and feedback from this batch. In
+  // particular, a harmful/retired replacement must not retire healthy sources.
+  const orderedDeltas = [...deltas.filter((d) => d.type !== "merge"), ...deltas.filter((d) => d.type === "merge")];
+  for (const delta of orderedDeltas) {
     let applied = false;
 
     switch (delta.type) {
@@ -776,6 +851,9 @@ export function curatePlaybook(
 
         const content = delta.bullet.content;
         const hash = hashContent(content);
+        const incomingScope = ruleScopeKey(delta.bullet);
+        const matchesIncoming = (bullet: PlaybookBullet): boolean => inScope(bullet, incomingScope)
+          && sameRuleInterpretation(bullet, delta.bullet);
 
         // Conflict detection (warnings only)
         // Checks against reference AND newly added bullets (via updated conflictMeta)
@@ -805,7 +883,9 @@ export function curatePlaybook(
         }
 
         // 1. Exact duplicate check (O(1) using map)
-        const exactMatch = bulletContentMap.get(hash);
+        const exactCandidates = (bulletContentMap.get(hash) ?? []).filter(matchesIncoming);
+        const exactMatch = exactCandidates.find((b) => !b.deprecated && b.maturity !== "deprecated" && b.state !== "retired")
+          ?? exactCandidates[0];
 
         if (exactMatch) {
           const isDeprecated =
@@ -862,9 +942,10 @@ export function curatePlaybook(
 
         // 2. Semantic duplicate check (Optimized)
         // Uses pre-computed tokens from conflictMeta (which includes newly added bullets)
+        const sameScopeMeta = conflictMeta.filter((meta) => matchesIncoming(meta.bullet));
         const lexicalSimilar = findSimilarBulletFromMeta(
           newTokenSet,
-          conflictMeta,
+          sameScopeMeta,
           config.dedupSimilarityThreshold,
           splitDirectiveClauses(content),
         );
@@ -872,7 +953,7 @@ export function curatePlaybook(
         // "Always execute the test suite prior to pushing"); embeddings catch them.
         const semanticMatch =
           !lexicalSimilar && options.semanticIndex
-            ? findSemanticDuplicateFromMeta(content, conflictMeta, options.semanticIndex)
+            ? findSemanticDuplicateFromMeta(content, sameScopeMeta, options.semanticIndex)
             : undefined;
         if (semanticMatch) {
           logDecision(decisionLog, "dedup", "modified", "Semantic duplicate of an existing rule", {
@@ -988,10 +1069,8 @@ export function curatePlaybook(
         }
 
         // Update caches to catch duplicates later in this batch
-        bulletContentMap.set(hash, newBullet);
-
-        // We reuse the already computed tokens for the new bullet metadata
-        conflictMeta.push(computeConflictMeta(newBullet));
+        targetBulletIds.add(newBullet.id);
+        indexBullet(newBullet);
 
         applied = true;
         logDecision(decisionLog, "add", "accepted", "New bullet added to playbook", {
@@ -1123,6 +1202,7 @@ export function curatePlaybook(
         const oldContent = bullet.content;
         bullet.content = delta.newContent;
         bullet.updatedAt = now();
+        indexBullet(bullet);
         applied = true;
         logDecision(decisionLog, "add", "modified", "Bullet content replaced", {
           bulletId: delta.bulletId,
@@ -1148,6 +1228,13 @@ export function curatePlaybook(
       }
 
       case "merge": {
+        applyCurationLifecycle(targetPlaybook, config, result);
+        for (const bullet of targetPlaybook.bullets) {
+          if (!metadataById.has(bullet.id)) {
+            targetBulletIds.add(bullet.id);
+            indexBullet(bullet);
+          }
+        }
         // Only merge if all bullets exist in target
         const bulletsToMerge = delta.bulletIds
           .map((id) => findBullet(targetPlaybook, id))
@@ -1165,21 +1252,72 @@ export function curatePlaybook(
           );
           break;
         }
+        const invalid = validateMergeSources(bulletsToMerge, delta.mergedContent, { allowImplicitWorkspace: options.allowImplicitWorkspace });
+        if (invalid) {
+          logDecision(decisionLog, "add", "rejected", invalid, { details: { sourceIds: delta.bulletIds } });
+          break;
+        }
 
-        const merged = addBullet(
-          targetPlaybook,
-          {
-            content: delta.mergedContent,
-            category: bulletsToMerge[0].category,
-            tags: [...new Set(bulletsToMerge.flatMap((b) => b.tags))],
-          },
-          "merged",
-          config.scoring?.decayHalfLifeDays ?? config.defaultDecayHalfLife ?? 90,
-        );
+        const source = bulletsToMerge[0];
+        const mergeScope = scopeKeyFor(source);
+        const compatible = (bullet: PlaybookBullet): boolean => inScope(bullet, mergeScope)
+          && sameRuleInterpretation(bullet, source);
+        const candidates = conflictMeta.filter((meta) => compatible(meta.bullet));
+        const exact = (bulletContentMap.get(hashContent(delta.mergedContent)) ?? [])
+          .filter(compatible);
+        const existing = exact.find((b) => !b.deprecated && b.maturity !== "deprecated" && b.state !== "retired")
+          ?? exact[0]
+          ?? findSimilarBulletFromMeta(
+            new Set(tokenize(delta.mergedContent)), candidates, config.dedupSimilarityThreshold,
+            splitDirectiveClauses(delta.mergedContent),
+          )
+          ?? (options.semanticIndex
+            ? findSemanticDuplicateFromMeta(delta.mergedContent, candidates, options.semanticIndex)?.bullet
+            : undefined);
+        let merged: PlaybookBullet;
+        if (existing) {
+          const local = findBullet(targetPlaybook, existing.id);
+          const unsafeReplacement = validateMergeSources(bulletsToMerge, existing.content, { allowImplicitWorkspace: options.allowImplicitWorkspace });
+          if (!local || local.deprecated || local.maturity === "deprecated" || local.state === "retired" || unsafeReplacement) {
+            logDecision(decisionLog, "add", "rejected", unsafeReplacement ?? "Merge replacement is inactive or belongs to another playbook layer", {
+              bulletId: existing.id, details: { sourceIds: delta.bulletIds },
+            });
+            break;
+          }
+          merged = local;
+        } else {
+          merged = addBullet(
+            targetPlaybook,
+            {
+              content: delta.mergedContent,
+              category: source.category,
+              kind: source.kind,
+              type: source.type,
+              isNegative: source.isNegative,
+              scope: source.scope,
+              scopeKey: source.scopeKey,
+              workspace: source.workspace,
+              tags: [...new Set(bulletsToMerge.flatMap((b) => b.tags))],
+            },
+            "merged",
+            config.scoring?.decayHalfLifeDays ?? config.defaultDecayHalfLife ?? 90,
+          );
+          merged.sourceSessions = [];
+          merged.sourceAgents = [];
+          merged.reasoning = delta.reason;
+          targetBulletIds.add(merged.id);
+          indexBullet(merged);
+        }
+        merged.sourceSessions = [...new Set([...merged.sourceSessions, ...bulletsToMerge.flatMap((b) => b.sourceSessions)])];
+        merged.sourceAgents = [...new Set([...merged.sourceAgents, ...bulletsToMerge.flatMap((b) => b.sourceAgents)])];
+        merged.tags = [...new Set([...merged.tags, ...bulletsToMerge.flatMap((b) => b.tags)])];
+        merged.updatedAt = now();
 
-        bulletsToMerge.forEach((b) => {
-          deprecateBullet(targetPlaybook, b.id, `Merged into ${merged.id}`, merged.id);
-        });
+        // A replacement must be active in the target before any source can be
+        // retired. An existing source can itself be the surviving replacement.
+        for (const bullet of bulletsToMerge) {
+          if (bullet.id !== merged.id) deprecateBullet(targetPlaybook, bullet.id, `Merged into ${merged.id}`, merged.id);
+        }
 
         applied = true;
         logDecision(decisionLog, "add", "accepted", "Bullets merged into new combined bullet", {
@@ -1195,6 +1333,12 @@ export function curatePlaybook(
     else result.skipped++;
   }
 
+  applyCurationLifecycle(targetPlaybook, config, result);
+  return result;
+}
+
+function applyCurationLifecycle(targetPlaybook: Playbook, config: Config, result: CurationResult): void {
+  const decisionLog = result.decisionLog ?? (result.decisionLog = []);
   // --- Post-Processing on TARGET ---
 
   // 1. Anti-Pattern Inversion (must run BEFORE auto-deprecation)
@@ -1264,7 +1408,7 @@ export function curatePlaybook(
       }
     }
   }
-  result.inversions = inversions;
+  result.inversions.push(...inversions);
 
   // 2. Promotions & Demotions (after inversion so we don't double-deprecate)
   // Iterate over a copy to avoid issues if we were to modify the array structure (though we currently don't remove)
@@ -1327,5 +1471,4 @@ export function curatePlaybook(
     }
   }
 
-  return result;
 }

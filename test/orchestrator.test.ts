@@ -16,8 +16,9 @@ import { withLock } from "../src/lock.js";
 import { orchestrateReflection } from "../src/orchestrator.js";
 import { tagCmSubprocessPrompt } from "../src/subprocess-tag.js";
 import { getProcessedLogPath, ProcessedLog } from "../src/tracking.js";
-import { expandPath, now } from "../src/utils.js";
-import { createBullet, createTestConfig, createTestPlaybook } from "./helpers/factories.js";
+import type { PlaybookBullet, PlaybookDelta } from "../src/types.js";
+import { expandPath, jaccardSimilarity, now } from "../src/utils.js";
+import { createBullet, createTestConfig, createTestFeedbackEvent, createTestPlaybook } from "./helpers/factories.js";
 import { type LlmShimConfig, withLlmShim } from "./helpers/llm-shim.js";
 import { cleanupEnvironment, createIsolatedEnvironment, type TestEnv } from "./helpers/temp.js";
 
@@ -73,6 +74,291 @@ function writeJsonlSession(
 function readPlaybook(playbookPath: string): any {
   return yaml.parse(readFileSync(playbookPath, "utf-8"));
 }
+
+async function withMergeReflection(
+  globalRules: PlaybookBullet[],
+  repoRules: PlaybookBullet[] | undefined,
+  deltas: PlaybookDelta[],
+  check: (result: {
+    global: PlaybookBullet[];
+    repo: PlaybookBullet[];
+    repoRoot: string;
+    outcome: Awaited<ReturnType<typeof orchestrateReflection>>;
+  }) => void,
+): Promise<void> {
+  await withIsolatedHome(async (env) => {
+    const repoRoot = path.join(env.home, "project");
+    const repoPath = path.join(repoRoot, ".cass", "playbook.yaml");
+    // A stable token lets fixtures refer to the actual isolated repository.
+    const bindWorkspace = (bullet: PlaybookBullet) => ({
+      ...bullet,
+      ...(bullet.workspace === "$project" ? { workspace: repoRoot } : {}),
+    });
+    writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook(globalRules.map(bindWorkspace))));
+    if (repoRules) {
+      mkdirSync(path.dirname(repoPath), { recursive: true });
+      expect(Bun.spawnSync(["git", "init", "--quiet", repoRoot]).exitCode).toBe(0);
+      writeFileSync(repoPath, yaml.stringify(createTestPlaybook(repoRules.map(bindWorkspace))));
+      process.chdir(repoRoot);
+    }
+    const sessionPath = path.join(env.home, "sessions", "merge.jsonl");
+    writeJsonlSession(sessionPath, [
+      { role: "user", content: "Consolidate the relevant rules while preserving their applicability and useful instructions." },
+      { role: "assistant", content: "The existing project and language rules must remain available in their original contexts." },
+    ]);
+    const config = createTestConfig({
+      playbookPath: env.playbookPath,
+      diaryDir: env.diaryDir,
+      cassPath: "/__missing__/cass",
+      validationEnabled: false,
+    });
+    await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
+      await withLlmShim({ reflector: { deltas } }, async (io) => {
+        const outcome = await orchestrateReflection(config, { session: sessionPath, io });
+        expect(outcome.errors).toEqual([]);
+        check({
+          global: readPlaybook(env.playbookPath).bullets,
+          repo: repoRules ? readPlaybook(repoPath).bullets : [],
+          repoRoot,
+          outcome,
+        });
+      });
+    });
+  });
+}
+
+describe("orchestrator merge applicability and retention", () => {
+  test("a new workspace replacement retains the original project scope", async () => {
+    const sources = [
+      createBullet({ content: "Run the database migration check.", scope: "workspace", workspace: "/projects/alpha" }),
+      createBullet({ content: "Check schema migration compatibility.", scope: "workspace", workspace: "/projects/alpha" }),
+    ];
+    const content = "Validate database migrations against the project schema.";
+    await withMergeReflection(sources, undefined, [{ type: "merge", bulletIds: sources.map(b => b.id), mergedContent: content }], ({ global }) => {
+      const replacement = global.find(b => b.content === content)!;
+      expect(replacement).toBeDefined();
+      expect(replacement.scope).toBe("workspace");
+      expect(replacement.workspace).toBe("/projects/alpha");
+      for (const source of sources) {
+        expect(global.find(b => b.id === source.id)?.replacedBy).toBe(replacement.id);
+      }
+    });
+  });
+
+  test("identical replacement text in another language is not reused", async () => {
+    const content = "Validate dependencies before release.";
+    const otherLanguage = createBullet({ content, scope: "language", scopeKey: "typescript" });
+    const sources = [
+      createBullet({ content: "Audit Python dependencies.", scope: "language", scopeKey: "python" }),
+      createBullet({ content: "Review package versions.", scope: "language", scopeKey: "python" }),
+    ];
+    await withMergeReflection([otherLanguage, ...sources], undefined, [{ type: "merge", bulletIds: sources.map(b => b.id), mergedContent: content }], ({ global }) => {
+      const replacement = global.find(b => b.content === content && b.scopeKey === "python")!;
+      expect(replacement).toBeDefined();
+      expect(replacement.id).not.toBe(otherLanguage.id);
+      expect(global.find(b => b.id === otherLanguage.id)?.deprecated).toBe(false);
+      expect(global.find(b => b.id === sources[0].id)?.replacedBy).toBe(replacement.id);
+    });
+  });
+
+  test.each(["different workspaces", "global and workspace", "different selectors", "retired source", "missing source", "duplicate source"])("rejects %s without retiring any additional source", async (kind) => {
+    const first = createBullet({ content: "Review migration scripts.", scope: "workspace", workspace: "/projects/alpha" });
+    const second = createBullet({ content: "Check migration compatibility.", scope: "workspace", workspace: "/projects/alpha" });
+    if (kind === "different workspaces") second.workspace = "/projects/beta";
+    if (kind === "global and workspace") second.scope = "global";
+    if (kind === "different selectors") {
+      first.scope = second.scope = "language";
+      first.scopeKey = "python";
+      second.scopeKey = "typescript";
+    }
+    if (kind === "retired source") second.state = "retired";
+    const ids = kind === "missing source" ? [first.id, "b-missing"] : kind === "duplicate source" ? [first.id, first.id] : [first.id, second.id];
+    await withMergeReflection([first, second], undefined, [{ type: "merge", bulletIds: ids, mergedContent: "Validate migrations before release." }], ({ global, outcome }) => {
+      expect(global).toHaveLength(2);
+      expect(global.find(b => b.id === first.id)?.deprecated).toBe(false);
+      expect(global.find(b => b.id === second.id)?.deprecated).toBe(false);
+      expect(outcome.globalResult?.decisionLog?.some(entry => entry.action === "rejected" && entry.reason.includes("merge"))).toBe(true);
+    });
+  });
+
+  test("keeps unresolved workspace rules in the global playbook separate", async () => {
+    const sources = [
+      createBullet({
+        content: "Review migration scripts.", scope: "workspace", workspace: undefined,
+        state: "active", sourceSessions: ["/sessions/project-a.jsonl"],
+      }),
+      createBullet({
+        content: "Check migration compatibility.", scope: "workspace", workspace: undefined,
+        state: "active", sourceSessions: ["/sessions/project-b.jsonl"],
+      }),
+    ];
+    await withMergeReflection(sources, undefined, [{
+      type: "merge", bulletIds: sources.map(b => b.id),
+      mergedContent: "Validate migrations before release.",
+    }], ({ global, outcome }) => {
+      expect(global).toHaveLength(2);
+      for (const source of sources) {
+        const saved = global.find(b => b.id === source.id)!;
+        expect(saved).toBeDefined();
+        expect(saved.state).toBe("active");
+        expect(saved.deprecated).toBe(false);
+        expect(saved.replacedBy).toBeUndefined();
+        expect(saved.scope).toBe("workspace");
+        expect(saved.workspace).toBeUndefined();
+        expect(saved.sourceSessions).toEqual(source.sourceSessions);
+      }
+      expect(outcome.globalResult?.decisionLog?.some(entry =>
+        entry.action === "rejected" && entry.reason.includes("same applicability"),
+      )).toBe(true);
+    });
+  });
+
+  test("opposing high-overlap guidance is not selected as the replacement", async () => {
+    const opposing = createBullet({ content: "Never commit generated dependency lockfiles alongside package manifests, version updates, checksum records, release metadata, deployment configuration, build settings, reproducibility notes, and integration test fixtures." });
+    const sources = [
+      createBullet({ content: "Track dependency lockfiles in git." }),
+      createBullet({ content: "Commit lockfiles with dependency changes." }),
+    ];
+    const content = "Always commit generated dependency lockfiles alongside package manifests, version updates, checksum records, release metadata, deployment configuration, build settings, reproducibility notes, and integration test fixtures.";
+    expect(jaccardSimilarity(content, opposing.content)).toBeGreaterThan(0.85);
+    await withMergeReflection([opposing, ...sources], undefined, [{ type: "merge", bulletIds: sources.map(b => b.id), mergedContent: content }], ({ global }) => {
+      const replacement = global.find(b => b.content === content)!;
+      expect(replacement).toBeDefined();
+      expect(global.find(b => b.id === sources[0].id)?.replacedBy).toBe(replacement.id);
+      expect(global.find(b => b.id === opposing.id)?.deprecated).toBe(false);
+    });
+  });
+
+  test("a replacement at the harmful threshold cannot retire healthy sources", async () => {
+    const content = "Validate database migrations against the current schema.";
+    const harmful = createBullet({
+      content,
+      harmfulCount: 3,
+      feedbackEvents: [0, 1, 2].map(index => createTestFeedbackEvent("harmful", {
+        timestamp: now(),
+        sessionPath: `/sessions/harmful-${index}.jsonl`,
+      })),
+    });
+    const sources = [
+      createBullet({ content: "Review SQL migration files." }),
+      createBullet({ content: "Check compatibility before deploying." }),
+    ];
+    await withMergeReflection([harmful, ...sources], undefined, [{
+      type: "merge", bulletIds: sources.map(b => b.id), mergedContent: content,
+    }], ({ global }) => {
+      expect(global.find(b => b.id === harmful.id)?.deprecated).toBe(true);
+      for (const source of sources) {
+        const saved = global.find(b => b.id === source.id)!;
+        expect(saved.deprecated).toBe(false);
+        expect(saved.state).not.toBe("retired");
+        expect(saved.replacedBy).toBeUndefined();
+      }
+    });
+  });
+
+  test("identical text in an anti-pattern cannot replace ordinary rules", async () => {
+    const content = "Validate database migrations against the current schema.";
+    const antiPattern = createBullet({ content, type: "anti-pattern", isNegative: true, kind: "anti_pattern" });
+    const sources = [
+      createBullet({ content: "Review SQL migration files." }),
+      createBullet({ content: "Check compatibility before deploying." }),
+    ];
+    await withMergeReflection([antiPattern, ...sources], undefined, [{
+      type: "merge", bulletIds: sources.map(b => b.id), mergedContent: content,
+    }], ({ global }) => {
+      const replacement = global.find(b => b.content === content && b.type === "rule" && !b.isNegative);
+      expect(replacement).toBeDefined();
+      expect(replacement?.deprecated).toBe(false);
+      expect(replacement?.id).not.toBe(antiPattern.id);
+      for (const source of sources) {
+        expect(global.find(b => b.id === source.id)?.replacedBy).toBe(replacement?.id);
+      }
+      expect(global.find(b => b.id === antiPattern.id)?.deprecated).toBe(false);
+    });
+  });
+
+  for (const layer of ["global", "repository"] as const) {
+    test(`reusing a ${layer} replacement persists combined provenance and tags`, async () => {
+      const scope = layer === "global" ? "global" : "workspace";
+      const content = "Validate database migrations against the current schema.";
+      const replacement = createBullet({
+        content, scope, sourceSessions: ["/sessions/original.jsonl"], sourceAgents: ["gemini"], tags: ["original", "shared"],
+      });
+      const sources = [
+        createBullet({
+          content: "Review SQL migration files.", scope,
+          sourceSessions: ["/sessions/original.jsonl", "/sessions/first.jsonl"],
+          sourceAgents: ["claude"], tags: ["migration", "shared"],
+        }),
+        createBullet({
+          content: "Check compatibility before deploying.", scope,
+          sourceSessions: ["/sessions/second.jsonl"], sourceAgents: ["codex", "claude"], tags: ["schema"],
+        }),
+      ];
+      const rules = [replacement, ...sources];
+      await withMergeReflection(layer === "global" ? rules : [], layer === "repository" ? rules : undefined, [{
+        type: "merge", bulletIds: sources.map(b => b.id), mergedContent: content,
+      }], ({ global, repo }) => {
+        const savedRules = layer === "global" ? global : repo;
+        expect(savedRules).toHaveLength(3);
+        const saved = savedRules.find(b => b.id === replacement.id)!;
+        expect(saved.deprecated).toBe(false);
+        expect(saved.sourceSessions.sort()).toEqual(["/sessions/first.jsonl", "/sessions/original.jsonl", "/sessions/second.jsonl"]);
+        expect(saved.sourceAgents.sort()).toEqual(["claude", "codex", "gemini"]);
+        expect(saved.tags.sort()).toEqual(["migration", "original", "schema", "shared"]);
+        for (const source of sources) {
+          expect(savedRules.find(b => b.id === source.id)?.replacedBy).toBe(saved.id);
+        }
+      });
+    });
+  }
+
+  test("repository-only merges stay portable in the repository playbook", async () => {
+    const sources = [
+      createBullet({ content: "Run the database migration check.", scope: "workspace" }),
+      createBullet({ content: "Check schema migration compatibility.", scope: "workspace" }),
+    ];
+    const content = "Validate database migrations against the project schema.";
+    await withMergeReflection([], sources, [{ type: "merge", bulletIds: sources.map(b => b.id), mergedContent: content }], ({ global, repo }) => {
+      expect(global).toHaveLength(0);
+      const replacement = repo.find(b => b.content === content)!;
+      expect(replacement).toBeDefined();
+      expect(replacement.scope).toBe("workspace");
+      expect(replacement.workspace).toBeUndefined();
+      expect(repo.find(b => b.id === sources[0].id)?.replacedBy).toBe(replacement.id);
+    });
+  });
+
+  test("cross-layer merges materialize the repository scope on a global replacement", async () => {
+    const globalSource = createBullet({ content: "Run the database migration check.", scope: "workspace", workspace: "$project" });
+    const repoSource = createBullet({ content: "Check schema migration compatibility.", scope: "workspace" });
+    const content = "Validate database migrations against the project schema.";
+    await withMergeReflection([globalSource], [repoSource], [{ type: "merge", bulletIds: [globalSource.id, repoSource.id], mergedContent: content }], ({ global, repo, repoRoot }) => {
+      const replacement = global.find(b => b.content === content)!;
+      expect(replacement).toBeDefined();
+      expect(replacement.scope).toBe("workspace");
+      expect(replacement.workspace).toBe(repoRoot);
+      expect(global.find(b => b.id === globalSource.id)?.replacedBy).toBe(replacement.id);
+      expect(repo.find(b => b.id === repoSource.id)?.replacedBy).toBe(replacement.id);
+    });
+  });
+
+  test("a later merge rechecks sources retired by an earlier merge", async () => {
+    const sources = [
+      createBullet({ content: "Review migration scripts." }),
+      createBullet({ content: "Check schema compatibility." }),
+      createBullet({ content: "Run deployment smoke tests." }),
+    ];
+    await withMergeReflection(sources, undefined, [
+      { type: "merge", bulletIds: [sources[0].id, sources[1].id], mergedContent: "Validate database migrations." },
+      { type: "merge", bulletIds: [sources[1].id, sources[2].id], mergedContent: "Exercise deployment behavior." },
+    ], ({ global }) => {
+      expect(global.find(b => b.id === sources[2].id)?.deprecated).toBe(false);
+      expect(global.some(b => b.content === "Exercise deployment behavior.")).toBe(false);
+      expect(global.some(b => b.content === "Validate database migrations.")).toBe(true);
+    });
+  });
+});
 
 describe("orchestrateReflection (unit)", () => {
   test("processes a single session and persists add delta to global playbook", async () => {

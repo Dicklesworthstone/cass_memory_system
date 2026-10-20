@@ -69,6 +69,7 @@ import {
   truncate,
   validateOneOf,
 } from "../utils.js";
+import { sameRuleInterpretation, sameRuleScope } from "../workspace.js";
 
 /** Very short rules ("Use Node 18" / "Use Node 20") only merge on exact text. */
 const MIN_TOKENS_FOR_SIMILAR_MERGE = 4;
@@ -681,9 +682,21 @@ export async function playbookCommand(
       const existingIds = new Set(existingPlaybook.bullets.map((b) => b.id));
       const isActive = (b: PlaybookBullet) =>
         !(b.deprecated || b.maturity === "deprecated" || b.state === "retired");
-      const byHash = new Map<string, PlaybookBullet>();
+      const byHash = new Map<string, PlaybookBullet[]>();
+      const indexBullet = (bullet: PlaybookBullet): void => {
+        if (!isActive(bullet)) return;
+        const hash = hashContent(bullet.content);
+        const bucket = byHash.get(hash) ?? [];
+        bucket.push(bullet);
+        byHash.set(hash, bucket);
+      };
+      const compatibleRule = (a: PlaybookBullet, b: PlaybookBullet): boolean => sameRuleInterpretation(a, b) && sameRuleScope(a, b, {
+        // --repo explicitly binds portable rules to this repository. A global
+        // import cannot infer which repository an omitted workspace meant.
+        allowImplicitWorkspace: Boolean(flags.repo),
+      });
       for (const b of existingPlaybook.bullets) {
-        if (isActive(b)) byHash.set(hashContent(b.content), b);
+        indexBullet(b);
       }
       const threshold =
         typeof config.dedupSimilarityThreshold === "number" ? config.dedupSimilarityThreshold : 0.85;
@@ -697,9 +710,15 @@ export async function playbookCommand(
         if (sameId) {
           if (flags.replace) {
             const idx = existingPlaybook.bullets.indexOf(sameId);
+            const oldHash = hashContent(sameId.content);
+            const remaining = (byHash.get(oldHash) ?? []).filter((b) => b.id !== sameId.id);
+            if (remaining.length > 0) byHash.set(oldHash, remaining);
+            else byHash.delete(oldHash);
             existingPlaybook.bullets[idx] = bullet;
+            indexBullet(bullet);
+            newlyAdded.push(bullet);
             updated++;
-          } else if (hashContent(sameId.content) === hashContent(bullet.content)) {
+          } else if (hashContent(sameId.content) === hashContent(bullet.content) && compatibleRule(sameId, bullet)) {
             feedbackMerged += mergeImportedBullet(sameId, bullet, config);
             merged++;
           } else {
@@ -707,15 +726,17 @@ export async function playbookCommand(
           }
         } else if (!isActive(bullet)) {
           existingPlaybook.bullets.push(bullet);
+          existingIds.add(bullet.id);
           added++;
         } else {
-          const exact = byHash.get(hashContent(bullet.content));
+          const exact = byHash.get(hashContent(bullet.content))?.find((b) => compatibleRule(b, bullet));
           const similar =
             exact ??
             (tokenize(bullet.content).length >= MIN_TOKENS_FOR_SIMILAR_MERGE
               ? existingPlaybook.bullets.find(
                   (b) =>
                     isActive(b) &&
+                    compatibleRule(b, bullet) &&
                     tokenize(b.content).length >= MIN_TOKENS_FOR_SIMILAR_MERGE &&
                     jaccardSimilarity(b.content, bullet.content) >= threshold &&
                     // "Mock X" and "Never mock X" overlap almost entirely.
@@ -736,7 +757,7 @@ export async function playbookCommand(
           } else {
             existingPlaybook.bullets.push(bullet);
             existingIds.add(bullet.id);
-            byHash.set(hashContent(bullet.content), bullet);
+            indexBullet(bullet);
             newlyAdded.push(bullet);
             added++;
           }

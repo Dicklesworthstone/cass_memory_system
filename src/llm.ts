@@ -642,6 +642,7 @@ add:
     "type": "rule" | "anti-pattern" | null,
     "isNegative": boolean | null,
     "scope": "global" | "workspace" | "language" | "framework" | "task" | null,
+    "scopeKey": string | null,           // exact language, framework, or task selector
     "workspace": string | null,
     "searchPointer": string | null,
     "tags": string[] | null
@@ -673,6 +674,8 @@ RULES:
   value is EXACTLY one of the literal strings listed — never invent new enum values.
 - Use the literal string "add"/"helpful"/etc. for "type" at the delta level.
 - "sourceSession" must be null; it is overwritten by the system.
+- Preserve each rule's applicability. Use "scopeKey" for a language, framework, or
+  task selector; use null when unknown. Never merge rules from different scopes.
 - Output ONLY the JSON object; no prose, no markdown fences.`,
 
   validator: `You are a scientific validator checking if a proposed rule is supported by historical evidence.

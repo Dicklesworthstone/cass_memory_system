@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "bun:test";
 import { curatePlaybook } from "../src/curate";
 import { hashContent } from "../src/utils";
-import type { Config, Playbook, PlaybookDelta } from "../src/types";
+import type { Config, Playbook, PlaybookBullet, PlaybookDelta } from "../src/types";
 import {
   createFeedbackEvent,
   createTestBullet,
@@ -1373,6 +1373,230 @@ describe("curatePlaybook semantic dedup", () => {
       semanticIndex: index(),
     });
     expect(result.playbook.bullets.find((b) => b.id === deprecated.id)?.helpfulCount).toBe(0);
+  });
+});
+
+describe("curatePlaybook preserves rule applicability", () => {
+  const content = "Run the full test suite before pushing";
+  const scopes: Array<[string, Partial<PlaybookBullet>, Partial<PlaybookBullet>]> = [
+    ["different projects", { scope: "workspace", workspace: "/projects/a" }, { scope: "workspace", workspace: "/projects/b" }],
+    ["parent and child directories", { scope: "workspace", workspace: "/projects/a" }, { scope: "workspace", workspace: "/projects/a/server" }],
+    ["global and project rules", { scope: "global" }, { scope: "workspace", workspace: "/projects/a" }],
+    ["different languages", { scope: "language", scopeKey: "typescript" }, { scope: "language", scopeKey: "python" }],
+    ["different frameworks", { scope: "framework", scopeKey: "react" }, { scope: "framework", scopeKey: "vue" }],
+    ["different tasks", { scope: "task", scopeKey: "release" }, { scope: "task", scopeKey: "migration" }],
+    ["known and unknown workspaces", { scope: "workspace", workspace: "/projects/a" }, { scope: "workspace" }],
+    ["rules and anti-patterns", { type: "anti-pattern", isNegative: true, kind: "anti_pattern" }, { type: "rule", isNegative: false }],
+    ["different negative interpretations", { type: "rule", isNegative: true }, { type: "rule", isNegative: false }],
+  ];
+
+  for (const [name, existingScope, incomingScope] of scopes) {
+    for (const mode of ["exact", "lexical", "semantic"] as const) {
+      it(`retains ${name} separately through ${mode} deduplication`, () => {
+        const incoming = mode === "exact"
+          ? content
+          : mode === "lexical"
+            ? "Run full test suite before pushing"
+            : "Always execute every test prior to a git push";
+        const existing = createTestBullet({ id: "existing", content, ...existingScope });
+        const result = curatePlaybook(createTestPlaybook([existing]), [{
+          type: "add",
+          bullet: { content: incoming, category: "testing", ...incomingScope },
+          reason: "Learned in a different scope",
+          sourceSession: "/session/new.jsonl",
+        }], createTestConfig(), undefined, mode === "semantic" ? {
+          semanticIndex: {
+            threshold: 0.9,
+            embeddings: new Map([[hashContent(content), [1, 0]], [hashContent(incoming), [1, 0]]]),
+          },
+        } : {});
+
+        expect(result.playbook.bullets).toHaveLength(2);
+        expect(existing.helpfulCount).toBe(0);
+        expect(existing.feedbackEvents).toHaveLength(0);
+        expect(result.playbook.bullets[1]).toMatchObject(incomingScope);
+      });
+    }
+  }
+
+  it("finds the right scoped copy when several existing rules share a content hash", () => {
+    const wanted = createTestBullet({ id: "wanted", content, scope: "workspace", workspace: "/projects/a" });
+    const other = createTestBullet({ id: "other", content, scope: "workspace", workspace: "/projects/b" });
+    const result = curatePlaybook(createTestPlaybook([wanted, other]), [{
+      type: "add",
+      bullet: { content, category: "testing", scope: "workspace", workspace: "/projects/a/../a" },
+      reason: "Same project",
+      sourceSession: "/session/new.jsonl",
+    }], createTestConfig());
+    expect(result.playbook.bullets).toHaveLength(2);
+    expect(wanted.helpfulCount).toBe(1);
+    expect(other.helpfulCount).toBe(0);
+  });
+
+  it("keeps implicit workspace rules in different playbook layers distinct", () => {
+    const otherLayer = createTestBullet({ id: "other-layer", content, scope: "workspace" });
+    const target = createTestPlaybook();
+    const result = curatePlaybook(target, [{
+      type: "add", bullet: { content, category: "testing", scope: "workspace" },
+      reason: "Portable repo rule", sourceSession: "/session/new.jsonl",
+    }], createTestConfig(), createTestPlaybook([otherLayer]));
+    expect(result.playbook.bullets).toHaveLength(1);
+    expect(otherLayer.helpfulCount).toBe(0);
+  });
+
+  it("never reinforces a target rule using a different layer's shadowing id", () => {
+    const targetRule = createTestBullet({ id: "shared-id", content: "Never commit generated lockfiles", scope: "language", scopeKey: "python" });
+    const foreignRule = createTestBullet({ id: "shared-id", content: "Always commit generated lockfiles", scope: "language", scopeKey: "typescript" });
+    const result = curatePlaybook(createTestPlaybook([targetRule]), [{
+      type: "add", bullet: { content: foreignRule.content, category: "git", scope: "language", scopeKey: "typescript" },
+      reason: "TypeScript guidance", sourceSession: "/session/typescript",
+    }], createTestConfig(), createTestPlaybook([foreignRule]));
+    expect(result.playbook.bullets).toHaveLength(2);
+    expect(targetRule.helpfulCount).toBe(0);
+    expect(targetRule.content).toBe("Never commit generated lockfiles");
+    expect(result.playbook.bullets[1].scopeKey).toBe("typescript");
+  });
+
+  it("reinforces a portable workspace rule only for a known repo-owned target", () => {
+    const existing = createTestBullet({ id: "portable", content, scope: "workspace" });
+    const result = curatePlaybook(createTestPlaybook([existing]), [{
+      type: "add", bullet: { content, category: "testing", scope: "workspace" },
+      reason: "Same repo rule", sourceSession: "/session/new.jsonl",
+    }], createTestConfig(), undefined, { allowImplicitWorkspace: true });
+    expect(result.playbook.bullets).toHaveLength(1);
+    expect(existing.helpfulCount).toBe(1);
+  });
+
+  it("keeps unresolved workspace guidance in the global store separate", () => {
+    const existing = createTestBullet({ id: "unknown-one", content, scope: "workspace", sourceSessions: ["/sessions/a"] });
+    const result = curatePlaybook(createTestPlaybook([existing]), [{
+      type: "add", bullet: { content, category: "testing", scope: "workspace" },
+      reason: "Unknown project", sourceSession: "/sessions/b",
+    }], createTestConfig());
+    expect(result.playbook.bullets).toHaveLength(2);
+    expect(existing.helpfulCount).toBe(0);
+    const merge = curatePlaybook(result.playbook, [{
+      type: "merge", bulletIds: result.playbook.bullets.map((b) => b.id), mergedContent: content, reason: "Unresolved provenance",
+    }], createTestConfig());
+    expect(merge.applied).toBe(0);
+    expect(merge.skipped).toBe(1);
+    expect(merge.playbook.bullets.every((b) => !b.deprecated)).toBe(true);
+  });
+
+  it("preserves homogeneous scope when merging rules", () => {
+    for (const scope of [
+      { scope: "workspace" as const, workspace: "/projects/a" },
+      { scope: "framework" as const, scopeKey: "react" },
+    ]) {
+      const first = createTestBullet({ id: "one", content: "Run tests before deployment", ...scope });
+      const second = createTestBullet({ id: "two", content: "Run lint before deployment", ...scope });
+      const result = curatePlaybook(createTestPlaybook([first, second]), [{
+        type: "merge", bulletIds: [first.id, second.id],
+        mergedContent: "Run tests and lint before deployment", reason: "Combine release checks",
+      }], createTestConfig());
+      const active = result.playbook.bullets.filter((b) => !b.deprecated);
+      expect(active).toHaveLength(1);
+      expect(active[0]).toMatchObject(scope);
+    }
+  });
+
+  it("rejects mixed-scope, inactive, duplicate-id, and opposing merges without retiring sources", () => {
+    const cases: Array<{ second: Partial<PlaybookBullet>; ids?: string[]; merged?: string }> = [
+      { second: { scope: "workspace", workspace: "/projects/b" } },
+      { second: { scope: "global" } },
+      { second: { state: "retired" } },
+      { second: {}, ids: ["one", "one"] },
+      { second: { content: "Never commit generated lockfiles" } },
+      { second: {}, merged: "Never commit generated lockfiles" },
+    ];
+    for (const scenario of cases) {
+      const first = createTestBullet({ id: "one", content: "Always commit generated lockfiles", scope: "workspace", workspace: "/projects/a" });
+      const second = createTestBullet({ id: "two", content: "Run tests before deployment", scope: "workspace", workspace: "/projects/a", ...scenario.second });
+      const result = curatePlaybook(createTestPlaybook([first, second]), [{
+        type: "merge", bulletIds: scenario.ids ?? [first.id, second.id],
+        mergedContent: scenario.merged ?? "Always commit generated lockfiles and run tests", reason: "Combine checks",
+      }], createTestConfig());
+      expect(result.applied).toBe(0);
+      expect(result.skipped).toBe(1);
+      expect(result.playbook.bullets).toHaveLength(2);
+      expect(first.deprecated).toBe(false);
+      expect(second.deprecated).toBe(false);
+    }
+  });
+
+  it("retains scope selectors when harmful guidance becomes an anti-pattern", () => {
+    const harmful = createTestBullet({
+      content: "Use blocking disk writes", scope: "framework", scopeKey: "react",
+      harmfulCount: 4,
+      feedbackEvents: Array.from({ length: 4 }, () => ({ type: "harmful" as const, timestamp: new Date().toISOString() })),
+    });
+    const result = curatePlaybook(createTestPlaybook([harmful]), [], createTestConfig());
+    const antiPattern = result.playbook.bullets.find((b) => b.kind === "anti_pattern");
+    expect(antiPattern).toMatchObject({ scope: "framework", scopeKey: "react" });
+  });
+
+  it("does not retire healthy sources into a replacement invalidated by this batch's feedback", () => {
+    const sources = [
+      createTestBullet({ id: "tests", content: "Run tests before deployment" }),
+      createTestBullet({ id: "lint", content: "Run lint before deployment" }),
+    ];
+    const replacement = createTestBullet({
+      id: "replacement", content: "Run tests and lint before deployment", harmfulCount: 2,
+      feedbackEvents: [
+        { type: "harmful", timestamp: new Date().toISOString(), sessionPath: "/session/one.jsonl" },
+        { type: "harmful", timestamp: new Date().toISOString(), sessionPath: "/session/two.jsonl" },
+      ],
+    });
+    const result = curatePlaybook(createTestPlaybook([...sources, replacement]), [
+      { type: "merge", bulletIds: sources.map((b) => b.id), mergedContent: replacement.content, reason: "Consolidate" },
+      { type: "harmful", bulletId: replacement.id, sourceSession: "/session/three.jsonl" },
+    ], createTestConfig());
+    expect(result.applied).toBe(1);
+    expect(result.skipped).toBe(1);
+    expect(result.inversions).toHaveLength(1);
+    expect(replacement.deprecated).toBe(true);
+    for (const source of sources) {
+      expect(source.deprecated).toBe(false);
+      expect(source.replacedBy).toBeUndefined();
+    }
+  });
+
+  it("keeps a surviving source active and preserves provenance when it is the replacement", () => {
+    const survivor = createTestBullet({ id: "survivor", content: "Run tests and lint before deployment", sourceSessions: ["/sessions/tests"], sourceAgents: ["codex"], tags: ["tests"] });
+    const other = createTestBullet({ id: "other", content: "Run lint before deployment", sourceSessions: ["/sessions/lint"], sourceAgents: ["claude"], tags: ["lint"] });
+    const result = curatePlaybook(createTestPlaybook([survivor, other]), [{
+      type: "merge", bulletIds: [survivor.id, other.id], mergedContent: survivor.content, reason: "Consolidate",
+    }], createTestConfig());
+    expect(result.playbook.bullets).toHaveLength(2);
+    expect(survivor.deprecated).toBe(false);
+    expect(other.replacedBy).toBe(survivor.id);
+    expect(survivor.sourceSessions).toEqual(["/sessions/tests", "/sessions/lint"]);
+    expect(survivor.sourceAgents).toEqual(["codex", "claude"]);
+    expect(survivor.tags).toEqual(["tests", "lint"]);
+  });
+
+  it("does not reuse an anti-pattern as the replacement for ordinary rules", () => {
+    const sources = [createTestBullet({ id: "tests", content: "Run tests before deployment" }), createTestBullet({ id: "lint", content: "Run lint before deployment" })];
+    const anti = createTestBullet({ id: "anti", content: "Run tests and lint before deployment", type: "anti-pattern", isNegative: true, kind: "anti_pattern" });
+    const result = curatePlaybook(createTestPlaybook([...sources, anti]), [{
+      type: "merge", bulletIds: sources.map((b) => b.id), mergedContent: anti.content, reason: "Consolidate",
+    }], createTestConfig());
+    const survivor = result.playbook.bullets.find((b) => !b.deprecated && b.type === "rule");
+    expect(survivor).toBeDefined();
+    expect(survivor?.id).not.toBe(anti.id);
+    expect(sources.every((b) => b.replacedBy === survivor?.id)).toBe(true);
+  });
+
+  it("refreshes duplicate and conflict indexes after changing an existing instruction", () => {
+    const original = createTestBullet({ id: "changed", content: "Always commit generated lockfiles" });
+    const result = curatePlaybook(createTestPlaybook([original]), [
+      { type: "replace", bulletId: original.id, newContent: "Never commit generated lockfiles" },
+      { type: "add", bullet: { content: "Always commit generated lockfiles", category: "git" }, reason: "Different guidance", sourceSession: "/sessions/new" },
+    ], createTestConfig());
+    expect(result.playbook.bullets).toHaveLength(2);
+    expect(result.conflicts).toHaveLength(1);
+    expect(result.conflicts[0].conflictingContent).toBe("Never commit generated lockfiles");
+    expect(original.helpfulCount).toBe(0);
   });
 });
 

@@ -26,6 +26,8 @@ import {
   __clearWorkspaceCacheForTest,
   canonicalWorkspacePath,
   resolveProjectRoot,
+  ruleScopeKey,
+  sameRuleScope,
   workspaceMatches,
 } from "../src/workspace.js";
 import { createBullet, createTestConfig } from "./helpers/factories.js";
@@ -61,6 +63,31 @@ function makeLayout() {
 }
 
 describe("workspace matching (#81)", () => {
+  test("deduplication equates canonical worktrees without collapsing narrower applicability", () => {
+    const { repo, wt, nested } = makeLayout();
+    const mainRule = { scope: "workspace" as const, workspace: path.join(repo, "src") };
+    const worktreeRule = { scope: "workspace" as const, workspace: path.join(wt, "src") };
+    expect(ruleScopeKey(mainRule)).toBe(ruleScopeKey(worktreeRule));
+    expect(sameRuleScope(mainRule, worktreeRule)).toBe(true);
+    expect(sameRuleScope(mainRule, { scope: "workspace", workspace: repo })).toBe(false);
+    expect(sameRuleScope(mainRule, { scope: "workspace", workspace: nested })).toBe(false);
+    expect(sameRuleScope(mainRule, { scope: "global" })).toBe(false);
+  });
+
+  test("unknown workspace identity requires an established common owner", () => {
+    expect(ruleScopeKey({ scope: "workspace" })).toBeUndefined();
+    expect(sameRuleScope({ scope: "workspace" }, { scope: "workspace" })).toBe(false);
+    expect(sameRuleScope({ scope: "workspace" }, { scope: "workspace" }, { allowImplicitWorkspace: true })).toBe(true);
+    expect(sameRuleScope({ scope: "workspace" }, { scope: "workspace", workspace: "/projects/a" }, { allowImplicitWorkspace: true })).toBe(false);
+  });
+
+  test("named scope identity keeps selectors and scope kinds distinct", () => {
+    expect(sameRuleScope({ scope: "language", scopeKey: " typescript " }, { scope: "language", scopeKey: "typescript" })).toBe(true);
+    expect(sameRuleScope({ scope: "language" }, { scope: "language", scopeKey: "typescript" })).toBe(false);
+    expect(sameRuleScope({ scope: "framework", scopeKey: "react" }, { scope: "task", scopeKey: "react" })).toBe(false);
+    expect(sameRuleScope({}, { scope: "global" })).toBe(true);
+  });
+
   test("a rule for the repo root applies in subdirectories and linked worktrees", () => {
     const { repo, wt } = makeLayout();
     expect(workspaceMatches(repo, repo)).toBe(true);

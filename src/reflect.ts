@@ -14,6 +14,7 @@ import {
   type PlaybookDelta,
 } from "./types.js";
 import { hashContent, log, now } from "./utils.js";
+import { ruleScopeKey } from "./workspace.js";
 
 // --- Helper: Summarize Playbook for Prompt ---
 
@@ -39,8 +40,10 @@ export function formatBulletsForPrompt(bullets: PlaybookBullet[]): string {
     output += `### ${cat}\n`;
     for (const b of group) {
       const maturity = iconFor(b.maturity);
+      const selector = b.scope === "workspace" ? b.workspace : b.scopeKey;
+      const scope = `${b.scope}${selector ? `:${selector}` : ""}`;
       // Format: [id] Content (stats)
-      output += `- [${b.id}] ${maturity} ${b.content} (${b.helpfulCount}+ / ${b.harmfulCount}-)\n`;
+      output += `- [${b.id}] ${maturity} ${b.content} (${b.helpfulCount}+ / ${b.harmfulCount}-; scope=${scope})\n`;
     }
     output += "\n";
   }
@@ -132,7 +135,11 @@ export function hashDelta(delta: PlaybookDelta): string {
 
   if (delta.type === "add") {
     // Category differences shouldn't allow duplicate rule content to re-enter the system.
-    return `add:${hashContent(delta.bullet.content)}`;
+    // Applicability is part of identity: identical advice learned for two
+    // projects must survive until each project receives its own rule.
+    const scope = ruleScopeKey(delta.bullet) ?? JSON.stringify(["workspace", "unresolved", delta.sourceSession]);
+    const interpretation = JSON.stringify([delta.bullet.type ?? "rule", Boolean(delta.bullet.isNegative)]);
+    return `add:${scope}:${interpretation}:${hashContent(delta.bullet.content)}`;
   }
   if (delta.type === "replace") {
     return `replace:${delta.bulletId}:${normalize(delta.newContent)}`;
@@ -185,6 +192,7 @@ const LLMNewBulletSchema = z
     type: BulletTypeEnum.nullable(),
     isNegative: z.boolean().nullable(),
     scope: BulletScopeEnum.nullable(),
+    scopeKey: z.string().nullable(),
     workspace: z.string().nullable(),
     searchPointer: z.string().nullable(),
     tags: z.array(z.string()).nullable(),
@@ -290,6 +298,7 @@ function normalizeLLMDelta(d: LLMReflectorDelta, sessionPath: string): PlaybookD
           ...(d.bullet.type !== null ? { type: d.bullet.type } : {}),
           ...(d.bullet.isNegative !== null ? { isNegative: d.bullet.isNegative } : {}),
           ...(d.bullet.scope !== null ? { scope: d.bullet.scope } : {}),
+          ...(d.bullet.scopeKey !== null ? { scopeKey: d.bullet.scopeKey } : {}),
           ...(d.bullet.workspace !== null ? { workspace: d.bullet.workspace } : {}),
           ...(d.bullet.searchPointer !== null ? { searchPointer: d.bullet.searchPointer } : {}),
           ...(d.bullet.tags !== null ? { tags: d.bullet.tags } : {}),

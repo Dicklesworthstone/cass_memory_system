@@ -9,7 +9,7 @@ import {
   formatSessionRecords,
 } from "./cass.js";
 import { HOOK_ACTIVE_ENV } from "./commands/hook.js";
-import { curatePlaybook } from "./curate.js";
+import { curatePlaybook, directivesDisagree, splitDirectiveClauses, validateMergeSources } from "./curate.js";
 import { generateDiary, generateDiaryFromContent } from "./diary.js";
 import type { LLMIO } from "./llm.js";
 import { withLock } from "./lock.js";
@@ -62,7 +62,7 @@ import {
   warn,
 } from "./utils.js";
 import { validateDelta } from "./validate.js";
-import { normalizeWorkspacePath, resolveProjectRoot } from "./workspace.js";
+import { normalizeWorkspacePath, resolveProjectRoot, sameRuleScope } from "./workspace.js";
 
 /** Hook-mode wait for the reflection lock: up to 30 minutes, polled every second. */
 export const HOOK_REFLECTION_LOCK_WAIT = { retries: 1800, delay: 1000 };
@@ -174,24 +174,48 @@ function isActiveBullet(bullet: PlaybookBullet): boolean {
   return !bullet.deprecated && bullet.maturity !== "deprecated" && bullet.state !== "retired";
 }
 
-function findFirstHashMatch(playbook: Playbook, content: string): PlaybookBullet | undefined {
+function findFirstHashMatch(
+  playbook: Playbook,
+  content: string,
+  eligible: (bullet: PlaybookBullet) => boolean,
+): PlaybookBullet | undefined {
   const h = hashContent(content);
-  return playbook.bullets.find((b) => hashContent(b.content) === h);
+  return playbook.bullets.find((b) => eligible(b) && hashContent(b.content) === h);
 }
 
 function findBestActiveSimilarBullet(
   playbook: Playbook,
   content: string,
   threshold: number,
+  eligible: (bullet: PlaybookBullet) => boolean,
 ): PlaybookBullet | undefined {
   let best: { bullet: PlaybookBullet; score: number } | undefined;
+  const clauses = splitDirectiveClauses(content);
   for (const b of playbook.bullets) {
-    if (!isActiveBullet(b)) continue;
+    if (!isActiveBullet(b) || !eligible(b)) continue;
+    if (directivesDisagree(clauses, splitDirectiveClauses(b.content))) continue;
     const score = jaccardSimilarity(content, b.content);
     if (score < threshold) continue;
     if (!best || score > best.score) best = { bullet: b, score };
   }
   return best?.bullet;
+}
+
+function accumulateCurationResult(
+  previous: CurationResult | undefined,
+  next: CurationResult,
+): CurationResult {
+  if (!previous) return next;
+  return {
+    playbook: next.playbook,
+    applied: previous.applied + next.applied,
+    skipped: previous.skipped + next.skipped,
+    conflicts: [...previous.conflicts, ...next.conflicts],
+    promotions: [...previous.promotions, ...next.promotions],
+    inversions: [...previous.inversions, ...next.inversions],
+    pruned: previous.pruned + next.pruned,
+    decisionLog: [...(previous.decisionLog ?? []), ...(next.decisionLog ?? [])],
+  };
 }
 
 /**
@@ -678,78 +702,12 @@ export async function orchestrateReflection(
       // Create fresh merged context to ensure deduplication uses up-to-date data
       const freshMerged = mergePlaybooks(globalPlaybook, repoPlaybook);
 
-      // Pre-process deltas to decompose 'merge' operations into atomic add/deprecate actions.
-      // This allows us to route deprecations to their specific playbooks (Repo vs Global)
-      // while adding the new merged rule to the default location (Global).
-      const processedDeltas: PlaybookDelta[] = [];
-
-      for (const delta of allDeltas) {
-        if (delta.type !== "merge") {
-          processedDeltas.push(delta);
-          continue;
-        }
-
-        const mergedContent = delta.mergedContent;
-        const threshold =
-          typeof config.dedupSimilarityThreshold === "number"
-            ? config.dedupSimilarityThreshold
-            : 0.85;
-
-        // If the merged content already exists (or is very similar), prefer deprecating into it
-        // rather than creating a duplicate replacement that curation might skip.
-        const exactMatch = findFirstHashMatch(freshMerged, mergedContent);
-        if (exactMatch && !isActiveBullet(exactMatch)) {
-          warn(
-            `[orchestrator] Skipping merge delta: merged content matches deprecated/blocked bullet ${exactMatch.id}`,
-          );
-          continue;
-        }
-
-        const replacement =
-          exactMatch && isActiveBullet(exactMatch)
-            ? exactMatch
-            : findBestActiveSimilarBullet(freshMerged, mergedContent, threshold);
-
-        if (replacement) {
-          for (const id of delta.bulletIds) {
-            // If one of the merged bullets is already the best replacement, keep it active and only deprecate the others.
-            if (id === replacement.id) continue;
-            processedDeltas.push({
-              type: "deprecate",
-              bulletId: id,
-              reason: `Merged into existing ${replacement.id}`,
-              replacedBy: replacement.id,
-            });
-          }
-          continue;
-        }
-
-        const newBulletId = generateBulletId();
-
-        // 1. Create the new merged rule
-        processedDeltas.push({
-          type: "add",
-          bullet: {
-            id: newBulletId, // Pre-assign ID so deprecate deltas can reference it
-            content: mergedContent,
-            category: "merged",
-            tags: [],
-          },
-          // Merge deltas don't carry sourceSession, so we use a placeholder
-          sourceSession: "merged-operation",
-          reason: delta.reason || "Merged from existing rules",
-        });
-
-        // 2. Deprecate the old rules
-        for (const id of delta.bulletIds) {
-          processedDeltas.push({
-            type: "deprecate",
-            bulletId: id,
-            reason: `Merged into ${newBulletId}`,
-            replacedBy: newBulletId,
-          });
-        }
-      }
+      // Merges must inspect the current sources and successfully establish a
+      // replacement before retiring anything. Decomposing all merges up front
+      // used stale sources, lost scope, and could retire rules after an add was
+      // rejected or deduplicated into an unrelated rule.
+      const processedDeltas = allDeltas.filter((delta) => delta.type !== "merge");
+      const mergeDeltas = allDeltas.filter((delta) => delta.type === "merge");
 
       // Partition deltas (Routing Logic)
       const globalDeltas: PlaybookDelta[] = [];
@@ -812,7 +770,7 @@ export async function orchestrateReflection(
               portable,
               config,
               mergePlaybooks(globalPlaybook, targetPlaybook),
-              { semanticIndex },
+              { semanticIndex, allowImplicitWorkspace: true },
             );
             await savePlaybook(result.playbook, playbookPath, { updateLastReflection: true });
             projectResults.push({ playbookPath, result });
@@ -835,15 +793,148 @@ export async function orchestrateReflection(
       if (repoDeltas.length > 0 && repoPlaybook && repoPath) {
         repoResult = curatePlaybook(repoPlaybook, repoDeltas, config, freshMerged, {
           semanticIndex,
+          allowImplicitWorkspace: true,
         });
-        await savePlaybook(repoResult.playbook, repoPath, { updateLastReflection: true });
+      }
+
+      const recordResult = (target: Playbook, result: CurationResult) => {
+        if (target === repoPlaybook) repoResult = accumulateCurationResult(repoResult, result);
+        else globalResult = accumulateCurationResult(globalResult, result);
+      };
+      const applyToLayer = (target: Playbook, deltas: PlaybookDelta[]) => {
+        if (deltas.length === 0) return;
+        recordResult(target, curatePlaybook(
+          target, deltas, config, mergePlaybooks(globalPlaybook, repoPlaybook),
+          { semanticIndex, allowImplicitWorkspace: target === repoPlaybook },
+        ));
+      };
+
+      if (mergeDeltas.length > 0) {
+        // Resolve harmful-rule inversion and retirement before selecting any
+        // replacement. Otherwise a rule can look active during selection and
+        // be retired by curation immediately after every source points to it.
+        recordResult(globalPlaybook, curatePlaybook(
+          globalPlaybook, [], config, mergePlaybooks(globalPlaybook, repoPlaybook), { semanticIndex },
+        ));
+        if (repoPlaybook) recordResult(repoPlaybook, curatePlaybook(
+          repoPlaybook, [], config, mergePlaybooks(globalPlaybook, repoPlaybook),
+          { semanticIndex, allowImplicitWorkspace: true },
+        ));
+      }
+
+      for (const delta of mergeDeltas) {
+        const repoIds = new Set(repoPlaybook?.bullets.map((bullet) => bullet.id) ?? []);
+        const owner = (id: string): Playbook => repoPlaybook && repoIds.has(id) ? repoPlaybook : globalPlaybook;
+        const target = repoPlaybook && delta.bulletIds.length > 0 && delta.bulletIds.every(id => repoIds.has(id))
+          ? repoPlaybook : globalPlaybook;
+        const rejectMerge = (reason: string) => {
+          const message = `Cannot merge: ${reason}`;
+          warn(`[orchestrator] ${message}`);
+          recordResult(target, {
+            playbook: target, applied: 0, skipped: 1, conflicts: [], promotions: [], inversions: [], pruned: 0,
+            decisionLog: [{ timestamp: now(), phase: "add", action: "rejected", reason: message,
+              details: { bulletIds: delta.bulletIds } }],
+          });
+        };
+        const found = delta.bulletIds.map(id => findBullet(owner(id), id));
+        if (found.some(bullet => !bullet)) {
+          rejectMerge("one or more source rules are missing");
+          continue;
+        }
+        const sources = found as PlaybookBullet[];
+        // A pathless workspace rule in the repository has a known owner. Use
+        // that path for comparisons, while keeping repository-only writes
+        // portable across clones. A cross-layer replacement needs it stored.
+        const effectiveScope = (bullet: PlaybookBullet): PlaybookBullet =>
+          repoDir && repoIds.has(bullet.id) && bullet.scope === "workspace" && !bullet.workspace?.trim()
+            ? { ...bullet, workspace: path.dirname(repoDir) } : bullet;
+        const sameLayer = sources.every(bullet => owner(bullet.id) === target);
+        const allowImplicitWorkspace = sameLayer && target === repoPlaybook;
+        const scopedSources = sources.map(effectiveScope);
+        const invalid = validateMergeSources(scopedSources, delta.mergedContent, { allowImplicitWorkspace });
+        if (invalid) {
+          rejectMerge(invalid);
+          continue;
+        }
+        const first = sources[0];
+        const firstScope = scopedSources[0];
+        if (!first || !firstScope) continue; // validation requires at least two sources
+        const eligible = (bullet: PlaybookBullet) =>
+          // Global sources cannot retire into a repository replacement that
+          // has not been saved yet. Cross-layer replacements stay global so
+          // the global-before-repo write order always persists them first.
+          (target !== globalPlaybook || owner(bullet.id) === globalPlaybook) &&
+          bullet.type === first.type && bullet.isNegative === first.isNegative &&
+          sameRuleScope(firstScope, effectiveScope(bullet), {
+            allowImplicitWorkspace: allowImplicitWorkspace && owner(bullet.id) === target,
+          });
+        const currentContext = mergePlaybooks(globalPlaybook, repoPlaybook);
+        const exact = findFirstHashMatch(currentContext, delta.mergedContent, eligible);
+        if (exact && !isActiveBullet(exact)) {
+          rejectMerge(`replacement text belongs to retired rule ${exact.id}`);
+          continue;
+        }
+        let replacement = exact ?? findBestActiveSimilarBullet(
+          currentContext, delta.mergedContent, config.dedupSimilarityThreshold ?? 0.85, eligible,
+        );
+        if (replacement) {
+          const invalidReplacement = validateMergeSources(scopedSources, replacement.content, {
+            allowImplicitWorkspace,
+          });
+          if (invalidReplacement) {
+            rejectMerge(invalidReplacement);
+            continue;
+          }
+        }
+        if (!replacement) {
+          const id = generateBulletId();
+          const scope = target === repoPlaybook ? first : firstScope;
+          applyToLayer(target, [{
+            type: "add",
+            bullet: {
+              id, content: delta.mergedContent, category: first.category,
+              kind: first.kind, type: first.type, isNegative: first.isNegative,
+              scope: scope.scope, scopeKey: scope.scopeKey, workspace: scope.workspace,
+              tags: [...new Set(sources.flatMap(bullet => bullet.tags))],
+            },
+            sourceSession: "merged-operation",
+            reason: delta.reason || "Merged from existing rules",
+          }]);
+          replacement = findBullet(target, id);
+          if (!replacement || !isActiveBullet(replacement)) {
+            rejectMerge("replacement was not retained; original rules were preserved");
+            continue;
+          }
+          replacement.sourceSessions = [];
+          replacement.sourceAgents = [];
+        }
+        replacement.sourceSessions = [...new Set([
+          ...replacement.sourceSessions, ...sources.flatMap(bullet => bullet.sourceSessions),
+        ])];
+        replacement.sourceAgents = [...new Set([
+          ...replacement.sourceAgents, ...sources.flatMap(bullet => bullet.sourceAgents),
+        ])];
+        replacement.tags = [...new Set([...replacement.tags, ...sources.flatMap(bullet => bullet.tags)])];
+        replacement.updatedAt = now();
+        const deprecations: PlaybookDelta[] = sources
+          .filter(bullet => bullet.id !== replacement.id)
+          .map(bullet => ({
+            type: "deprecate", bulletId: bullet.id,
+            reason: `Merged into ${replacement.id}`, replacedBy: replacement.id,
+          }));
+        applyToLayer(globalPlaybook, deprecations.filter(d => "bulletId" in d && !repoIds.has(d.bulletId)));
+        if (repoPlaybook) applyToLayer(repoPlaybook, deprecations.filter(d => "bulletId" in d && repoIds.has(d.bulletId)));
       }
 
       // The global playbook owns the run-level counters, so it is saved on
-      // every committing run, delta or not (#72).
+      // every committing run, delta or not (#72). Cross-layer replacements
+      // live here: persist them before retiring their repository sources.
       const globalToSave = globalResult ? globalResult.playbook : globalPlaybook;
       recordReflectionRun(globalToSave, committedSessionCount);
       await savePlaybook(globalToSave, globalPath, { updateLastReflection: true });
+      if (repoResult && repoPath) {
+        await savePlaybook(repoResult.playbook, repoPath, { updateLastReflection: true });
+      }
     };
 
     // Execute Merge with Locking

@@ -18,7 +18,48 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import type { PlaybookBullet } from "./types.js";
 import { expandPath } from "./utils.js";
+
+export type RuleScope = Partial<Pick<PlaybookBullet, "scope" | "scopeKey" | "workspace">>;
+type RuleInterpretation = Partial<Pick<PlaybookBullet, "type" | "isNegative">>;
+
+/** The same words can be an instruction or a recorded anti-pattern. */
+export function sameRuleInterpretation(a: RuleInterpretation, b: RuleInterpretation): boolean {
+  return (a.type ?? "rule") === (b.type ?? "rule") && Boolean(a.isNegative) === Boolean(b.isNegative);
+}
+
+/**
+ * Identity for safe deduplication. Overlapping scopes are not interchangeable:
+ * a global rule and a repo-only rule have different evidence and lifetimes.
+ * Unknown workspace provenance deliberately has no reusable identity. An
+ * omitted named selector stays distinct from every explicit selector.
+ */
+export function ruleScopeKey(rule: RuleScope): string | undefined {
+  const scope = rule.scope ?? "global";
+  if (scope === "global") return JSON.stringify([scope]);
+  if (scope !== "workspace") return JSON.stringify([scope, rule.scopeKey?.trim() || null]);
+  const workspace = rule.workspace?.trim();
+  return workspace ? JSON.stringify([scope, canonicalWorkspacePath(workspace)]) : undefined;
+}
+
+/**
+ * Callers may equate two implicit workspace scopes only after establishing
+ * that both belong to the same repository/playbook. Missing and explicit
+ * workspaces never compare equal without resolving that provenance first.
+ */
+export function sameRuleScope(
+  a: RuleScope,
+  b: RuleScope,
+  options: { allowImplicitWorkspace?: boolean } = {},
+): boolean {
+  const aKey = ruleScopeKey(a);
+  const bKey = ruleScopeKey(b);
+  if (aKey === undefined || bKey === undefined) {
+    return options.allowImplicitWorkspace === true && aKey === undefined && bKey === undefined;
+  }
+  return aKey === bKey;
+}
 
 interface GitCheckout {
   /** Top-level directory of the checkout that contains the path. */

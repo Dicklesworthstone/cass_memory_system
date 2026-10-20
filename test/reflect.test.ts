@@ -49,6 +49,35 @@ function captureConsole() {
 describe("reflectOnSession", () => {
   const config = createTestConfig();
 
+  test("preserves scope selectors through the strict LLM schema and normalization", async () => {
+    const diary = createTestDiary();
+    const result = await reflectOnSession(diary, createTestPlaybook(), { ...config, maxReflectorIterations: 1 }, {
+      generateObject: async <T>(options: any) => {
+        expect(options.prompt).toContain('"scopeKey": string | null');
+        const response = { deltas: ["typescript", "python", null].map((scopeKey) => ({
+          type: "add", reason: "A language-specific lesson", sourceSession: null,
+          bullet: {
+            content: "Run tests before publishing", category: "testing", kind: null,
+            type: null, isNegative: null, scope: "language", scopeKey,
+            workspace: null, searchPointer: null, tags: null,
+          },
+        })) };
+        const parsed = options.schema.parse(response);
+        const missingSelector = structuredClone(response);
+        delete (missingSelector.deltas[0].bullet as { scopeKey?: string | null }).scopeKey;
+        expect(options.schema.safeParse(missingSelector).success).toBe(false);
+        return { object: parsed as T };
+      },
+    });
+    expect(result.failure).toBeUndefined();
+    expect(result.deltas).toHaveLength(3);
+    const selectors = result.deltas.map((delta) => delta.type === "add" ? delta.bullet.scopeKey : "unexpected");
+    expect(selectors).toEqual(["typescript", "python", undefined]);
+    for (const delta of result.deltas) {
+      if (delta.type === "add") expect(delta.sourceSession).toBe(diary.sessionPath);
+    }
+  });
+
   test("should terminate when no new insights found", async () => {
     const diary = createTestDiary();
     const playbook = createTestPlaybook();
@@ -210,6 +239,42 @@ describe("deduplicateDeltas", () => {
     const result = deduplicateDeltas([d2], [d1]);
     expect(result).toHaveLength(1);
   });
+
+  test.serial("preserves identical instructions with different applicability", () => {
+    const base: PlaybookDelta = {
+      type: "add", bullet: { content: "Run tests before pushing", category: "testing", scope: "global" },
+      reason: "Observed in a session", sourceSession: "/sessions/one.jsonl",
+    };
+    const scoped: PlaybookDelta[] = [
+      { ...base, bullet: { ...base.bullet, scope: "workspace", workspace: "/projects/a" } },
+      { ...base, bullet: { ...base.bullet, scope: "workspace", workspace: "/projects/b" } },
+      { ...base, bullet: { ...base.bullet, scope: "language", scopeKey: "typescript" } },
+      { ...base, bullet: { ...base.bullet, scope: "language", scopeKey: "python" } },
+    ];
+    expect(deduplicateDeltas(scoped, [base])).toHaveLength(4);
+    const sameProject: PlaybookDelta = { ...base, bullet: { ...base.bullet, scope: "workspace", workspace: "/projects/a/../a" } };
+    expect(deduplicateDeltas([sameProject], scoped)).toHaveLength(0);
+  });
+
+  test.serial("does not conflate unresolved workspace rules from different sessions", () => {
+    const first: PlaybookDelta = {
+      type: "add", bullet: { content: "Run tests before pushing", category: "testing", scope: "workspace" },
+      reason: "Portable project rule", sourceSession: "/sessions/one.jsonl",
+    };
+    expect(deduplicateDeltas([{ ...first, sourceSession: "/sessions/two.jsonl" }], [first])).toHaveLength(1);
+    expect(deduplicateDeltas([{ ...first }], [first])).toHaveLength(0);
+  });
+
+  test.serial("keeps rules and negative interpretations distinct before curation", () => {
+    const positive: PlaybookDelta = {
+      type: "add", bullet: { content: "Run tests", category: "testing" },
+      reason: "An instruction", sourceSession: "/sessions/one",
+    };
+    expect(deduplicateDeltas([
+      { ...positive, bullet: { ...positive.bullet, type: "anti-pattern", isNegative: true } },
+      { ...positive, bullet: { ...positive.bullet, type: "rule", isNegative: true } },
+    ], [positive])).toHaveLength(2);
+  });
 });
 
 describe("reflect command helpers (unit)", () => {
@@ -347,6 +412,15 @@ describe("reflect command helpers (unit)", () => {
 describe("reflect module helpers (unit)", () => {
   test("formatBulletsForPrompt handles empty playbook", () => {
     expect(formatBulletsForPrompt([])).toBe("(Playbook is empty)");
+  });
+
+  test("shows applicability alongside otherwise identical prompt rules", () => {
+    const prompt = formatBulletsForPrompt([
+      createTestBullet({ content: "Run tests", scope: "language", scopeKey: "typescript" }),
+      createTestBullet({ content: "Run tests", scope: "workspace", workspace: "/projects/a" }),
+    ]);
+    expect(prompt).toContain("scope=language:typescript");
+    expect(prompt).toContain("scope=workspace:/projects/a");
   });
 
   test("hashDelta normalizes merge ids and replace content", () => {
