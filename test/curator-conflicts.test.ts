@@ -1,7 +1,13 @@
 import { describe, expect, it } from "bun:test";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import { detectConflicts, findBulletConflicts, splitDirectiveClauses } from "../src/curate.js";
+import {
+  detectConflicts,
+  directivesDisagree,
+  findBulletConflicts,
+  splitDirectiveClauses,
+  validateMergeSources,
+} from "../src/curate.js";
 import type { PlaybookBullet } from "../src/types.js";
 import { withTempDir } from "./helpers/temp.js";
 
@@ -125,6 +131,101 @@ describe("issue #95 regression cases", () => {
     it(`keeps complete complementary instructions compatible: ${name}`, () => {
       expect(detectConflicts(a, [bullet(b)])).toEqual([]);
       expect(detectConflicts(b, [bullet(a)])).toEqual([]);
+    });
+  }
+
+  // Pronoun objects take their meaning from their own rule. These shapes were
+  // the only pairs flagged in a scan of 1,683 real agent instructions.
+  const contextualObjects: Array<[string, string, string]> = [
+    [
+      "a pronoun with different antecedents",
+      "If a logger helper exists in the project, use it; do not invent a different pattern.",
+      "A worktree-using helper is broken in this repo; do not use it.",
+    ],
+    [
+      "a pronoun with a qualified instruction",
+      "Use it for syntax checks only.",
+      "If a tool wants to spawn a worktree, work around it. Never use it.",
+    ],
+    ["demonstrative objects", "Run these checks before every commit.", "Never run these checks."],
+  ];
+
+  for (const [name, a, b] of contextualObjects) {
+    it(`does not match objects that depend on their own rule: ${name}`, () => {
+      expect(detectConflicts(a, [bullet(b)])).toEqual([]);
+      expect(detectConflicts(b, [bullet(a)])).toEqual([]);
+      expect(findBulletConflicts([{ ...bullet(a), id: "b-a" }, { ...bullet(b), id: "b-b" }])).toEqual([]);
+    });
+  }
+
+  it("still keeps opposing contextual objects apart in deduplication and merges", () => {
+    // Both rules have a negative clause, so only the clause-level guard can
+    // tell them apart; the pronoun clause has too few topic words to compare.
+    const a = "Never commit secrets. Use it for releases.";
+    const b = "Never commit secrets. Do not use it for releases.";
+    expect(directivesDisagree(splitDirectiveClauses(a), splitDirectiveClauses(b))).toBe(true);
+    expect(
+      validateMergeSources(
+        [{ ...bullet("Use it before tagging."), id: "b-a" }, { ...bullet("Use it before tagging releases."), id: "b-b" }],
+        "Never use it before tagging.",
+      ),
+    ).toBe("Merged content directly opposes a source rule");
+  });
+
+  it("still reports the same action on a named object", () => {
+    const pairs = findBulletConflicts([
+      { ...bullet("If a logger helper exists, use the logger helper."), id: "b-a" },
+      { ...bullet("Never use the logger helper."), id: "b-b" },
+    ]);
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0].evidence.action).toBe("use logger helper");
+  });
+
+  const compatibleCommonVerbs: Array<[string, string, string]> = [
+    ["editing", "Never edit generated files by hand.", "Edit the generator template instead."],
+    ["killing processes", "Never kill processes you did not start.", "Kill the dev server you started before finishing."],
+    ["rebasing", "Always rebase onto origin/main before pushing.", "Never rebase published release tags."],
+    ["resetting", "Never reset the shared database.", "Reset your local test database between runs."],
+    ["stashing", "Never stash other agents' changes.", "Stash your own work before switching tasks."],
+    ["treating results", "Treat warnings as errors in CI.", "Do not treat flaky tests as passing."],
+    ["squashing", "Never squash commits from other contributors.", "Squash your own fixup commits before pushing."],
+  ];
+
+  for (const [name, a, b] of compatibleCommonVerbs) {
+    it(`keeps compatible instructions with common agent verbs apart: ${name}`, () => {
+      expect(detectConflicts(a, [bullet(b)])).toEqual([]);
+      expect(detectConflicts(b, [bullet(a)])).toEqual([]);
+    });
+  }
+
+  const opposingCommonForms: Array<[string, string, string, string]> = [
+    ["squashing", "Always squash commits before merging.", "Never squash commits before merging.", "squash commits before merging"],
+    ["rebasing", "Always rebase feature branches.", "Never rebase feature branches.", "rebase feature branches"],
+    ["treating warnings", "Treat warnings as errors.", "Never treat warnings as errors.", "treat warnings as errors"],
+    ["editing", "Edit generated files.", "Never edit generated files.", "edit generated files"],
+    ["amending", "Never amend published commits.", "Amend published commits to fix typos.", "amend published commits to fix typos"],
+    [
+      "a rationale after a comma",
+      "Always run the formatter before committing, because CI rejects unformatted code.",
+      "Never run the formatter before committing; it rewrites other agents' files.",
+      "run formatter before committing",
+    ],
+    [
+      "a purpose clause after a comma",
+      "Never commit lockfiles, to avoid drift.",
+      "Always commit lockfiles, so that installs are reproducible.",
+      "commit lockfiles",
+    ],
+  ];
+
+  for (const [name, a, b, action] of opposingCommonForms) {
+    it(`reports direct contradictions in common rule phrasing: ${name}`, () => {
+      const forward = detectConflicts(a, [bullet(b)]);
+      const reverse = detectConflicts(b, [bullet(a)]);
+      expect(forward).toHaveLength(1);
+      expect(reverse).toHaveLength(1);
+      expect(forward[0].evidence.action).toBe(action);
+      expect(reverse[0].evidence.action).toBe(action);
     });
   }
 });

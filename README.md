@@ -2186,6 +2186,9 @@ cache tokens to improve speed"** are compatible: caching with an expiry satisfie
 both. An `only if` prerequisite does not by itself require taking the action, and
 an `unless` or `except` clause does not by itself recommend the opposite action.
 Quoted examples and nested parenthetical text are kept separate from instructions.
+An object that refers back into its own rule, such as "use it" or "run these
+checks", is never matched against another rule, since each refers to something
+different; deduplication and merge checks still keep such opposing rules apart.
 
 ```typescript
 import { detectConflicts, findBulletConflicts } from "./src/curate.js";

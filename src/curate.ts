@@ -163,6 +163,12 @@ interface ParsedDirective {
   universal: boolean;
   condition: string | null;
   requiresAction: boolean;
+  /**
+   * The object refers back into its own rule ("use it", "skip these files").
+   * Two such objects can have different antecedents, so they never establish
+   * that two rules address the same thing in a conflict report.
+   */
+  contextualObject: boolean;
 }
 
 export interface ConflictEvidence {
@@ -176,16 +182,24 @@ export interface ConflictEvidence {
 // A bounded command vocabulary prevents descriptive prose ("The tests do not
 // fail") from being mistaken for an imperative. Inflections apply to the verb
 // only; retrieval stemming must never erase object qualifiers or identifiers.
+// The list covers the commands coding-agent rules most often give or forbid
+// (git, build and editing operations included): a missing verb silently hides
+// a direct contradiction such as "always/never squash commits before merging".
 const ACTION_VERBS = new Set([
-  "accept", "add", "allow", "apply", "attribute", "block", "cache", "check",
-  "commit", "compare", "configure", "copy", "create", "delete", "deploy",
-  "disable", "document", "drop", "emit", "enable", "encrypt", "enforce",
-  "establish", "exclude", "execute", "include", "inspect", "install", "keep",
-  "load", "log", "merge", "mock", "omit", "pin", "preserve", "publish",
-  "push", "read", "record", "reject", "release", "remove", "reproduce",
-  "require", "retain", "retry", "review", "run", "sanitize", "save", "set",
-  "sign", "skip", "start", "stop", "store", "supply", "test", "update",
-  "use", "validate", "verify", "wait", "write",
+  "accept", "add", "allow", "amend", "apply", "assume", "attribute", "block",
+  "build", "cache", "call", "change", "check", "clone", "commit", "compare",
+  "configure", "copy", "create", "delete", "deploy", "disable", "document",
+  "drop", "edit", "emit", "enable", "encrypt", "enforce", "establish",
+  "exclude", "execute", "export", "expose", "fetch", "format", "hardcode",
+  "ignore", "import", "include", "inspect", "install", "keep", "kill", "load",
+  "log", "merge", "mock", "modify", "move", "mutate", "omit", "overwrite",
+  "pin", "preserve", "publish", "pull", "push", "read", "rebase", "rebuild",
+  "record", "reject", "release", "rely", "remove", "rename", "reproduce",
+  "require", "rerun", "reset", "restart", "retain", "retry", "reuse", "revert",
+  "review", "run", "sanitize", "save", "set", "ship", "sign", "skip", "squash",
+  "stage", "start", "stash", "stop", "store", "supply", "test", "treat",
+  "trust", "update", "upgrade", "upload", "use", "validate", "verify", "wait",
+  "write",
 ]);
 
 function actionVerb(word: string): string | null {
@@ -215,6 +229,11 @@ function conditionText(text: string): string {
   return instructionText(text).replace(/^when\b/, "if");
 }
 
+// Pronouns and demonstratives take their meaning from the rule they appear
+// in: "If a logger helper exists, use it" and "A worktree helper is broken;
+// do not use it" name different things.
+const CONTEXTUAL_OBJECT = /^(?:it|its|itself|they|them|their|theirs|themselves|this|these|those|such)\b/;
+
 function parseDirective(clause: string): ParsedDirective | null {
   let text = instructionText(clause);
   const conditions: string[] = [];
@@ -230,7 +249,9 @@ function parseDirective(clause: string): ParsedDirective | null {
 
   // Ignore the rationale, not restrictions such as "without expiry". These
   // purpose constructions account for many unrelated negations in long rules.
-  text = text.split(/\s+(?:because|so that|in order to|to (?:avoid|prevent|improve|reduce|increase|keep|save)|for performance)\b/, 1)[0].trim();
+  // The comma that usually introduces a rationale ("..., because CI rejects
+  // it") belongs to the rationale; leaving it behind would reject the clause.
+  text = text.split(/,?\s+(?:because|so that|in order to|to (?:avoid|prevent|improve|reduce|increase|keep|save)|for performance)\b/, 1)[0].trim();
 
   // Only-if/except/unless restrict applicability; they do not instruct the
   // opposite behavior in the exception. Preserve the marker in the condition.
@@ -301,6 +322,7 @@ function parseDirective(clause: string): ParsedDirective | null {
     // "Only do X if Y" is a prerequisite, not a requirement to do X. Never
     // infer an affirmative duty from it; not doing X can satisfy both rules.
     requiresAction: negative || !conditions.some((c) => /^only (?:if|when)\b/.test(c)),
+    contextualObject: CONTEXTUAL_OBJECT.test(command[2]),
   };
 }
 
@@ -403,7 +425,7 @@ function sameTopic(a: Set<string>, b: Set<string>): boolean {
 export function directivesDisagree(a: DirectiveClause[], b: DirectiveClause[]): boolean {
   const aNeg = a.some((c) => c.polarity === "negative");
   const bNeg = b.some((c) => c.polarity === "negative");
-  if (aNeg !== bNeg || clauseConflict(a, b) !== null) return true;
+  if (aNeg !== bNeg || clauseConflict(a, b, { guard: true }) !== null) return true;
   // The evidence needed to *merge* is stronger than the evidence needed to
   // abstain from reporting a conflict. Preserve uncertain polarity/exception
   // differences and differently qualified versions of the same action.
@@ -453,14 +475,25 @@ function overlappingConditions(a: ParsedDirective, b: ParsedDirective): boolean 
   return (a.condition === null && a.universal) || (b.condition === null && b.universal);
 }
 
-/** First directly opposing clause pair between two rules, or null. */
-function clauseConflict(a: DirectiveClause[], b: DirectiveClause[]): { reason: string; evidence: ConflictEvidence } | null {
+/**
+ * First directly opposing clause pair between two rules, or null.
+ *
+ * A conflict report skips contextual objects ("use it"), whose antecedents can
+ * differ between rules. Safety guards (deduplication, merge validation) pass
+ * `guard` to keep matching them: a missed opposition there can silently merge
+ * away a rule, while a false match only keeps two rules apart.
+ */
+function clauseConflict(
+  a: DirectiveClause[],
+  b: DirectiveClause[],
+  { guard = false }: { guard?: boolean } = {},
+): { reason: string; evidence: ConflictEvidence } | null {
   for (const ca of a) {
     const da = ca.directive;
-    if (!da) continue;
+    if (!da || (da.contextualObject && !guard)) continue;
     for (const cb of b) {
       const db = cb.directive;
-      if (!db || !da.requiresAction || !db.requiresAction || da.negative === db.negative || da.verb !== db.verb || da.actor !== db.actor) continue;
+      if (!db || (db.contextualObject && !guard) || !da.requiresAction || !db.requiresAction || da.negative === db.negative || da.verb !== db.verb || da.actor !== db.actor) continue;
       if (!opposingObjects(da, db) || !overlappingConditions(da, db)) continue;
       const action = `${da.verb} ${da.negative ? db.object : da.object}`;
       const condition = da.condition ?? db.condition;
@@ -496,9 +529,9 @@ export function validateMergeSources(
   const replacement = splitDirectiveClauses(mergedContent);
   const clauses = bullets.map((b) => splitDirectiveClauses(b.content));
   for (let i = 0; i < clauses.length; i++) {
-    if (clauseConflict(clauses[i], replacement)) return "Merged content directly opposes a source rule";
+    if (clauseConflict(clauses[i], replacement, { guard: true })) return "Merged content directly opposes a source rule";
     for (let j = i + 1; j < clauses.length; j++) {
-      if (clauseConflict(clauses[i], clauses[j])) return "Opposing source rules require review before merging";
+      if (clauseConflict(clauses[i], clauses[j], { guard: true })) return "Opposing source rules require review before merging";
     }
   }
   return null;
@@ -629,10 +662,12 @@ export function findBulletConflicts(bullets: PlaybookBullet[]): BulletConflictPa
     const object = d.object.split(/\s+(?:with|without|before|after|for|from|to|in|on|during|at|using)\b/, 1)[0];
     return `${d.actor}\0${d.verb}\0${object.split(" ").at(-1)}`;
   };
+  // A conflict report never matches a contextual object, so it is not indexed.
+  const indexed = (d: ParsedDirective | null): d is ParsedDirective => d !== null && !d.contextualObject;
   for (let i = 0; i < active.length; i++) {
     for (const clause of active[i].clauses) {
       const d = clause.directive;
-      if (!d) continue;
+      if (!indexed(d)) continue;
       const k = key(d);
       let group = index.get(k);
       if (!group) {
@@ -646,7 +681,7 @@ export function findBulletConflicts(bullets: PlaybookBullet[]): BulletConflictPa
     const candidates = new Set<number>();
     for (const clause of active[i].clauses) {
       const d = clause.directive;
-      if (!d) continue;
+      if (!indexed(d)) continue;
       const group = index.get(key(d))!;
       for (const j of d.negative ? group.positive : group.negative) {
         if (j > i) candidates.add(j);
