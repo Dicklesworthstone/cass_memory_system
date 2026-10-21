@@ -8,15 +8,15 @@
  * - Pointing `config.cassPath` at a non-existent binary so `cassExport` uses fallback parsing
  */
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import yaml from "yaml";
 
 import { withLock } from "../src/lock.js";
 import type { LLMIO } from "../src/llm.js";
-import { orchestrateReflection } from "../src/orchestrator.js";
+import { orchestrateReflection, type ReflectionOptions } from "../src/orchestrator.js";
 import { prepareOutcome } from "../src/outcome.js";
-import { tagCmSubprocessPrompt } from "../src/subprocess-tag.js";
+import { slugifyProjectDir, tagCmSubprocessPrompt } from "../src/subprocess-tag.js";
 import { getProcessedLogPath, ProcessedLog } from "../src/tracking.js";
 import type { Config, PlaybookBullet, PlaybookDelta, ProcessedEntry } from "../src/types.js";
 import { expandPath, jaccardSimilarity, now } from "../src/utils.js";
@@ -66,7 +66,7 @@ async function withIsolatedHome<T>(fn: (env: TestEnv) => Promise<T>): Promise<T>
 
 function writeJsonlSession(
   sessionPath: string,
-  lines: Array<{ role: string; content: string }>,
+  lines: Array<{ role: string; content: string; cwd?: string }>,
 ): void {
   mkdirSync(path.dirname(sessionPath), { recursive: true });
   const body = lines.map((l) => JSON.stringify(l)).join("\n") + "\n";
@@ -104,9 +104,10 @@ async function withMergeReflection(
       process.chdir(repoRoot);
     }
     const sessionPath = path.join(env.home, "sessions", "merge.jsonl");
+    const workspace = repoRules ? repoRoot : globalRules.find(b => b.scope === "workspace" && b.workspace)?.workspace;
     writeJsonlSession(sessionPath, [
-      { role: "user", content: "Consolidate the relevant rules while preserving their applicability and useful instructions." },
-      { role: "assistant", content: "The existing project and language rules must remain available in their original contexts." },
+      { role: "user", content: "Consolidate the relevant rules while preserving their applicability and useful instructions.", cwd: workspace },
+      { role: "assistant", content: "The existing project and language rules must remain available in their original contexts.", cwd: workspace },
     ]);
     const config = createTestConfig({
       playbookPath: env.playbookPath,
@@ -114,6 +115,9 @@ async function withMergeReflection(
       cassPath: "/__missing__/cass",
       validationEnabled: false,
     });
+    // These are user-level policies; a session outside the launch cwd reloads
+    // them before applying any project-specific overrides.
+    writeFileSync(env.configPath, JSON.stringify(config));
     await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
       await withLlmShim({ reflector: { deltas } }, async (io) => {
         const outcome = await orchestrateReflection(config, { session: sessionPath, io });
@@ -614,7 +618,9 @@ describe("orchestrateReflection (unit)", () => {
     // Guards the other half of the fix: excluding cm's own calls must not cost
     // real sessions their reflection or their auto-recorded outcomes.
     await withIsolatedHome(async (env) => {
-      writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])), "utf-8");
+      writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([
+        createBullet({ id: "b-ccc333", content: "Verify exporter output against the integration tests." }),
+      ])), "utf-8");
 
       const sessionPath = path.join(env.home, "sessions", "real-work.jsonl");
       writeJsonlSession(sessionPath, [
@@ -625,7 +631,7 @@ describe("orchestrateReflection (unit)", () => {
         },
         {
           role: "assistant",
-          content: "Applied the rule, the refactor is done and the whole suite is green now.",
+          content: "Applied b-ccc333, the refactor is done and the whole suite is green now.",
         },
       ]);
 
@@ -1343,7 +1349,8 @@ describe("orchestrateReflection --force on a legacy entry (#85)", () => {
 
 describe("orchestrateReflection project-scoped rules (#81)", () => {
   function makeGitRepo(dir: string): string {
-    mkdirSync(path.join(dir, ".git"), { recursive: true });
+    mkdirSync(dir, { recursive: true });
+    expect(Bun.spawnSync(["git", "init", "--quiet", dir]).exitCode).toBe(0);
     return realpathSync(dir);
   }
 
@@ -1373,6 +1380,7 @@ describe("orchestrateReflection project-scoped rules (#81)", () => {
         validationEnabled: false,
         projectRuleRouting: "scoped",
       });
+      writeFileSync(env.configPath, JSON.stringify(config));
       const prompts: string[] = [];
       await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
         await withLlmShim(
@@ -1440,6 +1448,7 @@ describe("orchestrateReflection project-scoped rules (#81)", () => {
         validationEnabled: false,
         projectRuleRouting: "repo",
       });
+      writeFileSync(env.configPath, JSON.stringify(config));
       await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
         await withLlmShim(
           {
@@ -1510,6 +1519,400 @@ describe("orchestrateReflection project-scoped rules (#81)", () => {
       const saved = readPlaybook(env.playbookPath);
       const rule = saved.bullets.find((b: any) => b.content.includes("task runner"));
       expect(rule.scope).toBe("global");
+    });
+  });
+});
+
+interface WorkspaceReflectionFixture {
+  env: TestEnv;
+  config: Config;
+  alpha: string;
+  beta: string;
+  alphaPath: string;
+  betaPath: string;
+  session: (name: string, workspace: string | undefined, feedback: string, request?: string) => string;
+  discover: (sessions: Array<{ path: string; workspace?: string }>) => void;
+  run: (reflector?: LlmShimConfig["reflector"], options?: Omit<ReflectionOptions, "io">) => Promise<Awaited<ReturnType<typeof orchestrateReflection>>>;
+}
+
+async function withWorkspaceReflection(check: (fixture: WorkspaceReflectionFixture) => Promise<void>): Promise<void> {
+  await withIsolatedHome(async env => {
+    const alpha = path.join(env.home, "alpha");
+    const beta = path.join(env.home, "beta");
+    const alphaPath = path.join(alpha, ".cass", "playbook.yaml");
+    const betaPath = path.join(beta, ".cass", "playbook.yaml");
+    for (const project of [alpha, beta]) {
+      mkdirSync(path.join(project, ".cass"), { recursive: true });
+      expect(Bun.spawnSync(["git", "init", "--quiet", project]).exitCode).toBe(0);
+      const label = project === alpha ? "ALPHA_ONLY" : "BETA_ONLY";
+      writeFileSync(path.join(project, ".cass", "playbook.yaml"), yaml.stringify(createTestPlaybook([
+        createBullet({ id: "b-aaa111", content: `${label}: run the project's integration checks.`, scope: "workspace" }),
+        createBullet({ id: "b-bbb222", content: `${label}: require deployment review before release.`, scope: "workspace" }),
+      ])));
+    }
+    writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])));
+    const timelinePath = path.join(env.home, "timeline.json");
+    const cassPath = path.join(env.home, "cass-fixture.ts");
+    writeFileSync(cassPath, `#!${process.execPath}\nconst command = process.argv[2];
+if (command === "timeline") console.log(await Bun.file(${JSON.stringify(timelinePath)}).text());
+else if (command === "search") console.log("[]");
+else process.exit(1);
+`);
+    chmodSync(cassPath, 0o755);
+    const config = createTestConfig({
+      playbookPath: env.playbookPath, diaryDir: env.diaryDir, cassPath,
+      validationEnabled: false, semanticSearchEnabled: false,
+      maxReflectorIterations: 1, projectRuleRouting: "repo",
+    });
+    writeFileSync(env.configPath, JSON.stringify(config));
+    process.chdir(alpha);
+    const session = (name: string, workspace: string | undefined, feedback: string,
+      request = "Investigate the project-specific regression and record the relevant findings carefully.") => {
+      const sessionPath = path.join(env.home, "sessions", `${name}.jsonl`);
+      writeJsonlSession(sessionPath, [
+        { role: "user", content: request, cwd: workspace },
+        { role: "assistant", content: feedback, cwd: workspace },
+      ]);
+      return sessionPath;
+    };
+    const discover = (sessions: Array<{ path: string; workspace?: string }>) => {
+      writeFileSync(timelinePath, JSON.stringify({ groups: {
+        [now().slice(0, 10)]: sessions.map(entry => ({
+          source_path: entry.path, workspace: entry.workspace, agent: "claude_code",
+          message_count: 2, started_at: now(), ended_at: now(),
+        })),
+      } }));
+    };
+    discover([]);
+    const run: WorkspaceReflectionFixture["run"] = async (reflector = { deltas: [] }, options = {}) =>
+      withEnv({ CASS_MEMORY_LLM: "none", CASS_PATH: undefined }, () =>
+        orchestrateReflection(config, { maxSessions: 20, ...options, io: {
+          generateObject: async <T>(request: any) => ({
+            object: (typeof reflector === "function" ? reflector(request.prompt, request) : reflector) as T,
+          }),
+        } }));
+    await check({ env, config, alpha, beta, alphaPath, betaPath, session, discover, run });
+  });
+}
+
+describe("orchestrateReflection session workspace ownership", () => {
+  test("automatic discovery uses B's snapshot and inline feedback owners while launched in A", async () => {
+    await withWorkspaceReflection(async f => {
+      const beta = readPlaybook(f.betaPath);
+      beta.bullets.push(createBullet({ id: "b-ccc333", content: "BETA_ONLY: validate migration fixtures.", scope: "workspace" }));
+      writeFileSync(f.betaPath, yaml.stringify(beta));
+      const alphaBefore = readFileSync(f.alphaPath, "utf-8");
+      const first = f.session("beta-first", f.beta,
+        "// [cass: helpful b-aaa111] - useful check\n// [cass: harmful b-bbb222] - wrong release context\n// [cass: helpful b-ccc333] - correct fixture");
+      f.discover([{ path: first }]);
+      const prompts: string[] = [];
+      const result = await f.run(prompt => { prompts.push(prompt); return { deltas: [] }; });
+      expect(result.errors).toEqual([]);
+      expect(result.sessionsProcessed).toBe(1);
+      expect(result.repoResult?.applied).toBe(3);
+      expect(result.projectResults?.map(project => project.playbookPath)).toEqual([f.betaPath]);
+      expect(prompts.join("\n")).toContain("BETA_ONLY");
+      expect(prompts.join("\n")).not.toContain("ALPHA_ONLY");
+      expect(readPlaybook(f.betaPath).bullets.map((b: PlaybookBullet) => [b.id, b.helpfulCount, b.harmfulCount])).toEqual([
+        ["b-aaa111", 1, 0], ["b-bbb222", 0, 1], ["b-ccc333", 1, 0],
+      ]);
+      expect(readFileSync(f.alphaPath, "utf-8")).toBe(alphaBefore);
+      expect(readPlaybook(f.env.playbookPath).bullets).toEqual([]);
+      const second = f.session("beta-second", f.beta, "// [cass: harmful b-bbb222] - still the wrong release context");
+      f.discover([{ path: second }]);
+      expect((await f.run()).errors).toEqual([]);
+      expect(readPlaybook(f.betaPath).bullets.find((b: PlaybookBullet) => b.id === "b-bbb222").deprecated).toBe(true);
+      expect(readFileSync(f.alphaPath, "utf-8")).toBe(alphaBefore);
+      expect((await f.run()).sessionsProcessed).toBe(0);
+      const log = new ProcessedLog(getProcessedLogPath());
+      await log.load();
+      expect(log.get(first)?.recordCount).toBe(2);
+      expect(log.get(second)?.recordCount).toBe(2);
+    });
+  });
+
+  test("a mixed-project batch keeps colliding IDs and aggregate counts separate", async () => {
+    await withWorkspaceReflection(async f => {
+      const alpha = f.session("alpha", f.alpha, "// [cass: helpful b-aaa111] - appropriate for alpha");
+      const beta = f.session("beta", f.beta, "// [cass: harmful b-aaa111] - inappropriate for beta");
+      f.discover([{ path: alpha }, { path: beta }]);
+      const result = await f.run();
+      expect(result.errors).toEqual([]);
+      expect(result.sessionsProcessed).toBe(2);
+      expect(result.repoResult?.applied).toBe(2);
+      expect(result.projectResults?.map(project => project.playbookPath).sort()).toEqual([f.alphaPath, f.betaPath].sort());
+      expect(readPlaybook(f.alphaPath).bullets[0].helpfulCount).toBe(1);
+      expect(readPlaybook(f.alphaPath).bullets[0].harmfulCount).toBe(0);
+      expect(readPlaybook(f.betaPath).bullets[0].helpfulCount).toBe(0);
+      expect(readPlaybook(f.betaPath).bullets[0].harmfulCount).toBe(1);
+      expect(readPlaybook(f.alphaPath).bullets[0].feedbackEvents[0].sessionPath).toBe(alpha);
+      expect(readPlaybook(f.betaPath).bullets[0].feedbackEvents[0].sessionPath).toBe(beta);
+      expect(readPlaybook(f.env.playbookPath).metadata.totalSessionsProcessed).toBe(2);
+    });
+  });
+
+  test("all model delta kinds use the real session owner and ignore forged sourceSession", async () => {
+    await withWorkspaceReflection(async f => {
+      for (const [file, label] of [[f.alphaPath, "ALPHA_ONLY"], [f.betaPath, "BETA_ONLY"]]) {
+        writeFileSync(file!, yaml.stringify(createTestPlaybook([
+          createBullet({ id: "b-aaa111", content: `${label} integration test command.`, scope: "workspace" }),
+          createBullet({ id: "b-bbb222", content: `${label} review gate.`, scope: "workspace" }),
+          createBullet({ id: "b-ccc333", content: `${label} old migration command.`, scope: "workspace" }),
+          createBullet({ id: "b-ddd444", content: `${label} legacy deployment process.`, scope: "workspace" }),
+          createBullet({ id: "b-eee555", content: `${label} verify schema changes.`, scope: "workspace" }),
+          createBullet({ id: "b-fff666", content: `${label} inspect migration compatibility.`, scope: "workspace" }),
+        ])));
+      }
+      const alphaBefore = readFileSync(f.alphaPath, "utf-8");
+      const session = f.session("beta-model", f.beta, "The investigation found several reusable project-specific lessons.");
+      f.discover([{ path: session }]);
+      const forged = path.join(f.alpha, "unrelated.jsonl");
+      const merged = "Validate BETA_ONLY migrations against the deployment database schema.";
+      const result = await f.run({ deltas: [
+        { type: "helpful", bulletId: "b-aaa111", sourceSession: forged },
+        { type: "harmful", bulletId: "b-bbb222", sourceSession: forged, reason: "wrong_context" },
+        { type: "replace", bulletId: "b-ccc333", newContent: "BETA_ONLY: use make migrate-check.", reason: "Updated command" },
+        { type: "deprecate", bulletId: "b-ddd444", reason: "Replaced deployment process" },
+        { type: "merge", bulletIds: ["b-eee555", "b-fff666"], mergedContent: merged },
+        { type: "add", bullet: { content: "BETA_ONLY: run the smoke-test target before release.", category: "testing", scope: "workspace" }, sourceSession: forged },
+      ] });
+      expect(result.errors).toEqual([]);
+      const rules = readPlaybook(f.betaPath).bullets as PlaybookBullet[];
+      expect(rules.find(b => b.id === "b-aaa111")?.helpfulCount).toBe(1);
+      expect(rules.find(b => b.id === "b-bbb222")?.harmfulCount).toBe(1);
+      expect(rules.find(b => b.id === "b-ccc333")?.content).toBe("BETA_ONLY: use make migrate-check.");
+      expect(rules.find(b => b.id === "b-ddd444")?.deprecated).toBe(true);
+      const replacement = rules.find(b => b.content === merged)!;
+      expect(replacement).toBeDefined();
+      expect(rules.find(b => b.id === "b-eee555")?.replacedBy).toBe(replacement.id);
+      expect(rules.find(b => b.id === "b-fff666")?.replacedBy).toBe(replacement.id);
+      expect(rules.find(b => b.content.includes("smoke-test"))?.sourceSessions).toEqual([session]);
+      expect(rules.find(b => b.id === "b-aaa111")?.feedbackEvents[0]?.sessionPath).toBe(session);
+      expect(rules.find(b => b.id === "b-bbb222")?.feedbackEvents[0]?.sessionPath).toBe(session);
+      expect(readFileSync(f.alphaPath, "utf-8")).toBe(alphaBefore);
+      expect(readPlaybook(f.env.playbookPath).bullets).toEqual([]);
+    });
+  });
+
+  test("another project's global scoped rules are absent from prompts and cannot be changed or merged", async () => {
+    await withWorkspaceReflection(async f => {
+      const rules = [
+        createBullet({ id: "b-ccc333", content: "ALPHA_SCOPED: require deployment approval.", scope: "workspace", workspace: f.alpha,
+          harmfulCount: 2, feedbackEvents: [0, 1].map(index => createTestFeedbackEvent("harmful", { sessionPath: `old-${index}` })) }),
+        createBullet({ id: "b-ddd444", content: "ALPHA_SCOPED: retain the old migration tooling.", scope: "workspace", workspace: f.alpha }),
+      ];
+      writeFileSync(f.env.playbookPath, yaml.stringify(createTestPlaybook(rules)));
+      const before = readPlaybook(f.env.playbookPath).bullets;
+      const session = f.session("beta-scopes", f.beta, "Review the available deployment guidance carefully.");
+      f.discover([{ path: session }]);
+      const prompts: string[] = [];
+      const result = await f.run(prompt => {
+        prompts.push(prompt);
+        return { deltas: [
+          { type: "helpful", bulletId: "b-aaa111" },
+          { type: "replace", bulletId: "b-ccc333", newContent: "Discard approval requirements." },
+          { type: "deprecate", bulletId: "b-ddd444", reason: "Not useful here" },
+          { type: "merge", bulletIds: ["b-bbb222", "b-ccc333"], mergedContent: "Use a shared deployment procedure." },
+        ] };
+      });
+      expect(result.errors).toEqual([]);
+      expect(prompts.join("\n")).toContain("BETA_ONLY");
+      expect(prompts.join("\n")).not.toContain("ALPHA_SCOPED");
+      expect(prompts.join("\n")).not.toContain("ALPHA_ONLY");
+      expect(readPlaybook(f.env.playbookPath).bullets).toEqual(before);
+      expect(readPlaybook(f.betaPath).bullets[0].helpfulCount).toBe(1);
+      expect(readPlaybook(f.betaPath).bullets[1].deprecated).toBe(false);
+      expect(result.globalResult?.decisionLog?.filter(entry => entry.action === "rejected")).toHaveLength(3);
+    });
+  });
+
+  test("B's routing and scoring apply with both B and run sanitization protections", async () => {
+    await withWorkspaceReflection(async f => {
+      f.config.sanitization.extraPatterns = ["RUN_ONLY_SECRET"];
+      writeFileSync(path.join(f.beta, ".cass", "config.json"), JSON.stringify({
+        projectRuleRouting: "scoped",
+        sanitization: { extraPatterns: ["BETA_ONLY_SECRET"] },
+        scoring: { harmfulMultiplier: 1, minFeedbackForActive: 1, minHelpfulForProven: 1 },
+      }));
+      const session = f.session("beta-policy", f.beta,
+        "// [cass: helpful b-aaa111] - useful\n// [cass: harmful b-bbb222] - wrong context",
+        "Investigate this project while protecting RUN_ONLY_SECRET and BETA_ONLY_SECRET in all summaries.");
+      f.discover([{ path: session }]);
+      const prompts: string[] = [];
+      const result = await f.run(prompt => {
+        prompts.push(prompt);
+        return { deltas: [{ type: "add", bullet: {
+          content: "Use the beta-specific release checklist.", category: "workflow", scope: "workspace",
+        } }] };
+      });
+      expect(result.errors).toEqual([]);
+      expect(readPlaybook(f.betaPath).bullets[0].maturity).toBe("proven");
+      expect(readPlaybook(f.betaPath).bullets[1].deprecated).toBe(false);
+      expect(readPlaybook(f.betaPath).bullets).toHaveLength(2);
+      const added = readPlaybook(f.env.playbookPath).bullets.find((b: PlaybookBullet) => b.content.includes("beta-specific"));
+      expect(added?.scope).toBe("workspace");
+      expect(added?.workspace).toBe(f.beta);
+      const diaryText = readdirSync(f.env.diaryDir).filter(name => name.endsWith(".json"))
+        .map(name => readFileSync(path.join(f.env.diaryDir, name), "utf-8")).join("\n");
+      for (const text of [prompts.join("\n"), diaryText]) {
+        expect(text).not.toContain("RUN_ONLY_SECRET");
+        expect(text).not.toContain("BETA_ONLY_SECRET");
+        expect(text).toContain("[REDACTED]");
+      }
+    });
+  });
+
+  test.each([false, true])("linked worktree uses its policy and honors a local override: %s", async local => {
+    await withWorkspaceReflection(async f => {
+      expect(Bun.spawnSync(["git", "-C", f.beta, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+        "commit", "--quiet", "--allow-empty", "-m", "fixture"]).exitCode).toBe(0);
+      const linked = path.join(f.env.home, "beta-linked");
+      expect(Bun.spawnSync(["git", "-C", f.beta, "worktree", "add", "--quiet", "-b", "reflection-linked", linked]).exitCode).toBe(0);
+      const linkedPath = path.join(linked, ".cass", "playbook.yaml");
+      mkdirSync(path.dirname(linkedPath), { recursive: true });
+      writeFileSync(path.join(linked, ".cass", "config.json"), JSON.stringify({
+        scoring: { minFeedbackForActive: 1, minHelpfulForProven: 1 },
+      }));
+      if (local) writeFileSync(linkedPath, yaml.stringify(createTestPlaybook([
+        createBullet({ id: "b-aaa111", content: "LINKED_ONLY: run branch fixture tests.", scope: "workspace" }),
+      ])));
+      const mainBefore = readFileSync(f.betaPath, "utf-8");
+      const alphaBefore = readFileSync(f.alphaPath, "utf-8");
+      const session = f.session("linked", linked, "// [cass: helpful b-aaa111] - useful in this worktree");
+      f.discover([{ path: session }]);
+      const prompts: string[] = [];
+      const result = await f.run(prompt => { prompts.push(prompt); return { deltas: [] }; });
+      expect(result.errors).toEqual([]);
+      const ownerPath = local ? linkedPath : f.betaPath;
+      expect(result.projectResults?.[0]?.playbookPath).toBe(ownerPath);
+      expect(readPlaybook(ownerPath).bullets[0].helpfulCount).toBe(1);
+      expect(readPlaybook(ownerPath).bullets[0].maturity).toBe("proven");
+      expect(prompts.join("\n")).toContain(local ? "LINKED_ONLY" : "BETA_ONLY");
+      expect(prompts.join("\n")).not.toContain("ALPHA_ONLY");
+      expect(readFileSync(f.alphaPath, "utf-8")).toBe(alphaBefore);
+      if (local) expect(readFileSync(f.betaPath, "utf-8")).toBe(mainBefore);
+      else expect(existsSync(linkedPath)).toBe(false);
+    });
+  });
+
+  test("an interrupted mixed batch retries saved feedback without losing or duplicating either owner", async () => {
+    await withWorkspaceReflection(async f => {
+      const alpha = f.session("alpha-retry", f.alpha, "// [cass: helpful b-aaa111] - alpha check passed");
+      const beta = f.session("beta-retry", f.beta, "// [cass: helpful b-aaa111] - beta check passed");
+      f.discover([{ path: alpha }, { path: beta }]);
+      await withLock(f.betaPath, async () => {
+        await expect(f.run()).rejects.toThrow("lock");
+      });
+      const log = new ProcessedLog(getProcessedLogPath());
+      await log.load();
+      expect(log.has(alpha)).toBe(false);
+      expect(log.has(beta)).toBe(false);
+      expect(readPlaybook(f.alphaPath).bullets[0].helpfulCount).toBe(1);
+      expect(readPlaybook(f.betaPath).bullets[0].helpfulCount).toBe(0);
+      const result = await f.run();
+      expect(result.errors).toEqual([]);
+      expect(result.sessionsProcessed).toBe(2);
+      expect(readPlaybook(f.alphaPath).bullets[0].helpfulCount).toBe(1);
+      expect(readPlaybook(f.betaPath).bullets[0].helpfulCount).toBe(1);
+      await log.load();
+      expect(log.has(alpha)).toBe(true);
+      expect(log.has(beta)).toBe(true);
+    });
+  });
+
+  test("a repository symlink replaced during reflection keeps the logical playbook owner", async () => {
+    await withWorkspaceReflection(async f => {
+      const detached = path.join(f.env.home, "detached-beta.yaml");
+      renameSync(f.betaPath, detached);
+      symlinkSync(detached, f.betaPath);
+      const session = f.session("beta-symlink", f.beta, "// [cass: helpful b-aaa111] - verified beta guidance");
+      f.discover([{ path: session }]);
+      const result = await f.run(() => {
+        const next = path.join(f.beta, ".cass", "next-playbook.yaml");
+        const playbook = readPlaybook(detached);
+        playbook.bullets[0].content = "CURRENT_BETA: use the verified integration command.";
+        writeFileSync(next, yaml.stringify(playbook));
+        renameSync(next, f.betaPath);
+        return { deltas: [] };
+      });
+      expect(result.errors).toEqual([]);
+      expect(result.projectResults?.[0]?.playbookPath).toBe(f.betaPath);
+      expect(readPlaybook(f.betaPath).bullets[0].content).toContain("CURRENT_BETA");
+      expect(readPlaybook(f.betaPath).bullets[0].helpfulCount).toBe(1);
+      expect(readPlaybook(detached).bullets[0].helpfulCount).toBe(0);
+      expect(readPlaybook(f.alphaPath).bullets[0].helpfulCount).toBe(0);
+    });
+  });
+
+  test("automatic sessions with no workspace cannot borrow the launch repository", async () => {
+    await withWorkspaceReflection(async f => {
+      const before = readFileSync(f.alphaPath, "utf-8");
+      const session = f.session("unknown", undefined, "// [cass: helpful b-aaa111] - unknown project context");
+      f.discover([{ path: session }]);
+      const prompts: string[] = [];
+      const result = await f.run(prompt => {
+        prompts.push(prompt);
+        return { deltas: [{ type: "add", bullet: { content: "Verify assumptions before changing behavior.", category: "debugging", scope: "workspace" } }] };
+      });
+      expect(result.errors).toEqual([]);
+      expect(prompts.join("\n")).not.toContain("ALPHA_ONLY");
+      expect(readFileSync(f.alphaPath, "utf-8")).toBe(before);
+      expect(result.repoResult).toBeUndefined();
+      expect(readPlaybook(f.env.playbookPath).bullets[0].scope).toBe("global");
+      expect(result.globalResult?.decisionLog?.some(entry => entry.action === "rejected" && entry.bulletId === "b-aaa111")).toBe(true);
+    });
+  });
+
+  test("an automatic workspace filter cannot turn a sibling slug match into rule ownership", async () => {
+    await withWorkspaceReflection(async f => {
+      // The legacy discovery filter accepts /<requested-slug>-... as a
+      // possible subdirectory. A sibling name has the same ambiguous form.
+      const sibling = `${f.alpha}-old`;
+      renameSync(f.beta, sibling);
+      const siblingPath = path.join(sibling, ".cass", "playbook.yaml");
+      const alphaBefore = readFileSync(f.alphaPath, "utf-8");
+      const siblingBefore = readFileSync(siblingPath, "utf-8");
+      const session = path.join(f.env.home, ".claude", "projects", slugifyProjectDir(sibling), "legacy.jsonl");
+      writeJsonlSession(session, [
+        { role: "user", content: "Investigate the old project's release process and record which checks were useful." },
+        { role: "assistant", content: "// [cass: helpful b-aaa111] - this legacy transcript has no recorded working directory" },
+      ]);
+      f.discover([{ path: session }]);
+      const prompts: string[] = [];
+      const result = await f.run(prompt => { prompts.push(prompt); return { deltas: [] }; }, { workspace: f.alpha });
+      // Prove real discovery selected it; the ownership check must protect
+      // both repositories even though the filter let the transcript through.
+      expect(result.sessionsProcessed).toBe(1);
+      expect(result.errors).toEqual([]);
+      expect(result.autoOutcome?.inlineFeedbackDeltas).toBe(1);
+      expect(result.repoResult).toBeUndefined();
+      expect(prompts.join("\n")).not.toContain("ALPHA_ONLY");
+      expect(prompts.join("\n")).not.toContain("BETA_ONLY");
+      expect(readFileSync(f.alphaPath, "utf-8")).toBe(alphaBefore);
+      expect(readFileSync(siblingPath, "utf-8")).toBe(siblingBefore);
+      expect(result.globalResult?.decisionLog?.some(entry => entry.action === "rejected" && entry.bulletId === "b-aaa111")).toBe(true);
+      const log = new ProcessedLog(getProcessedLogPath(f.alpha));
+      await log.load();
+      expect(log.get(session)?.recordCount).toBe(2);
+    });
+  });
+
+  test("an explicit session without metadata can use the requested workspace fallback", async () => {
+    await withWorkspaceReflection(async f => {
+      const before = readFileSync(f.alphaPath, "utf-8");
+      const session = f.session("explicit-unknown", undefined, "// [cass: helpful b-aaa111] - the caller explicitly selected beta");
+      const prompts: string[] = [];
+      const result = await f.run(prompt => { prompts.push(prompt); return { deltas: [] }; }, {
+        session, workspace: f.beta,
+      });
+      expect(result.errors).toEqual([]);
+      expect(result.sessionsProcessed).toBe(1);
+      expect(result.repoResult?.applied).toBe(1);
+      expect(result.projectResults?.[0]?.playbookPath).toBe(f.betaPath);
+      expect(prompts.join("\n")).toContain("BETA_ONLY");
+      expect(prompts.join("\n")).not.toContain("ALPHA_ONLY");
+      expect(readFileSync(f.alphaPath, "utf-8")).toBe(before);
+      expect(readPlaybook(f.betaPath).bullets[0].helpfulCount).toBe(1);
     });
   });
 });

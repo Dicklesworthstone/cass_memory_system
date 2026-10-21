@@ -7,9 +7,10 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createOpenAI } from "@ai-sdk/openai";
 import { generateObject, type LanguageModel, zodSchema } from "ai";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createOllama } from "ollama-ai-provider-v2";
 import { z } from "zod";
-import { checkBudget, recordCost } from "./cost.js";
+import { BudgetAdmissionError, recordCost, withBudgetAdmission } from "./cost.js";
 import {
   CM_SUBPROCESS_ENV_VALUE,
   CM_SUBPROCESS_ENV_VAR,
@@ -811,18 +812,35 @@ export const LLM_RETRY_CONFIG = {
   ],
 };
 
-async function withTimeout<T>(promise: Promise<T>, ms: number, operationName: string): Promise<T> {
+// Propagate caller deadlines through nested schema retries without changing
+// every public callback signature. A timed-out waiter must never call a model
+// later merely because another process finally released the budget guard.
+const llmOperationSignal = new AsyncLocalStorage<AbortSignal>();
+
+class LLMOperationTimeoutError extends Error {}
+
+async function withTimeout<T>(operation: () => Promise<T>, ms: number, operationName: string): Promise<T> {
+  const controller = new AbortController();
+  const parentSignal = llmOperationSignal.getStore();
+  const onAbort = () => controller.abort(parentSignal?.reason);
+  parentSignal?.addEventListener("abort", onAbort, { once: true });
+  if (parentSignal?.aborted) onAbort();
   let timeoutId: ReturnType<typeof setTimeout>;
   const timeoutPromise = new Promise<T>((_, reject) => {
     timeoutId = setTimeout(() => {
-      reject(new Error(`${operationName} timed out after ${ms}ms`));
+      const error = new LLMOperationTimeoutError(`${operationName} timed out after ${ms}ms`);
+      controller.abort(error);
+      reject(error);
     }, ms);
   });
 
   try {
+    controller.signal.throwIfAborted();
+    const promise = llmOperationSignal.run(controller.signal, operation);
     return await Promise.race([promise, timeoutPromise]);
   } finally {
     clearTimeout(timeoutId!);
+    parentSignal?.removeEventListener("abort", onAbort);
   }
 }
 
@@ -862,12 +880,16 @@ export async function llmWithRetry<T>(
   while (true) {
     try {
       const elapsed = Date.now() - startTime;
-      if (elapsed > totalTimeoutMs) {
-        throw new Error(`${operationName} exceeded total timeout ceiling of ${totalTimeoutMs}ms`);
+      if (elapsed >= totalTimeoutMs) {
+        throw new LLMOperationTimeoutError(`${operationName} exceeded total timeout ceiling of ${totalTimeoutMs}ms`);
       }
 
-      return await withTimeout(operation(), perOperationTimeoutMs, operationName);
+      return await withTimeout(operation, Math.min(perOperationTimeoutMs, totalTimeoutMs - elapsed), operationName);
     } catch (err: any) {
+      // An in-flight call may ignore cancellation and settle later. Retrying a
+      // wrapper timeout would duplicate work; admission/accounting errors must
+      // also remain terminal even when their filesystem cause mentions 429/500.
+      if (isTerminalLLMError(err)) throw err;
       attempt++;
       const isRetryable = LLM_RETRY_CONFIG.retryableErrors.some((e) => {
         const lowerE = e.toLowerCase();
@@ -894,13 +916,16 @@ export async function llmWithRetry<T>(
   }
 }
 
-class LLMBudgetExceededError extends Error {}
-
 class LLMUsageAccountingError extends Error {
   constructor(cause: unknown) {
     super("Failed to record LLM usage; refusing further requests because the budget could not be updated.", { cause });
     this.name = "LLMUsageAccountingError";
   }
+}
+
+function isTerminalLLMError(error: unknown): boolean {
+  return error instanceof BudgetAdmissionError || error instanceof LLMUsageAccountingError ||
+    error instanceof LLMOperationTimeoutError;
 }
 
 /** Accept only reported token counts; never infer usage from response text. */
@@ -954,11 +979,8 @@ async function monitoredGenerateObject<T>(
   context: string,
   io: LLMIO = DEFAULT_LLM_IO,
 ): Promise<LLMGenerateObjectResult<T>> {
-  const budgetCheck = await checkBudget(config);
-  if (!budgetCheck.allowed) {
-    throw new LLMBudgetExceededError(`LLM budget exceeded: ${budgetCheck.reason}`);
-  }
-
+  const signal = llmOperationSignal.getStore();
+  signal?.throwIfAborted();
   const { jsonModeFallback, ...requestOptions } = options ?? {};
   let generationOptions = requestOptions;
   let outputSchema: z.ZodSchema<T> | undefined;
@@ -975,19 +997,30 @@ async function monitoredGenerateObject<T>(
     };
   }
 
-  let result: LLMGenerateObjectResult<T>;
-  try {
-    result = await io.generateObject<T>(generationOptions);
-  } catch (error) {
-    // Parsing/schema failures from the SDK can still represent paid model
-    // work. Count the reported usage once before another attempt is allowed.
-    await recordReportedUsage(config, usageFromError(error), context);
-    throw error;
-  }
+  const completion = await withBudgetAdmission(config, async () => {
+    let result: LLMGenerateObjectResult<T>;
+    try {
+      result = await io.generateObject<T>({
+        ...generationOptions,
+        // Keep retry admission/accounting at this layer, not hidden inside SDK
+        // retries whose intermediate usage cannot be inspected here.
+        maxRetries: 0,
+        ...(signal ? { abortSignal: signal } : {}),
+      });
+    } catch (error) {
+      // A paid failed output must settle before another process is admitted.
+      await recordReportedUsage(config, usageFromError(error), context);
+      return { error };
+    }
+    await recordReportedUsage(config, reportedUsage(result.usage), context);
+    return { result };
+  }, { signal, timeoutMs: config.llmTimeoutMs });
 
-  // Account before local validation as well. Keep validation outside the
-  // provider catch so one response cannot be recorded twice.
-  await recordReportedUsage(config, reportedUsage(result.usage), context);
+  // A late response still gets accounted, but cannot start a schema retry or
+  // fallback after the caller's deadline has expired.
+  signal?.throwIfAborted();
+  if ("error" in completion) throw completion.error;
+  const result = completion.result;
   return outputSchema ? { ...result, object: outputSchema.parse(result.object) } : result;
 }
 
@@ -1048,6 +1081,7 @@ export async function generateObjectSafe<T>(
   maxAttempts: number = 3,
   io: LLMIO = DEFAULT_LLM_IO,
 ): Promise<T> {
+  llmOperationSignal.getStore()?.throwIfAborted();
   // Honor the auto-fallback chain doctor advertises (real LLM calls only —
   // mock LLMIO tests inject responses directly and must stay hermetic).
   if (io === DEFAULT_LLM_IO) {
@@ -1059,6 +1093,7 @@ export async function generateObjectSafe<T>(
     let lastCliError: string | undefined;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
+        llmOperationSignal.getStore()?.throwIfAborted();
         // On retry, prepend the previous error so the model can self-correct
         const retryPrompt =
           attempt > 1 && lastCliError
@@ -1073,6 +1108,8 @@ export async function generateObjectSafe<T>(
         );
         return result.object;
       } catch (err: any) {
+        llmOperationSignal.getStore()?.throwIfAborted();
+        if (isTerminalLLMError(err)) throw err;
         lastCliError = err.message?.slice(0, 200);
         if (attempt >= maxAttempts) throw err;
         warn(`[CLI] Attempt ${attempt} failed: ${err.message}. Retrying...`);
@@ -1102,6 +1139,7 @@ export async function generateObjectSafe<T>(
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
+      llmOperationSignal.getStore()?.throwIfAborted();
       const enhancedPrompt =
         attempt > 1
           ? `[PREVIOUS ATTEMPT FAILED - OUTPUT MUST BE VALID JSON]\n\n${prompt}\n\nCRITICAL: Your response MUST be valid JSON matching the provided schema exactly. Ensure all required fields are present.`
@@ -1125,7 +1163,8 @@ export async function generateObjectSafe<T>(
       return result.object;
     } catch (err: any) {
       lastError = err;
-      if (err instanceof LLMUsageAccountingError) throw err;
+      llmOperationSignal.getStore()?.throwIfAborted();
+      if (isTerminalLLMError(err)) throw err;
 
       const errorMsg = err.message || String(err);
       const isBudgetError = errorMsg.includes("budget exceeded");
@@ -1567,6 +1606,7 @@ export async function llmWithFallback<T>(
     const isLastProvider = i === providerOrder.length - 1;
 
     try {
+      llmOperationSignal.getStore()?.throwIfAborted();
       // CLI provider: bypass AI SDK, shell out directly
       if (provider === "cli") {
         const result = await cliGenerateObject<T>(
@@ -1606,7 +1646,8 @@ export async function llmWithFallback<T>(
 
       return result.object;
     } catch (err: any) {
-      if (err instanceof LLMBudgetExceededError || err instanceof LLMUsageAccountingError) throw err;
+      llmOperationSignal.getStore()?.throwIfAborted();
+      if (isTerminalLLMError(err)) throw err;
       const errorMsg = err.message || String(err);
       errors.push({ provider, error: errorMsg });
 

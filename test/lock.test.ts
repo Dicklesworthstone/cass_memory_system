@@ -96,6 +96,54 @@ describe("withLock - Basic Operations", () => {
 // withLock - Error Handling
 // =============================================================================
 describe("withLock - Error Handling", () => {
+  it("cancels a waiter without disturbing the active owner or later starting the callback", async () => {
+    await withTempDir("lock-abort-wait", async (tempDir) => {
+      const target = join(tempDir, "shared");
+      let entered!: () => void;
+      let release!: () => void;
+      const ready = new Promise<void>(resolve => { entered = resolve; });
+      const hold = new Promise<void>(resolve => { release = resolve; });
+      const holder = withLock(target, async () => { entered(); await hold; });
+      await ready;
+      const owner = await readFile(`${target}.lock.d/owner`, "utf8");
+      const controller = new AbortController();
+      let calls = 0;
+      const waiter = withLock(target, async () => { calls++; }, { signal: controller.signal, delay: 10_000 });
+      controller.abort(new Error("cancelled waiter"));
+      try {
+        await expect(waiter).rejects.toThrow("cancelled waiter");
+        expect(await readFile(`${target}.lock.d/owner`, "utf8")).toBe(owner);
+      } finally {
+        release();
+        await holder;
+      }
+      await withLock(target, async () => undefined);
+      expect(calls).toBe(0);
+    });
+  });
+
+  it("keeps an admitted operation's lock until its real promise settles after cancellation", async () => {
+    await withTempDir("lock-abort-active", async (tempDir) => {
+      const target = join(tempDir, "shared");
+      const controller = new AbortController();
+      let entered!: () => void;
+      let release!: () => void;
+      const ready = new Promise<void>(resolve => { entered = resolve; });
+      const hold = new Promise<void>(resolve => { release = resolve; });
+      const holder = withLock(target, async () => { entered(); await hold; return "settled"; }, { signal: controller.signal });
+      await ready;
+      controller.abort(new Error("caller stopped waiting"));
+      try {
+        await expect(withLock(target, async () => "unexpected", { retries: 2, delay: 5 }))
+          .rejects.toThrow("Could not acquire lock");
+      } finally {
+        release();
+      }
+      expect(await holder).toBe("settled");
+      expect(await withLock(target, async () => "released")).toBe("released");
+    });
+  });
+
   it("removes lock directory when operation throws", async () => {
     await withTempDir("lock-error", async (tempDir) => {
       const targetPath = join(tempDir, "test.txt");

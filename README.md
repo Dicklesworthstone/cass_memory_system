@@ -375,6 +375,16 @@ errors remain visible while work is pending. This recovery covers outcome
 delivery after curation; it is not a transaction spanning all playbook and
 processed-log writes.
 
+New transcript-backed automatic outcomes also retain the source records that
+mentioned each rule. Reprocessing those records through a different workspace's
+processed log does not add confidence again, even if the inferred verdict
+changes. Appended records can provide new evidence. Each applied grading batch
+with new evidence contributes one event; the keys track record consumption,
+not a universal event count independent of how sessions were batched. This
+protection is prospective: older events lack the provenance needed to identify
+overlaps. Automatic confidence changes abstain when structured source records
+are unavailable; explicit inline feedback and manual outcomes still work.
+
 ### What NOT to Do
 
 You do NOT need to:
@@ -856,6 +866,15 @@ cm reflect --workspace ~/code/api --agent claude,codex --json
 # Via cron (runs at 2am daily)
 0 2 * * * /usr/local/bin/cm reflect --days 7 >> ~/.cass-memory/reflect.log 2>&1
 ```
+
+Each session uses its source project's applicable rules and reflection policy.
+Inline feedback, replacements, deprecations, and merges retain that ownership
+through curation. Linked worktrees use their local playbook when present and
+otherwise fall back to the main worktree's playbook, while keeping the session
+workspace's policy. The source project's additional redaction patterns apply
+before diary or reflector requests. Automatically discovered sessions without
+workspace provenance use global rules only. For an explicitly named session,
+`--workspace` supplies a fallback; otherwise its launch directory is the fallback.
 
 For Claude Code and Gemini CLI, opt into automatic reflection for your user. Finished sessions across your projects are reflected in the background using your configured LLM provider and budget:
 
@@ -1409,11 +1428,16 @@ interface OutcomeRecord {
   hadRetries?: boolean;
   sentiment?: "positive" | "negative" | "neutral";
   autoGraded?: boolean;          // Shown rules need stricter harm attribution
+  transcriptEvidence?: Array<{
+    ruleId: string;
+    recordKeys: string[];        // Stable keys for original transcript records
+  }>;
 }
 ```
 
-Applied events carry their `outcomeId` in each rule's feedback history. Legacy
-events retain timestamp/session deduplication and use the requested workspace
+Applied events carry their `outcomeId` in each rule's feedback history.
+Transcript-backed events also retain newly consumed `transcriptEvidenceKeys`.
+Legacy events retain timestamp/session deduplication and use the requested workspace
 when no recorded workspace is available.
 
 ---
@@ -1622,8 +1646,8 @@ back to whichever file is active, in its own format.
 | `baseUrl` | _(unset)_ | Custom base URL for OpenAI-compatible gateways (OpenRouter, Z.AI, Azure, etc.) |
 | `disableStructuredOutputs` | `false` | Opt-in escape hatch for OpenAI strict structured-outputs mode. The reflect/audit/validate Zod schemas are written to be strict-compliant, but if you hit `cm reflect` returning zero deltas with "Invalid JSON response" warnings on a particular gateway/model combination (see #47), flipping this to `true` falls back to plain JSON mode while still applying the schemas as a post-hoc validator. Leave `false` unless you've confirmed strict-mode is the failure surface. |
 | `cliSubprocessCwd` | `"~/.cass-memory/llm-subprocess-cwd"` | Working directory for cm's own LLM subprocesses on `provider: "cli"`. Agent CLIs name their per-project transcript folder after the working directory, so running cm's `claude -p` / `codex` / `gemini` calls in one cm-owned directory keeps every transcript cm generates in a single place that `cm reflect` skips — otherwise cm reads its own prompts back as work sessions and grades its own rules (#76). Must be absolute or `~`-rooted; set to `""` to inherit cm's own working directory (the prompt still carries an internal marker that `reflect` recognises). |
-| `budget.dailyLimit` | `1.00` | Max daily LLM spend (USD) |
-| `budget.monthlyLimit` | `20.00` | Max monthly LLM spend (USD) |
+| `budget.dailyLimit` | `1.00` | Daily threshold for estimated API spend (USD); nonpositive values mean unlimited |
+| `budget.monthlyLimit` | `20.00` | Monthly threshold for estimated API spend (USD); nonpositive values mean unlimited |
 | `budget.warningThreshold` | `80` | Percentage before warning |
 
 #### Scoring Settings
@@ -1659,6 +1683,15 @@ therefore exhaust the budget and stop a retry or provider fallback. If local
 usage accounting cannot be saved, the request stops instead of repeating paid
 work. Costs use CM's model-rate estimates; responses without reported usage
 cannot be priced, and the ledger is not a provider invoice.
+
+API requests sharing a cost directory take turns through budget admission and
+usage settlement. Every request checks the latest saved totals after acquiring
+admission. A waiting request whose deadline expires cannot start later, and an
+in-flight request retains admission until its provider promise settles. Invalid
+or incomplete accounting blocks further API requests. The thresholds are checked
+before each request; one admitted response can cross a threshold because CM does
+not reserve its maximum possible cost in advance. CLI providers do not report
+priced API usage and remain outside this monetary accounting.
 
 | Option | Default | Description |
 |--------|---------|-------------|

@@ -56,6 +56,8 @@ export type LLMProvider = z.infer<typeof LLMProviderEnum>;
 // FEEDBACK EVENT
 // ============================================================================
 
+const TranscriptEvidenceKeySchema = z.string().regex(/^te1:[0-9a-f]{64}$/);
+
 export const FeedbackEventSchema = z.object({
   type: z.enum(["helpful", "harmful"]),
   timestamp: z.string(),
@@ -65,6 +67,9 @@ export const FeedbackEventSchema = z.object({
   decayedValue: z.number().optional(),
   // Stable identity for replaying a persisted outcome after partial failure.
   outcomeId: z.string().optional(),
+  // Source records consumed by automatic transcript grading, independently
+  // of the outcome UUID, processing workspace, or inferred verdict.
+  transcriptEvidenceKeys: z.array(TranscriptEvidenceKeySchema).min(1).optional(),
 });
 export type FeedbackEvent = z.infer<typeof FeedbackEventSchema>;
 
@@ -882,7 +887,13 @@ export type ValidationResult = z.infer<typeof ValidationResultSchema>;
 // OUTCOME RECORDS AND PROCESSED LOG
 // ============================================================================
 
-export const OutcomeInputSchema = z.object({
+export const TranscriptRuleEvidenceSchema = z.object({
+  ruleId: z.string().min(1),
+  recordKeys: z.array(TranscriptEvidenceKeySchema).min(1),
+});
+export type TranscriptRuleEvidence = z.infer<typeof TranscriptRuleEvidenceSchema>;
+
+const OutcomeInputObjectSchema = z.object({
   sessionId: z.string().min(1),
   outcome: z.enum(["success", "failure", "partial", "mixed"]),
   rulesUsed: z.array(z.string().min(1)).optional(),
@@ -894,8 +905,40 @@ export const OutcomeInputSchema = z.object({
   hadRetries: z.boolean().optional(),
   sentiment: z.enum(["positive", "negative", "neutral"]).optional(),
   autoGraded: z.boolean().optional(),
+  // Only the transcript reflection path opts in. Context-enriched manual
+  // outcomes may also be autoGraded but have no source-record evidence.
+  transcriptEvidence: z.array(TranscriptRuleEvidenceSchema).optional(),
 });
-export const OutcomeRecordSchema = OutcomeInputSchema.extend({
+
+function validateTranscriptEvidence(
+  value: z.infer<typeof OutcomeInputObjectSchema>,
+  context: z.RefinementCtx,
+): void {
+  if (value.transcriptEvidence === undefined) return;
+  if (value.autoGraded !== true) {
+    context.addIssue({ code: "custom", path: ["transcriptEvidence"], message: "Transcript evidence requires automatic grading" });
+  }
+  const rules = new Set(value.rulesUsed ?? []);
+  const seen = new Set<string>();
+  for (const [index, entry] of value.transcriptEvidence.entries()) {
+    if (!rules.has(entry.ruleId) || seen.has(entry.ruleId)) {
+      context.addIssue({
+        code: "custom", path: ["transcriptEvidence", index, "ruleId"],
+        message: "Transcript evidence must name each recorded rule at most once",
+      });
+    }
+    if (new Set(entry.recordKeys).size !== entry.recordKeys.length) {
+      context.addIssue({
+        code: "custom", path: ["transcriptEvidence", index, "recordKeys"],
+        message: "Transcript evidence keys must be unique within a rule",
+      });
+    }
+    seen.add(entry.ruleId);
+  }
+}
+
+export const OutcomeInputSchema = OutcomeInputObjectSchema.superRefine(validateTranscriptEvidence);
+export const OutcomeRecordSchema = OutcomeInputObjectSchema.extend({
   id: z.string().min(1).optional(),
   recordedAt: z.string().min(1),
   path: z.string().min(1),
@@ -905,7 +948,7 @@ export const OutcomeRecordSchema = OutcomeInputSchema.extend({
     ruleId: z.string().min(1),
     playbookPath: z.string().min(1).nullable(),
   })).optional(),
-});
+}).superRefine(validateTranscriptEvidence);
 
 export const ProcessedEntrySchema = z.object({
   sessionPath: z.string(),

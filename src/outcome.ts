@@ -1,12 +1,14 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { formatSessionRecords } from "./cass.js";
 import { getSanitizeConfig } from "./config.js";
 import { withLock } from "./lock.js";
 import { loadPlaybook, resolveRepoPlaybookPath, savePlaybook } from "./playbook.js";
 import { sanitize } from "./sanitize.js";
 import { calculateMaturityState } from "./scoring.js";
-import { OutcomeInputSchema, OutcomeRecordSchema, type Config, type DiaryEntry, type FeedbackEvent } from "./types.js";
+import { containsCmSubprocessPayload } from "./subprocess-tag.js";
+import { OutcomeInputSchema, OutcomeRecordSchema, type Config, type DiaryEntry, type FeedbackEvent, type TranscriptRuleEvidence } from "./types.js";
 import { normalizeWorkspacePath, resolveProjectRoot } from "./workspace.js";
 import {
   ensureDir,
@@ -85,6 +87,12 @@ export interface OutcomeInput {
    * normally.
    */
   autoGraded?: boolean;
+  /**
+   * Original transcript records supporting each automatically extracted rule.
+   * Presence opts into source-evidence deduplication; an empty list abstains.
+   * Omitted on manual outcomes and legacy records whose evidence is unknown.
+   */
+  transcriptEvidence?: TranscriptRuleEvidence[];
 }
 
 export interface OutcomeRecord extends OutcomeInput {
@@ -490,6 +498,9 @@ export async function applyOutcomeFeedback(
 
     const scored = scoreImplicitFeedback(enriched);
     if (!scored) continue;
+    const transcriptEvidence = enriched.transcriptEvidence === undefined
+      ? undefined
+      : new Map(enriched.transcriptEvidence.map(entry => [entry.ruleId, entry.recordKeys]));
 
     let lookup: Map<string, string | null>;
     if (enriched.ruleTargets) {
@@ -510,6 +521,10 @@ export async function applyOutcomeFeedback(
     }
 
     for (const ruleId of new Set(enriched.rulesUsed)) {
+      const recordKeys = transcriptEvidence?.get(ruleId);
+      // A transcript-backed outcome cannot attribute a rule to evidence it
+      // did not observe. Missing evidence is not the legacy/manual fallback.
+      if (transcriptEvidence !== undefined && !recordKeys?.length) continue;
       const targetPath = lookup.get(ruleId);
 
       if (!targetPath) {
@@ -522,6 +537,7 @@ export async function applyOutcomeFeedback(
         feedback: {
           type: scored.type,
           ...(enriched.id ? { outcomeId: enriched.id } : {}),
+          ...(recordKeys ? { transcriptEvidenceKeys: recordKeys } : {}),
           // Use the outcome's recordedAt for stable idempotency across replays of the outcome log.
           timestamp: enriched.recordedAt,
           sessionPath: enriched.sessionId,
@@ -546,6 +562,7 @@ export async function applyOutcomeFeedback(
       }
       const playbook = await loadPlaybook(targetPath);
       const bullets = new Map(playbook.bullets.map(bullet => [bullet.id, bullet]));
+      const consumedEvidence = new Map<string, Set<string>>();
       let modified = false;
 
       for (const item of items) {
@@ -569,7 +586,22 @@ export async function applyOutcomeFeedback(
           continue;
         }
 
-        bullet.feedbackEvents.push(item.feedback);
+        let feedback = item.feedback;
+        if (feedback.transcriptEvidenceKeys) {
+          let consumed = consumedEvidence.get(bullet.id);
+          if (!consumed) {
+            consumed = new Set(bullet.feedbackEvents.flatMap(event => event.transcriptEvidenceKeys ?? []));
+            consumedEvidence.set(bullet.id, consumed);
+          }
+          const novel = feedback.transcriptEvidenceKeys.filter(key => !consumed.has(key));
+          if (novel.length === 0) continue;
+          // One event per graded batch with genuinely new evidence. Partial
+          // overlaps consume only new keys, regardless of processing order or
+          // verdict. UUID replay and evidence consumption share this lock/save.
+          feedback = { ...feedback, transcriptEvidenceKeys: novel };
+          for (const key of novel) consumed.add(key);
+        }
+        bullet.feedbackEvents.push(feedback);
 
         // Update counters
         if (item.feedback.type === "helpful") {
@@ -629,6 +661,61 @@ export function extractRuleIdsFromTranscript(content: string): string[] {
   // Real bullet IDs always contain digits (from base36-encoded timestamps).
   // Pure-alpha matches are common English words, not IDs.
   return [...new Set(matches.filter((m) => /\d/.test(m)).map((m) => m.toLowerCase()))];
+}
+
+/**
+ * Identify original source records independently of reflection batching.
+ *
+ * Pass the FULL exported record stream even when grading only a suffix. The
+ * occurrence number distinguishes genuinely repeated identical records, and
+ * must be counted across the earlier prefix too. Moving an unchanged record
+ * or changing JSON object-key order does not create new evidence. Original
+ * record hashes stay stable across sanitization policies; only sanitized
+ * text can attribute a rule to one of those records. As in orchestration, a
+ * cm payload marker anywhere excludes the full stream, including payloads
+ * whose opening and closing markers are in different records.
+ *
+ * These keys cannot reconstruct provenance for legacy feedback without them,
+ * or equate different export representations of the same original record.
+ */
+export function buildTranscriptEvidence(
+  sessionPath: string,
+  records: readonly unknown[],
+  config: Config,
+  options: { startRecord: number; ruleIds: readonly string[] },
+): TranscriptRuleEvidence[] {
+  if (!Number.isSafeInteger(options.startRecord) || options.startRecord < 0 || options.startRecord > records.length) {
+    throw new Error("Transcript evidence start must be within the full record stream");
+  }
+  const session = normalizeWorkspacePath(sessionPath);
+  const requested = new Set(options.ruleIds);
+  const evidence = new Map<string, string[]>();
+  const occurrences = new Map<string, number>();
+  for (const [index, record] of records.entries()) {
+    const serialized = JSON.stringify(record, (_key, value) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+      return Object.fromEntries(Object.keys(value).sort().map(key => [key, value[key]]));
+    });
+    if (serialized === undefined) throw new Error("Transcript evidence requires JSON source records");
+    const fingerprint = createHash("sha256").update(serialized).digest("hex");
+    const occurrence = occurrences.get(fingerprint) ?? 0;
+    occurrences.set(fingerprint, occurrence + 1);
+    const content = formatSessionRecords([record], config);
+    if (containsCmSubprocessPayload(content)) return [];
+    if (index < options.startRecord) continue;
+    const ruleIds = extractRuleIdsFromTranscript(content).filter(id => requested.has(id));
+    if (ruleIds.length === 0) continue;
+    const key = `te1:${createHash("sha256").update(JSON.stringify([session, fingerprint, occurrence])).digest("hex")}`;
+    for (const ruleId of ruleIds) {
+      const keys = evidence.get(ruleId);
+      if (keys) keys.push(key);
+      else evidence.set(ruleId, [key]);
+    }
+  }
+  return [...requested].flatMap(ruleId => {
+    const recordKeys = evidence.get(ruleId);
+    return recordKeys ? [{ ruleId, recordKeys }] : [];
+  });
 }
 
 /**

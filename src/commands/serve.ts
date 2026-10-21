@@ -793,7 +793,6 @@ async function handleToolCall(name: string, args: any): Promise<any> {
     }
     case "memory_reflect": {
       const t0 = performance.now();
-      const config = await loadConfig();
 
       const daysCheck = validatePositiveInt(args?.days, "days", { min: 1, allowUndefined: true });
       if (!daysCheck.ok) throw new Error(daysCheck.message);
@@ -818,6 +817,7 @@ async function handleToolCall(name: string, args: any): Promise<any> {
       if (!agentCheck.ok) throw new Error(agentCheck.message);
       const workspace = workspaceCheck.value;
       const session = sessionCheck.value;
+      const config = await loadConfig({}, { cwd: workspace });
 
       // Delegate to orchestrator (reads cass sessions) under the admission limiter.
       const outcome = await withCassAdmission("memory_reflect", () =>

@@ -3,7 +3,7 @@ import { NoObjectGeneratedError } from "ai";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
-import { checkBudget, getUsageStats, recordCost, type CostEntry } from "../src/cost.js";
+import { checkBudget, getUsageStats, recordCost, withBudgetAdmission, type CostEntry } from "../src/cost.js";
 import {
   __resetAutoFallbackNoticeForTest,
   fillPrompt,
@@ -469,12 +469,16 @@ describe("LLM usage accounting across failed outputs", () => {
   async function withUsageHome(run: (home: string) => Promise<void>): Promise<void> {
     await withTempDir("llm-usage", async (home) => {
       const previousHome = process.env.HOME;
+      const previousMemoryHome = process.env.CASS_MEMORY_HOME;
       process.env.HOME = home;
+      process.env.CASS_MEMORY_HOME = path.join(home, ".cass-memory");
       try {
         await run(home);
       } finally {
         if (previousHome === undefined) delete process.env.HOME;
         else process.env.HOME = previousHome;
+        if (previousMemoryHome === undefined) delete process.env.CASS_MEMORY_HOME;
+        else process.env.CASS_MEMORY_HOME = previousMemoryHome;
       }
     });
   }
@@ -649,17 +653,246 @@ describe("LLM usage accounting across failed outputs", () => {
         const settings = config();
         process.env.OPENAI_API_KEY = "sk-test-openai";
         process.env.ANTHROPIC_API_KEY = "sk-ant-test-anthropic";
-        await fs.mkdir(path.join(home, ".cass-memory"), { recursive: true });
-        await fs.writeFile(path.join(home, ".cass-memory", "cost"), "A file blocks the accounting directory");
+        const logPath = path.join(home, ".cass-memory", "cost", `monthly-${new Date().toISOString().slice(0, 7)}.jsonl`);
         let calls = 0;
-        const io: LLMIO = { generateObject: async <T>() => { calls++; return { object: { value: "ok" } as T, usage }; } };
+        const io: LLMIO = { generateObject: async <T>() => {
+          calls++;
+          // Failure arises after admission, while the provider is doing paid
+          // work; a pre-existing bad ledger must now prevent the call itself.
+          await fs.mkdir(logPath, { recursive: true });
+          return { object: { value: "ok" } as T, usage };
+        } };
         const result = fallback ? llmWithFallback(schema, "prompt", settings, io)
           : generateObjectSafe(schema, "prompt", settings, 3, io);
         await expect(result).rejects.toThrow("Failed to record LLM usage");
         expect(calls).toBe(1);
+        await fs.rename(logPath, `${logPath}.repaired`);
+        await expect(generateObjectSafe(schema, "next request", settings, 3, io)).rejects.toThrow("Unsettled usage accounting");
+        expect(calls).toBe(1);
       });
     });
   }
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>(done => { resolve = done; });
+    return { promise, resolve };
+  }
+
+  it("blocks provider admission when accounting is already unreadable", async () => {
+    await withUsageHome(async (home) => {
+      await fs.mkdir(path.join(home, ".cass-memory"), { recursive: true });
+      await fs.writeFile(path.join(home, ".cass-memory", "cost"), "not a directory");
+      let calls = 0;
+      const io: LLMIO = { generateObject: async <T>() => { calls++; return { object: { value: "unexpected" } as T, usage }; } };
+      await expect(generateObjectSafe(schema, "prompt", config(), 3, io)).rejects.toThrow("Unable to admit LLM request");
+      expect(calls).toBe(0);
+    });
+  });
+
+  for (const unbounded of ["absent", "unlimited"] as const) {
+    it(`serializes a caller with ${unbounded} budget against a capped caller in the same cost home`, async () => {
+      await withUsageHome(async (home) => {
+        const firstSettings = config();
+        if (unbounded === "absent") Reflect.deleteProperty(firstSettings, "budget");
+        else firstSettings.budget = { ...firstSettings.budget, dailyLimit: 0, monthlyLimit: -1 };
+        const capped = config();
+        capped.budget.dailyLimit = estimatedCallCost;
+        const entered = deferred<void>();
+        const release = deferred<void>();
+        const first = generateObjectSafe(schema, "unbounded request", firstSettings, 1, {
+          generateObject: async <T>() => { entered.resolve(); await release.promise; return { object: { value: "ok" } as T, usage }; },
+        });
+        await entered.promise;
+        let laterCalls = 0;
+        const later = generateObjectSafe(schema, "capped request", capped, 3, {
+          generateObject: async <T>() => { laterCalls++; return { object: { value: "unexpected" } as T, usage }; },
+        });
+        const rejected = later.catch(error => error);
+        release.resolve();
+        await first;
+        expect((await rejected).message).toContain("budget exceeded");
+        expect(laterCalls).toBe(0);
+        expect(await costRows(home)).toHaveLength(1);
+      });
+    });
+  }
+
+  it("cancels a timed-out waiter without a late provider call or outer retry", async () => {
+    await withUsageHome(async (home) => {
+      const settings = config();
+      const entered = deferred<void>();
+      const release = deferred<void>();
+      const first = generateObjectSafe(schema, "active request", settings, 1, {
+        generateObject: async <T>() => { entered.resolve(); await release.promise; return { object: { value: "ok" } as T, usage }; },
+      });
+      await entered.promise;
+      let providerCalls = 0;
+      let wrapperCalls = 0;
+      try {
+        await expect(llmWithRetry(() => {
+          wrapperCalls++;
+          return generateObjectSafe(schema, "queued request", settings, 3, {
+            generateObject: async <T>() => { providerCalls++; return { object: { value: "unexpected" } as T, usage }; },
+          });
+        }, "queued-timeout", { perOperationTimeoutMs: 20 })).rejects.toThrow("timed out");
+      } finally {
+        release.resolve();
+        await first;
+      }
+      await withBudgetAdmission(settings, async () => undefined);
+      expect(providerCalls).toBe(0);
+      expect(wrapperCalls).toBe(1);
+      expect(await costRows(home)).toHaveLength(1);
+    });
+  });
+
+  it("holds admission until a timed-out provider settles and accounts its late response", async () => {
+    await withUsageHome(async (home) => {
+      const settings = config();
+      settings.budget.dailyLimit = estimatedCallCost;
+      const entered = deferred<void>();
+      const release = deferred<void>();
+      let calls = 0;
+      let providerSignal: AbortSignal | undefined;
+      const first = llmWithRetry(() => generateObjectSafe(schema, "slow request", settings, 3, {
+        generateObject: async <T>(options: any) => {
+          calls++;
+          expect(options.maxRetries).toBe(0);
+          providerSignal = options.abortSignal;
+          entered.resolve();
+          // Model work can outlive the SDK's cancellation signal.
+          await release.promise;
+          return { object: { value: "late response" } as T, usage };
+        },
+      }), "active-timeout", { perOperationTimeoutMs: 30 });
+      const timedOut = first.catch(error => error);
+      await entered.promise;
+      expect((await timedOut).message).toContain("timed out");
+      expect(providerSignal?.aborted).toBe(true);
+      expect(await Bun.file(path.join(home, ".cass-memory", "cost", "admission.lock.d", "owner")).exists()).toBe(true);
+      let laterCalls = 0;
+      const later = generateObjectSafe(schema, "queued behind timed-out provider", settings, 1, {
+        generateObject: async <T>() => { laterCalls++; return { object: { value: "unexpected" } as T, usage }; },
+      });
+      const rejected = later.catch(error => error);
+      release.resolve();
+      expect((await rejected).message).toContain("budget exceeded");
+      expect(calls).toBe(1);
+      expect(laterCalls).toBe(0);
+      expect(await costRows(home)).toHaveLength(1);
+      expect((await getUsageStats(settings)).today).toBeCloseTo(estimatedCallCost);
+    });
+  });
+
+  it("does not start another schema retry after timeout during a previous schema retry", async () => {
+    await withUsageHome(async (home) => {
+      const settings = { ...config(), disableStructuredOutputs: true };
+      const retryEntered = deferred<void>();
+      const release = deferred<void>();
+      let calls = 0;
+      const run = llmWithRetry(() => generateObjectSafe(schema, "invalid responses", settings, 3, {
+        generateObject: async <T>() => {
+          calls++;
+          if (calls === 2) { retryEntered.resolve(); await release.promise; }
+          return { object: { value: 42 } as T, usage };
+        },
+      }), "schema-timeout", { perOperationTimeoutMs: 100 });
+      const timedOut = run.catch(error => error);
+      await retryEntered.promise;
+      expect((await timedOut).message).toContain("timed out");
+      release.resolve();
+      await withBudgetAdmission(settings, async () => undefined);
+      expect(calls).toBe(2);
+      expect(await costRows(home)).toHaveLength(2);
+      expect((await getUsageStats(settings)).total).toBeCloseTo(estimatedCallCost * 2);
+    });
+  });
+
+  it("admits only two of eight concurrent processes at a shared daily/monthly cap", async () => {
+    await withUsageHome(async (home) => {
+      const workerPath = path.join(home, "budget-worker.ts");
+      const gate = path.join(home, "gate");
+      await fs.mkdir(gate);
+      await fs.writeFile(workerPath, `
+import fs from "node:fs/promises";
+import path from "node:path";
+import { z } from ${JSON.stringify(path.resolve(import.meta.dir, "../node_modules/zod/index.js"))};
+import { generateObjectSafe } from ${JSON.stringify(path.resolve(import.meta.dir, "../src/llm.ts"))};
+import { createTestConfig } from ${JSON.stringify(path.resolve(import.meta.dir, "helpers/factories.ts"))};
+const gate = process.argv[2];
+const id = process.argv[3];
+const wait = async (name: string) => {
+  const deadline = Date.now() + 10000;
+  while (!(await Bun.file(path.join(gate, name)).exists())) {
+    if (Date.now() > deadline) throw new Error("fixture barrier expired");
+    await Bun.sleep(5);
+  }
+};
+await fs.writeFile(path.join(gate, "ready-" + id), "ready");
+await wait("start");
+const config = createTestConfig({ provider: "openai", model: "gpt-4o",
+  budget: { dailyLimit: 0.005, monthlyLimit: 0.005, warningThreshold: 80, currency: "USD" } });
+try {
+  await generateObjectSafe(z.object({ value: z.string() }), "budget fixture", config, 1, {
+    generateObject: async <T>() => {
+      await fs.writeFile(path.join(gate, "entered-" + id), process.cwd());
+      await wait("respond");
+      return { object: { value: "ok" } as T, usage: { inputTokens: 1000, outputTokens: 0 } };
+    },
+  });
+  console.log(JSON.stringify({ success: true }));
+} catch (error) {
+  console.log(JSON.stringify({ success: false, error: String(error) }));
+}
+`);
+      const children = [];
+      for (let i = 0; i < 8; i++) {
+        const workspace = path.join(home, `workspace-${i}`);
+        const git = Bun.spawnSync(["git", "init", "--quiet", workspace], { env: { ...process.env }, stdout: "pipe", stderr: "pipe" });
+        expect(git.exitCode).toBe(0);
+        children.push(Bun.spawn([process.execPath, workerPath, gate, String(i)], {
+          cwd: workspace, env: { ...process.env }, stdout: "pipe", stderr: "pipe",
+        }));
+      }
+      const count = async (prefix: string) => (await fs.readdir(gate)).filter(name => name.startsWith(prefix)).length;
+      const waitFor = async (predicate: () => Promise<boolean>) => {
+        const deadline = Date.now() + 10_000;
+        while (!(await predicate())) {
+          if (Date.now() > deadline) throw new Error("worker fixture did not reach its barrier");
+          await Bun.sleep(5);
+        }
+      };
+      let admittedBeforeSettlement = 0;
+      try {
+        await waitFor(async () => await count("ready-") === 8);
+        await fs.writeFile(path.join(gate, "start"), "start");
+        await waitFor(async () => await count("entered-") > 0);
+        // Keep the first actual provider promise unresolved while all other
+        // processes contend. The pre-fix implementation admits more callers.
+        const probeDeadline = Date.now() + 200;
+        while (await count("entered-") < 2 && Date.now() < probeDeadline) await Bun.sleep(5);
+        admittedBeforeSettlement = await count("entered-");
+      } finally {
+        await fs.writeFile(path.join(gate, "respond"), "respond");
+      }
+      const results = await Promise.all(children.map(async child => {
+        const [stdout, stderr, code] = await Promise.all([
+          new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
+        ]);
+        expect(code).toBe(0);
+        expect(stderr).toBe("");
+        return JSON.parse(stdout) as { success: boolean; error?: string };
+      }));
+      expect(admittedBeforeSettlement).toBe(1);
+      expect(results.filter(result => result.success)).toHaveLength(2);
+      expect(results.filter(result => !result.success).every(result => result.error?.includes("budget exceeded"))).toBe(true);
+      expect(await costRows(home)).toHaveLength(2);
+      const stats = await getUsageStats(config());
+      expect(stats.today).toBeCloseTo(0.005);
+      expect(stats.month).toBeCloseTo(0.005);
+    });
+  }, 20_000);
 });
 
 // ============================================================================

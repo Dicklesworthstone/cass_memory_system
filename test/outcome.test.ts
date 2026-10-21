@@ -17,8 +17,43 @@ import {
   recordOutcome,
   scoreImplicitFeedback,
 } from "../src/outcome.js";
+import { FeedbackEventSchema, OutcomeInputSchema, OutcomeRecordSchema } from "../src/types.js";
 import { createTestConfig } from "./helpers/factories.js";
 import { withTempCassHome } from "./helpers/temp.js";
+
+describe("transcript evidence validation", () => {
+  const key = `te1:${"a".repeat(64)}`;
+  const input = {
+    sessionId: "/tmp/transcript.jsonl", outcome: "success", autoGraded: true,
+    rulesUsed: ["b-evidence1"], transcriptEvidence: [{ ruleId: "b-evidence1", recordKeys: [key] }],
+  };
+
+  it("preserves source metadata in both prepared records and feedback events", () => {
+    expect(OutcomeInputSchema.parse(input).transcriptEvidence).toEqual(input.transcriptEvidence);
+    expect(OutcomeRecordSchema.parse({ ...input, recordedAt: "2026-10-21T00:00:00Z", path: "/tmp/outcomes.jsonl" }).transcriptEvidence)
+      .toEqual(input.transcriptEvidence);
+    expect(FeedbackEventSchema.parse({ type: "helpful", timestamp: "2026-10-21T00:00:00Z", transcriptEvidenceKeys: [key] }).transcriptEvidenceKeys)
+      .toEqual([key]);
+  });
+
+  it.each([
+    ["manual verdict", { autoGraded: false }],
+    ["unlisted rule", { transcriptEvidence: [{ ruleId: "b-foreign1", recordKeys: [key] }] }],
+    ["duplicate rule", { transcriptEvidence: [...input.transcriptEvidence, ...input.transcriptEvidence] }],
+    ["duplicate key", { transcriptEvidence: [{ ruleId: "b-evidence1", recordKeys: [key, key] }] }],
+    ["missing key", { transcriptEvidence: [{ ruleId: "b-evidence1", recordKeys: [] }] }],
+    ["invalid key", { transcriptEvidence: [{ ruleId: "b-evidence1", recordKeys: ["raw transcript content"] }] }],
+  ])("rejects %s metadata before preparation and pending-record replay", (_name, changes) => {
+    const value = { ...input, ...changes };
+    expect(OutcomeInputSchema.safeParse(value).success).toBe(false);
+    expect(OutcomeRecordSchema.safeParse({ ...value, recordedAt: "2026-10-21T00:00:00Z", path: "/tmp/outcomes.jsonl" }).success).toBe(false);
+  });
+
+  it("distinguishes explicit abstention from legacy outcomes with unknown evidence", () => {
+    expect(OutcomeInputSchema.parse({ ...input, transcriptEvidence: [] }).transcriptEvidence).toEqual([]);
+    expect(OutcomeInputSchema.parse({ sessionId: "legacy", outcome: "success", autoGraded: true }).transcriptEvidence).toBeUndefined();
+  });
+});
 
 describe("detectSentiment", () => {
   describe("positive patterns", () => {

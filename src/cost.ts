@@ -6,11 +6,9 @@ import type { Config } from "./types.js";
 import {
   atomicWrite,
   ensureDir,
-  expandPath,
   fileExists,
   now,
   resolveGlobalDir,
-  warn,
 } from "./utils.js";
 
 export interface CostEntry {
@@ -59,6 +57,9 @@ export async function recordCost(
   entry: Omit<CostEntry, "timestamp" | "cost">,
 ): Promise<void> {
   const cost = estimateCost(entry.model, entry.tokensIn, entry.tokensOut);
+  if (!Number.isFinite(cost) || cost < 0) {
+    throw new Error("Reported usage must have a finite, non-negative cost");
+  }
   const fullEntry: CostEntry = {
     ...entry,
     timestamp: now(),
@@ -74,12 +75,25 @@ export async function recordCost(
   // Security: Do not log the full context (prompt) to disk as it may contain secrets
   const { context, ...logEntry } = fullEntry;
 
-  await withLock(logPath, async () => {
-    await fs.appendFile(logPath, JSON.stringify(logEntry) + "\n");
-  });
+  // All writers, including callers outside the LLM admission guard, use one
+  // accounting lock. A partial append/update must not reopen stale headroom.
+  const totalPath = path.join(costDir, "total.json");
+  const pendingPath = path.join(costDir, "accounting-pending.json");
+  await withLock(totalPath, async () => {
+    await assertNoPending(pendingPath);
+    const total = await readTotalCost(costDir);
+    await writePendingMarker(pendingPath);
 
-  // Update total
-  await updateTotalCost(costDir, cost);
+    const log = await fs.open(logPath, "a", 0o600);
+    try {
+      await log.writeFile(JSON.stringify(logEntry) + "\n");
+      await log.sync();
+    } finally {
+      await log.close();
+    }
+    await updateTotalCost(totalPath, total, cost);
+    await fs.unlink(pendingPath);
+  });
 }
 
 interface TotalCostData {
@@ -89,56 +103,96 @@ interface TotalCostData {
   currentDay?: { day: string; cost: number };
 }
 
-async function updateTotalCost(costDir: string, amount: number): Promise<void> {
-  const totalPath = path.join(costDir, "total.json");
+async function updateTotalCost(totalPath: string, total: TotalCostData, amount: number): Promise<void> {
   const nowIso = now();
   const date = new Date();
   const today = date.toLocaleDateString("en-CA");
   const month = today.slice(0, 7); // YYYY-MM
 
-  await withLock(totalPath, async () => {
-    let total: TotalCostData = { allTime: 0, lastUpdated: nowIso };
+  total.allTime += amount;
+  if (!total.currentMonth || total.currentMonth.month !== month) {
+    total.currentMonth = { month, cost: 0 };
+  }
+  total.currentMonth.cost += amount;
+  if (!total.currentDay || total.currentDay.day !== today) {
+    total.currentDay = { day: today, cost: 0 };
+  }
+  total.currentDay.cost += amount;
+  total.lastUpdated = nowIso;
 
-    if (await fileExists(totalPath)) {
-      try {
-        total = JSON.parse(await fs.readFile(totalPath, "utf-8"));
-      } catch {}
-    }
-
-    // Update All Time
-    total.allTime = (total.allTime || 0) + amount;
-
-    // Update Monthly
-    if (!total.currentMonth || total.currentMonth.month !== month) {
-      total.currentMonth = { month, cost: 0 };
-    }
-    total.currentMonth.cost += amount;
-
-    // Update Daily
-    if (!total.currentDay || total.currentDay.day !== today) {
-      total.currentDay = { day: today, cost: 0 };
-    }
-    total.currentDay.cost += amount;
-
-    total.lastUpdated = nowIso;
-
-    await atomicWrite(totalPath, JSON.stringify(total, null, 2));
-  });
+  await atomicWrite(totalPath, JSON.stringify(total, null, 2));
+  const file = await fs.open(totalPath, "r");
+  try {
+    await file.sync();
+  } finally {
+    await file.close();
+  }
 }
 
-export async function checkBudget(config: Config): Promise<{ allowed: boolean; reason?: string }> {
-  const budget = config.budget;
-  if (!budget) return { allowed: true }; // No budget set
-
-  const costDir = path.join(resolveGlobalDir(), "cost");
-  const totalPath = path.join(costDir, "total.json");
-
-  // If total.json doesn't exist, we assume 0 cost (or legacy migration could happen here,
-  // but scanning logs is expensive so we start fresh or rely on recordCost to init)
-  if (!(await fileExists(totalPath))) return { allowed: true };
-
+async function assertNoPending(pendingPath: string): Promise<void> {
   try {
-    const total: TotalCostData = JSON.parse(await fs.readFile(totalPath, "utf-8"));
+    await fs.lstat(pendingPath);
+  } catch (error: any) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  throw new Error(`Unsettled usage accounting at ${pendingPath}; reconcile the cost ledger before making further requests`);
+}
+
+async function writePendingMarker(pendingPath: string): Promise<void> {
+  const file = await fs.open(pendingPath, "wx", 0o600);
+  try {
+    await file.writeFile(JSON.stringify({ startedAt: now(), pid: process.pid }));
+    await file.sync();
+  } finally {
+    await file.close();
+  }
+}
+
+async function readTotalCost(costDir: string): Promise<TotalCostData> {
+  const totalPath = path.join(costDir, "total.json");
+  let raw: string;
+  try {
+    raw = await fs.readFile(totalPath, "utf-8");
+  } catch (error: any) {
+    if (error?.code !== "ENOENT") throw error;
+    let names: string[];
+    try {
+      names = await fs.readdir(costDir);
+    } catch (directoryError: any) {
+      if (directoryError?.code !== "ENOENT") throw directoryError;
+      names = [];
+    }
+    if (names.some(name => /^monthly-.*\.jsonl$/.test(name))) {
+      throw new Error("Cost totals are missing but usage logs exist; reconcile the cost ledger before making further requests");
+    }
+    return { allTime: 0, lastUpdated: now() };
+  }
+
+  const total = JSON.parse(raw) as TotalCostData | null;
+  const validCost = (value: unknown): value is number =>
+    typeof value === "number" && Number.isFinite(value) && value >= 0;
+  if (!total || !validCost(total.allTime) || typeof total.lastUpdated !== "string" ||
+    !Number.isFinite(Date.parse(total.lastUpdated)) ||
+    (total.allTime > 0 && (!total.currentDay || !total.currentMonth)) ||
+    (total.currentDay !== undefined && (!total.currentDay ||
+      typeof total.currentDay.day !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(total.currentDay.day) ||
+      !validCost(total.currentDay.cost))) ||
+    (total.currentMonth !== undefined && (!total.currentMonth ||
+      typeof total.currentMonth.month !== "string" || !/^\d{4}-\d{2}$/.test(total.currentMonth.month) ||
+      !validCost(total.currentMonth.cost)))) {
+    throw new Error(`Invalid cost totals in ${totalPath}`);
+  }
+  return total;
+}
+
+async function checkBudgetAt(config: Config, costDir: string): Promise<{ allowed: boolean; reason?: string }> {
+  try {
+    await assertNoPending(path.join(costDir, "admission-pending.json"));
+    await assertNoPending(path.join(costDir, "accounting-pending.json"));
+    const total = await readTotalCost(costDir);
+    const budget = config.budget;
+    if (!budget) return { allowed: true };
     const date = new Date();
     const today = date.toLocaleDateString("en-CA");
     const month = today.slice(0, 7);
@@ -162,11 +216,82 @@ export async function checkBudget(config: Config): Promise<{ allowed: boolean; r
       };
     }
   } catch (err) {
-    // If read fails, fail open but warn
-    warn(`[cost] Failed to read budget file: ${err}`);
+    return { allowed: false, reason: `Budget accounting unavailable: ${err}` };
   }
 
   return { allowed: true };
+}
+
+export async function checkBudget(config: Config): Promise<{ allowed: boolean; reason?: string }> {
+  return checkBudgetAt(config, path.join(resolveGlobalDir(), "cost"));
+}
+
+/** Terminal: retrying admission/accounting failures could spend untracked money. */
+export class BudgetAdmissionError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "BudgetAdmissionError";
+  }
+}
+
+/**
+ * Serialize API spending across every workspace sharing a cost home. The
+ * callback must settle reported usage before resolving; a rejection leaves a
+ * durable marker so a failed accounting write cannot authorize the next call.
+ * Provider failures whose usage was settled should be returned as values.
+ * This enforces recorded-spend thresholds, not a pre-request cost reservation:
+ * one response may still take the estimate past a configured limit.
+ */
+export async function withBudgetAdmission<T>(
+  config: Config,
+  operation: () => Promise<T>,
+  options: { signal?: AbortSignal; timeoutMs?: number } = {},
+): Promise<T> {
+  const costDir = path.join(resolveGlobalDir(), "cost");
+  const pendingPath = path.join(costDir, "admission-pending.json");
+  const timeoutMs = options.timeoutMs && options.timeoutMs > 0 ? options.timeoutMs : 30_000;
+  const controller = new AbortController();
+  const onAbort = () => controller.abort(options.signal?.reason);
+  options.signal?.addEventListener("abort", onAbort, { once: true });
+  if (options.signal?.aborted) onAbort();
+  const timer = setTimeout(() => {
+    controller.abort(new BudgetAdmissionError(`LLM budget admission timed out after ${timeoutMs}ms`));
+  }, timeoutMs);
+  let operationStarted = false;
+
+  try {
+    return await withLock(path.join(costDir, "admission"), async () => {
+      await withLock(path.join(costDir, "total.json"), async () => {
+        const budget = await checkBudgetAt(config, costDir);
+        if (!budget.allowed) throw new BudgetAdmissionError(`LLM budget exceeded or unavailable: ${budget.reason}`);
+        controller.signal.throwIfAborted();
+        await writePendingMarker(pendingPath);
+      }, { signal: controller.signal });
+
+      if (controller.signal.aborted) {
+        await fs.unlink(pendingPath);
+        controller.signal.throwIfAborted();
+      }
+      // Only admission has this deadline, including the ledger check. The
+      // provider's actual promise retains the lock through usage settlement.
+      clearTimeout(timer);
+      operationStarted = true;
+      const result = await operation();
+      try {
+        await fs.unlink(pendingPath);
+      } catch (error) {
+        throw new BudgetAdmissionError("Failed to settle LLM budget admission; refusing further requests", { cause: error });
+      }
+      return result;
+    }, { signal: controller.signal, retries: Math.ceil(timeoutMs / 25) + 2, delay: 25 });
+  } catch (error) {
+    if (operationStarted || error instanceof BudgetAdmissionError) throw error;
+    if (options.signal?.aborted) options.signal.throwIfAborted();
+    throw new BudgetAdmissionError(`Unable to admit LLM request: ${error}`, { cause: error });
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener("abort", onAbort);
+  }
 }
 
 export async function getUsageStats(config: Config): Promise<{

@@ -316,14 +316,14 @@ function normalizeLLMDelta(d: LLMReflectorDelta, sessionPath: string): PlaybookD
       return {
         type: "helpful",
         bulletId: d.bulletId,
-        sourceSession: d.sourceSession ?? sessionPath,
+        sourceSession: sessionPath,
         ...(d.context !== null ? { context: d.context } : {}),
       };
     case "harmful":
       return {
         type: "harmful",
         bulletId: d.bulletId,
-        sourceSession: d.sourceSession ?? sessionPath,
+        sourceSession: sessionPath,
         ...(d.reason !== null ? { reason: d.reason } : {}),
         ...(d.context !== null ? { context: d.context } : {}),
       };
@@ -397,7 +397,7 @@ export async function reflectOnSession(
         for (const iteration of stubIterations) {
           const injected = iteration.deltas.map((d) => {
             if (d.type === "add") return { ...d, sourceSession: diary.sessionPath };
-            if ((d.type === "helpful" || d.type === "harmful") && !d.sourceSession) {
+            if (d.type === "helpful" || d.type === "harmful") {
               return { ...d, sourceSession: diary.sessionPath };
             }
             return d;

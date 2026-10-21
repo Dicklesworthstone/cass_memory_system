@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { applyOutcomeFeedback, loadOutcomes, persistOutcomeRecord, prepareOutcome, type OutcomeRecord } from "../src/outcome.js";
 import { loadPlaybook, savePlaybook } from "../src/playbook.js";
+import type { TranscriptRuleEvidence } from "../src/types.js";
 import { createTestBullet, createTestConfig, createTestPlaybook } from "./helpers/factories.js";
 import { withTempCassHome } from "./helpers/temp.js";
 
@@ -327,6 +328,155 @@ describe("durable outcome identity and ownership", () => {
       record.ruleTargets = [{ ruleId: "b-foreign", playbookPath: foreignPath }];
       await expect(applyOutcomeFeedback(record, config)).rejects.toThrow("does not belong");
       expect((await loadPlaybook(foreignPath)).bullets[0].helpfulCount).toBe(0);
+    });
+  });
+});
+
+describe("automatic transcript evidence consumption", () => {
+  const key = (digit: string) => `te1:${digit.repeat(64)}`;
+  const evidence = (ruleId: string, ...digits: string[]): TranscriptRuleEvidence => ({
+    ruleId, recordKeys: digits.map(key),
+  });
+
+  async function withEvidencePlaybook(run: (fixture: {
+    config: ReturnType<typeof createTestConfig>;
+    prepare: (entries: TranscriptRuleEvidence[], outcome?: "success" | "failure") => Promise<OutcomeRecord>;
+    read: () => ReturnType<typeof loadPlaybook>;
+    workspace: string;
+  }) => Promise<void>) {
+    await withTempCassHome(async env => {
+      const config = createTestConfig({ playbookPath: path.join(env.cassMemoryDir, "playbook.yaml") });
+      await savePlaybook(createTestPlaybook([
+        createTestBullet({ id: "b-evidence1" }), createTestBullet({ id: "b-evidence2" }),
+      ]), config.playbookPath);
+      const prepare = (entries: TranscriptRuleEvidence[], outcome: "success" | "failure" = "success") =>
+        prepareOutcome({
+          sessionId: path.join(env.home, "session.jsonl"), workspace: env.home, outcome,
+          rulesUsed: ["b-evidence1", "b-evidence2"], autoGraded: true, transcriptEvidence: entries,
+        }, config);
+      await run({ config, prepare, read: () => loadPlaybook(config.playbookPath), workspace: env.home });
+    });
+  }
+
+  test("separately prepared automatic outcomes consume identical source evidence once", async () => {
+    await withEvidencePlaybook(async ({ config, prepare, read, workspace }) => {
+      const entries = [evidence("b-evidence1", "1"), evidence("b-evidence2", "2")];
+      const first = await prepare(entries);
+      const second = await prepare(entries);
+      expect(first.id).not.toBe(second.id);
+      await persistOutcomeRecord(first, config);
+      await persistOutcomeRecord(second, config);
+      expect((await applyOutcomeFeedback(first, config)).applied).toBe(2);
+      expect((await applyOutcomeFeedback(second, config)).applied).toBe(0);
+      const loaded = await loadOutcomes(config, 100, workspace);
+      expect(loaded).toHaveLength(2);
+      expect(loaded.every(record => record.transcriptEvidence?.length === 2)).toBe(true);
+      expect((await applyOutcomeFeedback(loaded, config)).applied).toBe(0);
+      expect((await read()).bullets.map(bullet => bullet.helpfulCount)).toEqual([1, 1]);
+      expect((await read()).bullets[0].feedbackEvents[0].transcriptEvidenceKeys).toEqual([key("1")]);
+    });
+  });
+
+  test.each([false, true])("partial overlaps consume only new keys in either order (reverse=%s)", async reverse => {
+    await withEvidencePlaybook(async ({ config, prepare, read }) => {
+      const first = await prepare([evidence("b-evidence1", "1", "2")]);
+      const second = await prepare([evidence("b-evidence1", "2", "3")]);
+      const ordered = reverse ? [second, first] : [first, second];
+      expect((await applyOutcomeFeedback(ordered, config)).applied).toBe(2);
+      expect((await applyOutcomeFeedback([...ordered].reverse(), config)).applied).toBe(0);
+      const [bullet, unrelated] = (await read()).bullets;
+      expect(bullet.helpfulCount).toBe(2);
+      expect(unrelated.helpfulCount).toBe(0);
+      expect(bullet.feedbackEvents.flatMap(event => event.transcriptEvidenceKeys ?? []).sort())
+        .toEqual([key("1"), key("2"), key("3")]);
+      expect(bullet.feedbackEvents.map(event => event.transcriptEvidenceKeys?.length)).toEqual([2, 1]);
+    });
+  });
+
+  test("overlapping full and incremental histories cannot credit an unrelated old rule again", async () => {
+    await withEvidencePlaybook(async ({ config, prepare, read }) => {
+      const prefix = await prepare([evidence("b-evidence1", "1")]);
+      const whole = await prepare([evidence("b-evidence1", "1"), evidence("b-evidence2", "2")]);
+      const suffix = await prepare([evidence("b-evidence2", "2")]);
+      expect((await applyOutcomeFeedback(prefix, config)).applied).toBe(1);
+      expect((await applyOutcomeFeedback(whole, config)).applied).toBe(1);
+      expect((await applyOutcomeFeedback(suffix, config)).applied).toBe(0);
+      expect((await read()).bullets.map(bullet => bullet.helpfulCount)).toEqual([1, 1]);
+    });
+  });
+
+  test("new appended evidence counts while a changed verdict cannot reuse old evidence", async () => {
+    await withEvidencePlaybook(async ({ config, prepare, read }) => {
+      const initial = await prepare([evidence("b-evidence1", "1")]);
+      const reclassified = await prepare([evidence("b-evidence1", "1")], "failure");
+      const appended = await prepare([evidence("b-evidence1", "2")]);
+      expect((await applyOutcomeFeedback(initial, config)).applied).toBe(1);
+      expect((await applyOutcomeFeedback(reclassified, config)).applied).toBe(0);
+      expect((await applyOutcomeFeedback(appended, config)).applied).toBe(1);
+      const bullet = (await read()).bullets[0];
+      expect(bullet.helpfulCount).toBe(2);
+      expect(bullet.harmfulCount).toBe(0);
+    });
+  });
+
+  test("concurrent outcomes consume shared keys atomically", async () => {
+    await withEvidencePlaybook(async ({ config, prepare, read }) => {
+      const entries = [evidence("b-evidence1", "1")];
+      const records = await Promise.all([prepare(entries), prepare(entries)]);
+      const results = await Promise.all(records.map(record => applyOutcomeFeedback(record, config)));
+      expect(results.reduce((total, result) => total + result.applied, 0)).toBe(1);
+      expect((await read()).bullets[0].helpfulCount).toBe(1);
+      expect((await read()).bullets[0].feedbackEvents).toHaveLength(1);
+    });
+  });
+
+  test("an explicit empty evidence set abstains instead of falling back to all rules", async () => {
+    await withEvidencePlaybook(async ({ config, prepare, read }) => {
+      expect((await applyOutcomeFeedback(await prepare([]), config)).applied).toBe(0);
+      expect((await read()).bullets.map(bullet => bullet.helpfulCount)).toEqual([0, 0]);
+    });
+  });
+
+  test("a prepared UUID cannot be repurposed to consume different transcript records", async () => {
+    await withEvidencePlaybook(async ({ config, prepare }) => {
+      const record = await prepare([evidence("b-evidence1", "1")]);
+      await persistOutcomeRecord(record, config);
+      const before = await fs.readFile(record.path, "utf8");
+      await expect(persistOutcomeRecord({
+        ...record, transcriptEvidence: [evidence("b-evidence1", "2")],
+      }, config)).rejects.toThrow("different event");
+      expect(await fs.readFile(record.path, "utf8")).toBe(before);
+    });
+  });
+
+  test("legacy feedback without source keys does not invent record provenance", async () => {
+    await withEvidencePlaybook(async ({ config, prepare, read }) => {
+      const record = await prepare([evidence("b-evidence1", "1")]);
+      const legacy = { ...record, id: "legacy-automatic-event", transcriptEvidence: undefined, rulesUsed: ["b-evidence1"] };
+      expect((await applyOutcomeFeedback(legacy, config)).applied).toBe(1);
+      expect((await applyOutcomeFeedback(record, config)).applied).toBe(1);
+      expect((await applyOutcomeFeedback(record, config)).applied).toBe(0);
+      const bullet = (await read()).bullets[0];
+      expect(bullet.helpfulCount).toBe(2);
+      expect(bullet.feedbackEvents[0].transcriptEvidenceKeys).toBeUndefined();
+      expect(bullet.feedbackEvents[1].transcriptEvidenceKeys).toEqual([key("1")]);
+    });
+  });
+
+  test("context-enriched manual outcomes remain separate events without transcript evidence", async () => {
+    await withTempCassHome(async env => {
+      const config = createTestConfig({ playbookPath: path.join(env.cassMemoryDir, "playbook.yaml") });
+      await savePlaybook(createTestPlaybook([createTestBullet({ id: "b-evidence1" })]), config.playbookPath);
+      await fs.writeFile(path.join(env.cassMemoryDir, "context-log.jsonl"), JSON.stringify({
+        session: "manual", workspace: env.home, ruleIds: ["b-evidence1"], timestamp: new Date().toISOString(),
+      }) + "\n");
+      const first = await prepareOutcome({ sessionId: "manual", outcome: "success", workspace: env.home }, config);
+      const second = await prepareOutcome({ sessionId: "manual", outcome: "success", workspace: env.home }, config);
+      expect(first.autoGraded).toBe(true);
+      expect(first.transcriptEvidence).toBeUndefined();
+      expect(first.id).not.toBe(second.id);
+      expect((await applyOutcomeFeedback([first, second], config)).applied).toBe(2);
+      expect((await loadPlaybook(config.playbookPath)).bullets[0].helpfulCount).toBe(2);
     });
   });
 });

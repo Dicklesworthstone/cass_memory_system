@@ -11,11 +11,12 @@ import {
 import { HOOK_ACTIVE_ENV } from "./commands/hook.js";
 import { getSanitizeConfig, loadConfig } from "./config.js";
 import { curatePlaybook, directivesDisagree, splitDirectiveClauses, validateMergeSources } from "./curate.js";
-import { generateDiary, generateDiaryFromContent } from "./diary.js";
+import { generateDiaryFromContent } from "./diary.js";
 import type { LLMIO } from "./llm.js";
 import { withLock } from "./lock.js";
 import {
   applyOutcomeFeedback,
+  buildTranscriptEvidence,
   classifySessionOutcome,
   extractRuleIdsFromTranscript,
   type OutcomeInput,
@@ -24,13 +25,15 @@ import {
 } from "./outcome.js";
 import {
   findBullet,
-  loadMergedPlaybook,
+  loadMergedPlaybookWithSources,
   loadPlaybook,
   mergePlaybooks,
   recordReflectionRun,
+  resolveRepoPlaybookPath,
   savePlaybook,
 } from "./playbook.js";
 import { reflectOnSession } from "./reflect.js";
+import { compileExtraPatterns, sanitize } from "./sanitize.js";
 import { buildSemanticDedupIndex, type SemanticDedupIndex } from "./semantic.js";
 import { containsCmSubprocessPayload, stripCmSubprocessPayloads } from "./subprocess-tag.js";
 import {
@@ -42,7 +45,6 @@ import {
 import {
   type Config,
   type CurationResult,
-  DecisionLogEntry,
   type Playbook,
   type PlaybookBullet,
   type PlaybookDelta,
@@ -50,7 +52,6 @@ import {
 } from "./types.js";
 import {
   ensureDir,
-  error,
   expandPath,
   fileExists,
   generateBulletId,
@@ -60,11 +61,10 @@ import {
   now,
   inlineFeedbackToDeltas,
   parseInlineFeedback,
-  resolveRepoDir,
   warn,
 } from "./utils.js";
 import { validateDelta } from "./validate.js";
-import { normalizeWorkspacePath, resolveProjectRoot, sameRuleScope } from "./workspace.js";
+import { normalizeWorkspacePath, resolveProjectRoot, sameRuleScope, workspaceMatches } from "./workspace.js";
 
 /** Hook-mode wait for the reflection lock: up to 30 minutes, polled every second. */
 export const HOOK_REFLECTION_LOCK_WAIT = { retries: 1800, delay: 1000 };
@@ -94,7 +94,7 @@ export interface ReflectionOutcome {
   deltasGenerated: number;
   globalResult?: CurationResult;
   repoResult?: CurationResult;
-  /** Project rules routed to other repositories' `.cass/playbook.yaml` (#81, "repo" mode). */
+  /** Per-repository details; repoResult aggregates all repository updates. */
   projectResults?: Array<{ playbookPath: string; result: CurationResult }>;
   dryRunDeltas?: PlaybookDelta[];
   errors: string[];
@@ -172,6 +172,52 @@ function samePlaybookPath(a: string, b: string): boolean {
   return normalizeWorkspacePath(a) === normalizeWorkspacePath(b);
 }
 
+/** Trusted provenance captured from discovery/transcript metadata, never model output. */
+interface ReflectionContext {
+  workspace?: string;
+  projectRoot?: string;
+  config: Config;
+  repoPath: string | null;
+  repoExists: boolean;
+  snapshot: Playbook;
+  ruleOwners: Map<string, string>;
+}
+
+function acceptsRepositoryAdds(context: ReflectionContext): boolean {
+  return !!context.repoPath && context.config.projectRuleRouting === "repo"
+    && (context.repoExists || !!repoPlaybookTargetFor(path.dirname(path.dirname(context.repoPath))));
+}
+
+function appliesInContext(bullet: PlaybookBullet, workspace: string | undefined, repository: boolean): boolean {
+  if (bullet.scope !== "workspace") return true;
+  if (bullet.workspace?.trim()) return !!workspace && workspaceMatches(bullet.workspace, workspace);
+  return repository;
+}
+
+/** Curation lifecycle must not alter other projects' rules stored in the global file. */
+function scopedPlaybook(playbook: Playbook, context: ReflectionContext, repository: boolean): Playbook {
+  return {
+    ...playbook,
+    bullets: playbook.bullets.filter(bullet => appliesInContext(bullet, context.workspace, repository)),
+  };
+}
+
+function retainOtherScopes(stored: Playbook, scoped: Playbook, context: ReflectionContext, repository: boolean): Playbook {
+  const updated = new Map(scoped.bullets.map(bullet => [bullet.id, bullet]));
+  const originalIds = new Set(stored.bullets.map(bullet => bullet.id));
+  return {
+    ...scoped,
+    bullets: [
+      ...stored.bullets.flatMap(bullet => {
+        if (!appliesInContext(bullet, context.workspace, repository)) return [bullet];
+        const replacement = updated.get(bullet.id);
+        return replacement ? [replacement] : [];
+      }),
+      ...scoped.bullets.filter(bullet => !originalIds.has(bullet.id)),
+    ],
+  };
+}
+
 function isActiveBullet(bullet: PlaybookBullet): boolean {
   return !bullet.deprecated && bullet.maturity !== "deprecated" && bullet.state !== "retired";
 }
@@ -230,17 +276,18 @@ export async function orchestrateReflection(
   options: ReflectionOptions,
 ): Promise<ReflectionOutcome> {
   const runWorkspace = normalizeWorkspacePath(process.cwd());
+  const configWorkspace = normalizeWorkspacePath(options.workspace ?? runWorkspace);
   const logPath = expandPath(getProcessedLogPath(options.workspace));
   const globalPath = expandPath(config.playbookPath);
-  const repoDir = await resolveRepoDir(runWorkspace);
-  const repoPath = repoDir ? path.join(repoDir, "playbook.yaml") : null;
-  const hasRepo = repoPath ? await fileExists(repoPath) : false;
-  const outcomeConfigs = new Map<string, Promise<Config>>([[runWorkspace, Promise.resolve(config)]]);
+  const outcomeConfigs = new Map<string, Promise<Config>>([[configWorkspace, Promise.resolve(config)]]);
   const configForOutcomeWorkspace = (workspace?: string): Promise<Config> => {
-    const owner = normalizeWorkspacePath(workspace ?? runWorkspace);
+    const owner = normalizeWorkspacePath(workspace ?? configWorkspace);
     let pending = outcomeConfigs.get(owner);
     if (!pending) {
-      pending = loadConfig({ playbookPath: globalPath }, { cwd: owner }).then((targetConfig) => {
+      pending = loadConfig({
+        playbookPath: globalPath, cassPath: config.cassPath,
+        diaryDir: config.diaryDir, budget: config.budget,
+      }, { cwd: owner }).then((targetConfig) => {
         const runSanitization = getSanitizeConfig(config);
         const targetSanitization = getSanitizeConfig(targetConfig);
         return {
@@ -253,6 +300,40 @@ export async function orchestrateReflection(
         };
       });
       outcomeConfigs.set(owner, pending);
+    }
+    return pending;
+  };
+  const contexts = new Map<string, Promise<ReflectionContext>>();
+  const contextForSession = (workspace: string | undefined, projectKnown: boolean): Promise<ReflectionContext> => {
+    const owner = workspace ? normalizeWorkspacePath(workspace) : undefined;
+    const key = JSON.stringify([owner ?? null, projectKnown]);
+    let pending = contexts.get(key);
+    if (!pending) {
+      pending = (async () => {
+        const scopedConfig = owner ? await configForOutcomeWorkspace(owner) : config;
+        const resolved = owner ? await resolveRepoPlaybookPath({ cwd: owner }) : null;
+        // Keep the repository's logical file address. Atomic saves may replace
+        // a final-component symlink while reflection is generating its deltas.
+        const repoPath = resolved ? path.resolve(expandPath(resolved)) : null;
+        const repoExists = !!repoPath && await fileExists(repoPath);
+        const loaded = owner
+          ? await loadMergedPlaybookWithSources(scopedConfig, { cwd: owner })
+          : { playbook: await loadPlaybook(globalPath), repoBulletIds: new Set<string>() };
+        const snapshot = {
+          ...loaded.playbook,
+          bullets: loaded.playbook.bullets.filter(bullet =>
+            appliesInContext(bullet, owner, loaded.repoBulletIds.has(bullet.id))),
+        };
+        return {
+          workspace: owner,
+          projectRoot: owner && (projectKnown || repoPath) ? resolveProjectRoot(owner) : undefined,
+          config: scopedConfig, repoPath, repoExists, snapshot,
+          ruleOwners: new Map(snapshot.bullets.map(bullet => [
+            bullet.id, repoPath && loaded.repoBulletIds.has(bullet.id) ? repoPath : globalPath,
+          ])),
+        };
+      })();
+      contexts.set(key, pending);
     }
     return pending;
   };
@@ -321,12 +402,8 @@ export async function orchestrateReflection(
     // leaves both the pending queue and its outcome/feedback destinations alone.
     if (!options.dryRun) await drainPendingOutcomes();
 
-    // 2. Snapshot Phase: Load playbook context (without locking playbook yet)
-    // We need the playbook to give context to the LLM.
-    // Stale data here is acceptable (LLM might suggest a rule that just got added, curation will dedupe).
-    const snapshotPlaybook = await loadMergedPlaybook(config);
-
-    // 3. Discovery Phase
+    // 2. Discovery Phase. Each session gets its own applicable snapshot after
+    // its workspace is known; the launch repository is not a batch-wide owner.
     let sessions: string[] = [];
     // Agent attribution cass reported per session; the diary uses it as the
     // authoritative provenance instead of re-inferring from the path (#73).
@@ -338,7 +415,6 @@ export async function orchestrateReflection(
       maxFailures: config.sessionRetryMaxFailures ?? 3,
       cooldownMs: (config.sessionRetryCooldownHours ?? 24) * 60 * 60 * 1000,
     };
-    const routing = config.projectRuleRouting ?? "off";
 
     if (options.session) {
       sessions = [options.session];
@@ -410,9 +486,8 @@ export async function orchestrateReflection(
     // the session), and failed attempts (bounded retry, #85).
     const pendingRefreshEntries: ProcessedEntry[] = [];
     const pendingFailureEntries: ProcessedEntry[] = [];
-    // "repo" routing (#81): add deltas bound for another repo's playbook.
-    const projectTargets = new Map<PlaybookDelta, { playbookPath: string; projectRoot: string }>();
-    const pendingOutcomes = new Map<string, OutcomeInput[]>();
+    const deltaProvenance = new Map<PlaybookDelta, { sessionPath: string; context: ReflectionContext }>();
+    const pendingOutcomes = new Map<string, Array<{ input: OutcomeInput; context: ReflectionContext }>>();
     let sessionsProcessed = 0;
     let inlineFeedbackDeltaCount = 0;
 
@@ -504,21 +579,44 @@ export async function orchestrateReflection(
         }
         const watermarkFields = records ? watermarkFor(records) : {};
 
-        // Feedback and outcome grading must only see turns that were never
-        // graded before (#85). Only a forced full pass differs from `content`.
-        let gradingSource = content;
-        if (forceFull && previouslyGraded) {
-          gradingSource =
-            watermark !== undefined && records && records.length > watermark
-              ? formatSessionRecords(records.slice(watermark), config)
-              : "";
-        }
-
-        // #81: the project the session ran in (cass search hit, else the
-        // transcript's own cwd), used to pin workspace-scoped rules.
+        // Discovery/transcript provenance wins over a requested filter. An
+        // explicit session with no metadata may use the caller's workspace;
+        // an automatic discovery with no provenance cannot borrow its repo.
         const sessionWorkspace =
           discovered?.workspace ?? (records ? extractSessionWorkspace(records) : undefined);
-        const projectRoot = sessionWorkspace ? resolveProjectRoot(sessionWorkspace) : undefined;
+        const requestedWorkspace = sessionWorkspace ?? (options.session ? options.workspace : undefined);
+        const context = await contextForSession(
+          requestedWorkspace ?? (options.session ? runWorkspace : undefined),
+          requestedWorkspace !== undefined,
+        );
+        const sessionConfig = context.config;
+        const projectRoot = context.projectRoot;
+
+        // The export above is local I/O. Before diary/reflector transmission,
+        // render the original records with this project's additional privacy
+        // patterns as well as the run's protections.
+        const rendered = records
+          ? formatSessionRecords(incremental ? records.slice(watermark) : records, sessionConfig)
+          : "";
+        const sanitization = getSanitizeConfig(sessionConfig);
+        content = rendered || sanitize(content, {
+          ...sanitization, extraPatterns: compileExtraPatterns(sanitization.extraPatterns),
+        });
+        // Feedback and outcome grading must only see previously ungraded turns.
+        let gradingSource = content;
+        let gradingStartRecord = incremental ? (watermark ?? 0) : 0;
+        if (forceFull && previouslyGraded) {
+          gradingSource = "";
+          // Force may revisit the whole transcript for rule extraction, but
+          // feedback still requires the same intact boundary as an ordinary
+          // incremental pass. A longer rewritten transcript is not new use.
+          if (records && watermark !== undefined && records.length > watermark &&
+            (watermark === 0 || prior?.lastRecordHash === undefined ||
+              hashRecord(records[watermark - 1]) === prior.lastRecordHash)) {
+            gradingStartRecord = watermark;
+            gradingSource = formatSessionRecords(records.slice(watermark), sessionConfig);
+          }
+        }
 
         // #76: a transcript carrying cm's private payload marker is a recording
         // of one of cm's OWN `claude -p` / codex / gemini calls, not a work
@@ -582,13 +680,11 @@ export async function orchestrateReflection(
 
         const diaryHint = {
           agent: agentHints.get(sessionPath),
-          ...(sessionWorkspace ? { workspace: sessionWorkspace } : {}),
+          ...(context.workspace ? { workspace: context.workspace } : {}),
         };
-        const diary = incremental
-          ? await generateDiaryFromContent(sessionPath, sliceNote + content, config, diaryHint)
-          : await generateDiary(sessionPath, config, diaryHint);
+        const diary = await generateDiaryFromContent(sessionPath, sliceNote + content, sessionConfig, diaryHint);
 
-        const reflectResult = await reflectOnSession(diary, snapshotPlaybook, config, options.io);
+        const reflectResult = await reflectOnSession(diary, context.snapshot, sessionConfig, options.io);
         if (reflectResult.failure !== undefined && reflectResult.deltas.length === 0) {
           // The reflector never produced anything for this session (timeout,
           // provider error, unparseable output). Throwing here keeps the
@@ -608,7 +704,7 @@ export async function orchestrateReflection(
         // Validation
         const validatedDeltas: PlaybookDelta[] = [];
         for (const delta of reflectedDeltas) {
-          const validation = await validateDelta(delta, config);
+          const validation = await validateDelta(delta, sessionConfig);
           if (validation.valid) {
             // Apply LLM refinement if suggested
             if (validation.result?.refinedRule && delta.type === "add") {
@@ -629,13 +725,12 @@ export async function orchestrateReflection(
             continue;
           }
           delta.bullet.workspace = projectRoot;
-          if (routing === "repo") {
-            const playbookPath = repoPlaybookTargetFor(projectRoot);
-            if (playbookPath) projectTargets.set(delta, { playbookPath, projectRoot });
-          }
         }
 
         if (validatedDeltas.length > 0) {
+          for (const delta of validatedDeltas) {
+            deltaProvenance.set(delta, { sessionPath, context });
+          }
           allDeltas.push(...validatedDeltas);
         }
 
@@ -656,7 +751,9 @@ export async function orchestrateReflection(
           // Parse inline feedback comments (// [cass: helpful b-xyz] - reason)
           const inlineFeedback = parseInlineFeedback(gradableContent);
           if (inlineFeedback.length > 0) {
-            allDeltas.push(...inlineFeedbackToDeltas(inlineFeedback, sessionPath));
+            const inlineDeltas = inlineFeedbackToDeltas(inlineFeedback, sessionPath);
+            for (const delta of inlineDeltas) deltaProvenance.set(delta, { sessionPath, context });
+            allDeltas.push(...inlineDeltas);
             inlineFeedbackDeltaCount += inlineFeedback.length;
           }
 
@@ -665,14 +762,27 @@ export async function orchestrateReflection(
           // double-counting (they get direct signal from the delta above).
           const inlineFeedbackIds = new Set(inlineFeedback.map((fb) => fb.bulletId.toLowerCase()));
           const ruleIds = extractRuleIdsFromTranscript(gradableContent).filter(
-            (id) => !inlineFeedbackIds.has(id),
+            (id) => !inlineFeedbackIds.has(id) && context.ruleOwners.has(id),
           );
           if (ruleIds.length > 0) {
             const outcomeInput = classifySessionOutcome(gradableContent, diary, ruleIds);
-            if (outcomeInput) {
+            if (outcomeInput && context.workspace) {
               pendingOutcomes.set(sessionPath, [
                 ...(pendingOutcomes.get(sessionPath) ?? []),
-                { ...outcomeInput, workspace: sessionWorkspace ?? options.workspace ?? runWorkspace },
+                {
+                  context,
+                  input: {
+                    ...outcomeInput,
+                    workspace: context.workspace,
+                    // Full original records give occurrence keys the same
+                    // identity in global, workspace, and incremental passes.
+                    // Without structured records, retain the outcome but
+                    // abstain from inferring independent confidence evidence.
+                    transcriptEvidence: records ? buildTranscriptEvidence(
+                      sessionPath, records, sessionConfig, { startRecord: gradingStartRecord, ruleIds },
+                    ) : [],
+                  },
+                },
               ]);
             }
           }
@@ -744,8 +854,16 @@ export async function orchestrateReflection(
       if (!inputs?.length) continue;
       try {
         const prepared = [];
-        for (const input of inputs) {
-          prepared.push(await prepareOutcome(input, await configForOutcomeWorkspace(input.workspace)));
+        for (const { input, context } of inputs) {
+          const record = await prepareOutcome(input, context.config);
+          // Automatic feedback belongs to the rules this session actually
+          // saw. A new same-ID repository rule created during the LLM call
+          // must not steal a global rule's feedback at preparation time.
+          record.ruleTargets = (record.rulesUsed ?? []).map(ruleId => {
+            const owner = context.ruleOwners.get(ruleId);
+            return { ruleId, playbookPath: owner ? path.resolve(expandPath(owner)) : null };
+          });
+          prepared.push(record);
         }
         entry.pendingOutcomes = [...(entry.pendingOutcomes ?? []), ...prepared];
       } catch (err: any) {
@@ -774,135 +892,116 @@ export async function orchestrateReflection(
     let repoResult: CurationResult | undefined;
     const projectResults: Array<{ playbookPath: string; result: CurationResult }> = [];
 
-    // Embeddings for the curator's reworded-duplicate check, computed before
-    // taking the merge lock (embedding can be slow). Rules a concurrent writer
-    // adds in between simply have no embedding and fall back to word overlap.
-    const incomingContents = allDeltas.flatMap((d) =>
-      d.type === "add" ? [d.bullet.content] : d.type === "merge" ? [d.mergedContent] : [],
-    );
-    let semanticIndex: SemanticDedupIndex | undefined;
-    if (incomingContents.length > 0) {
-      const existing = [
-        ...(await loadPlaybook(globalPath)).bullets,
-        ...(hasRepo ? (await loadPlaybook(repoPath!)).bullets : []),
-      ];
-      semanticIndex = await buildSemanticDedupIndex(existing, incomingContents, config);
+    const batches = new Map<ReflectionContext, PlaybookDelta[]>();
+    for (const delta of allDeltas) {
+      const provenance = deltaProvenance.get(delta);
+      if (!provenance) throw new Error("Reflection delta is missing trusted session provenance");
+      const batch = batches.get(provenance.context) ?? [];
+      batch.push(delta);
+      batches.set(provenance.context, batch);
+    }
+    // Embedding work stays outside storage locks and sees only this session
+    // context's rules, never a different repository's colliding IDs.
+    const semanticIndexes = new Map<ReflectionContext, SemanticDedupIndex | undefined>();
+    for (const [context, deltas] of batches) {
+      const incoming = deltas.flatMap(delta => delta.type === "add" ? [delta.bullet.content]
+        : delta.type === "merge" ? [delta.mergedContent] : []);
+      if (incoming.length > 0) semanticIndexes.set(context,
+        await buildSemanticDedupIndex(context.snapshot.bullets, incoming, context.config));
     }
 
-    const performMerge = async () => {
-      // Reload fresh playbooks under lock
-      const globalPlaybook = await loadPlaybook(globalPath);
-      let repoPlaybook: Playbook | null = null;
-      if (hasRepo) {
-        repoPlaybook = await loadPlaybook(repoPath!);
-      }
+    const performMerge = async (context: ReflectionContext, deltas: PlaybookDelta[]) => {
+      const config = context.config;
+      const repoPath = context.repoPath;
+      const repoDir = repoPath ? path.dirname(repoPath) : null;
+      const semanticIndex = semanticIndexes.get(context);
+      const repoAcceptsAdds = acceptsRepositoryAdds(context);
+      const storedGlobal = await loadPlaybook(globalPath);
+      const storedRepo = repoPath && (context.repoExists || repoAcceptsAdds)
+        ? await loadPlaybook(repoPath) : null;
+      const globalPlaybook = scopedPlaybook(storedGlobal, context, false);
+      const repoPlaybook = storedRepo ? scopedPlaybook(storedRepo, context, true) : null;
+      let localGlobalResult: CurationResult | undefined;
+      let localRepoResult: CurationResult | undefined;
+      const recordResult = (target: Playbook, result: CurationResult) => {
+        if (target === repoPlaybook) localRepoResult = accumulateCurationResult(localRepoResult, result);
+        else localGlobalResult = accumulateCurationResult(localGlobalResult, result);
+      };
+      const boundOwner = (id: string): Playbook | undefined => {
+        const ownerPath = context.ruleOwners.get(id);
+        if (!ownerPath) return undefined;
+        const target = ownerPath === repoPath ? repoPlaybook : globalPlaybook;
+        if (!target || !findBullet(target, id)) {
+          throw new Error(`Rule ${id} is no longer available in its original playbook ${ownerPath}; reflection was not committed`);
+        }
+        return target;
+      };
 
-      // Create fresh merged context to ensure deduplication uses up-to-date data
-      const freshMerged = mergePlaybooks(globalPlaybook, repoPlaybook);
+      // Keep the layer the session actually saw even if a concurrent writer
+      // has since introduced a shadowing ID in the other file.
+      const mergeContext = () => {
+        const merged = mergePlaybooks(globalPlaybook, repoPlaybook);
+        return {
+          ...merged,
+          bullets: merged.bullets.map(bullet => {
+            const ownerPath = context.ruleOwners.get(bullet.id);
+            if (!ownerPath) return bullet;
+            const layer = ownerPath === repoPath ? repoPlaybook : globalPlaybook;
+            return layer ? findBullet(layer, bullet.id) ?? bullet : bullet;
+          }),
+        };
+      };
+      const freshMerged = mergeContext();
 
       // Merges must inspect the current sources and successfully establish a
       // replacement before retiring anything. Decomposing all merges up front
       // used stale sources, lost scope, and could retire rules after an add was
       // rejected or deduplicated into an unrelated rule.
-      const processedDeltas = allDeltas.filter((delta) => delta.type !== "merge");
-      const mergeDeltas = allDeltas.filter((delta) => delta.type === "merge");
+      const processedDeltas = deltas.filter((delta) => delta.type !== "merge");
+      const mergeDeltas = deltas.filter((delta) => delta.type === "merge");
 
       // Partition deltas (Routing Logic)
       const globalDeltas: PlaybookDelta[] = [];
       const repoDeltas: PlaybookDelta[] = [];
 
-      // "repo" routing (#81): project rules for another repository.
-      const externalRepoDeltas = new Map<string, PlaybookDelta[]>();
-
       for (const delta of processedDeltas) {
-        let routed = false;
-
-        const target = projectTargets.get(delta);
-        if (target && delta.type === "add") {
-          if (repoPlaybook && repoPath && samePlaybookPath(target.playbookPath, repoPath)) {
-            // A repo playbook is implicitly scoped to its repository; keeping
-            // an absolute path would break the rule in other clones.
-            delete delta.bullet.workspace;
-            repoDeltas.push(delta);
-          } else {
-            const list = externalRepoDeltas.get(target.playbookPath) ?? [];
-            list.push(delta);
-            externalRepoDeltas.set(target.playbookPath, list);
-          }
+        if (delta.type === "add") {
+          if (delta.bullet.scope === "workspace" && repoAcceptsAdds && repoPlaybook) {
+            const { workspace: _workspace, ...bullet } = delta.bullet;
+            repoDeltas.push({ ...delta, bullet });
+          } else globalDeltas.push(delta);
           continue;
         }
-
-        // Feedback/Replace/Delete: Must target existing ID
-        if ("bulletId" in delta && delta.bulletId) {
-          if (repoPlaybook && findBullet(repoPlaybook, delta.bulletId)) {
-            repoDeltas.push(delta);
-            routed = true;
-          } else if (findBullet(globalPlaybook, delta.bulletId)) {
-            globalDeltas.push(delta);
-            routed = true;
-          }
-        }
-
-        // New rules or orphans default to Global
-        if (!routed) {
-          globalDeltas.push(delta);
-        }
-      }
-
-      // Other repositories first, so a repo that cannot be written falls back
-      // to the global playbook (still workspace-scoped) in this same merge.
-      // Lock order is always global -> cwd repo -> other repos (sorted), and
-      // nothing takes a repo lock before the global one, so this cannot deadlock.
-      for (const playbookPath of [...externalRepoDeltas.keys()].sort()) {
-        const deltas = externalRepoDeltas.get(playbookPath)!;
-        try {
-          await withLock(playbookPath, async () => {
-            const targetPlaybook = await loadPlaybook(playbookPath);
-            const portable = deltas.map((d) => {
-              if (d.type !== "add") return d;
-              const { workspace: _workspace, ...bullet } = d.bullet;
-              return { ...d, bullet };
-            });
-            const result = curatePlaybook(
-              targetPlaybook,
-              portable,
-              config,
-              mergePlaybooks(globalPlaybook, targetPlaybook),
-              { semanticIndex, allowImplicitWorkspace: true },
-            );
-            await savePlaybook(result.playbook, playbookPath, { updateLastReflection: true });
-            projectResults.push({ playbookPath, result });
+        const target = boundOwner(delta.bulletId);
+        if (target === repoPlaybook && repoPlaybook) repoDeltas.push(delta);
+        else if (target === globalPlaybook) globalDeltas.push(delta);
+        else {
+          recordResult(globalPlaybook, {
+            playbook: globalPlaybook, applied: 0, skipped: 1, conflicts: [], promotions: [], inversions: [], pruned: 0,
+            decisionLog: [{ timestamp: now(), phase: "feedback", action: "rejected", bulletId: delta.bulletId,
+              reason: "Rule is missing or outside the session's workspace; no other project's rule was changed" }],
           });
-        } catch (err: any) {
-          errors.push(
-            `Could not write project rules to ${playbookPath} (${err?.message || String(err)}); kept them in the global playbook, scoped to the project`,
-          );
-          globalDeltas.push(...deltas);
         }
       }
 
       // Apply Curation
       if (globalDeltas.length > 0) {
-        globalResult = curatePlaybook(globalPlaybook, globalDeltas, config, freshMerged, {
+        recordResult(globalPlaybook, curatePlaybook(globalPlaybook, globalDeltas, config, freshMerged, {
           semanticIndex,
-        });
+        }));
       }
 
       if (repoDeltas.length > 0 && repoPlaybook && repoPath) {
-        repoResult = curatePlaybook(repoPlaybook, repoDeltas, config, freshMerged, {
+        recordResult(repoPlaybook, curatePlaybook(repoPlaybook, repoDeltas, config, freshMerged, {
           semanticIndex,
           allowImplicitWorkspace: true,
-        });
+        }));
       }
 
-      const recordResult = (target: Playbook, result: CurationResult) => {
-        if (target === repoPlaybook) repoResult = accumulateCurationResult(repoResult, result);
-        else globalResult = accumulateCurationResult(globalResult, result);
-      };
       const applyToLayer = (target: Playbook, deltas: PlaybookDelta[]) => {
         if (deltas.length === 0) return;
         recordResult(target, curatePlaybook(
-          target, deltas, config, mergePlaybooks(globalPlaybook, repoPlaybook),
+          target, deltas, config, mergeContext(),
           { semanticIndex, allowImplicitWorkspace: target === repoPlaybook },
         ));
       };
@@ -912,18 +1011,24 @@ export async function orchestrateReflection(
         // replacement. Otherwise a rule can look active during selection and
         // be retired by curation immediately after every source points to it.
         recordResult(globalPlaybook, curatePlaybook(
-          globalPlaybook, [], config, mergePlaybooks(globalPlaybook, repoPlaybook), { semanticIndex },
+          globalPlaybook, [], config, mergeContext(), { semanticIndex },
         ));
         if (repoPlaybook) recordResult(repoPlaybook, curatePlaybook(
-          repoPlaybook, [], config, mergePlaybooks(globalPlaybook, repoPlaybook),
+          repoPlaybook, [], config, mergeContext(),
           { semanticIndex, allowImplicitWorkspace: true },
         ));
       }
 
       for (const delta of mergeDeltas) {
         const repoIds = new Set(repoPlaybook?.bullets.map((bullet) => bullet.id) ?? []);
-        const owner = (id: string): Playbook => repoPlaybook && repoIds.has(id) ? repoPlaybook : globalPlaybook;
-        const target = repoPlaybook && delta.bulletIds.length > 0 && delta.bulletIds.every(id => repoIds.has(id))
+        const owner = (id: string): Playbook => {
+          const ownerPath = context.ruleOwners.get(id);
+          if (ownerPath) return repoPlaybook && ownerPath === repoPath
+            ? repoPlaybook : globalPlaybook;
+          return repoPlaybook && repoIds.has(id) ? repoPlaybook : globalPlaybook;
+        };
+        const sourceOwners = delta.bulletIds.map(boundOwner);
+        const target = repoPlaybook && sourceOwners.length > 0 && sourceOwners.every(layer => layer === repoPlaybook)
           ? repoPlaybook : globalPlaybook;
         const rejectMerge = (reason: string) => {
           const message = `Cannot merge: ${reason}`;
@@ -934,9 +1039,12 @@ export async function orchestrateReflection(
               details: { bulletIds: delta.bulletIds } }],
           });
         };
-        const found = delta.bulletIds.map(id => findBullet(owner(id), id));
+        const found = delta.bulletIds.map((id, index) => {
+          const layer = sourceOwners[index];
+          return layer ? findBullet(layer, id) : undefined;
+        });
         if (found.some(bullet => !bullet)) {
-          rejectMerge("one or more source rules are missing");
+          rejectMerge("one or more source rules are missing or outside the same applicability");
           continue;
         }
         const sources = found as PlaybookBullet[];
@@ -944,7 +1052,7 @@ export async function orchestrateReflection(
         // that path for comparisons, while keeping repository-only writes
         // portable across clones. A cross-layer replacement needs it stored.
         const effectiveScope = (bullet: PlaybookBullet): PlaybookBullet =>
-          repoDir && repoIds.has(bullet.id) && bullet.scope === "workspace" && !bullet.workspace?.trim()
+          repoDir && owner(bullet.id) === repoPlaybook && bullet.scope === "workspace" && !bullet.workspace?.trim()
             ? { ...bullet, workspace: path.dirname(repoDir) } : bullet;
         const sameLayer = sources.every(bullet => owner(bullet.id) === target);
         const allowImplicitWorkspace = sameLayer && target === repoPlaybook;
@@ -966,7 +1074,7 @@ export async function orchestrateReflection(
           sameRuleScope(firstScope, effectiveScope(bullet), {
             allowImplicitWorkspace: allowImplicitWorkspace && owner(bullet.id) === target,
           });
-        const currentContext = mergePlaybooks(globalPlaybook, repoPlaybook);
+        const currentContext = mergeContext();
         const exact = findFirstHashMatch(currentContext, delta.mergedContent, eligible);
         if (exact && !isActiveBullet(exact)) {
           rejectMerge(`replacement text belongs to retired rule ${exact.id}`);
@@ -1020,28 +1128,44 @@ export async function orchestrateReflection(
             type: "deprecate", bulletId: bullet.id,
             reason: `Merged into ${replacement.id}`, replacedBy: replacement.id,
           }));
-        applyToLayer(globalPlaybook, deprecations.filter(d => "bulletId" in d && !repoIds.has(d.bulletId)));
-        if (repoPlaybook) applyToLayer(repoPlaybook, deprecations.filter(d => "bulletId" in d && repoIds.has(d.bulletId)));
+        applyToLayer(globalPlaybook, deprecations.filter(d => "bulletId" in d && owner(d.bulletId) === globalPlaybook));
+        if (repoPlaybook) applyToLayer(repoPlaybook, deprecations.filter(d => "bulletId" in d && owner(d.bulletId) === repoPlaybook));
       }
 
-      // The global playbook owns the run-level counters, so it is saved on
-      // every committing run, delta or not (#72). Cross-layer replacements
-      // live here: persist them before retiring their repository sources.
-      const globalToSave = globalResult ? globalResult.playbook : globalPlaybook;
-      recordReflectionRun(globalToSave, committedSessionCount);
+      // Cross-layer replacements must reach disk before repository sources
+      // retire. A failure propagates without acknowledging any session; retry
+      // uses the curator's existing session-feedback idempotency.
+      const globalToSave = retainOtherScopes(storedGlobal, globalPlaybook, context, false);
       await savePlaybook(globalToSave, globalPath, { updateLastReflection: true });
-      if (repoResult && repoPath) {
-        await savePlaybook(repoResult.playbook, repoPath, { updateLastReflection: true });
+      if (localGlobalResult) globalResult = accumulateCurationResult(globalResult,
+        { ...localGlobalResult, playbook: globalToSave });
+      if (localRepoResult && storedRepo && repoPlaybook && repoPath) {
+        const repoToSave = retainOtherScopes(storedRepo, repoPlaybook, context, true);
+        await savePlaybook(repoToSave, repoPath, { updateLastReflection: true });
+        const saved = { ...localRepoResult, playbook: repoToSave };
+        repoResult = accumulateCurationResult(repoResult, saved);
+        const previous = projectResults.find(project => samePlaybookPath(project.playbookPath, repoPath));
+        if (previous) previous.result = accumulateCurationResult(previous.result, saved);
+        else projectResults.push({ playbookPath: repoPath, result: saved });
       }
     };
 
-    // Execute Merge with Locking
+    // Every batch takes global first and at most one repository lock. No
+    // nested cross-repository locks are needed, including shared worktrees.
     await withLock(globalPath, async () => {
-      if (hasRepo && repoPath) {
-        await withLock(repoPath, performMerge);
-      } else {
-        await performMerge();
+      for (const [context, deltas] of batches) {
+        if (context.repoPath && (context.repoExists || acceptsRepositoryAdds(context))) {
+          if (samePlaybookPath(context.repoPath, globalPath)) {
+            throw new Error("Global and repository playbook paths must differ for reflection");
+          }
+          await withLock(context.repoPath, () => performMerge(context, deltas));
+        } else await performMerge(context, deltas);
       }
+      // Run-level counters advance once, after every owning file was saved.
+      const globalToSave = await loadPlaybook(globalPath);
+      recordReflectionRun(globalToSave, committedSessionCount);
+      await savePlaybook(globalToSave, globalPath, { updateLastReflection: true });
+      if (globalResult) globalResult.playbook = globalToSave;
     });
 
     // Persist the watermark and prepared outcome queue together, only after

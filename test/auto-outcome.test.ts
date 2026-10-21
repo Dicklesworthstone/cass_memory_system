@@ -10,13 +10,25 @@
  * - Inline feedback extraction during reflection
  */
 import { describe, expect, it } from "bun:test";
+import fs from "node:fs/promises";
+import { writeFileSync } from "node:fs";
+import path from "node:path";
+import yaml from "yaml";
 import {
+  buildTranscriptEvidence,
   classifySessionOutcome,
   detectSentiment,
   extractRuleIdsFromTranscript,
+  loadOutcomes,
   scoreImplicitFeedback,
 } from "../src/outcome.js";
+import { orchestrateReflection, type ReflectionOutcome } from "../src/orchestrator.js";
+import { loadPlaybook, savePlaybook } from "../src/playbook.js";
+import { CM_SUBPROCESS_PAYLOAD_BEGIN, CM_SUBPROCESS_PAYLOAD_END, tagCmSubprocessPrompt } from "../src/subprocess-tag.js";
 import type { DiaryEntry } from "../src/types.js";
+import { createTestBullet, createTestConfig, createTestPlaybook } from "./helpers/factories.js";
+import { withLlmShim } from "./helpers/llm-shim.js";
+import { withTempCassHome } from "./helpers/temp.js";
 
 // --- extractRuleIdsFromTranscript ---
 
@@ -139,6 +151,288 @@ describe("extractRuleIdsFromTranscript", () => {
 });
 
 // --- classifySessionOutcome ---
+
+describe("buildTranscriptEvidence", () => {
+  const config = createTestConfig();
+  const session = "/tmp/evidence-session.jsonl";
+  const first = { role: "user", content: "Apply b-evidence1 to verify the exporter with deterministic fixtures." };
+  const second = { role: "user", content: "Apply b-evidence2 to the independent tokenizer requirement." };
+
+  it("keeps per-rule evidence stable across full-history and incremental batches", () => {
+    const prefix = buildTranscriptEvidence(session, [first], config, { startRecord: 0, ruleIds: ["b-evidence1"] });
+    const whole = buildTranscriptEvidence(session, [first, second], config, {
+      startRecord: 0, ruleIds: ["b-evidence1", "b-evidence2"],
+    });
+    const suffix = buildTranscriptEvidence(session, [first, second], config, {
+      startRecord: 1, ruleIds: ["b-evidence1", "b-evidence2"],
+    });
+    expect(whole[0]).toEqual(prefix[0]);
+    expect(suffix).toEqual([whole[1]]);
+    expect(suffix[0].ruleId).toBe("b-evidence2");
+  });
+
+  it("counts identical-record occurrences over the full stream instead of resetting at the suffix", () => {
+    const records = [first, { role: "assistant", content: "Complete." }, first];
+    const whole = buildTranscriptEvidence(session, records, config, { startRecord: 0, ruleIds: ["b-evidence1"] });
+    const suffix = buildTranscriptEvidence(session, records, config, { startRecord: 2, ruleIds: ["b-evidence1"] });
+    expect(whole[0].recordKeys).toHaveLength(2);
+    expect(whole[0].recordKeys[0]).not.toBe(whole[0].recordKeys[1]);
+    expect(suffix[0].recordKeys).toEqual([whole[0].recordKeys[1]]);
+  });
+
+  it("ignores object key order and position shifts while retaining original record differences", () => {
+    const record = { ...first, metadata: { a: 1, nested: { x: 1, y: 2 }, b: 2 } };
+    const reordered = { metadata: { b: 2, nested: { y: 2, x: 1 }, a: 1 }, content: first.content, role: first.role };
+    const options = { startRecord: 0, ruleIds: ["b-evidence1"] };
+    const initial = buildTranscriptEvidence(session, [record], config, options);
+    expect(buildTranscriptEvidence(session, [second, reordered], config, options)).toEqual(initial);
+    expect(buildTranscriptEvidence(session, [{ ...record, content: first.content.toUpperCase() }], config, options))
+      .not.toEqual(initial);
+  });
+
+  it("keeps raw-record identity across privacy policies but only attributes visible rule mentions", () => {
+    const record = { ...first, content: `${first.content} PRIVATE_MARKER` };
+    const options = { startRecord: 0, ruleIds: ["b-evidence1"] };
+    const stricter = createTestConfig({ sanitization: { ...config.sanitization, extraPatterns: ["PRIVATE_MARKER"] } });
+    const initial = buildTranscriptEvidence(session, [record], config, options);
+    expect(buildTranscriptEvidence(session, [record], stricter, options)).toEqual(initial);
+    expect(JSON.stringify(initial)).not.toContain("PRIVATE_MARKER");
+    const hideRule = createTestConfig({ sanitization: { ...config.sanitization, extraPatterns: ["b-evidence1"] } });
+    expect(buildTranscriptEvidence(session, [record], hideRule, options)).toEqual([]);
+  });
+
+  it("does not attribute metadata, private subprocess payloads, or unrequested rules", () => {
+    const records = [
+      { role: "user", content: "Ordinary content without any cited rule.", metadata: { ruleId: "b-evidence1" } },
+      { role: "user", content: tagCmSubprocessPrompt("Reflect on b-evidence1 in cm's private prompt.") },
+      second,
+    ];
+    expect(buildTranscriptEvidence(session, records, config, { startRecord: 0, ruleIds: ["b-evidence1"] })).toEqual([]);
+  });
+
+  it("excludes a payload spanning records even when its marker is before the graded suffix", () => {
+    const records = [
+      { role: "user", content: CM_SUBPROCESS_PAYLOAD_BEGIN },
+      { role: "user", content: "The private prompt contains b-evidence1." },
+      { role: "user", content: CM_SUBPROCESS_PAYLOAD_END },
+      first,
+    ];
+    for (const startRecord of [0, 1, 3]) {
+      expect(buildTranscriptEvidence(session, records, config, { startRecord, ruleIds: ["b-evidence1"] })).toEqual([]);
+    }
+  });
+
+  it("canonicalizes session aliases while separating distinct transcript files", async () => {
+    await withTempCassHome(async env => {
+      const original = path.join(env.home, "original.jsonl");
+      const alias = path.join(env.home, "alias.jsonl");
+      const distinct = path.join(env.home, "distinct.jsonl");
+      await fs.writeFile(original, JSON.stringify(first) + "\n");
+      await fs.writeFile(distinct, JSON.stringify(first) + "\n");
+      await fs.symlink(original, alias);
+      const options = { startRecord: 0, ruleIds: ["b-evidence1"] };
+      const initial = buildTranscriptEvidence(original, [first], config, options);
+      expect(buildTranscriptEvidence(alias, [first], config, options)).toEqual(initial);
+      expect(buildTranscriptEvidence(distinct, [first], config, options)).not.toEqual(initial);
+    });
+  });
+
+  it("abstains without records or with an empty suffix and rejects invalid boundaries", () => {
+    const options = { startRecord: 0, ruleIds: ["b-evidence1"] };
+    expect(buildTranscriptEvidence(session, [], config, options)).toEqual([]);
+    expect(buildTranscriptEvidence(session, [first], config, { ...options, startRecord: 1 })).toEqual([]);
+    for (const startRecord of [-1, 0.5, 2, Number.NaN]) {
+      expect(() => buildTranscriptEvidence(session, [first], config, { ...options, startRecord })).toThrow("full record stream");
+    }
+  });
+});
+
+describe("persisted automatic evidence across reflection boundaries", () => {
+  type RecordLine = { role: string; content: string; cwd?: string };
+  const prefix: RecordLine[] = [
+    { role: "user", content: "Follow b-evidence1 to implement the exporter and verify its exact output with deterministic fixtures." },
+    { role: "assistant", content: "The exporter is complete and all tests passed. Perfect, thanks!" },
+  ];
+  const appended = (ruleId: string): RecordLine[] => [
+    { role: "user", content: `Follow ${ruleId} to implement a new compression option and verify its independent requirements.` },
+    { role: "assistant", content: "The compression option is complete and all tests passed. Perfect, thanks!" },
+  ];
+
+  async function withReflection(run: (fixture: {
+    workspace: string;
+    playbookPath: string;
+    beforeReflector: (callback: () => void) => void;
+    write: (records: RecordLine[]) => Promise<void>;
+    reflect: (options?: { workspace?: string; force?: boolean }) => Promise<ReflectionOutcome>;
+    read: () => ReturnType<typeof loadPlaybook>;
+    outcomes: () => ReturnType<typeof loadOutcomes>;
+  }) => Promise<void>, textOnly = false) {
+    await withTempCassHome(async env => {
+      const originalCwd = process.cwd();
+      const savedEnv = new Map(["CASS_MEMORY_LLM", "CASS_MEMORY_HOME", "CASS_PATH"].map(name => [name, process.env[name]]));
+      process.env.CASS_MEMORY_LLM = "none";
+      process.env.CASS_MEMORY_HOME = env.cassMemoryDir;
+      delete process.env.CASS_PATH;
+      try {
+        const workspace = path.join(env.home, "project");
+        await fs.mkdir(workspace);
+        process.chdir(workspace);
+        const sessionPath = path.join(env.home, textOnly ? "session.md" : "session.jsonl");
+        const config = createTestConfig({
+          playbookPath: env.playbookPath, diaryDir: env.diaryDir,
+          cassPath: "/__missing__/cass", validationEnabled: false, semanticSearchEnabled: false,
+        });
+        await savePlaybook(createTestPlaybook([
+          createTestBullet({ id: "b-evidence1", content: "Verify exporter output using deterministic fixtures.", state: "active" }),
+          createTestBullet({ id: "b-evidence2", content: "Verify tokenizer behavior against its requirements.", state: "active" }),
+        ]), config.playbookPath);
+        const write = (records: RecordLine[]) => fs.writeFile(sessionPath, records.map(record =>
+          textOnly ? record.content : JSON.stringify({ ...record, cwd: workspace }),
+        ).join("\n") + "\n");
+        await write(prefix);
+        let beforeReflector: (() => void) | undefined;
+        await withLlmShim({ reflector: () => { beforeReflector?.(); return { deltas: [] }; } }, async io => {
+          await run({
+            workspace, playbookPath: config.playbookPath, write,
+            beforeReflector: callback => { beforeReflector = callback; },
+            reflect: options => orchestrateReflection(config, { session: sessionPath, io, ...options }),
+            read: () => loadPlaybook(config.playbookPath),
+            outcomes: () => loadOutcomes(config, 100, workspace),
+          });
+        });
+      } finally {
+        process.chdir(originalCwd);
+        for (const [name, value] of savedEnv) {
+          if (value === undefined) delete process.env[name];
+          else process.env[name] = value;
+        }
+      }
+    }, "automatic-evidence-reflection");
+  }
+
+  it.each(["global first", "workspace first"])("does not count unchanged history twice (%s)", async order => {
+    await withReflection(async ({ workspace, reflect, read, outcomes }) => {
+      const scoped = { workspace };
+      const first = await reflect(order === "global first" ? {} : scoped);
+      const second = await reflect(order === "global first" ? scoped : {});
+      expect(first.errors).toEqual([]);
+      expect(second.errors).toEqual([]);
+      expect(first.autoOutcome?.feedbackApplied).toBe(1);
+      expect(second.autoOutcome?.feedbackApplied).toBe(0);
+      expect((await read()).bullets.map(bullet => bullet.helpfulCount)).toEqual([1, 0]);
+      expect(await outcomes()).toHaveLength(2);
+      for (const options of [{ force: true }, { workspace, force: true }]) {
+        expect((await reflect(options)).errors).toEqual([]);
+      }
+      expect((await read()).bullets[0].feedbackEvents).toHaveLength(1);
+      expect(await outcomes()).toHaveLength(2);
+    });
+  });
+
+  it("credits only the newly mentioned rule across overlapping global and workspace history", async () => {
+    await withReflection(async ({ workspace, write, reflect, read }) => {
+      expect((await reflect()).autoOutcome?.feedbackApplied).toBe(1);
+      await write([...prefix, ...appended("b-evidence2")]);
+      expect((await reflect({ workspace })).autoOutcome?.feedbackApplied).toBe(1);
+      expect((await read()).bullets.map(bullet => bullet.helpfulCount)).toEqual([1, 1]);
+      expect((await reflect()).autoOutcome?.feedbackApplied).toBe(0);
+      expect((await read()).bullets.map(bullet => bullet.helpfulCount)).toEqual([1, 1]);
+    });
+  });
+
+  it("credits genuine appended use of the same rule once even when both logs reflect it", async () => {
+    await withReflection(async ({ workspace, write, reflect, read }) => {
+      expect((await reflect()).autoOutcome?.feedbackApplied).toBe(1);
+      await write([...prefix, ...appended("b-evidence1")]);
+      expect((await reflect({ force: true })).autoOutcome?.feedbackApplied).toBe(1);
+      expect((await reflect({ workspace })).autoOutcome?.feedbackApplied).toBe(0);
+      expect((await reflect({ force: true })).errors).toEqual([]);
+      const bullet = (await read()).bullets[0];
+      expect(bullet.helpfulCount).toBe(2);
+      expect(bullet.feedbackEvents).toHaveLength(2);
+      expect(new Set(bullet.feedbackEvents.flatMap(event => event.transcriptEvidenceKeys ?? [])).size).toBe(2);
+    });
+  });
+
+  it("does not grade shifted old turns when a forced transcript has been rewritten", async () => {
+    await withReflection(async ({ write, reflect, read, outcomes }) => {
+      expect((await reflect()).autoOutcome?.feedbackApplied).toBe(1);
+      await write([
+        { role: "user", content: "A transport header was inserted before the unchanged transcript." },
+        { role: "assistant", content: "Only the transcript container changed; no new task was performed." },
+        ...prefix,
+      ]);
+      const forced = await reflect({ force: true });
+      expect(forced.errors).toEqual([]);
+      expect(forced.sessionsProcessed).toBe(1);
+      expect((await read()).bullets[0].helpfulCount).toBe(1);
+      // A rewrite does not establish a new grading boundary, even when the
+      // evidence key layer would also prevent a duplicate feedback event.
+      expect(await outcomes()).toHaveLength(1);
+    });
+  });
+
+  it("abstains from automatic feedback when no original structured records are available", async () => {
+    await withReflection(async ({ reflect, read, outcomes }) => {
+      const result = await reflect();
+      expect(result.errors).toEqual([]);
+      expect(result.sessionsProcessed).toBe(1);
+      expect(result.autoOutcome?.feedbackApplied ?? 0).toBe(0);
+      expect((await read()).bullets.map(bullet => bullet.helpfulCount)).toEqual([0, 0]);
+      expect((await outcomes()).every(record => record.transcriptEvidence?.length === 0)).toBe(true);
+    }, true);
+  });
+
+  it("excludes a foreign workspace rule while crediting applicable global guidance", async () => {
+    await withReflection(async ({ workspace, playbookPath, write, reflect, read, outcomes }) => {
+      const foreignWorkspace = path.join(path.dirname(workspace), "foreign-project");
+      await fs.mkdir(foreignWorkspace);
+      const playbook = await read();
+      playbook.bullets[0].scope = "workspace";
+      playbook.bullets[0].workspace = foreignWorkspace;
+      await savePlaybook(playbook, playbookPath);
+      await write([
+        { ...prefix[0], content: `${prefix[0].content} Also follow the applicable global rule b-evidence2.` },
+        prefix[1],
+      ]);
+
+      const result = await reflect();
+      expect(result.errors).toEqual([]);
+      expect(result.autoOutcome?.feedbackApplied).toBe(1);
+      expect((await read()).bullets.map(bullet => bullet.helpfulCount)).toEqual([0, 1]);
+      const recorded = await outcomes();
+      expect(recorded).toHaveLength(1);
+      expect(recorded[0].rulesUsed).toEqual(["b-evidence2"]);
+      expect(recorded[0].ruleTargets).toEqual([{ ruleId: "b-evidence2", playbookPath }]);
+      expect(recorded[0].transcriptEvidence?.map(entry => entry.ruleId)).toEqual(["b-evidence2"]);
+    });
+  });
+
+  it("pins automatic feedback to the observed owner when a repository adds a shadowing ID during reflection", async () => {
+    await withReflection(async ({ workspace, playbookPath, beforeReflector, reflect, read, outcomes }) => {
+      expect(Bun.spawnSync(["git", "init", "--quiet", workspace]).exitCode).toBe(0);
+      const repoPath = path.join(workspace, ".cass", "playbook.yaml");
+      await fs.mkdir(path.dirname(repoPath));
+      await savePlaybook(createTestPlaybook([]), repoPath);
+      beforeReflector(() => {
+        // The snapshot already contains the global rule. Simulate another
+        // writer introducing an unrelated local owner before preparation.
+        writeFileSync(repoPath, yaml.stringify(createTestPlaybook([createTestBullet({
+          id: "b-evidence1", content: "A new unrelated repository instruction.", state: "active",
+        })])));
+      });
+
+      const result = await reflect();
+      expect(result.errors).toEqual([]);
+      expect(result.autoOutcome?.feedbackApplied).toBe(1);
+      expect((await read()).bullets.map(bullet => bullet.helpfulCount)).toEqual([1, 0]);
+      expect((await loadPlaybook(repoPath)).bullets[0].helpfulCount).toBe(0);
+      const recorded = await outcomes();
+      expect(recorded).toHaveLength(1);
+      expect(recorded[0].ruleTargets).toEqual([{ ruleId: "b-evidence1", playbookPath }]);
+    });
+  });
+});
 
 function makeDiary(overrides: Partial<DiaryEntry> = {}): DiaryEntry {
   return {

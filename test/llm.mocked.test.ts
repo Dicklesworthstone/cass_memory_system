@@ -1,8 +1,23 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { z } from "zod";
+import { withBudgetAdmission } from "../src/cost.js";
 import type { LLMIO } from "../src/llm.js";
 import { extractDiary, runReflector, runValidator } from "../src/llm.js";
 import { createTestConfig, createTestDiary } from "./helpers/factories.js";
+import { cleanupEnvironment, createIsolatedEnvironment, type TestEnv } from "./helpers/temp.js";
+
+let environment: TestEnv;
+let previousMemoryHome: string | undefined;
+beforeEach(async () => {
+  environment = await createIsolatedEnvironment("llm-mocked");
+  previousMemoryHome = process.env.CASS_MEMORY_HOME;
+  process.env.CASS_MEMORY_HOME = environment.cassMemoryDir;
+});
+afterEach(async () => {
+  if (previousMemoryHome === undefined) delete process.env.CASS_MEMORY_HOME;
+  else process.env.CASS_MEMORY_HOME = previousMemoryHome;
+  await cleanupEnvironment(environment);
+});
 
 describe("LLM flows with injected generateObject", () => {
   it("extractDiary returns structured diary using session metadata in the prompt", async () => {
@@ -218,8 +233,13 @@ describe("LLM flows with injected generateObject", () => {
 
 describe("runReflector honors configured LLM timeouts (#78)", () => {
   it("times out after config.llmTimeoutMs instead of the 30s default", async () => {
+    let release!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; });
     const io: LLMIO = {
-      generateObject: () => new Promise(() => {}), // never resolves
+      generateObject: async <T>() => {
+        await hold; // Deliberately outlives the caller's deadline.
+        return { object: { deltas: [] } as T };
+      },
     };
     const config = createTestConfig({
       apiKey: "sk-ant-test-0000000000000000",
@@ -228,10 +248,16 @@ describe("runReflector honors configured LLM timeouts (#78)", () => {
     });
     const schema = z.object({ deltas: z.array(z.object({ type: z.string() })) });
     const started = Date.now();
-    await expect(
-      runReflector(schema, createTestDiary(), "bullets", "history", 0, config, io),
-    ).rejects.toThrow(/runReflector timed out after 20ms/);
-    // Three attempts with 20ms budgets plus backoff must stay far below 30s.
-    expect(Date.now() - started).toBeLessThan(20000);
+    try {
+      await expect(
+        runReflector(schema, createTestDiary(), "bullets", "history", 0, config, io),
+      ).rejects.toThrow(/runReflector timed out after 20ms/);
+      expect(Date.now() - started).toBeLessThan(20000);
+    } finally {
+      // Caller timeout must not discard an in-flight provider's guard. Settle
+      // the fake work and wait for its accounting before removing its home.
+      release();
+      await withBudgetAdmission(config, async () => undefined);
+    }
   }, 25000);
 });

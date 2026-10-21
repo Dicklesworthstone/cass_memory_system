@@ -190,7 +190,7 @@ async function tryRemoveAbandonedLock(lockPath: string): Promise<boolean> {
 export async function withLock<T>(
   targetPath: string,
   operation: () => Promise<T>,
-  options: { retries?: number; delay?: number; staleLockThresholdMs?: number } = {},
+  options: { retries?: number; delay?: number; staleLockThresholdMs?: number; signal?: AbortSignal } = {},
 ): Promise<T> {
   const maxRetries = options.retries ?? 20;
   const retryDelay = options.delay ?? 100;
@@ -205,6 +205,9 @@ export async function withLock<T>(
   const owner = crypto.randomUUID();
 
   for (let i = 0; i < maxRetries; i++) {
+    // Cancellation only governs admission. Once operation() starts, its real
+    // promise owns the lock until it settles, even if its caller stops waiting.
+    options.signal?.throwIfAborted();
     // Acquire lock dir (mkdir is atomic)
     try {
       await fs.mkdir(lockPath);
@@ -216,7 +219,7 @@ export async function withLock<T>(
         if (await tryRemoveStaleLock(lockPath, staleThreshold)) {
           continue;
         }
-        await new Promise((resolve) => setTimeout(resolve, retryDelay));
+        await waitForRetry(retryDelay, options.signal);
         continue;
       }
       if (err?.code === "ENOENT") {
@@ -255,6 +258,9 @@ export async function withLock<T>(
     }
 
     try {
+      // Abort may have arrived while mkdir/metadata writes were in flight.
+      // Release our newly acquired lock without starting cancelled work.
+      options.signal?.throwIfAborted();
       return await operation();
     } finally {
       clearInterval(heartbeat);
@@ -276,4 +282,21 @@ export async function withLock<T>(
   }
 
   throw new Error(`Could not acquire lock for ${targetPath} after ${maxRetries} retries.`);
+}
+
+async function waitForRetry(delay: number, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  await new Promise<void>((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, delay);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+  });
 }

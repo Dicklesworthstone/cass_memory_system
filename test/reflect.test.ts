@@ -49,6 +49,21 @@ function captureConsole() {
 describe("reflectOnSession", () => {
   const config = createTestConfig();
 
+  test("feedback always records the actual session instead of model-supplied provenance", async () => {
+    const diary = createTestDiary({ sessionPath: "/sessions/actual-beta.jsonl" });
+    await withLlmShim({ reflector: { deltas: [
+      { type: "helpful", bulletId: "b-aaa111", sourceSession: "/sessions/forged-alpha.jsonl" },
+      { type: "harmful", bulletId: "b-bbb222", sourceSession: "/sessions/forged-alpha.jsonl", reason: "wrong_context" },
+    ] } }, async io => {
+      const result = await reflectOnSession(diary, createTestPlaybook(), { ...config, maxReflectorIterations: 1 }, io);
+      expect(result.deltas).toHaveLength(2);
+      for (const delta of result.deltas) {
+        expect(delta.type === "helpful" || delta.type === "harmful").toBe(true);
+        if (delta.type === "helpful" || delta.type === "harmful") expect(delta.sourceSession).toBe(diary.sessionPath);
+      }
+    });
+  });
+
   test("preserves scope selectors through the strict LLM schema and normalization", async () => {
     const diary = createTestDiary();
     const result = await reflectOnSession(diary, createTestPlaybook(), { ...config, maxReflectorIterations: 1 }, {

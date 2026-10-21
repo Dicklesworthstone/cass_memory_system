@@ -7,7 +7,7 @@
  * - computePlaybookStats calculation
  */
 import { describe, expect, it } from "bun:test";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
 
@@ -936,6 +936,64 @@ describe("tool call validation", () => {
 });
 
 describe("successful tool calls", () => {
+  it("memory_reflect applies a requested project's inline feedback without changing the server's project", async () => {
+    await withTempCassHome(async (env) => {
+      await withTempGitRepo(async (launchRepo) => {
+        await withTempGitRepo(async (requestedRepo) => {
+          await writeFile(env.configPath, JSON.stringify(createTestConfig({
+            playbookPath: env.playbookPath,
+            diaryDir: path.join(env.cassMemoryDir, "diary"),
+            cassPath: "cm-reflect-missing-cass",
+            validationEnabled: false,
+            semanticSearchEnabled: false,
+          })));
+          await writeFile(env.playbookPath, yaml.stringify(createTestPlaybook()));
+          for (const [repo, label] of [[launchRepo, "launch"], [requestedRepo, "requested"]]) {
+            await mkdir(path.join(repo, ".cass"));
+            await writeFile(path.join(repo, ".cass/playbook.yaml"), yaml.stringify(createTestPlaybook([
+              createTestBullet({ id: "b-aaa111", content: `Review ${label} migration safety`, scope: "workspace" }),
+            ])));
+          }
+          const launchPath = path.join(launchRepo, ".cass/playbook.yaml");
+          const launchBefore = await readFile(launchPath, "utf-8");
+          const session = path.join(env.home, "project-session.jsonl");
+          await writeFile(session, JSON.stringify({
+            role: "assistant", cwd: requestedRepo,
+            content: "Completed the requested project's database migration and verified its safety.\n// [cass: helpful b-aaa111] - The migration check caught a missing index.",
+          }) + "\n");
+          const cwd = process.cwd();
+          const priorLlm = process.env.CASS_MEMORY_LLM;
+          const priorStubs = process.env.CM_REFLECTOR_STUBS;
+          try {
+            process.chdir(launchRepo);
+            process.env.CASS_MEMORY_LLM = "none";
+            process.env.CM_REFLECTOR_STUBS = JSON.stringify([{ deltas: [] }]);
+            const response = await routeRequest({
+              jsonrpc: "2.0", id: 1, method: "tools/call",
+              params: { name: "memory_reflect", arguments: { workspace: requestedRepo, session } },
+            });
+            expect("result" in response).toBe(true);
+            if (!("result" in response)) throw new Error(JSON.stringify(response));
+            const payload = unwrapToolResult(response.result);
+            expect(payload.sessionsProcessed).toBe(1);
+            expect(payload.deltasApplied).toBe(1);
+            const saved = yaml.parse(await readFile(path.join(requestedRepo, ".cass/playbook.yaml"), "utf-8"));
+            expect(saved.bullets[0].helpfulCount).toBe(1);
+            expect(saved.bullets[0].feedbackEvents[0].sessionPath).toBe(session);
+            expect(await readFile(launchPath, "utf-8")).toBe(launchBefore);
+            expect(process.cwd()).toBe(launchRepo);
+          } finally {
+            process.chdir(cwd);
+            if (priorLlm === undefined) delete process.env.CASS_MEMORY_LLM;
+            else process.env.CASS_MEMORY_LLM = priorLlm;
+            if (priorStubs === undefined) delete process.env.CM_REFLECTOR_STUBS;
+            else process.env.CM_REFLECTOR_STUBS = priorStubs;
+          }
+        });
+      });
+    });
+  });
+
   it("memory_search reads and filters the requested workspace instead of the server launch directory", async () => {
     await withTempCassHome(async (env) => {
       await withTempGitRepo(async (launchRepo) => {

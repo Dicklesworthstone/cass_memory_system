@@ -163,7 +163,7 @@ export async function reflectCommand(
     ...(sessionCheck.value !== undefined ? { session: sessionCheck.value } : {}),
   };
 
-  const config = await loadConfig();
+  const config = await loadConfig({}, { cwd: workspaceCheck.value });
   const statsBefore = await getUsageStats(config);
 
   // #68: budget-default transparency. When the effective budget limits come
