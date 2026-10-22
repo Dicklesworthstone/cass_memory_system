@@ -76,7 +76,8 @@ describe("validateAndSanitizeInput", () => {
 
     test("expands ~ to home directory", () => {
       const result = validateAndSanitizeInput("sessionPath", "~/sessions/test.jsonl");
-      expect(result).toBe(path.join(os.homedir(), "sessions/test.jsonl"));
+      // "~" resolves from $HOME first; the test preload points HOME at a temp dir.
+      expect(result).toBe(path.join(process.env.HOME || os.homedir(), "sessions/test.jsonl"));
     });
 
     test("resolves relative paths to absolute", () => {

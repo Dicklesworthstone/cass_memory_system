@@ -10,16 +10,20 @@ import {
   toNativeSeparators,
 } from "../src/utils.js";
 
+// expandPath reads $HOME first (os.homedir() is only its fallback, and Bun
+// caches that at startup), and the test preload points HOME at a temp dir.
+const home = process.env.HOME || os.homedir();
+
 describe("Path Utilities", () => {
   describe("expandPath", () => {
     test("expands ~ to home directory", () => {
       const result = expandPath("~");
-      expect(result).toBe(os.homedir());
+      expect(result).toBe(home);
     });
 
     test("expands ~/path to home + path", () => {
       const result = expandPath("~/docs");
-      expect(result).toBe(path.join(os.homedir(), "docs"));
+      expect(result).toBe(path.join(home, "docs"));
     });
 
     test("returns empty string for empty input", () => {
@@ -39,18 +43,18 @@ describe("Path Utilities", () => {
 
     test("expands tilde to home directory", () => {
       const result = normalizePlatformPath("~");
-      expect(result).toBe(os.homedir());
+      expect(result).toBe(home);
     });
 
     test("expands ~/path correctly", () => {
       const result = normalizePlatformPath("~/docs");
-      expect(result).toContain(os.homedir());
+      expect(result).toContain(home);
       expect(result).toContain("docs");
     });
 
     test("expands ~\\path correctly", () => {
       const result = normalizePlatformPath("~\\docs");
-      expect(result).toContain(os.homedir());
+      expect(result).toContain(home);
     });
 
     test("resolves relative paths to absolute", () => {
@@ -209,7 +213,7 @@ describe("Path Utilities", () => {
 
     test("expands tilde in first segment", () => {
       const result = joinPath("~", "docs");
-      expect(result).toContain(os.homedir());
+      expect(result).toContain(home);
       expect(result).toContain("docs");
     });
 

@@ -11,17 +11,50 @@
  * - Cleanup handlers
  */
 import { afterAll, afterEach, beforeAll, beforeEach } from "bun:test";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { configureOllamaEmbedding, setEmbeddingBackend } from "../src/semantic.js";
 import { __setStdoutSinkForTests } from "../src/utils.js";
 
 // Store original environment to restore after tests
 const originalEnv: Record<string, string | undefined> = {};
 
+// Hermeticity: tests must never read or write the developer's real cm state
+// (cost ledger and budget, config, playbook, embeddings, hook settings). Each
+// test file starts with an empty temporary HOME (under --isolate the preload
+// runs once per file). This runs at module scope, before test modules are
+// evaluated, so paths they derive from HOME at import time are isolated too.
+// Tests that need a specific HOME still set and restore their own.
+const isolatedHome = mkdtempSync(path.join(realpathSync(os.tmpdir()), "cm-test-home-"));
+for (const key of ["HOME", "USERPROFILE", "CASS_MEMORY_HOME", "XDG_DATA_HOME", "CLAUDE_CONFIG_DIR"]) {
+  originalEnv[key] = process.env[key];
+  delete process.env[key];
+}
+process.env.HOME = isolatedHome;
+if (process.platform === "win32") process.env.USERPROFILE = isolatedHome;
+
+// Under `bun test --isolate`, Bun.spawn/Bun.spawnSync without an `env` option
+// hand the child the runner's original environment, not the current
+// process.env, so a child cm would use the real HOME again. Default `env` to
+// the current process.env, as node:child_process does.
+function withCurrentEnv(args: unknown[]): unknown[] {
+  const out = [...args];
+  // Bun.spawn(cmd[], options?) or Bun.spawn({ cmd, ...options })
+  const index = Array.isArray(out[0]) ? 1 : 0;
+  const options = (out[index] ?? {}) as { env?: unknown };
+  if (typeof options === "object") out[index] = { ...options, env: options.env ?? process.env };
+  return out;
+}
+const bunSpawn = Bun.spawn;
+const bunSpawnSync = Bun.spawnSync;
+(Bun as any).spawn = (...args: unknown[]) => (bunSpawn as any)(...withCurrentEnv(args));
+(Bun as any).spawnSync = (...args: unknown[]) => (bunSpawnSync as any)(...withCurrentEnv(args));
+
 beforeAll(() => {
   // Save original environment values
   originalEnv.CASS_MEMORY_TEST = process.env.CASS_MEMORY_TEST;
   originalEnv.CASS_MEMORY_VERBOSE = process.env.CASS_MEMORY_VERBOSE;
-  originalEnv.HOME = process.env.HOME;
   originalEnv.CASS_PATH = process.env.CASS_PATH;
   originalEnv.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
   originalEnv.OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -84,6 +117,12 @@ afterAll(() => {
     } else {
       process.env[key] = value;
     }
+  }
+
+  (Bun as any).spawn = bunSpawn;
+  (Bun as any).spawnSync = bunSpawnSync;
+  if (process.env.KEEP_TEMP !== "1") {
+    rmSync(isolatedHome, { recursive: true, force: true });
   }
 
   // Bun does not clear exitCode when assigning `undefined`; set 0 explicitly
