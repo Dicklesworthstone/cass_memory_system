@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, setSystemTime } from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -189,7 +189,7 @@ describe("Cost Tracking & Optimization", () => {
   });
 
   for (const contents of ["{broken", "null", "{}", '{"allTime":-1,"lastUpdated":"2026-01-01"}',
-    '{"allTime":5,"lastUpdated":"2026-01-01"}',
+    '{"allTime":5,"lastUpdated":"yesterday"}',
     '{"allTime":0,"lastUpdated":"2026-01-01","currentDay":{"day":"2026-01-01","cost":"0"}}']) {
     it(`refuses spending and preserves malformed totals: ${contents}`, async () => {
       await withTempDir(async (dir) => {
@@ -284,5 +284,136 @@ describe("Cost Tracking & Optimization", () => {
       expect(calls).toBe(0);
     });
   });
+  }
+});
+
+// cm releases up to December 2025 wrote total.json with only allTime and
+// lastUpdated (budgets came from the monthly usage logs). Upgrading must keep
+// such a ledger working without understating spend in the current period.
+describe("totals written before daily and monthly sums", () => {
+  const budget = (dailyLimit: number, monthlyLimit: number) =>
+    createTestConfig({ budget: { dailyLimit, monthlyLimit, warningThreshold: 80, currency: "USD" } });
+  const charge = { provider: "openai", model: "gpt-4o", tokensIn: 1000, tokensOut: 0, context: "test" };
+  const logLine = (timestamp: string, cost: number) =>
+    JSON.stringify({ provider: "anthropic", model: "claude-3", tokensIn: 10, tokensOut: 5, timestamp, cost }) + "\n";
+
+  async function seedLedger(dir: string, total: string, logs: Record<string, string>): Promise<string> {
+    const costDir = path.join(dir, ".cass-memory", "cost");
+    await fs.mkdir(costDir, { recursive: true });
+    await fs.writeFile(path.join(costDir, "total.json"), total);
+    for (const [name, contents] of Object.entries(logs)) {
+      await fs.writeFile(path.join(costDir, name), contents);
+    }
+    return costDir;
+  }
+
+  async function withClock<T>(iso: string, tz: string, run: () => Promise<T>): Promise<T> {
+    const originalTz = process.env.TZ;
+    process.env.TZ = tz;
+    setSystemTime(new Date(iso));
+    try {
+      return await run();
+    } finally {
+      setSystemTime();
+      if (originalTz === undefined) delete process.env.TZ;
+      else process.env.TZ = originalTz;
+    }
+  }
+
+  it("accepts an old ledger last charged in an earlier month and keeps its all-time spend", async () => {
+    await withTempDir(async (dir) => {
+      const legacy = '{\n  "allTime": 0.00025,\n  "lastUpdated": "2025-12-08T02:06:36.881Z"\n}';
+      const costDir = await seedLedger(dir, legacy, {
+        "monthly-2025-12.jsonl": logLine("2025-12-08T02:06:36.874Z", 0.000125) +
+          logLine("2025-12-08T02:06:36.881Z", 0.000125),
+      });
+
+      expect(await checkBudget(budget(1, 10))).toEqual({ allowed: true });
+      const stats = await getUsageStats(budget(1, 10));
+      expect([stats.today, stats.month, stats.total]).toEqual([0, 0, 0.00025]);
+
+      await recordCost(createTestConfig(), charge);
+      const total = JSON.parse(await fs.readFile(path.join(costDir, "total.json"), "utf-8"));
+      const today = new Date().toLocaleDateString("en-CA");
+      expect(total.allTime).toBeCloseTo(0.00275, 10);
+      expect(total.currentDay).toEqual({ day: today, cost: 0.0025 });
+      expect(total.currentMonth).toEqual({ month: today.slice(0, 7), cost: 0.0025 });
+    });
+  });
+
+  it("rebuilds today's and this month's spend from the usage logs when the old ledger was charged today", async () => {
+    await withTempDir(async (dir) => {
+      await withClock("2026-10-15T12:30:00.000Z", "UTC", async () => {
+        const costDir = await seedLedger(dir, '{"allTime":7,"lastUpdated":"2026-10-15T12:20:00.000Z"}', {
+          "monthly-2026-09.jsonl": logLine("2026-09-20T12:00:00.000Z", 4),
+          "monthly-2026-10.jsonl": logLine("2026-10-08T12:30:00.000Z", 1) + logLine("2026-10-15T12:20:00.000Z", 2),
+        });
+
+        expect(await checkBudget(budget(1.5, 100))).toEqual({
+          allowed: false, reason: "Daily budget exceeded ($2.00 / $1.50)",
+        });
+        expect(await checkBudget(budget(0, 2.5))).toEqual({
+          allowed: false, reason: "Monthly budget exceeded ($3.00 / $2.50)",
+        });
+        expect(await checkBudget(budget(2.5, 3.5))).toEqual({ allowed: true });
+        const stats = await getUsageStats(budget(0, 0));
+        expect([stats.today, stats.month, stats.total]).toEqual([2, 3, 7]);
+
+        // The next charge persists the rebuilt sums instead of restarting them at 0.
+        await recordCost(createTestConfig(), charge);
+        const total = JSON.parse(await fs.readFile(path.join(costDir, "total.json"), "utf-8"));
+        expect(total.allTime).toBeCloseTo(7.0025, 10);
+        expect(total.currentDay.day).toBe("2026-10-15");
+        expect(total.currentDay.cost).toBeCloseTo(2.0025, 10);
+        expect(total.currentMonth.month).toBe("2026-10");
+        expect(total.currentMonth.cost).toBeCloseTo(3.0025, 10);
+      });
+    });
+  });
+
+  it("charges only the month when the old ledger was last charged earlier this month", async () => {
+    await withTempDir(async (dir) => {
+      await withClock("2026-10-15T12:30:00.000Z", "UTC", async () => {
+        await seedLedger(dir, '{"allTime":5,"lastUpdated":"2026-10-08T12:30:00.000Z"}', {
+          "monthly-2026-10.jsonl": logLine("2026-10-08T12:30:00.000Z", 1),
+        });
+        expect(await checkBudget(budget(0.5, 100))).toEqual({ allowed: true });
+        expect((await checkBudget(budget(0, 1))).reason).toBe("Monthly budget exceeded ($1.00 / $1.00)");
+      });
+    });
+  });
+
+  it("counts a local month's charges that were logged under the next UTC month", async () => {
+    await withTempDir(async (dir) => {
+      // 01:00Z on Nov 1 is still Oct 31 in New York, but was logged in the November file.
+      await withClock("2026-11-01T02:00:00.000Z", "America/New_York", async () => {
+        await seedLedger(dir, '{"allTime":3,"lastUpdated":"2026-11-01T01:00:00.000Z"}', {
+          "monthly-2026-10.jsonl": logLine("2026-10-31T12:00:00.000Z", 1),
+          "monthly-2026-11.jsonl": logLine("2026-11-01T01:00:00.000Z", 2),
+        });
+        const stats = await getUsageStats(budget(0, 0));
+        expect([stats.today, stats.month]).toEqual([3, 3]);
+      });
+    });
+  });
+
+  for (const [label, logs, reason] of [
+    ["no usage log covers the period", {}, "no usage log covers the current period"],
+    ["a usage log entry is unreadable", { "monthly-2026-10.jsonl": '{"timestamp":"2026-10-15T12:20:00.000Z","cost":2\n' },
+      "Invalid usage entry"],
+  ] as const) {
+    it(`keeps refusing an old ledger charged today when ${label}`, async () => {
+      await withTempDir(async (dir) => {
+        await withClock("2026-10-15T12:30:00.000Z", "UTC", async () => {
+          const legacy = '{"allTime":7,"lastUpdated":"2026-10-15T12:20:00.000Z"}';
+          const costDir = await seedLedger(dir, legacy, logs);
+          const result = await checkBudget(budget(0, 0));
+          expect(result.allowed).toBe(false);
+          expect(result.reason).toContain(reason);
+          await expect(recordCost(createTestConfig(), charge)).rejects.toThrow(reason);
+          expect(await fs.readFile(path.join(costDir, "total.json"), "utf8")).toBe(legacy);
+        });
+      });
+    });
   }
 });

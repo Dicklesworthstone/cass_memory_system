@@ -6,7 +6,6 @@ import type { Config } from "./types.js";
 import {
   atomicWrite,
   ensureDir,
-  fileExists,
   now,
   resolveGlobalDir,
 } from "./utils.js";
@@ -103,6 +102,9 @@ interface TotalCostData {
   currentDay?: { day: string; cost: number };
 }
 
+const validCost = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0;
+
 async function updateTotalCost(totalPath: string, total: TotalCostData, amount: number): Promise<void> {
   const nowIso = now();
   const date = new Date();
@@ -170,11 +172,8 @@ async function readTotalCost(costDir: string): Promise<TotalCostData> {
   }
 
   const total = JSON.parse(raw) as TotalCostData | null;
-  const validCost = (value: unknown): value is number =>
-    typeof value === "number" && Number.isFinite(value) && value >= 0;
   if (!total || !validCost(total.allTime) || typeof total.lastUpdated !== "string" ||
     !Number.isFinite(Date.parse(total.lastUpdated)) ||
-    (total.allTime > 0 && (!total.currentDay || !total.currentMonth)) ||
     (total.currentDay !== undefined && (!total.currentDay ||
       typeof total.currentDay.day !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(total.currentDay.day) ||
       !validCost(total.currentDay.cost))) ||
@@ -183,7 +182,77 @@ async function readTotalCost(costDir: string): Promise<TotalCostData> {
       !validCost(total.currentMonth.cost)))) {
     throw new Error(`Invalid cost totals in ${totalPath}`);
   }
+  if (total.allTime > 0 && (!total.currentDay || !total.currentMonth)) {
+    await restoreCurrentPeriods(costDir, total);
+  }
   return total;
+}
+
+/**
+ * Totals written before cm kept daily and monthly sums (cm releases up to
+ * December 2025) hold only `allTime` and `lastUpdated`; budgets were enforced
+ * from the per-request usage logs instead. Every charge bumps `lastUpdated`,
+ * so a period that began after it has no recorded spend. Spend in a period
+ * that may include charges is rebuilt from those logs, never assumed to be 0.
+ * The caller persists the result with its next charge.
+ */
+async function restoreCurrentPeriods(costDir: string, total: TotalCostData): Promise<void> {
+  const today = new Date().toLocaleDateString("en-CA");
+  const month = today.slice(0, 7);
+  const lastChargeDay = new Date(total.lastUpdated).toLocaleDateString("en-CA");
+  const dayMayHaveSpend = !total.currentDay && lastChargeDay >= today;
+  const monthMayHaveSpend = !total.currentMonth && lastChargeDay.slice(0, 7) >= month;
+  const logged = dayMayHaveSpend || monthMayHaveSpend
+    ? await sumLoggedSpend(costDir, today)
+    : { day: 0, month: 0 };
+  total.currentDay ??= { day: today, cost: dayMayHaveSpend ? logged.day : 0 };
+  total.currentMonth ??= { month, cost: monthMayHaveSpend ? logged.month : 0 };
+}
+
+/** Sum the usage logs' charges on the local calendar day `today` and its month. */
+async function sumLoggedSpend(costDir: string, today: string): Promise<{ day: number; month: number }> {
+  const month = today.slice(0, 7);
+  // Logs are named for the UTC month of each charge, so one local month can
+  // draw on the UTC months on either side of it.
+  const year = Number(month.slice(0, 4));
+  const monthIndex = Number(month.slice(5, 7)) - 1;
+  const logNames = [-1, 0, 1].map(offset =>
+    `monthly-${new Date(Date.UTC(year, monthIndex + offset, 1)).toISOString().slice(0, 7)}.jsonl`);
+
+  let sawLog = false;
+  let day = 0;
+  let monthSum = 0;
+  for (const name of logNames) {
+    const logPath = path.join(costDir, name);
+    let raw: string;
+    try {
+      raw = await fs.readFile(logPath, "utf-8");
+    } catch (error: any) {
+      if (error?.code === "ENOENT") continue;
+      throw error;
+    }
+    sawLog = true;
+    for (const line of raw.split("\n")) {
+      if (!line.trim()) continue;
+      let entry: { timestamp?: unknown; cost?: unknown } | null;
+      try {
+        entry = JSON.parse(line);
+      } catch {
+        entry = null;
+      }
+      const chargedAt = typeof entry?.timestamp === "string" ? Date.parse(entry.timestamp) : Number.NaN;
+      if (!entry || !Number.isFinite(chargedAt) || !validCost(entry.cost)) {
+        throw new Error(`Invalid usage entry in ${logPath}; reconcile the cost ledger before making further requests`);
+      }
+      const chargedDay = new Date(chargedAt).toLocaleDateString("en-CA");
+      if (chargedDay.slice(0, 7) === month) monthSum += entry.cost;
+      if (chargedDay === today) day += entry.cost;
+    }
+  }
+  if (!sawLog) {
+    throw new Error("Cost totals predate daily and monthly tracking and no usage log covers the current period; reconcile the cost ledger before making further requests");
+  }
+  return { day, month: monthSum };
 }
 
 async function checkBudgetAt(config: Config, costDir: string): Promise<{ allowed: boolean; reason?: string }> {
@@ -302,30 +371,28 @@ export async function getUsageStats(config: Config): Promise<{
   monthlyLimit: number;
 }> {
   const costDir = path.join(resolveGlobalDir(), "cost");
-  const totalPath = path.join(costDir, "total.json");
 
   let dailyTotal = 0;
   let monthlyTotal = 0;
   let allTimeTotal = 0;
 
-  if (await fileExists(totalPath)) {
-    try {
-      const total: TotalCostData = JSON.parse(await fs.readFile(totalPath, "utf-8"));
-      const date = new Date();
-      const today = date.toLocaleDateString("en-CA");
-      const month = today.slice(0, 7);
+  try {
+    // Same reader as budget admission, so the report matches what is enforced.
+    const total = await readTotalCost(costDir);
+    const date = new Date();
+    const today = date.toLocaleDateString("en-CA");
+    const month = today.slice(0, 7);
 
-      allTimeTotal = total.allTime || 0;
+    allTimeTotal = total.allTime;
 
-      if (total.currentDay?.day === today) {
-        dailyTotal = total.currentDay.cost || 0;
-      }
+    if (total.currentDay?.day === today) {
+      dailyTotal = total.currentDay.cost;
+    }
 
-      if (total.currentMonth?.month === month) {
-        monthlyTotal = total.currentMonth.cost || 0;
-      }
-    } catch {}
-  }
+    if (total.currentMonth?.month === month) {
+      monthlyTotal = total.currentMonth.cost;
+    }
+  } catch {}
 
   return {
     today: dailyTotal,

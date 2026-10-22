@@ -1688,7 +1688,9 @@ API requests sharing a cost directory take turns through budget admission and
 usage settlement. Every request checks the latest saved totals after acquiring
 admission. A waiting request whose deadline expires cannot start later, and an
 in-flight request retains admission until its provider promise settles. Invalid
-or incomplete accounting blocks further API requests. The thresholds are checked
+or incomplete accounting blocks further API requests. A `total.json` saved by an
+older cm without daily and monthly sums is still accepted: any spend it may hold
+for the current day or month is rebuilt from the usage logs. The thresholds are checked
 before each request; one admitted response can cross a threshold because CM does
 not reserve its maximum possible cost in advance. CLI providers do not report
 priced API usage and remain outside this monetary accounting.
