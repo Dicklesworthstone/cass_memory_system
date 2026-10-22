@@ -27,12 +27,23 @@ const originalEnv: Record<string, string | undefined> = {};
 // evaluated, so paths they derive from HOME at import time are isolated too.
 // Tests that need a specific HOME still set and restore their own.
 const isolatedHome = mkdtempSync(path.join(realpathSync(os.tmpdir()), "cm-test-home-"));
-for (const key of ["HOME", "USERPROFILE", "CASS_MEMORY_HOME", "XDG_DATA_HOME", "CLAUDE_CONFIG_DIR"]) {
+for (const key of ["HOME", "USERPROFILE", "CASS_MEMORY_HOME", "XDG_DATA_HOME", "CLAUDE_CONFIG_DIR", "TMPDIR"]) {
   originalEnv[key] = process.env[key];
   delete process.env[key];
 }
 process.env.HOME = isolatedHome;
 if (process.platform === "win32") process.env.USERPROFILE = isolatedHome;
+// On macOS the temp dir (/var/folders/...) is reached through a symlink, while
+// git and a child process's working directory report the resolved path
+// (/private/var/...). Fixtures made under the resolved root compare equal to
+// the paths cm reports.
+if (originalEnv.TMPDIR) {
+  try {
+    process.env.TMPDIR = realpathSync(originalEnv.TMPDIR);
+  } catch {
+    process.env.TMPDIR = originalEnv.TMPDIR;
+  }
+}
 
 // Under `bun test --isolate`, Bun.spawn/Bun.spawnSync without an `env` option
 // hand the child the runner's original environment, not the current
