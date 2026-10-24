@@ -1487,6 +1487,31 @@ describe("curatePlaybook semantic dedup", () => {
     ).toHaveLength(2);
   });
 
+  it("compares rules added in one batch with each other, not only with stored rules (#96)", () => {
+    const first = "Before running pt agent diff, verify that both selected sessions contain plan.json";
+    const lexical = "Before running pt agent diff, verify that both of the selected sessions contain plan.json";
+    const semantic = "Before running pt agent diff, check that the sessions being compared contain a plan.json file";
+    const batchIndex = {
+      threshold: 0.9,
+      embeddings: new Map<string, number[]>([
+        [hashContent(first), [1, 0, 0]],
+        [hashContent(lexical), [0.99, 0.141, 0]],
+        [hashContent(semantic), [0.98, 0.199, 0]],
+      ]),
+    };
+    // addDelta gives every candidate the same source session, as one reflect run does.
+    const result = curatePlaybook(
+      createTestPlaybook(),
+      [addDelta(first), addDelta(lexical), addDelta(semantic)],
+      createTestConfig(),
+      undefined,
+      { semanticIndex: batchIndex },
+    );
+    expect(result.playbook.bullets.map((b) => b.content)).toEqual([first]);
+    expect(result.playbook.bullets[0].helpfulCount).toBe(0);
+    expect(result.decisionLog?.filter((entry) => entry.action === "accepted")).toHaveLength(1);
+  });
+
   it("never reinforces a deprecated rule through semantic similarity", () => {
     const deprecated = createTestBullet({ content: existingContent, deprecated: true, maturity: "deprecated" });
     const playbook = createTestPlaybook([deprecated]);

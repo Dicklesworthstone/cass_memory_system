@@ -159,6 +159,20 @@ export function hashDelta(delta: PlaybookDelta): string {
   return JSON.stringify(delta);
 }
 
+/**
+ * Rule texts proposed so far in this reflection (new, replacement, and merged
+ * wording). Later passes are shown them: without that, each pass re-derives
+ * the same insights in new words, and only exact repeats are removed (#96).
+ */
+export function proposedRuleTexts(deltas: readonly PlaybookDelta[]): string[] {
+  const texts = deltas.flatMap((delta) =>
+    delta.type === "add" ? [delta.bullet.content]
+      : delta.type === "replace" ? [delta.newContent]
+        : delta.type === "merge" ? [delta.mergedContent]
+          : []);
+  return Array.from(new Set(texts.filter((text) => typeof text === "string" && text.trim() !== "")));
+}
+
 export function deduplicateDeltas(
   newDeltas: PlaybookDelta[],
   existing: PlaybookDelta[],
@@ -454,6 +468,7 @@ export async function reflectOnSession(
         i,
         config,
         io,
+        proposedRuleTexts(allDeltas),
       );
 
       // `output.deltas` are strict-mode LLM deltas (see issue #44) — null

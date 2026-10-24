@@ -188,6 +188,36 @@ describe("LLM flows with injected generateObject", () => {
     expect(prompt).toContain("mocked ai sdk");
   });
 
+  it("runReflector lists earlier passes' rules so later passes do not reword them (#96)", async () => {
+    const prompts: string[] = [];
+    const io: LLMIO = {
+      generateObject: async <T>(options: any) => {
+        prompts.push(options.prompt ?? "");
+        return { object: { deltas: [] } as T };
+      },
+    };
+    const schema = z.object({ deltas: z.array(z.object({ type: z.string() })) });
+    const config = createTestConfig({ apiKey: "sk-ant-test-0000000000000000" });
+    const earlier = [
+      "Before running pt agent diff, verify that both selected sessions contain plan.json",
+      "   ",
+      "Close a finished bead only after its gated push lands",
+    ];
+
+    await runReflector(schema, createTestDiary(), "bullets", "history", 0, config, io, earlier);
+    await runReflector(schema, createTestDiary(), "bullets", "history", 1, config, io, earlier);
+    await runReflector(schema, createTestDiary(), "bullets", "history", 1, config, io, []);
+
+    const [first, later, laterWithoutEarlier] = prompts;
+    expect(first).not.toContain("<earlier_passes>");
+    expect(first).not.toContain(earlier[0]);
+    expect(later).toContain("iteration 2");
+    expect(later).toContain("Do not propose them again, reworded or not");
+    expect(later).toContain(`<earlier_passes>\n- ${earlier[0]}\n- ${earlier[2]}\n</earlier_passes>`);
+    expect(laterWithoutEarlier).toContain("Focus on insights you may have missed in previous passes.");
+    expect(laterWithoutEarlier).not.toContain("<earlier_passes>");
+  });
+
   it("runValidator maps evidence and uses proposed rule/evidence in the prompt", async () => {
     let lastOptions: any = null;
     const io: LLMIO = {

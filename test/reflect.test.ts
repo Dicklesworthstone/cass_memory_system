@@ -4,6 +4,7 @@ import {
   deduplicateDeltas,
   formatBulletsForPrompt,
   hashDelta,
+  proposedRuleTexts,
   reflectOnSession,
   shouldExitEarly,
 } from "../src/reflect.js";
@@ -91,6 +92,35 @@ describe("reflectOnSession", () => {
     for (const delta of result.deltas) {
       if (delta.type === "add") expect(delta.sourceSession).toBe(diary.sessionPath);
     }
+  });
+
+  test("shows each later pass the rules that earlier passes proposed (#96)", async () => {
+    const diary = createTestDiary();
+    const prompts: string[] = [];
+    const proposals = [
+      "Before running pt agent diff, verify that both selected sessions contain plan.json",
+      "Pin the CI bun version to the one declared in package.json",
+    ];
+    const addDelta = (content: string) => ({
+      type: "add", reason: "Learned from this session", sourceSession: null,
+      bullet: {
+        content, category: "workflow", kind: null, type: null, isNegative: null, scope: null,
+        scopeKey: null, workspace: null, searchPointer: null, tags: null,
+      },
+    });
+    const result = await reflectOnSession(diary, createTestPlaybook(), { ...config, maxReflectorIterations: 3 }, {
+      generateObject: async <T>(options: any) => {
+        prompts.push(options.prompt);
+        const pass = prompts.length - 1;
+        return { object: options.schema.parse({ deltas: pass < proposals.length ? [addDelta(proposals[pass])] : [] }) as T };
+      },
+    });
+    expect(result.failure).toBeUndefined();
+    expect(result.deltas.map((delta) => delta.type === "add" ? delta.bullet.content : "")).toEqual(proposals);
+    expect(prompts).toHaveLength(3);
+    expect(prompts[0]).not.toContain("<earlier_passes>");
+    expect(prompts[1]).toContain(`<earlier_passes>\n- ${proposals[0]}\n</earlier_passes>`);
+    expect(prompts[2]).toContain(`<earlier_passes>\n- ${proposals[0]}\n- ${proposals[1]}\n</earlier_passes>`);
   });
 
   test("should terminate when no new insights found", async () => {
@@ -199,6 +229,21 @@ describe("reflectOnSession", () => {
         expect(deltas.length).toBeGreaterThanOrEqual(2);
       },
     );
+  });
+});
+
+describe("proposedRuleTexts", () => {
+  test("collects new, replacement, and merged wording once, skipping feedback and blanks", () => {
+    const session = "/sessions/one.jsonl";
+    const texts = proposedRuleTexts([
+      { type: "add", bullet: { content: "Rule A", category: "test" }, reason: "r", sourceSession: session },
+      { type: "helpful", bulletId: "b-1", sourceSession: session },
+      { type: "replace", bulletId: "b-2", newContent: "Rule B", reason: "r" },
+      { type: "merge", bulletIds: ["b-3", "b-4"], mergedContent: "Rule C", reason: "r" },
+      { type: "add", bullet: { content: "Rule A", category: "other" }, reason: "r", sourceSession: session },
+      { type: "add", bullet: { content: "  ", category: "test" }, reason: "r", sourceSession: session },
+    ] as PlaybookDelta[]);
+    expect(texts).toEqual(["Rule A", "Rule B", "Rule C"]);
   });
 });
 

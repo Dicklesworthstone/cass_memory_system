@@ -1323,6 +1323,12 @@ export async function extractDiary<T>(
   );
 }
 
+/**
+ * One reflection pass over a session diary. `earlierProposals` holds the rule
+ * texts that earlier passes over the same session already proposed. Later
+ * passes see them so they look for different insights instead of rewording
+ * the same ones, which curation cannot always recognize as duplicates (#96).
+ */
 export async function runReflector<T>(
   schema: z.ZodSchema<T>,
   diary: DiaryEntry,
@@ -1331,6 +1337,7 @@ export async function runReflector<T>(
   iteration: number,
   config: Config,
   io: LLMIO = DEFAULT_LLM_IO,
+  earlierProposals: readonly string[] = [],
 ): Promise<T> {
   // Only check env-based stubs when using default IO (backward compat for subprocess E2E tests).
   // When explicit LLMIO is injected, tests control responses directly via the io object.
@@ -1364,10 +1371,20 @@ Preferences: ${diary.preferences.join("\n- ")}
 Key Learnings: ${diary.keyLearnings.join("\n- ")}
 `.trim();
 
+  const earlier = earlierProposals.map((text) => text.trim()).filter((text) => text.length > 0);
   const iterationNote =
-    iteration > 0
-      ? `This is iteration ${iteration + 1}. Focus on insights you may have missed in previous passes.`
-      : "";
+    iteration === 0
+      ? ""
+      : earlier.length === 0
+        ? `This is iteration ${iteration + 1}. Focus on insights you may have missed in previous passes.`
+        : `This is iteration ${iteration + 1}. Earlier passes over this session already proposed the rules in <earlier_passes>.
+Do not propose them again, reworded or not; add only insights they do not cover.
+If nothing new remains, return an empty "deltas" array.
+
+<earlier_passes>
+${truncateForContext(earlier.map((text) => `- ${text}`).join("\n"), { maxChars: 10000 })}
+</earlier_passes>
+`;
 
   const safeExistingBullets = truncateForContext(existingBullets, { maxChars: 20000 });
   const safeCassHistory = truncateForContext(cassHistory, { maxChars: 20000 });
