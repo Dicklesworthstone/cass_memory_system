@@ -420,6 +420,8 @@ export interface ContextComputation {
   cassHits: CassSearchHit[];
   warnings: string[];
   suggestedQueries: string[];
+  /** True when a history limit of 0 skipped the cass search. */
+  historySkipped: boolean;
 }
 
 export type ContextProgressEvent =
@@ -701,7 +703,8 @@ export async function generateContextResult(
   // availability probe, instead of running it and discarding the hits: on a
   // large archive the search dominates the runtime.
   const historyLimit = flags.history ?? config.maxHistoryInContext;
-  if (historyLimit > 0) {
+  const historySkipped = historyLimit === 0;
+  if (!historySkipped) {
     options.onProgress?.({ phase: "cass_search", kind: "start", message: "Searching history..." });
     const cassResult = await safeCassSearchWithDegraded(
       cassQuery,
@@ -796,7 +799,7 @@ export async function generateContextResult(
     }, config, sources.repoRoot);
   }
 
-  return { result, rules, antiPatterns, cassHits, warnings, suggestedQueries };
+  return { result, rules, antiPatterns, cassHits, warnings, suggestedQueries, historySkipped };
 }
 
 async function appendContextLog(entry: {
@@ -1154,7 +1157,7 @@ export async function contextCommand(task: string | undefined, flags: ContextFla
   const cassProgressRef: { current: ProgressReporter | null } = { current: null };
 
   try {
-    const { result, rules, antiPatterns, cassHits, warnings, suggestedQueries } =
+    const { result, rules, antiPatterns, cassHits, warnings, suggestedQueries, historySkipped } =
       await generateContextResult(normalizedTask, normalizedFlags, {
         onProgress: (event) => {
           if (event.phase === "semantic_embeddings") {
@@ -1242,8 +1245,8 @@ export async function contextCommand(task: string | undefined, flags: ContextFla
       }
 
       console.log(`## History (${cassHits.length})\n`);
-      if (normalizedFlags.history === 0) {
-        console.log(`(History search skipped: --history 0)\n`);
+      if (historySkipped) {
+        console.log(`(History search skipped: history limit is 0)\n`);
       } else if (cassHits.length === 0) {
         console.log(`(No relevant history found)\n`);
       } else {
@@ -1397,10 +1400,10 @@ export async function contextCommand(task: string | undefined, flags: ContextFla
         }
         console.log("");
       });
-    } else if (normalizedFlags.history === 0) {
+    } else if (historySkipped) {
       console.log(chalk.bold("HISTORY (0)"));
       console.log(divider);
-      console.log(chalk.gray("(History search skipped: --history 0)"));
+      console.log(chalk.gray("(History search skipped: history limit is 0)"));
       console.log("");
     } else if (!result.degraded?.cass || result.degraded.cass.available) {
       console.log(chalk.bold("HISTORY (0)"));

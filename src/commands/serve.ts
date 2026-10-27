@@ -603,8 +603,10 @@ async function handleToolCall(name: string, args: any): Promise<any> {
       if (!workspace.ok) throw new Error(workspace.message);
 
       // cm_context fans out to cass history — gate it under the admission limiter.
+      // history: 0 never reaches cass, so a rules-only call does not queue
+      // behind history searches.
       const namedScopes = parseNamedScopeFilters(args);
-      const context = await withCassAdmission("cm_context", () =>
+      const computeContext = () =>
         generateContextResult(taskCheck.value, {
           ...namedScopes,
           limit: limit.value ?? top.value,
@@ -613,8 +615,11 @@ async function handleToolCall(name: string, args: any): Promise<any> {
           maxTokens: maxTokens.value,
           workspace: workspace.value,
           json: true,
-        }),
-      );
+        });
+      const context =
+        history.value === 0
+          ? await computeContext()
+          : await withCassAdmission("cm_context", computeContext);
       return context.result;
     }
     case "cm_why": {

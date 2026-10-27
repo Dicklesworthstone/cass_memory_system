@@ -180,6 +180,23 @@ describe("contextCommand input validation", () => {
     });
   });
 
+  test("config maxHistoryInContext 0 skips history and says so (#97)", async () => {
+    await withTempCassHome(async (env) => {
+      writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])));
+      writeFileSync(env.configPath, JSON.stringify({ maxHistoryInContext: 0 }));
+
+      const capture = captureConsole();
+      try {
+        await contextCommand("fix bug", { format: "markdown" });
+        const output = capture.getOutput();
+        expect(output).toContain("History search skipped");
+        expect(output).not.toContain("No relevant history found");
+      } finally {
+        capture.restore();
+      }
+    });
+  });
+
   test("rejects invalid days (negative)", async () => {
     await withTempCassHome(async (env) => {
       writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])));

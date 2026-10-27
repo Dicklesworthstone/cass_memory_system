@@ -11,7 +11,14 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
 
-import { __test, computePlaybookStats, serveCommand } from "../src/commands/serve.js";
+import {
+  __test,
+  CassAdmissionController,
+  computePlaybookStats,
+  resetAdmissionController,
+  serveCommand,
+  setAdmissionController,
+} from "../src/commands/serve.js";
 import { withTempCassHome } from "./helpers/temp.js";
 import { withTempGitRepo } from "./helpers/git.js";
 import { createTestBullet, createTestConfig, createTestPlaybook } from "./helpers/factories.js";
@@ -876,6 +883,32 @@ describe("tool call validation", () => {
         expect(payload.historySnippets).toEqual([]);
       }
     }, "serve-context-history-zero");
+  });
+
+  it("cm_context with history 0 does not wait for cass admission (#97)", async () => {
+    await withTempCassHome(async () => {
+      // One slot, held for the whole test, with an unbounded queue and no
+      // timeout: any call that waits for admission never returns.
+      const controller = new CassAdmissionController(1, 0, 0);
+      const release = await controller.acquire();
+      setAdmissionController(controller);
+      try {
+        const response = await Promise.race([
+          routeRequest({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: { name: "cm_context", arguments: { task: "test task", history: 0 } },
+          }),
+          new Promise<"queued">((resolve) => setTimeout(() => resolve("queued"), 5000)),
+        ]);
+        expect(response).not.toBe("queued");
+        expect(controller.snapshot().queued).toBe(0);
+      } finally {
+        release();
+        resetAdmissionController();
+      }
+    }, "serve-context-history-zero-admission");
   });
 
   it("cm_context validates days parameter", async () => {
