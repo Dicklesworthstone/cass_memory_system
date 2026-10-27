@@ -164,6 +164,22 @@ describe("contextCommand input validation", () => {
     });
   });
 
+  test("accepts --history 0 as rules-only context (#97)", async () => {
+    await withTempCassHome(async (env) => {
+      writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])));
+
+      const capture = captureConsole();
+      try {
+        await contextCommand("fix bug", { history: 0, json: true });
+        const output = JSON.parse(capture.getOutput());
+        expect(output.success).toBe(true);
+        expect(output.data.historySnippets).toEqual([]);
+      } finally {
+        capture.restore();
+      }
+    });
+  });
+
   test("rejects invalid days (negative)", async () => {
     await withTempCassHome(async (env) => {
       writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])));

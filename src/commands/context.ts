@@ -697,25 +697,31 @@ export async function generateContextResult(
   let cassHits: CassSearchHit[] = [];
   let degraded: ContextResult["degraded"] | undefined;
 
-  options.onProgress?.({ phase: "cass_search", kind: "start", message: "Searching history..." });
-  const cassResult = await safeCassSearchWithDegraded(
-    cassQuery,
-    {
-      limit: flags.history ?? config.maxHistoryInContext,
-      days: flags.days ?? config.historyLookbackDays,
-      workspace: flags.workspace,
-      timeout: config.cassHistoryTimeoutSeconds ?? DEFAULT_CASS_HISTORY_TIMEOUT_SECONDS,
-    },
-    config.cassPath,
-    config,
-  );
-  options.onProgress?.({ phase: "cass_search", kind: "done", message: "History search complete" });
-  cassHits = cassResult.hits;
-  if (cassResult.degraded || cassResult.remoteDegraded) {
-    degraded = {
-      cass: cassResult.degraded,
-      remoteCass: cassResult.remoteDegraded,
-    };
+  // A history limit of 0 asks for rules only. Skip the cass search, and its
+  // availability probe, instead of running it and discarding the hits: on a
+  // large archive the search dominates the runtime.
+  const historyLimit = flags.history ?? config.maxHistoryInContext;
+  if (historyLimit > 0) {
+    options.onProgress?.({ phase: "cass_search", kind: "start", message: "Searching history..." });
+    const cassResult = await safeCassSearchWithDegraded(
+      cassQuery,
+      {
+        limit: historyLimit,
+        days: flags.days ?? config.historyLookbackDays,
+        workspace: flags.workspace,
+        timeout: config.cassHistoryTimeoutSeconds ?? DEFAULT_CASS_HISTORY_TIMEOUT_SECONDS,
+      },
+      config.cassPath,
+      config,
+    );
+    options.onProgress?.({ phase: "cass_search", kind: "done", message: "History search complete" });
+    cassHits = cassResult.hits;
+    if (cassResult.degraded || cassResult.remoteDegraded) {
+      degraded = {
+        cass: cassResult.degraded,
+        remoteCass: cassResult.remoteDegraded,
+      };
+    }
   }
 
   const warnings: string[] = [];
@@ -756,7 +762,7 @@ export async function generateContextResult(
     suggestedQueries,
     {
       maxBullets: selectionOptions.maxBullets,
-      maxHistory: flags.history ?? config.maxHistoryInContext,
+      maxHistory: historyLimit,
     },
   );
   if (degraded) {
@@ -1018,7 +1024,7 @@ export async function contextCommand(task: string | undefined, flags: ContextFla
   }
 
   const historyCheck = validatePositiveInt(flags.history, "history", {
-    min: 1,
+    min: 0,
     allowUndefined: true,
   });
   if (!historyCheck.ok) {
@@ -1236,7 +1242,9 @@ export async function contextCommand(task: string | undefined, flags: ContextFla
       }
 
       console.log(`## History (${cassHits.length})\n`);
-      if (cassHits.length === 0) {
+      if (normalizedFlags.history === 0) {
+        console.log(`(History search skipped: --history 0)\n`);
+      } else if (cassHits.length === 0) {
         console.log(`(No relevant history found)\n`);
       } else {
         const shown = Math.min(cassHits.length, 3);
@@ -1389,6 +1397,11 @@ export async function contextCommand(task: string | undefined, flags: ContextFla
         }
         console.log("");
       });
+    } else if (normalizedFlags.history === 0) {
+      console.log(chalk.bold("HISTORY (0)"));
+      console.log(divider);
+      console.log(chalk.gray("(History search skipped: --history 0)"));
+      console.log("");
     } else if (!result.degraded?.cass || result.degraded.cass.available) {
       console.log(chalk.bold("HISTORY (0)"));
       console.log(divider);

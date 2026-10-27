@@ -313,7 +313,11 @@ const TOOL_DEFS = [
         taskType: { type: "string", description: "Exact scopeKey for task-scoped rules; omit to leave this scope open" },
         limit: { type: "integer", minimum: 1, description: "Max rules to return" },
         top: { type: "integer", minimum: 1, description: "DEPRECATED: use limit" },
-        history: { type: "integer", minimum: 1 },
+        history: {
+          type: "integer",
+          minimum: 0,
+          description: "Max history snippets; 0 returns rules only and skips the cass search",
+        },
         days: { type: "integer", minimum: 1 },
         maxTokens: {
           type: "integer",
@@ -582,7 +586,7 @@ async function handleToolCall(name: string, args: any): Promise<any> {
       const top = validatePositiveInt(args?.top, "top", { min: 1, allowUndefined: true });
       if (!top.ok) throw new Error(top.message);
       const history = validatePositiveInt(args?.history, "history", {
-        min: 1,
+        min: 0,
         allowUndefined: true,
       });
       if (!history.ok) throw new Error(history.message);

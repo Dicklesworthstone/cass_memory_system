@@ -847,7 +847,7 @@ describe("tool call validation", () => {
         method: "tools/call",
         params: {
           name: "cm_context",
-          arguments: { task: "test task", history: 0 },
+          arguments: { task: "test task", history: -1 },
         },
       });
 
@@ -856,6 +856,26 @@ describe("tool call validation", () => {
         expect(response.error.message).toBeDefined();
       }
     }, "serve-context-history-validation");
+  });
+
+  it("cm_context accepts history 0 as rules-only context (#97)", async () => {
+    await withTempCassHome(async () => {
+      const response = await routeRequest({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "cm_context",
+          arguments: { task: "test task", history: 0 },
+        },
+      });
+
+      expect("result" in response).toBe(true);
+      if ("result" in response) {
+        const payload = unwrapToolResult(response.result);
+        expect(payload.historySnippets).toEqual([]);
+      }
+    }, "serve-context-history-zero");
   });
 
   it("cm_context validates days parameter", async () => {

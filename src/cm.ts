@@ -108,7 +108,11 @@ export function createProgram(argv: string[] = process.argv): Command {
     .option("--task-type <name>", "Match this exact scopeKey for task-scoped rules")
     .option("--limit <n>", "Number of rules to show", toInt)
     .option("--top <n>", "DEPRECATED: use --limit", toInt)
-    .option("--history <n>", "Number of history snippets", toInt)
+    .option(
+      "--history <n>",
+      "Number of history snippets (0 = rules only; skips the cass search)",
+      toInt,
+    )
     .option("--days <n>", "Lookback days for history", toInt)
     .option(
       "--max-tokens <n>",

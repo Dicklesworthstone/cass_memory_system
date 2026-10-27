@@ -958,6 +958,9 @@ cm context "implement user authentication" --json
 # Select a project's rules and explicit applicability selectors
 cm context "review Python changes" --workspace ~/code/api --language python --task-type review --json
 
+# Rules only, without the cass history search (fast enough for prompt hooks)
+cm context "fix the login bug" --history 0 --json
+
 # Self-documenting explanation of the system
 cm quickstart --json
 

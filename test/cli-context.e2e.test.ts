@@ -575,6 +575,35 @@ describe("E2E: CLI context command", () => {
       });
     });
 
+    it("skips the cass search entirely for history 0 (#97)", async () => {
+      await withTempCassHome(async (env) => {
+        const playbook = createTestPlaybook([
+          createTestBullet({
+            id: "test-rule",
+            content: "Test rule for rules-only context",
+            kind: "workflow_rule",
+            category: "testing",
+            tags: ["test"],
+            effectiveScore: 0.8,
+          }),
+        ]);
+        await writeFile(env.playbookPath, yaml.stringify(playbook));
+
+        // The same missing-index cass as the degraded test above: any search
+        // or availability probe would surface as degraded.cass.
+        const binDir = path.join(env.home, "bin");
+        await mkdir(binDir, { recursive: true });
+        const cassStubPath = await makeCassStub(binDir, { exitCode: 3, search: "[]" });
+        await writeFile(env.configPath, JSON.stringify({ cassPath: cassStubPath }, null, 2));
+
+        const { result, rules } = await generateContextResult("test task", { history: 0 });
+
+        expect(rules.map((b) => b.id)).toContain("test-rule");
+        expect(result.historySnippets).toEqual([]);
+        expect(result.degraded?.cass).toBeUndefined();
+      });
+    });
+
     it("returns history snippets when cass is available", async () => {
       const { cassAvailable } = await import("../src/cass.js");
       if (!cassAvailable()) {
