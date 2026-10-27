@@ -1,6 +1,7 @@
 import chalk from "chalk";
 import { type CassRunner, cassAvailable, cassTimeline } from "../cass.js";
 import { getDefaultConfig, readGlobalConfigRaw, saveConfig } from "../config.js";
+import { formatValidationIssues } from "../input-limits.js";
 import { withLock } from "../lock.js";
 import { icon } from "../output.js";
 import { type Config, ConfigSchema, ErrorCode } from "../types.js";
@@ -79,7 +80,7 @@ async function loadGlobalConfigEnsuringInit(): Promise<Config> {
 
   const parsed = ConfigSchema.safeParse(merged);
   if (!parsed.success) {
-    throw new Error(`Invalid global config: ${parsed.error.message}`);
+    throw new Error(`Invalid global config: ${formatValidationIssues(parsed.error)}`);
   }
 
   return parsed.data;

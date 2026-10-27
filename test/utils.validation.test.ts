@@ -3,6 +3,34 @@ import os from "node:os";
 import path from "node:path";
 import { type InputType, InputValidationError, validateAndSanitizeInput } from "../src/utils.js";
 
+describe("bounded stdin input (#98)", () => {
+  test("accepts the exact UTF-8 byte limit and rejects excess bytes before EOF buffering", async () => {
+    const moduleUrl = new URL("../src/utils.ts", import.meta.url).href;
+    const script = `
+      import { readStdinText } from ${JSON.stringify(moduleUrl)};
+      try {
+        const value = await readStdinText({ maxBytes: 128 });
+        console.log(JSON.stringify({ ok: true, bytes: Buffer.byteLength(value, "utf8") }));
+      } catch (error) {
+        console.log(JSON.stringify({ ok: false, code: error.code }));
+      }
+    `;
+    for (const [input, expected] of [
+      ["é".repeat(64), { ok: true, bytes: 128 }],
+      ["é".repeat(65), { ok: false, code: "INPUT_LIMIT_EXCEEDED" }],
+    ] as const) {
+      const child = Bun.spawn([process.execPath, "-e", script], {
+        stdin: "pipe", stdout: "pipe", stderr: "pipe",
+      });
+      child.stdin.write(input);
+      child.stdin.end();
+      const output = await new Response(child.stdout).text();
+      expect(await child.exited).toBe(0);
+      expect(JSON.parse(output)).toEqual(expected);
+    }
+  });
+});
+
 describe("validateAndSanitizeInput", () => {
   describe("bulletId validation", () => {
     test("accepts valid bullet IDs", () => {

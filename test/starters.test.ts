@@ -1,11 +1,32 @@
 import { describe, expect, test } from "bun:test";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { PLAYBOOK_INPUT_LIMITS } from "../src/input-limits.js";
 import { createEmptyPlaybook } from "../src/playbook.js";
 import { applyStarter, listStarters, loadStarter } from "../src/starters.js";
 import { withTempCassHome } from "./helpers/temp.js";
 
 describe("starters module (unit)", () => {
+  test("ignores oversized and malformed custom inputs while retaining normal starters", async () => {
+    await withTempCassHome(async (env) => {
+      const startersDir = path.join(env.cassMemoryDir, "starters", "custom");
+      await mkdir(startersDir, { recursive: true });
+      const oversized = Array(PLAYBOOK_INPUT_LIMITS.maxArrayLength + 1).fill(null);
+      await writeFile(path.join(startersDir, "too-many.json"), JSON.stringify({ bullets: oversized }));
+      await writeFile(path.join(startersDir, "nested.json"), JSON.stringify({
+        bullets: [{ content: "Valid rule", tags: oversized }],
+      }));
+      await writeFile(path.join(startersDir, "invalid.yaml"), "bullets: [null, false, 1]\n");
+      await writeFile(path.join(startersDir, "cyclic.yaml"), "bullets: &rules [*rules]\n");
+      expect(await loadStarter("too-many")).toBeNull();
+      expect(await loadStarter("nested")).toBeNull();
+      expect(await loadStarter("invalid")).toBeNull();
+      expect(await loadStarter("cyclic")).toBeNull();
+      expect((await listStarters()).every((starter) => starter.source === "builtin")).toBe(true);
+      expect((await loadStarter("general"))?.bullets.length).toBeGreaterThan(0);
+    }, "starters-input-limits");
+  });
+
   test("listStarters returns builtins sorted by name in a fresh HOME", async () => {
     await withTempCassHome(async () => {
       const starters = await listStarters();

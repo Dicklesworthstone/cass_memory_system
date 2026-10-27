@@ -18,6 +18,8 @@ interface InstallScenario {
   gnuLibc?: boolean;
   ldd?: "gnu" | "musl" | "unknown" | "absent";
   muslLoader?: boolean;
+  failLatest?: boolean;
+  latestUrl?: string;
   failArtifact?: boolean;
   failChecksum?: boolean;
   checksumText?: string;
@@ -127,7 +129,8 @@ done
 printf 'curl %s\\n' "$url" >> "$FIXTURE_LOG"
 case "$url" in
   */releases/latest)
-    printf '%s\\n' 'https://github.com/Dicklesworthstone/cass_memory_system/releases/tag/v9.8.7' ;;
+    printf '%s\\n' "$FIXTURE_LATEST_URL"
+    [ "$FIXTURE_FAIL_LATEST" = 0 ] || exit 22 ;;
   *.sha256|*/checksum)
     [ "$FIXTURE_FAIL_CHECKSUM" = 0 ] || exit 22
     cp "$FIXTURE_ROOT/checksum" "$output" ;;
@@ -180,6 +183,8 @@ esac`);
         FIXTURE_GNU: scenario.gnuLibc === false ? "0" : "1",
         FIXTURE_LDD: scenario.ldd ?? "gnu",
         FIXTURE_MUSL_LOADER: scenario.muslLoader ? "1" : "0",
+        FIXTURE_FAIL_LATEST: scenario.failLatest ? "1" : "0",
+        FIXTURE_LATEST_URL: scenario.latestUrl ?? "https://github.com/Dicklesworthstone/cass_memory_system/releases/tag/v9.8.7",
         FIXTURE_FAIL_ARTIFACT: scenario.failArtifact ? "1" : "0",
         FIXTURE_FAIL_CHECKSUM: scenario.failChecksum ? "1" : "0",
         FIXTURE_FAIL_DEPENDENCIES: scenario.failDependencies ? "1" : "0",
@@ -201,6 +206,47 @@ esac`);
 const posixDescribe = process.platform === "win32" ? describe.skip : describe;
 
 posixDescribe("release installer", () => {
+  for (const fromSource of [false, true]) {
+    test(`a failed latest lookup preserves an existing installation (${fromSource ? "source" : "binary"})`, async () => {
+      // curl -w can print a plausible final URL even when the request fails.
+      const result = await runInstaller({
+        failLatest: true,
+        existingBinary: true,
+        args: fromSource ? ["--from-source"] : [],
+      });
+      expect(result.exitCode).not.toBe(0);
+      expect(result.installed).toBe(executable("existing-install"));
+      expect(result.output).toContain("--version vX.Y.Z");
+      expect(result.commands).toEqual([
+        "curl https://github.com/Dicklesworthstone/cass_memory_system/releases/latest",
+      ]);
+    });
+  }
+
+  for (const latestUrl of [
+    "",
+    "https://github.com/Dicklesworthstone/cass_memory_system/releases/latest",
+    "https://github.com/another/repository/releases/tag/v9.8.7",
+  ]) {
+    test(`an unresolved or unrelated latest redirect cannot install an old fallback: ${JSON.stringify(latestUrl)}`, async () => {
+      const result = await runInstaller({ latestUrl });
+      expect(result.exitCode).not.toBe(0);
+      expect(result.installed).toBeNull();
+      expect(result.output).toContain("Could not resolve latest version");
+      expect(result.commands).toEqual([
+        "curl https://github.com/Dicklesworthstone/cass_memory_system/releases/latest",
+      ]);
+    });
+  }
+
+  test("an explicitly selected release does not require latest resolution", async () => {
+    const result = await runInstaller({ failLatest: true, args: ["--version", "v1.2.3"] });
+    expect(result.exitCode).toBe(0);
+    expect(result.installed).toBe(artifact);
+    expect(result.commands.some((entry) => entry.endsWith("/releases/latest"))).toBe(false);
+    expect(result.commands).toContain("curl https://github.com/Dicklesworthstone/cass_memory_system/releases/download/v1.2.3/cass-memory-linux-x64");
+  });
+
   for (const scenario of [
     { name: "GNU getconf wins over a side-by-side musl loader", gnuLibc: true, ldd: "musl" as const },
     { name: "GNU ldd wins over a side-by-side musl loader", gnuLibc: false, ldd: "gnu" as const },

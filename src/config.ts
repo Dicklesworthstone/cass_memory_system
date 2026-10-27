@@ -1,6 +1,15 @@
-import fs from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
+import {
+  assertInputLimits,
+  assertTextSize,
+  CONFIG_INPUT_LIMITS,
+  formatValidationIssues,
+  InputLimitError,
+  parseJsonInput,
+  parseYamlInput,
+  readBoundedFile,
+} from "./input-limits.js";
 import { configureEmbeddingBackend } from "./semantic.js";
 import { type BudgetConfig, type Config, ConfigSchema, type SanitizationConfig } from "./types.js";
 import {
@@ -124,15 +133,20 @@ async function loadConfigFile(filePath: string): Promise<Partial<Config>> {
   if (!(await fileExists(expanded))) return {};
 
   try {
-    const content = await fs.readFile(expanded, "utf-8");
+    const content = await readBoundedFile(expanded, CONFIG_INPUT_LIMITS.maxBytes);
     const ext = path.extname(expanded);
 
     if (ext === ".yaml" || ext === ".yml") {
-      return normalizeYamlKeys(yaml.parse(content));
+      return normalizeYamlKeys(
+        parseYamlInput(content, CONFIG_INPUT_LIMITS, expanded),
+      ) as Partial<Config>;
     } else {
-      return JSON.parse(content);
+      return parseJsonInput(content, CONFIG_INPUT_LIMITS, expanded) as Partial<Config>;
     }
   } catch (error: any) {
+    // An excessive input must fail the request, including when this is a
+    // repository selected by an MCP client. Never silently drop its settings.
+    if (error instanceof InputLimitError) throw error;
     warn(`Failed to load config from ${expanded}: ${error.message}`);
     return {};
   }
@@ -181,6 +195,9 @@ export async function loadConfig(
   cliOverrides: Partial<Config> = {},
   options: { cwd?: string } = {},
 ): Promise<Config> {
+  // Bound programmatic inputs before migration, copying, or additive array
+  // merging. File inputs are checked before parsing and YAML normalization.
+  assertInputLimits(cliOverrides, CONFIG_INPUT_LIMITS, "configuration overrides");
   const defaults = getCachedDefaults();
   const { config: globalConfigRaw } = await loadConfigFromDir(resolveGlobalDir());
 
@@ -357,10 +374,13 @@ export async function loadConfig(
     },
   };
 
+  // Individually valid source files may exceed the limit once combined.
+  assertInputLimits(merged, CONFIG_INPUT_LIMITS, "merged configuration");
   const result = ConfigSchema.safeParse(merged);
   if (!result.success) {
-    warn(`Invalid configuration detected: ${result.error.message}`);
-    throw new Error(`Configuration validation failed: ${result.error.message}`);
+    const details = formatValidationIssues(result.error);
+    warn(`Invalid configuration detected: ${details}`);
+    throw new Error(`Configuration validation failed: ${details}`);
   }
 
   if (process.env.CASS_MEMORY_VERBOSE === "1" || process.env.CASS_MEMORY_VERBOSE === "true") {
@@ -416,9 +436,11 @@ export async function readGlobalConfigRaw(): Promise<{
   if (!file.exists) return { file, data: {} };
 
   try {
-    const content = await fs.readFile(file.path, "utf-8");
+    const content = await readBoundedFile(file.path, CONFIG_INPUT_LIMITS.maxBytes);
     const parsed: unknown =
-      file.format === "yaml" ? normalizeYamlKeys(yaml.parse(content)) : JSON.parse(content);
+      file.format === "yaml"
+        ? normalizeYamlKeys(parseYamlInput(content, CONFIG_INPUT_LIMITS, file.path))
+        : parseJsonInput(content, CONFIG_INPUT_LIMITS, file.path);
     // An empty YAML file parses to null; treat it as an empty object.
     if (parsed === null || parsed === undefined) return { file, data: {} };
     if (typeof parsed !== "object" || Array.isArray(parsed)) return { file, data: null };
@@ -446,12 +468,19 @@ async function writeGlobalConfigKeys(
   data: Record<string, unknown>,
   changedKeys: string[] = Object.keys(data),
 ): Promise<void> {
+  assertInputLimits(data, CONFIG_INPUT_LIMITS, file.path);
   if (file.format === "json") {
-    await atomicWrite(file.path, JSON.stringify(data, null, 2));
+    const serialized = JSON.stringify(data, null, 2);
+    assertTextSize(serialized, CONFIG_INPUT_LIMITS.maxBytes, file.path);
+    await atomicWrite(file.path, serialized);
     return;
   }
 
-  const existing = file.exists ? await fs.readFile(file.path, "utf-8") : "";
+  const existing = file.exists
+    ? await readBoundedFile(file.path, CONFIG_INPUT_LIMITS.maxBytes)
+    : "";
+  // Recheck the current file: it may have changed since readGlobalConfigRaw().
+  parseYamlInput(existing, CONFIG_INPUT_LIMITS, file.path);
   const doc = yaml.parseDocument(existing);
   if (doc.errors.length > 0 || (doc.contents !== null && !yaml.isMap(doc.contents))) {
     // readGlobalConfigRaw() already reports such files as unwritable (null);
@@ -469,7 +498,11 @@ async function writeGlobalConfigKeys(
     }
     doc.set(key, value);
   }
-  await atomicWrite(file.path, doc.toString());
+  const serialized = doc.toString();
+  // YAML preserves untouched fields; validate the full resulting document,
+  // including those fields, so we cannot write a file the loader would refuse.
+  parseYamlInput(serialized, CONFIG_INPUT_LIMITS, file.path);
+  await atomicWrite(file.path, serialized);
 }
 
 /**

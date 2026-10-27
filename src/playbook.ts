@@ -2,6 +2,15 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
 import type { z } from "zod";
+import {
+  assertInputLimits,
+  assertTextSize,
+  formatValidationIssues,
+  InputLimitError,
+  parseYamlInput,
+  PLAYBOOK_INPUT_LIMITS,
+  readBoundedFile,
+} from "./input-limits.js";
 import { withLock } from "./lock.js";
 import { normalizeWorkspacePath, resolveProjectRoot } from "./workspace.js";
 import { formatMaturityIcon, iconPrefix } from "./output.js";
@@ -73,14 +82,14 @@ export async function loadPlaybook(filePath: string): Promise<Playbook> {
   }
 
   try {
-    const content = await fs.readFile(expanded, "utf-8");
+    const content = await readBoundedFile(expanded, PLAYBOOK_INPUT_LIMITS.maxBytes);
     if (!content.trim()) return createEmptyPlaybook();
 
-    const raw = yaml.parse(content);
+    const raw = parseYamlInput(content, PLAYBOOK_INPUT_LIMITS, expanded);
     const result = PlaybookSchema.safeParse(raw);
 
     if (!result.success) {
-      logError(`Playbook validation failed for ${expanded}: ${result.error.message}`);
+      logError(`Playbook validation failed for ${expanded}: ${formatValidationIssues(result.error)}`);
       throw new Error(
         `Playbook at ${expanded} is invalid. Please fix it manually or remove it to reset.`,
       );
@@ -104,7 +113,11 @@ export async function savePlaybook(
   if (options.updateLastReflection) {
     playbook.metadata.lastReflection = now();
   }
-  const yamlStr = yaml.stringify(playbook);
+  assertInputLimits(playbook, PLAYBOOK_INPUT_LIMITS, filePath);
+  // The expanded structure was bounded above. Do not introduce aliases that
+  // could make our own saved file exceed the reader's alias-expansion limit.
+  const yamlStr = yaml.stringify(playbook, { aliasDuplicateObjects: false });
+  assertTextSize(yamlStr, PLAYBOOK_INPUT_LIMITS.maxBytes, filePath);
   await atomicWrite(filePath, yamlStr);
 }
 
@@ -150,6 +163,9 @@ export async function recoverCorruptPlaybook(
   playbookPath: string,
   error: Error,
 ): Promise<PlaybookRecoveryResult> {
+  // A resource limit is not evidence of corruption. Never replace or copy an
+  // oversized file as part of automatic recovery; the user must reduce it.
+  if (error instanceof InputLimitError) throw error;
   const expanded = expandPath(playbookPath);
   let backupPath: string | null = null;
 
@@ -226,7 +242,7 @@ export async function loadPlaybookWithRecovery(
     return { playbook, recovered: false };
   } catch (err: any) {
     // Don't recover from ENOENT - that's handled by loadPlaybook
-    if (err.code === "ENOENT") {
+    if (err.code === "ENOENT" || err instanceof InputLimitError) {
       throw err;
     }
 
@@ -248,7 +264,7 @@ export async function loadBlockedLog(logPath: string): Promise<ToxicEntry[]> {
   }
 
   try {
-    const content = await fs.readFile(expanded, "utf-8");
+    const content = await readBoundedFile(expanded, PLAYBOOK_INPUT_LIMITS.maxBytes);
     const entries: ToxicEntry[] = [];
 
     for (const line of content.split("\n")) {
@@ -268,6 +284,9 @@ export async function loadBlockedLog(logPath: string): Promise<ToxicEntry[]> {
     }
     return entries;
   } catch (err: any) {
+    // Ignoring an oversized repository block list would silently re-enable
+    // rules the project explicitly blocked.
+    if (err instanceof InputLimitError) throw err;
     warn(`Failed to read blocked log ${expanded}: ${err.message}`);
     return [];
   }
@@ -293,7 +312,7 @@ export async function removeFromBlockedLog(bulletId: string, logPath: string): P
     }
 
     try {
-      const content = await fs.readFile(expanded, "utf-8");
+      const content = await readBoundedFile(expanded, PLAYBOOK_INPUT_LIMITS.maxBytes);
       const lines = content.split("\n");
       const filteredLines: string[] = [];
       let found = false;
@@ -323,6 +342,7 @@ export async function removeFromBlockedLog(bulletId: string, logPath: string): P
 
       return found;
     } catch (err: any) {
+      if (err instanceof InputLimitError) throw err;
       warn(`Failed to remove from blocked log ${expanded}: ${err.message}`);
       return false;
     }

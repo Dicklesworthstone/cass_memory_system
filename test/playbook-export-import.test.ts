@@ -6,8 +6,9 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
 import { playbookCommand } from "../src/commands/playbook.js";
+import { PLAYBOOK_INPUT_LIMITS } from "../src/input-limits.js";
 import { createTestBullet, createTestConfig, createTestPlaybook } from "./helpers/factories.js";
-import { withTempDir } from "./helpers/temp.js";
+import { withTempCassHome, withTempDir } from "./helpers/temp.js";
 
 // Helper to capture console output
 function captureConsole() {
@@ -614,6 +615,78 @@ describe("playbook import command", () => {
       expect(result.success).toBe(false);
       expect(result.error.message).toContain("Parse error");
     });
+  });
+});
+
+describe("bounded playbook imports and batch input (#98)", () => {
+  it("rejects oversized JSON/YAML imports before validating or writing bullets", async () => {
+    await withTempCassHome(async (env) => {
+      await writeFile(env.configPath, JSON.stringify(createTestConfig({ playbookPath: env.playbookPath })));
+      await savePlaybookToPath(createTestPlaybook([createTestBullet({ content: "Keep existing rules" })]), env.playbookPath);
+      const original = await readFile(env.playbookPath, "utf8");
+      const invalid = Array(PLAYBOOK_INPUT_LIMITS.maxArrayLength + 1).fill(null);
+      for (const [filename, input] of [
+        ["oversized.json", { success: true, data: { bullets: invalid } }],
+        ["nested.yaml", { bullets: [{ ...createTestBullet(), feedbackEvents: invalid }] }],
+      ] as const) {
+        const file = path.join(env.home, filename);
+        await writeFile(file, JSON.stringify(input));
+        const capture = captureConsole();
+        const previousExitCode = process.exitCode;
+        try {
+          await playbookCommand("import", [file], { json: true });
+          const result = JSON.parse(capture.logs.join("\n"));
+          expect(result.success).toBe(false);
+          expect(result.error.message).toContain("Input limit exceeded");
+          expect(capture.logs.join("\n").length).toBeLessThan(4000);
+        } finally {
+          capture.restore();
+          process.exitCode = previousExitCode;
+        }
+        expect(await readFile(env.playbookPath, "utf8")).toBe(original);
+      }
+    }, "playbook-import-limits");
+  });
+
+  it("bounds invalid-element diagnostics and rejects oversized batch arrays", async () => {
+    await withTempCassHome(async (env) => {
+      await writeFile(env.configPath, JSON.stringify(createTestConfig({ playbookPath: env.playbookPath })));
+      await savePlaybookToPath(createTestPlaybook([]), env.playbookPath);
+      const original = await readFile(env.playbookPath, "utf8");
+      const file = path.join(env.home, "rules.json");
+      for (const action of ["import", "add"] as const) {
+        await writeFile(file, JSON.stringify(Array(128).fill(null)));
+        const capture = captureConsole();
+        const previousExitCode = process.exitCode;
+        try {
+          await playbookCommand(action, action === "import" ? [file] : [], { json: true, file });
+          const result = JSON.parse(capture.logs.join("\n"));
+          if (action === "import") {
+            expect(result.error.details.failed).toBe(128);
+            expect(result.error.details.errors.length).toBeLessThanOrEqual(20);
+          } else {
+            expect(result.data.summary.failed).toBe(128);
+            expect(result.data.failed.length).toBeLessThanOrEqual(20);
+          }
+          expect(capture.logs.join("\n").length).toBeLessThan(30_000);
+        } finally {
+          capture.restore();
+          process.exitCode = previousExitCode;
+        }
+        expect(await readFile(env.playbookPath, "utf8")).toBe(original);
+      }
+      await writeFile(file, JSON.stringify(Array(PLAYBOOK_INPUT_LIMITS.maxArrayLength + 1).fill(null)));
+      const capture = captureConsole();
+      try {
+        await playbookCommand("add", [], { json: true, file });
+        const result = JSON.parse(capture.logs.join("\n"));
+        expect(result.data.success).toBe(false);
+        expect(result.data.failed[0].error).toContain("Input limit exceeded");
+      } finally {
+        capture.restore();
+      }
+      expect(await readFile(env.playbookPath, "utf8")).toBe(original);
+    }, "playbook-batch-limits");
   });
 });
 

@@ -47,27 +47,26 @@ resolve_version() {
   # User-Agent: Identifies installer (GitHub may block empty UA)
   # -o /dev/null: Discard body, we only want the URL
   # -w '%{url_effective}': Capture final URL after redirects
-  final_url="$(curl -fsSL \
+  if final_url="$(curl -fsSL \
     --connect-timeout 10 \
     --max-time 30 \
     -A "cass-memory-installer/1.0" \
     -o /dev/null \
     -w '%{url_effective}' \
-    "$releases_url" 2>/dev/null || true)"
+    "$releases_url" 2>/dev/null)"; then
 
-  # Extract tag: .../releases/tag/v0.2.1 → v0.2.1
-  local tag="${final_url##*/}"
-
-  # Validate: URL must contain /releases/tag/ (proves redirect worked)
-  # This catches: network errors, no releases, unexpected redirects
-  if [ -n "$tag" ] && [[ "$final_url" == *"/releases/tag/"* ]]; then
-    VERSION="$tag"
-    info "Resolved latest version: $VERSION"
-  else
-    # Fallback to known-good version (update when releasing major versions)
-    VERSION="v0.2.2"
-    warn "Could not resolve latest version; defaulting to $VERSION"
+    # Accept only a release redirect for the requested repository.
+    local tag="${final_url##*/}"
+    if [ -n "$tag" ] && [ "$final_url" = "https://github.com/${OWNER}/${REPO}/releases/tag/$tag" ]; then
+      VERSION="$tag"
+      info "Resolved latest version: $VERSION"
+      return 0
+    fi
   fi
+
+  # An old fallback can silently reinstall a known vulnerable release (#98).
+  err "Could not resolve latest version. Retry or select a release explicitly with --version vX.Y.Z."
+  return 1
 }
 
 maybe_add_path() {

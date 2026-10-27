@@ -6,6 +6,13 @@ import yaml from "yaml";
 import { cassAvailable, cassNeedsIndex, cassSearch, cassStats, safeCassSearch } from "../cass.js";
 import { DEFAULT_CONFIG, loadConfig, patchGlobalConfig } from "../config.js";
 import {
+  CONFIG_INPUT_LIMITS,
+  InputLimitError,
+  parseJsonInput,
+  parseYamlInput,
+  readBoundedFile,
+} from "../input-limits.js";
+import {
   getAvailableProviders,
   isLLMAvailable,
   resolveCliCommand,
@@ -129,7 +136,7 @@ type FixPlan = {
   wouldSkip: Array<{ id: string; reason: string }>;
 };
 
-type ConfigFileValidation = { valid: true } | { valid: false; error: string };
+type ConfigFileValidation = { valid: true } | { valid: false; error: string; limitExceeded?: boolean };
 
 /**
  * Syntax-level validation of a config file in its own format (JSON or YAML).
@@ -137,15 +144,21 @@ type ConfigFileValidation = { valid: true } | { valid: false; error: string };
  */
 async function validateConfigFile(file: ResolvedConfigFile): Promise<ConfigFileValidation> {
   try {
-    const raw = await fs.readFile(file.path, "utf-8");
-    const parsed: unknown = file.format === "yaml" ? yaml.parse(raw) : JSON.parse(raw);
+    const raw = await readBoundedFile(file.path, CONFIG_INPUT_LIMITS.maxBytes);
+    const parsed: unknown = file.format === "yaml"
+      ? parseYamlInput(raw, CONFIG_INPUT_LIMITS, file.path)
+      : parseJsonInput(raw, CONFIG_INPUT_LIMITS, file.path);
     // An empty YAML file parses to null and is treated as "no overrides".
     if (parsed !== null && (typeof parsed !== "object" || Array.isArray(parsed))) {
       return { valid: false, error: "top-level value must be an object" };
     }
     return { valid: true };
   } catch (err: any) {
-    return { valid: false, error: err?.message || String(err) };
+    return {
+      valid: false,
+      error: err?.message || String(err),
+      limitExceeded: err instanceof InputLimitError,
+    };
   }
 }
 
@@ -1443,16 +1456,15 @@ function createPlaybookSchemaMigrationFix(
     safety: "safe",
     fix: async () => {
       const expanded = expandPath(playbookPath);
-      const backupPath = `${expanded}.backup.${Date.now()}`;
-      try {
-        await fs.copyFile(expanded, backupPath);
-      } catch {
-        // Best-effort backup
-      }
-
       await withLock(expanded, async () => {
         const playbook = await loadPlaybook(expanded);
         if ((playbook.schema_version ?? 2) >= 2) return;
+        const backupPath = `${expanded}.backup.${Date.now()}`;
+        try {
+          await fs.copyFile(expanded, backupPath);
+        } catch {
+          // Best-effort backup of a bounded, successfully validated file.
+        }
         playbook.schema_version = 2;
         await savePlaybook(playbook, expanded);
       });
@@ -1517,6 +1529,10 @@ function createResetConfigFix(configFile: ResolvedConfigFile): FixableIssue {
       // Create backup
       const exists = await fileExists(configPath);
       if (exists) {
+        const validation = await validateConfigFile(configFile);
+        if (!validation.valid && validation.limitExceeded) {
+          throw new Error(`Refusing to reset config: ${validation.error}`);
+        }
         const backupPath = `${configPath}.backup.${Date.now()}`;
         await fs.copyFile(expandPath(configPath), backupPath);
       }
@@ -1612,7 +1628,12 @@ export async function detectFixableIssues(
     const validation = await validateConfigFile(globalConfigFile);
     if (options.configLoadError || !validation.valid) {
       configIsValid = false;
-      issues.push(createResetConfigFix(globalConfigFile));
+      // Limits indicate that input needs to be reduced, not that it is
+      // corrupt. A repo limit error must never trigger a global config reset.
+      if (!(options.configLoadError instanceof InputLimitError) &&
+          (validation.valid || !validation.limitExceeded)) {
+        issues.push(createResetConfigFix(globalConfigFile));
+      }
     }
   }
 

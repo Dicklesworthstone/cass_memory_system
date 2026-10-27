@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setSystemTime, test } from "bun:test";
 import {
   analyzeScoreDistribution,
   calculateDecayedValue,
@@ -98,14 +98,21 @@ describe("Confidence Decay", () => {
     });
 
     test("should apply maturity multipliers", () => {
-      const bullet = createTestBullet({
-        maturity: "proven",
-        feedbackEvents: [createTestFeedbackEvent("helpful", 0)],
-      });
+      // This tests the exact multiplier, not elapsed-time decay. A 1 ms clock
+      // advance between creating and scoring the event changes the result.
+      setSystemTime(new Date("2026-10-27T00:00:00Z"));
+      try {
+        const bullet = createTestBullet({
+          maturity: "proven",
+          feedbackEvents: [createTestFeedbackEvent("helpful", 0)],
+        });
 
-      // 1.0 (base) * 1.5 (proven multiplier)
-      const score = getEffectiveScore(bullet, config);
-      expect(score).toBe(1.5);
+        // 1.0 (base) * 1.5 (proven multiplier)
+        const score = getEffectiveScore(bullet, config);
+        expect(score).toBe(1.5);
+      } finally {
+        setSystemTime();
+      }
     });
 
     test("should honor harmful multiplier overrides from config", () => {

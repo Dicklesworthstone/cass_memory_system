@@ -1,9 +1,16 @@
-import { copyFile, mkdir, readFile } from "node:fs/promises";
+import { copyFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import chalk from "chalk";
 import yaml from "yaml";
 import { z } from "zod";
 import { loadConfig } from "../config.js";
+import {
+  formatValidationIssues,
+  parseJsonInput,
+  parseYamlInput,
+  PLAYBOOK_INPUT_LIMITS,
+  readBoundedFile,
+} from "../input-limits.js";
 import {
   type BulletConflictPair,
   directivesDisagree,
@@ -73,6 +80,7 @@ import { sameRuleInterpretation, sameRuleScope } from "../workspace.js";
 
 /** Very short rules ("Use Node 18" / "Use Node 20") only merge on exact text. */
 const MIN_TOKENS_FOR_SIMILAR_MERGE = 4;
+const MAX_IMPORT_DIAGNOSTICS = 20;
 
 // Helper function to format a bullet for detailed display
 function formatBulletDetails(
@@ -283,10 +291,10 @@ async function handleBatchAdd(
   let rawInput: string;
   try {
     if (flags.file === "-") {
-      rawInput = await readStdinText();
+      rawInput = await readStdinText({ maxBytes: PLAYBOOK_INPUT_LIMITS.maxBytes });
     } else {
       // Read from file
-      rawInput = await readFile(expandPath(flags.file!), "utf-8");
+      rawInput = await readBoundedFile(expandPath(flags.file!), PLAYBOOK_INPUT_LIMITS.maxBytes);
     }
   } catch (err: any) {
     result.failed.push({
@@ -301,7 +309,7 @@ async function handleBatchAdd(
   // Parse JSON
   let rules: unknown[];
   try {
-    const parsed = JSON.parse(rawInput);
+    const parsed = parseJsonInput(rawInput, PLAYBOOK_INPUT_LIMITS, flags.file || "batch input");
     if (!Array.isArray(parsed)) {
       throw new Error("Input must be a JSON array");
     }
@@ -340,14 +348,17 @@ async function handleBatchAdd(
       // Validate schema
       const validated = BatchRuleSchema.safeParse(raw);
       if (!validated.success) {
-        const content =
-          typeof raw === "object" && raw !== null && "content" in raw
-            ? String((raw as any).content).slice(0, 50)
-            : `[item ${i}]`;
-        result.failed.push({
-          content,
-          error: validated.error.issues.map((e) => e.message).join(", "),
-        });
+        if (result.failed.length < MAX_IMPORT_DIAGNOSTICS) {
+          const content =
+            typeof raw === "object" && raw !== null && "content" in raw &&
+            typeof (raw as any).content === "string"
+              ? (raw as any).content.slice(0, 50)
+              : `[item ${i}]`;
+          result.failed.push({
+            content,
+            error: formatValidationIssues(validated.error),
+          });
+        }
         continue;
       }
 
@@ -397,10 +408,12 @@ async function handleBatchAdd(
         });
         result.summary.succeeded++;
       } catch (err: any) {
-        result.failed.push({
-          content: rule.content.slice(0, 50),
-          error: err.message || "Unknown error",
-        });
+        if (result.failed.length < MAX_IMPORT_DIAGNOSTICS) {
+          result.failed.push({
+            content: rule.content.slice(0, 50),
+            error: (err.message || "Unknown error").slice(0, 1000),
+          });
+        }
       }
     }
 
@@ -552,15 +565,15 @@ export async function playbookCommand(
     }
 
     // Read and parse file
-    const content = await readFile(expandedFilePath, "utf-8");
-    const format = detectFormat(content, expandedFilePath);
-
+    let format: "yaml" | "json" | undefined;
     let importedData: any;
     try {
+      const content = await readBoundedFile(expandedFilePath, PLAYBOOK_INPUT_LIMITS.maxBytes);
+      format = detectFormat(content, expandedFilePath);
       if (format === "json") {
-        importedData = JSON.parse(content);
+        importedData = parseJsonInput(content, PLAYBOOK_INPUT_LIMITS, expandedFilePath);
       } else {
-        importedData = yaml.parse(content);
+        importedData = parseYamlInput(content, PLAYBOOK_INPUT_LIMITS, expandedFilePath);
       }
     } catch (err: any) {
       const message = err?.message || String(err);
@@ -588,8 +601,9 @@ export async function playbookCommand(
     // Validate imported bullets
     const importedBullets: PlaybookBullet[] = [];
     const validationErrors: string[] = [];
+    let validationFailureCount = 0;
 
-    const bulletsArray = importedData.bullets || importedData;
+    const bulletsArray = importedData?.bullets || importedData;
     if (!Array.isArray(bulletsArray)) {
       reportError("Invalid format: expected bullets array", {
         code: ErrorCode.INVALID_INPUT,
@@ -630,16 +644,22 @@ export async function playbookCommand(
         const validated = PlaybookBulletSchema.parse(bullet);
         importedBullets.push(validated);
       } catch (err: any) {
-        validationErrors.push(`Bullet ${i}: ${err.message}`);
+        validationFailureCount++;
+        if (validationErrors.length < MAX_IMPORT_DIAGNOSTICS) {
+          const message = err instanceof z.ZodError
+            ? formatValidationIssues(err)
+            : String(err.message || err).slice(0, 1000);
+          validationErrors.push(`Bullet ${i}: ${message}`);
+        }
       }
     }
 
     validateProgress.complete("Validation complete");
 
-    if (validationErrors.length > 0 && importedBullets.length === 0) {
+    if (validationFailureCount > 0 && importedBullets.length === 0) {
       reportError("All bullets failed validation", {
         code: ErrorCode.VALIDATION_FAILED,
-        details: { errors: validationErrors, path: filePath },
+        details: { errors: validationErrors, failed: validationFailureCount, path: filePath },
         json: flags.json,
         command,
         startedAtMs,
@@ -803,6 +823,7 @@ export async function playbookCommand(
             skipped,
             updated,
             conflicts,
+            validationFailureCount,
             validationWarnings: validationErrors.length > 0 ? validationErrors : undefined,
           },
           { startedAtMs },
@@ -827,8 +848,8 @@ export async function playbookCommand(
         if (updated > 0) {
           console.log(`  - ${chalk.blue(updated)} bullets updated`);
         }
-        if (validationErrors.length > 0) {
-          console.log(chalk.yellow(`  - ${validationErrors.length} bullets failed validation`));
+        if (validationFailureCount > 0) {
+          console.log(chalk.yellow(`  - ${validationFailureCount} bullets failed validation`));
         }
       }
     });
@@ -1041,7 +1062,9 @@ export async function playbookCommand(
         }
         if (result.failed.length > 0) {
           console.log("");
-          console.log(chalk.red(`${icon("failure")} Failed ${result.failed.length} rules:`));
+          const examples = result.summary.failed > result.failed.length
+            ? ` (showing first ${result.failed.length})` : "";
+          console.log(chalk.red(`${icon("failure")} Failed ${result.summary.failed} rules${examples}:`));
           for (const r of result.failed) {
             console.log(chalk.dim(`  "${truncate(r.content, 40)}": ${r.error}`));
           }

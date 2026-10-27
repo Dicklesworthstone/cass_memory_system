@@ -1,6 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import yaml from "yaml";
+import {
+  parseJsonInput,
+  parseYamlInput,
+  PLAYBOOK_INPUT_LIMITS,
+  readBoundedFile,
+} from "./input-limits.js";
 import { createEmptyPlaybook } from "./playbook.js";
 import type {
   BulletKind,
@@ -312,13 +317,27 @@ function buildPlaybookFromDefinition(def: StarterDefinition): Playbook {
 
 async function loadCustomStarter(pathname: string): Promise<StarterDefinition | null> {
   try {
-    const raw = await fs.readFile(pathname, "utf-8");
-    const parsed = pathname.endsWith(".json") ? JSON.parse(raw) : yaml.parse(raw);
-    if (!parsed || !Array.isArray(parsed.bullets)) return null;
+    const raw = await readBoundedFile(pathname, PLAYBOOK_INPUT_LIMITS.maxBytes);
+    const parsed = pathname.endsWith(".json")
+      ? parseJsonInput(raw, PLAYBOOK_INPUT_LIMITS, pathname)
+      : parseYamlInput(raw, PLAYBOOK_INPUT_LIMITS, pathname);
+    if (!parsed || typeof parsed !== "object" || !("bullets" in parsed) ||
+        !Array.isArray(parsed.bullets)) return null;
+    // Custom files are untyped at runtime. Reject malformed entries before
+    // normalization touches content, tags or other per-bullet fields.
+    if (parsed.bullets.some((bullet) =>
+      !bullet || typeof bullet !== "object" || typeof bullet.content !== "string" ||
+      (bullet.category !== undefined && typeof bullet.category !== "string") ||
+      (bullet.tags !== undefined && (!Array.isArray(bullet.tags) ||
+        bullet.tags.some((tag: unknown) => typeof tag !== "string")))
+    )) return null;
+    const definition = parsed as Record<string, unknown> & { bullets: StarterBulletInput[] };
     return {
-      name: parsed.name || path.basename(pathname, path.extname(pathname)),
-      description: parsed.description || "Custom starter",
-      bullets: parsed.bullets,
+      name: typeof definition.name === "string" && definition.name
+        ? definition.name : path.basename(pathname, path.extname(pathname)),
+      description: typeof definition.description === "string" && definition.description
+        ? definition.description : "Custom starter",
+      bullets: definition.bullets,
       source: "custom",
     };
   } catch {

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { execSync } from "node:child_process";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   bakeBudgetIntoConfig,
@@ -10,8 +10,10 @@ import {
   isBudgetBakedInConfig,
   loadConfig,
   patchGlobalConfig,
+  readGlobalConfigRaw,
   saveConfig,
 } from "../src/config.js";
+import { CONFIG_INPUT_LIMITS, InputLimitError } from "../src/input-limits.js";
 import { getEmbeddingBackend, getSemanticStatus, setEmbeddingBackend } from "../src/semantic.js";
 import { type Config, ConfigSchema } from "../src/types.js";
 import { ensureGlobalStructure } from "../src/utils.js";
@@ -877,6 +879,164 @@ describe("loadConfig() - Error handling", () => {
         provider: "invalid-provider" as any,
       }),
     ).rejects.toThrow(/Configuration validation failed/);
+  });
+});
+
+// These fixtures exceed configured limits by one element/byte, never by enough
+// to stress the test host. Rejections must happen before normalization or Zod.
+describe("configuration input limits (#98)", () => {
+  for (const extension of ["json", "yaml", "yml"] as const) {
+    test(`rejects oversized invalid repository arrays in config.${extension}`, async () => {
+      await withTempCassHome(async () => {
+        await withTempDir("config-array-limit", async (repoDir) => {
+          execSync("git init --quiet", { cwd: repoDir, stdio: "pipe" });
+          await mkdir(join(repoDir, ".cass"));
+          const configPath = join(repoDir, ".cass", `config.${extension}`);
+          const entries = Array(CONFIG_INPUT_LIMITS.maxArrayLength + 1).fill(null);
+          const text = extension === "json"
+            ? JSON.stringify({ sessionExcludePatterns: entries })
+            : `session_exclude_patterns: [${entries.map(() => "null").join(", ")}]\n`;
+          await writeFile(configPath, text);
+
+          await expect(loadConfig({}, { cwd: repoDir })).rejects.toBeInstanceOf(InputLimitError);
+          expect(await readFile(configPath, "utf-8")).toBe(text);
+        });
+      });
+    });
+  }
+
+  test("bounds repository sanitization arrays before filtering invalid elements", async () => {
+    await withTempCassHome(async () => {
+      await withTempDir("config-sanitization-limit", async (repoDir) => {
+        execSync("git init --quiet", { cwd: repoDir, stdio: "pipe" });
+        await mkdir(join(repoDir, ".cass"));
+        await writeFile(join(repoDir, ".cass", "config.json"), JSON.stringify({
+          sanitization: {
+            extraPatterns: Array(CONFIG_INPUT_LIMITS.maxArrayLength + 1).fill(null),
+          },
+        }));
+
+        await expect(loadConfig({}, { cwd: repoDir })).rejects.toBeInstanceOf(InputLimitError);
+      });
+    });
+  });
+
+  test("rejects oversized overrides before reading array elements", async () => {
+    const entries = new Array(CONFIG_INPUT_LIMITS.maxArrayLength + 1);
+    Object.defineProperty(entries, 0, {
+      get() { throw new Error("array elements must not be visited"); },
+    });
+
+    await expect(loadConfig({ sessionExcludePatterns: entries })).rejects.toBeInstanceOf(InputLimitError);
+  });
+
+  test("accepts valid arrays at the limit and rejects invalid elements below it", async () => {
+    await withTempCassHome(async (env) => {
+      const entries = Array.from({ length: CONFIG_INPUT_LIMITS.maxArrayLength }, (_, i) => `pattern-${i}`);
+      await writeFile(env.configPath, JSON.stringify({ sessionExcludePatterns: entries }));
+      expect((await loadConfig()).sessionExcludePatterns).toEqual(entries);
+
+      await writeFile(env.configPath, JSON.stringify({ sessionExcludePatterns: [null, 42, {}] }));
+      await expect(loadConfig()).rejects.toThrow(/Configuration validation failed/);
+    });
+  });
+
+  test("bounds additive arrays after individually bounded sources are merged", async () => {
+    await withTempCassHome(async (env) => {
+      const globalPatterns = Array.from(
+        { length: CONFIG_INPUT_LIMITS.maxArrayLength }, (_, i) => `global-${i}`,
+      );
+      await writeFile(env.configPath, JSON.stringify({ sanitization: { extraPatterns: globalPatterns } }));
+
+      await expect(loadConfig({
+        sanitization: { ...DEFAULT_CONFIG.sanitization, extraPatterns: ["one-additional-pattern"] },
+      })).rejects.toBeInstanceOf(InputLimitError);
+    });
+  });
+
+  test("applies the byte boundary before parsing and preserves the original file", async () => {
+    await withTempCassHome(async (env) => {
+      const atLimit = "{}".padEnd(CONFIG_INPUT_LIMITS.maxBytes, " ");
+      await writeFile(env.configPath, atLimit);
+      expect((await loadConfig()).provider).toBe(DEFAULT_CONFIG.provider);
+
+      await writeFile(env.configPath, `${atLimit} `);
+      await expect(loadConfig()).rejects.toBeInstanceOf(InputLimitError);
+      expect(await readFile(env.configPath, "utf-8")).toBe(`${atLimit} `);
+    });
+  });
+
+  test("rejects excessive depth before YAML key normalization", async () => {
+    await withTempCassHome(async (env) => {
+      const yamlPath = join(env.cassMemoryDir, "config.yaml");
+      const depth = CONFIG_INPUT_LIMITS.maxDepth + 2;
+      await writeFile(yamlPath, `ignored: ${"[".repeat(depth)}0${"]".repeat(depth)}\n`);
+
+      await expect(loadConfig()).rejects.toBeInstanceOf(InputLimitError);
+      expect((await readGlobalConfigRaw()).data).toBeNull();
+    });
+  });
+
+  test("rejects cyclic aliases instead of recursing during YAML key normalization", async () => {
+    await withTempCassHome(async (env) => {
+      const yamlPath = join(env.cassMemoryDir, "config.yaml");
+      const text = "ignored: &cycle [*cycle]\n";
+      await writeFile(yamlPath, text);
+
+      await expect(loadConfig()).rejects.toBeInstanceOf(InputLimitError);
+      expect(await patchGlobalConfig({ verbose: true })).toBe(false);
+      expect(await readFile(yamlPath, "utf-8")).toBe(text);
+    });
+  });
+
+  test("rejects excessive total values even when each array is below its limit", async () => {
+    await withTempCassHome(async (env) => {
+      const width = CONFIG_INPUT_LIMITS.maxArrayLength;
+      const rows = Math.ceil(CONFIG_INPUT_LIMITS.maxNodes / width) + 1;
+      await writeFile(env.configPath, JSON.stringify({
+        ignored: Array.from({ length: rows }, () => Array(width).fill(0)),
+      }));
+
+      await expect(loadConfig()).rejects.toBeInstanceOf(InputLimitError);
+    });
+  });
+
+  test("refuses to save or patch oversized data without modifying the existing config", async () => {
+    await withTempCassHome(async (env) => {
+      const original = JSON.stringify({ provider: "openai" });
+      await writeFile(env.configPath, original);
+      const config = getDefaultConfig();
+      config.sessionExcludePatterns = Array(CONFIG_INPUT_LIMITS.maxArrayLength + 1).fill("pattern");
+
+      await expect(saveConfig(config)).rejects.toBeInstanceOf(InputLimitError);
+      await expect(patchGlobalConfig({ ignored: "x".repeat(CONFIG_INPUT_LIMITS.maxBytes) }))
+        .rejects.toBeInstanceOf(InputLimitError);
+      expect(await readFile(env.configPath, "utf-8")).toBe(original);
+    });
+  });
+
+  test("raw reads and patching refuse an oversized existing config", async () => {
+    await withTempCassHome(async (env) => {
+      const original = " ".repeat(CONFIG_INPUT_LIMITS.maxBytes + 1);
+      await writeFile(env.configPath, original);
+
+      expect((await readGlobalConfigRaw()).data).toBeNull();
+      expect(await patchGlobalConfig({ verbose: true })).toBe(false);
+      expect(await readFile(env.configPath, "utf-8")).toBe(original);
+    });
+  });
+
+  test("YAML writes bound the preserved document as well as the new settings", async () => {
+    await withTempCassHome(async (env) => {
+      const yamlPath = join(env.cassMemoryDir, "config.yaml");
+      const original = Array.from(
+        { length: CONFIG_INPUT_LIMITS.maxObjectKeys }, (_, i) => `unknown${i}: true`,
+      ).join("\n");
+      await writeFile(yamlPath, original);
+
+      await expect(saveConfig(getDefaultConfig())).rejects.toBeInstanceOf(InputLimitError);
+      expect(await readFile(yamlPath, "utf-8")).toBe(original);
+    });
   });
 });
 

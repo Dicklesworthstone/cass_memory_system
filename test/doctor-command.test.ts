@@ -3,10 +3,11 @@
  * Tests JSON output, fix modes, and various health check scenarios.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
-import { doctorCommand } from "../src/commands/doctor.js";
+import { detectFixableIssues, doctorCommand } from "../src/commands/doctor.js";
+import { CONFIG_INPUT_LIMITS, InputLimitError } from "../src/input-limits.js";
 import { createTestConfig } from "./helpers/factories.js";
 import { makeCassStub, type TestEnv, withTempCassHome } from "./helpers/temp.js";
 
@@ -239,6 +240,60 @@ describe("doctorCommand", () => {
   });
 
   describe("config load error handling", () => {
+    test("rechecks resource limits before backing up or resetting a changed config", async () => {
+      await withTempCassHome(async (env) => {
+        await withCwd(env.home, async () => {
+          await writeFile(env.configPath, "{malformed json");
+          await writeFile(env.playbookPath, createValidPlaybookYaml());
+          const reset = (await detectFixableIssues()).find((issue) => issue.id === "reset-config");
+          expect(reset).toBeDefined();
+          const oversized = JSON.stringify({
+            sessionExcludePatterns: Array(CONFIG_INPUT_LIMITS.maxArrayLength + 1).fill(null),
+          });
+          await writeFile(env.configPath, oversized);
+          await expect(reset!.fix()).rejects.toThrow("Refusing to reset config: Input limit exceeded");
+          expect(await readFile(env.configPath, "utf8")).toBe(oversized);
+          expect((await readdir(env.cassMemoryDir)).some((name) => name.includes(".backup."))).toBe(false);
+        });
+      }, "doctor-reset-input-limits");
+    });
+
+    test("reports bounded input failures without offering a destructive config reset", async () => {
+      await withTempCassHome(async (env) => {
+        await withCwd(env.home, async () => {
+          const oversized = JSON.stringify({
+            sessionExcludePatterns: Array(CONFIG_INPUT_LIMITS.maxArrayLength + 1).fill(null),
+          });
+          await writeFile(env.configPath, oversized);
+          await writeFile(env.playbookPath, createValidPlaybookYaml());
+          const previousExitCode = process.exitCode;
+          try {
+            const { output } = await captureConsoleLog(() =>
+              doctorCommand({ json: true, fix: true, dryRun: true }),
+            );
+            const payload = JSON.parse(output).data;
+            const check = payload.checks.find(
+              (entry: any) => entry.category === "Configuration" && entry.item === "config.json",
+            );
+            expect(check.status).toBe("fail");
+            expect(check.message).toContain("Input limit exceeded");
+            expect(payload.fixableIssues.some((issue: any) => issue.id === "reset-config")).toBe(false);
+            expect(await readFile(env.configPath, "utf8")).toBe(oversized);
+
+            // A selected repository's limit error must not reset a valid user config.
+            await writeFile(env.configPath, "{}");
+            const issues = await detectFixableIssues({
+              configLoadError: new InputLimitError("repo/.cass/config.json", "maximum array length exceeded"),
+            });
+            expect(issues.some((issue) => issue.id === "reset-config")).toBe(false);
+            expect(await readFile(env.configPath, "utf8")).toBe("{}");
+          } finally {
+            process.exitCode = previousExitCode;
+          }
+        });
+      }, "doctor-input-limits");
+    });
+
     test("handles invalid JSON config gracefully", async () => {
       await withEnvAsync(
         {

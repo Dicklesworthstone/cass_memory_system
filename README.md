@@ -2312,6 +2312,35 @@ function cosineSimilarity(a: number[], b: number[]): number {
 
 ## 🔒 Privacy & Security
 
+### Untrusted Playbooks and Configuration
+
+Repository-controlled `.cass/playbook.yaml` and `.cass/config.json`, `.yaml`, or
+`.yml` files are bounded before normalization and schema validation, including
+when selected through an MCP tool's `workspace` argument. The same protections
+apply to global files, playbook imports, batch additions, custom starters, and
+doctor's independent configuration checks.
+
+| Limit per input | Playbooks and imports | Configuration |
+|---|---:|---:|
+| File or batch stdin size | 16 MiB | 1 MiB |
+| Elements in any array | 10,000 | 1,000 |
+| Keys in any object | 10,000 | 1,000 |
+| Total expanded values | 200,000 | 20,000 |
+| Nesting depth | 32 | 32 |
+| Total expanded string and key bytes | 16 MiB | 1 MiB |
+
+Every limit applies independently. YAML also has a streaming token budget
+before syntax-tree construction and an alias-expansion ceiling; cyclic aliases
+are rejected. Array schemas declare maximum lengths, using patched Zod to reject
+oversized arrays before evaluating their elements
+([GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5), #98).
+
+Excessive repository inputs fail the request with a bounded diagnostic. They do
+not silently fall back to defaults, trigger playbook recovery, or cause doctor
+to reset global configuration. Writes are checked before replacing existing
+files. These hard ceilings cannot be raised by repository configuration. Reduce
+oversized collections or split import batches before retrying.
+
 ### Local-First Design
 
 - **All data stays on your machine** - No cloud sync, no telemetry

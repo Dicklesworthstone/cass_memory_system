@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import yaml from "yaml";
+import { InputLimitError, PLAYBOOK_INPUT_LIMITS } from "../src/input-limits.js";
 
 import {
   addBullet,
@@ -177,6 +178,84 @@ describe("loadPlaybook", () => {
 // =============================================================================
 // loadPlaybookWithRecovery
 // =============================================================================
+describe("untrusted playbook resource limits (#98)", () => {
+  it("rejects oversized outer and nested arrays before validating their elements", async () => {
+    await withTempDir(async (dir) => {
+      const file = path.join(dir, "playbook.yaml");
+      const invalid = Array(PLAYBOOK_INPUT_LIMITS.maxArrayLength + 1).fill(null);
+      for (const fields of [
+        { bullets: invalid },
+        { deprecatedPatterns: invalid },
+        { bullets: [{ ...createTestBullet(), tags: invalid }] },
+        { bullets: [{ ...createTestBullet(), feedbackEvents: invalid }] },
+      ]) {
+        // JSON is valid YAML and keeps these fixtures small and deterministic.
+        const content = JSON.stringify({ ...createEmptyPlaybook(), ...fields });
+        await fs.writeFile(file, content);
+        await expect(loadPlaybook(file)).rejects.toBeInstanceOf(InputLimitError);
+        expect(await fs.readFile(file, "utf8")).toBe(content);
+      }
+    });
+  });
+
+  it("rejects modest arrays of invalid bullets with bounded diagnostics", async () => {
+    await withTempDir(async (dir) => {
+      const file = path.join(dir, "playbook.yaml");
+      await fs.writeFile(file, JSON.stringify({ ...createEmptyPlaybook(), bullets: Array(128).fill(null) }));
+      const messages: string[] = [];
+      const original = console.error;
+      console.error = (...args: unknown[]) => { messages.push(args.map(String).join(" ")); };
+      try {
+        await expect(loadPlaybook(file)).rejects.toThrow("is invalid");
+      } finally {
+        console.error = original;
+      }
+      expect(messages.join("\n").length).toBeLessThan(3000);
+      expect(messages.join("\n")).toContain("validation");
+    });
+  });
+
+  it("does not recover, back up, or replace files rejected by resource limits", async () => {
+    await withTempDir(async (dir) => {
+      const file = path.join(dir, "playbook.yaml");
+      // A sparse file exercises the byte limit without allocating its contents.
+      const handle = await fs.open(file, "w");
+      await handle.truncate(PLAYBOOK_INPUT_LIMITS.maxBytes + 1);
+      await handle.close();
+      await expect(loadPlaybookWithRecovery(file)).rejects.toBeInstanceOf(InputLimitError);
+      expect((await fs.stat(file)).size).toBe(PLAYBOOK_INPUT_LIMITS.maxBytes + 1);
+      expect(await fs.readdir(dir)).toEqual(["playbook.yaml"]);
+    });
+  });
+
+  it("rejects cyclic YAML aliases and refuses oversized writes without losing saved rules", async () => {
+    await withTempDir(async (dir) => {
+      const file = path.join(dir, "playbook.yaml");
+      await fs.writeFile(file, "metadata: &meta { createdAt: now, recursive: *meta }\nbullets: []\n");
+      await expect(loadPlaybookWithRecovery(file)).rejects.toBeInstanceOf(InputLimitError);
+      const playbook = createEmptyPlaybook();
+      playbook.bullets = [createTestBullet({ content: "Preserve ordinary playbooks" })];
+      await savePlaybook(playbook, file);
+      const original = await fs.readFile(file, "utf8");
+      playbook.bullets[0].sourceSessions = Array(PLAYBOOK_INPUT_LIMITS.maxArrayLength + 1).fill("session");
+      await expect(savePlaybook(playbook, file)).rejects.toBeInstanceOf(InputLimitError);
+      expect(await fs.readFile(file, "utf8")).toBe(original);
+      expect((await loadPlaybook(file)).bullets[0].content).toBe("Preserve ordinary playbooks");
+    });
+  });
+
+  it("saves repeated object references without producing an unreadable alias-heavy file", async () => {
+    await withTempDir(async (dir) => {
+      const file = path.join(dir, "playbook.yaml");
+      const playbook = createEmptyPlaybook();
+      const shared = createTestBullet({ content: "A normal bounded rule" });
+      playbook.bullets = Array(128).fill(shared);
+      await savePlaybook(playbook, file);
+      expect((await loadPlaybook(file)).bullets).toHaveLength(128);
+    });
+  });
+});
+
 describe("loadPlaybookWithRecovery", () => {
   it("returns recovered=false for valid playbook roundtrip", async () => {
     await withTempDir(async (dir) => {

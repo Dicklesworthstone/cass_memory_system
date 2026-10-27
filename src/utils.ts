@@ -7,6 +7,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { promisify } from "node:util";
 import chalk from "chalk";
+import { InputLimitError } from "./input-limits.js";
 import { iconPrefix } from "./output.js";
 import { type ContextResult, ErrorCode, type PlaybookDelta } from "./types.js";
 
@@ -2225,12 +2226,15 @@ export function canonicalAgentName(agent: string | undefined | null): string {
  * With `firstByteTimeoutMs`, give up and return "" if nothing arrives in that
  * time: a caller that merely inherited an open, silent pipe (agent harnesses,
  * CI) must get a prompt validation error, not a hang. Once data starts
- * flowing it is read to EOF.
+ * flowing it is read to EOF, or rejected once `maxBytes` is exceeded.
  */
-export async function readStdinText(options: { firstByteTimeoutMs?: number } = {}): Promise<string> {
+export async function readStdinText(
+  options: { firstByteTimeoutMs?: number; maxBytes?: number } = {},
+): Promise<string> {
   const stdin = process.stdin;
   return await new Promise<string>((resolve, reject) => {
     const chunks: Buffer[] = [];
+    let totalBytes = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const cleanup = () => {
       if (timer) clearTimeout(timer);
@@ -2243,7 +2247,16 @@ export async function readStdinText(options: { firstByteTimeoutMs?: number } = {
         clearTimeout(timer);
         timer = undefined;
       }
-      chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+      const buffer = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+      totalBytes += buffer.length;
+      if (options.maxBytes !== undefined && totalBytes > options.maxBytes) {
+        cleanup();
+        stdin.pause();
+        stdin.unref?.();
+        reject(new InputLimitError("stdin", `maximum input size is ${options.maxBytes} bytes`));
+        return;
+      }
+      chunks.push(buffer);
     };
     const onEnd = () => {
       cleanup();

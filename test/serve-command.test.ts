@@ -10,6 +10,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
+import { CONFIG_INPUT_LIMITS, PLAYBOOK_INPUT_LIMITS } from "../src/input-limits.js";
 
 import {
   __test,
@@ -69,6 +70,108 @@ function captureConsole() {
     },
   };
 }
+
+describe("MCP untrusted workspace limits (#98)", () => {
+  const fixtures = [
+    {
+      name: "oversized invalid bullet array",
+      file: "playbook.yaml",
+      contents: JSON.stringify({
+        ...createTestPlaybook(),
+        bullets: Array(PLAYBOOK_INPUT_LIMITS.maxArrayLength + 1).fill(null),
+      }),
+      error: "maximum array length",
+    },
+    {
+      name: "oversized nested bullet array",
+      file: "playbook.yaml",
+      contents: JSON.stringify({
+        ...createTestPlaybook(),
+        bullets: [{ ...createTestBullet(), tags: Array(PLAYBOOK_INPUT_LIMITS.maxArrayLength + 1).fill(null) }],
+      }),
+      error: "maximum array length",
+    },
+    {
+      name: "invalid elements below the collection limit",
+      file: "playbook.yaml",
+      contents: JSON.stringify({ ...createTestPlaybook(), bullets: [null, "invalid", 17] }),
+      error: "is invalid",
+    },
+    {
+      name: "oversized repository configuration array",
+      file: "config.json",
+      contents: JSON.stringify({ sessionExcludePatterns: Array(CONFIG_INPUT_LIMITS.maxArrayLength + 1).fill(null) }),
+      error: "maximum array length",
+    },
+    {
+      name: "oversized repository configuration file",
+      file: "config.yaml",
+      contents: "#".repeat(CONFIG_INPUT_LIMITS.maxBytes + 1),
+      error: "maximum file size",
+    },
+  ];
+
+  for (const name of ["cm_context", "memory_search"]) {
+    for (const fixture of fixtures) {
+      it(`${name} rejects ${fixture.name} in the requested workspace and remains usable`, async () => {
+        await withTempCassHome(async (env) => {
+          await withTempGitRepo(async (launchRepo) => {
+            await withTempGitRepo(async (requestedRepo) => {
+              await writeFile(env.configPath, JSON.stringify(createTestConfig({
+                playbookPath: env.playbookPath,
+                semanticSearchEnabled: false,
+                cassPath: "cm-security-test-missing-cass",
+              })));
+              await writeFile(env.playbookPath, yaml.stringify(createTestPlaybook()));
+              await mkdir(path.join(launchRepo, ".cass"));
+              await mkdir(path.join(requestedRepo, ".cass"));
+              const healthyPath = path.join(launchRepo, ".cass/playbook.yaml");
+              const healthyText = yaml.stringify(createTestPlaybook([
+                createTestBullet({
+                  id: "b-security-normal", content: "Verify database migration safety.",
+                  state: "active", maturity: "established", scope: "workspace",
+                }),
+              ]));
+              await writeFile(healthyPath, healthyText);
+              const unsafePath = path.join(requestedRepo, ".cass", fixture.file);
+              await writeFile(unsafePath, fixture.contents);
+              const args = name === "cm_context"
+                ? { task: "database migration safety", history: 0 }
+                : { query: "database migration safety", scope: "playbook" };
+              const cwd = process.cwd();
+              try {
+                process.chdir(launchRepo);
+                const rejected = await routeRequest({
+                  jsonrpc: "2.0", id: 980, method: "tools/call",
+                  params: { name, arguments: { ...args, workspace: requestedRepo } },
+                });
+                expect("error" in rejected).toBe(true);
+                if (!("error" in rejected)) throw new Error(JSON.stringify(rejected));
+                expect(rejected.error.message).toContain(fixture.error);
+                expect(rejected.error.message.length).toBeLessThan(2000);
+                expect(await readFile(unsafePath, "utf8")).toBe(fixture.contents);
+                expect(await readFile(healthyPath, "utf8")).toBe(healthyText);
+                expect(await routeRequest({ jsonrpc: "2.0", id: 981, method: "ping" }))
+                  .toEqual({ jsonrpc: "2.0", id: 981, result: {} });
+                const healthy = await routeRequest({
+                  jsonrpc: "2.0", id: 982, method: "tools/call",
+                  params: { name, arguments: { ...args, workspace: launchRepo } },
+                });
+                if (!("result" in healthy)) throw new Error(JSON.stringify(healthy));
+                const payload = unwrapToolResult(healthy.result);
+                const rules = name === "cm_context" ? payload.relevantBullets : payload.playbook;
+                expect(rules.map((rule: { id: string }) => rule.id)).toContain("b-security-normal");
+                expect(process.cwd()).toBe(launchRepo);
+              } finally {
+                process.chdir(cwd);
+              }
+            });
+          });
+        }, "mcp-input-limits");
+      });
+    }
+  }
+});
 
 describe("serve.ts helper functions", () => {
   describe("isLoopbackHost", () => {
