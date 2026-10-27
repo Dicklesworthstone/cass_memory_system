@@ -779,9 +779,9 @@ install.sh [--version vX.Y.Z] [--dest DIR] [--system] [--easy-mode] [--verify]
            [--checksum-url URL] [--quiet]
 
 # Examples
-install.sh --version v0.2.2 --verify    # Specific version
+install.sh --version v0.5.1 --verify       # Specific version
 install.sh --system --verify             # Install to /usr/local/bin (requires sudo)
-install.sh --from-source --version v0.5.0 # Build that release from source (requires bun)
+install.sh --from-source --version v0.5.1 # Build that release from source (requires bun)
 ```
 
 | Flag | Effect |

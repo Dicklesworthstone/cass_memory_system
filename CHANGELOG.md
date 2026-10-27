@@ -10,6 +10,20 @@ All notable changes to **cass-memory** (`cm`) are documented in this file.
 
 ## [Unreleased]
 
+## [0.5.1] -- 2026-10-27
+
+### Security
+
+- Fix #98 / [GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5): require Zod `^4.6.7` and lock both Bun and npm to `4.6.7`, above the advisory's patched minimum of `4.6.6`. Reconcile the stale npm lock with the current Bun dependency graph without upgrading unrelated dependencies.
+- Bound untrusted playbooks and configuration before normalization and schema validation. Playbooks, imports, and custom starters are limited to 16 MiB, 10,000 entries per array/object, depth 32, and 200,000 logical nodes. Configuration is limited to 1 MiB, 1,000 entries per array/object, depth 32, and 20,000 logical nodes. YAML token and alias limits, plus expanded text accounting, also apply.
+- Apply the same checks to global and repository files, CLI input and stdin, doctor/recovery, persistence, and MCP-selected workspaces. Oversized inputs fail with bounded diagnostics and remain unchanged; they are not silently reset. Array schemas declare their maxima so patched Zod rejects oversized arrays before inspecting invalid elements.
+- Stop installation when the latest-release lookup fails or redirects outside this repository, instead of silently falling back to the vulnerable `v0.2.2` release.
+
+### Qualification
+
+- Typechecking, frozen dependency installation, and compilation pass with Bun 1.4.4 and Zod 4.6.7. The complete CI test command passes: 3,404 passed, 3 environment-dependent skips, 0 failures (9,988 assertions across 152 files).
+- Deterministic regressions cover oversized and invalid arrays, normal playbooks, byte/depth/node limits, YAML alias expansion, recovery and persistence, and MCP workspace selection. Compiled CLI and HTTP MCP checks reject modest malicious fixtures, preserve their files, and keep subsequent requests working.
+
 ### Added
 
 - `cm guard --install --user` installs the trauma guard into Claude Code's user settings (`~/.claude`, or `$CLAUDE_CONFIG_DIR`) so it covers every project, branch and worktree. Running the plain install from the home directory now does the same instead of registering a hook that points into the project (#93).
@@ -663,7 +677,8 @@ The initial project scaffolding before any tagged release.
 
 ---
 
-[Unreleased]: https://github.com/Dicklesworthstone/cass_memory_system/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/Dicklesworthstone/cass_memory_system/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/Dicklesworthstone/cass_memory_system/compare/v0.5.0...v0.5.1
 [v0.2.3]: https://github.com/Dicklesworthstone/cass_memory_system/compare/v0.2.2...v0.2.3
 [v0.2.2]: https://github.com/Dicklesworthstone/cass_memory_system/compare/v0.2.1...v0.2.2
 [v0.2.1]: https://github.com/Dicklesworthstone/cass_memory_system/compare/v0.2.0...v0.2.1
