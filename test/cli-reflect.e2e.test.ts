@@ -127,7 +127,7 @@ describe("E2E: reflect failure status (#99)", () => {
     deltas: [{ type: "add", bullet: { content: rule, category: "testing" }, reason: "session evidence" }],
   }]);
 
-  function runReflect(env: TestEnv, args: string[]) {
+  function runReflect(env: TestEnv, args: string[], overrides: Record<string, string | undefined> = {}) {
     return spawnSync(process.execPath, ["run", cmPath, "reflect", ...args], {
       cwd: env.home,
       env: {
@@ -138,6 +138,7 @@ describe("E2E: reflect failure status (#99)", () => {
         CM_REFLECTOR_STUBS: reflectorStubs,
         NO_COLOR: "1",
         FORCE_COLOR: "0",
+        ...overrides,
       },
       encoding: "utf-8",
       timeout: 30_000,
@@ -165,6 +166,89 @@ describe("E2E: reflect failure status (#99)", () => {
   }
 
   for (const dryRun of [false, true]) {
+    it(`reports a real later reflector-pass failure and retains its uncommitted proposals${dryRun ? " in dry-run" : ""}`, async () => {
+      await withTempCassHome(async env => {
+        await setup(env);
+        const sessionPath = await writeSession(env, "later-pass-failure");
+        const cliPath = path.join(env.home, "fixture-llm");
+        const proposal = {
+          type: "add",
+          bullet: {
+            content: rule, category: "testing", kind: null, type: null, isNegative: null,
+            scope: null, scopeKey: null, workspace: null, searchPointer: null, tags: null,
+          },
+          reason: "The session exposed false success in a reflection job.", sourceSession: null,
+        };
+        // Use the supported CLI-provider protocol and real reflector loop;
+        // an environment reflector response would bypass iterative failure.
+        await writeFile(cliPath, `#!${process.execPath}
+const prompt = await Bun.stdin.text();
+if (prompt.includes("extract reusable lessons for a playbook")) {
+  if (prompt.includes("This is iteration 2.")) {
+    if (process.env.CASS_TEST_REFLECTION_COMPLETES === "1") console.log('{"deltas":[]}');
+    else {
+      console.error("invalid_api_key: fixture rejected the second reflection pass");
+      process.exit(1);
+    }
+  } else console.log(${JSON.stringify(JSON.stringify({ deltas: [proposal] }))});
+} else console.log(${JSON.stringify(JSON.stringify({
+          status: "success", accomplishments: ["Investigated reflection failure reporting"],
+          decisions: [], challenges: [], preferences: [],
+          keyLearnings: ["Check session errors before declaring a reflection successful"], tags: ["testing"],
+        }))});
+`, { mode: 0o755 });
+        const config = JSON.parse(await readFile(env.configPath, "utf8"));
+        await writeFile(env.configPath, JSON.stringify({
+          ...config, provider: "cli", cliCommand: cliPath, maxReflectorIterations: 3,
+        }));
+        const realProvider = {
+          CASS_MEMORY_LLM: undefined, CM_REFLECTOR_STUBS: undefined, CASS_CLI_COMMAND: cliPath,
+        };
+        const before = await readFile(env.playbookPath, "utf8");
+        const configBefore = await readFile(env.configPath, "utf8");
+        const result = runReflect(env, ["--session", sessionPath, "--json", ...(dryRun ? ["--dry-run"] : [])], realProvider);
+        expect(result.error).toBeUndefined();
+        expect(result.status).not.toBe(0);
+        const payload = JSON.parse(result.stdout);
+        expect(payload.success).toBe(false);
+        expect(payload.error.code).toBe("REFLECTION_FAILED");
+        expect(payload.error.exitCode).toBe(result.status);
+        expect(payload.data.sessionsProcessed).toBe(0);
+        expect(payload.data.deltasGenerated).toBe(0);
+        expect(payload.data.errors).toHaveLength(1);
+        expect(payload.data.failedSessions).toEqual([{
+          sessionPath,
+          error: expect.stringContaining("fixture rejected the second reflection pass"),
+          proposedDeltas: [expect.objectContaining({
+            type: "add", sourceSession: sessionPath,
+            bullet: expect.objectContaining({ content: rule }),
+          })],
+        }]);
+        if (dryRun) expect(payload.data.deltas).toEqual([]);
+        expect(await readFile(env.playbookPath, "utf8")).toBe(before);
+        expect(await readFile(env.configPath, "utf8")).toBe(configBefore);
+        const log = new ProcessedLog(getProcessedLogPath());
+        await log.load();
+        expect(log.has(sessionPath)).toBe(false);
+        if (dryRun) expect(log.get(sessionPath)).toBeUndefined();
+        else expect(log.get(sessionPath)).toMatchObject({ status: "failed", failures: 1 });
+
+        const retry = runReflect(env, ["--session", sessionPath, "--json"], {
+          ...realProvider, CASS_TEST_REFLECTION_COMPLETES: "1",
+        });
+        expect(retry.error).toBeUndefined();
+        expect(retry.status).toBe(0);
+        const recovered = JSON.parse(retry.stdout);
+        expect(recovered.success).toBe(true);
+        expect(recovered.data.failedSessions).toBeUndefined();
+        expect(recovered.data.sessionsProcessed).toBe(1);
+        const saved = await loadPlaybook(env.playbookPath);
+        expect(saved.bullets.map(bullet => bullet.content)).toEqual([rule]);
+        expect(saved.metadata.totalReflections).toBe(1);
+        expect(saved.metadata.totalSessionsProcessed).toBe(1);
+      });
+    });
+
     it(`fails for an oversized playbook${dryRun ? " in dry-run" : ""} without losing error details`, async () => {
       await withTempCassHome(async env => {
         await setup(env);

@@ -383,9 +383,9 @@ export interface ReflectionResult {
   deltas: PlaybookDelta[];
   decisionLog: DecisionLogEntry[];
   /**
-   * Message of the reflector error that ended iteration early before any
-   * iteration had completed. A failure after at least one successful pass
-   * (even one that proposed nothing) is logged in `decisionLog` only.
+   * Error that interrupted reflection, including failures after a successful
+   * pass. Earlier proposals remain in deltas for inspection, but an incomplete
+   * session must not be committed or marked processed.
    */
   failure?: string;
 }
@@ -450,7 +450,6 @@ export async function reflectOnSession(
   }
 
   let failure: string | undefined;
-  let completedIterations = 0;
   const existingBullets = formatBulletsForPrompt(playbook.bullets);
   const cassHistory = await getCassHistoryForDiary(diary, config);
 
@@ -479,7 +478,6 @@ export async function reflectOnSession(
         normalizeLLMDelta(d, diary.sessionPath),
       );
 
-      completedIterations++;
       const uniqueDeltas = deduplicateDeltas(validDeltas, allDeltas);
       const duplicatesRemoved = validDeltas.length - uniqueDeltas.length;
 
@@ -518,9 +516,7 @@ export async function reflectOnSession(
         details: { iteration: i + 1, error: String(err) },
       });
       log(`Reflection iteration ${i + 1} failed: ${err}`);
-      if (completedIterations === 0) {
-        failure = err instanceof Error ? err.message : String(err);
-      }
+      failure = err instanceof Error ? err.message : String(err);
       break;
     }
   }

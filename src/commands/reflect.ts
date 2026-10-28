@@ -295,6 +295,7 @@ export async function reflectCommand(
     sessionsProcessed: result.sessionsProcessed,
     deltasGenerated: result.deltasGenerated,
     errors: result.errors,
+    ...(result.failedSessions ? { failedSessions: result.failedSessions } : {}),
   };
   const printResult = (data: Record<string, unknown>): void => {
     if (failure) {
@@ -312,6 +313,14 @@ export async function reflectCommand(
     result.errors.slice(0, shown).forEach((e) => console.error(chalk.yellow(`- ${e}`)));
     if (result.errors.length > shown) {
       console.error(chalk.yellow(`- … and ${result.errors.length - shown} more`));
+    }
+    const uncommittedProposals = result.failedSessions?.reduce(
+      (total, session) => total + session.proposedDeltas.length, 0,
+    ) ?? 0;
+    if (uncommittedProposals > 0) {
+      console.error(chalk.yellow(
+        `${uncommittedProposals} proposal(s) from incomplete sessions were not applied. Use --json to review failedSessions.`,
+      ));
     }
     console.error("");
   }

@@ -828,11 +828,19 @@ describe("tool call validation", () => {
   it("wrapToolResult marks errors with isError and serializes objects", () => {
     const ok = wrapToolResult({ a: 1 });
     expect(ok.content[0].text).toBe(JSON.stringify({ a: 1 }));
+    expect(ok.structuredContent).toEqual({ a: 1 });
     expect(ok.isError).toBeUndefined();
 
     const err = wrapToolResult("boom", true);
     expect(err.content[0].text).toBe("boom");
+    expect(err.structuredContent).toBeUndefined();
     expect(err.isError).toBe(true);
+
+    const partial = { success: false, sessionsProcessed: 1, errors: ["session unavailable"] };
+    const failed = wrapToolResult(partial, true);
+    expect(failed.isError).toBe(true);
+    expect(failed.structuredContent).toEqual(partial);
+    expect(JSON.parse(failed.content[0].text)).toEqual(partial);
   });
 
   it("memory_search validates query parameter", async () => {
@@ -1108,6 +1116,7 @@ describe("successful tool calls", () => {
             await mkdir(path.join(repo, ".cass"));
             await writeFile(path.join(repo, ".cass/playbook.yaml"), yaml.stringify(createTestPlaybook([
               createTestBullet({ id: "b-aaa111", content: `Review ${label} migration safety`, scope: "workspace" }),
+              createTestBullet({ id: "b-private", content: `UNRELATED_PRIVATE_${label}_POLICY`, scope: "workspace" }),
             ])));
           }
           const launchPath = path.join(launchRepo, ".cass/playbook.yaml");
@@ -1131,11 +1140,25 @@ describe("successful tool calls", () => {
             expect("result" in response).toBe(true);
             if (!("result" in response)) throw new Error(JSON.stringify(response));
             const payload = unwrapToolResult(response.result);
+            expect(response.result.isError).toBeUndefined();
+            expect(payload.success).toBe(true);
+            expect(payload.errors).toEqual([]);
             expect(payload.sessionsProcessed).toBe(1);
             expect(payload.deltasApplied).toBe(1);
+            expect(payload.repoResult.applied).toBe(1);
+            expect(payload.repoResult.playbook).toBeUndefined();
+            expect(payload.projectResults).toHaveLength(1);
+            expect(payload.projectResults[0].playbookPath).toBe(path.join(requestedRepo, ".cass/playbook.yaml"));
+            expect(payload.projectResults[0].result.applied).toBe(1);
+            expect(payload.projectResults[0].result.playbook).toBeUndefined();
+            expect(payload.projectResults[0].result.decisionLog).toContainEqual(expect.objectContaining({
+              phase: "feedback", action: "accepted", bulletId: "b-aaa111",
+            }));
+            expect(JSON.stringify(response)).not.toContain("UNRELATED_PRIVATE_");
             const saved = yaml.parse(await readFile(path.join(requestedRepo, ".cass/playbook.yaml"), "utf-8"));
             expect(saved.bullets[0].helpfulCount).toBe(1);
             expect(saved.bullets[0].feedbackEvents[0].sessionPath).toBe(session);
+            expect(saved.bullets[1].content).toBe("UNRELATED_PRIVATE_requested_POLICY");
             expect(await readFile(launchPath, "utf-8")).toBe(launchBefore);
             expect(process.cwd()).toBe(launchRepo);
           } finally {

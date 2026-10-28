@@ -741,8 +741,19 @@ describe("serve module tool calls", () => {
           method: "tools/call",
           params: { name: "memory_reflect", arguments: { days: 7, dryRun: true } },
         });
-        expect("error" in response).toBe(true);
-        if ("error" in response) expect(response.error.message).toContain("discovery failed");
+        expect("result" in response).toBe(true);
+        if (!("result" in response)) throw new Error(JSON.stringify(response));
+        expect(response.result.isError).toBe(true);
+        const result = parseToolResult<{
+          success: boolean;
+          error: { code: string };
+          sessionsProcessed: number;
+          errors: string[];
+        }>(response.result);
+        expect(result.success).toBe(false);
+        expect(result.error.code).toBe("REFLECTION_FAILED");
+        expect(result.sessionsProcessed).toBe(0);
+        expect(result.errors[0]).toContain("discovery failed");
       } finally {
         if (prevCassPath === undefined) delete process.env.CASS_PATH;
         else process.env.CASS_PATH = prevCassPath;

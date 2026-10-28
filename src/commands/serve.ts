@@ -12,7 +12,7 @@ import {
   loadMergedPlaybookWithSources,
 } from "../playbook.js";
 import { analyzeScoreDistribution, getEffectiveScore, isStale } from "../scoring.js";
-import { type Config, ErrorCode, type PlaybookBullet } from "../types.js";
+import { type Config, type CurationResult, ErrorCode, type PlaybookBullet } from "../types.js";
 import {
   expandPath,
   getVersion,
@@ -47,6 +47,20 @@ import { buildWhyResult, resolveWhyBullet } from "./why.js";
 // Chosen in the server-defined -32000..-32099 range; clients should back off
 // and retry rather than treating it as a hard failure.
 export const MCP_BUSY_ERROR_CODE = -32010;
+
+/** A completed tool invocation can fail while still producing useful data. */
+class ToolExecutionError extends Error {
+  constructor(readonly payload: Record<string, unknown>) {
+    super(typeof payload.message === "string" ? payload.message : "Tool execution failed");
+    this.name = "ToolExecutionError";
+  }
+}
+
+/** Report curation decisions without copying unrelated learned state into MCP. */
+function summarizeCuration(result: CurationResult): Omit<CurationResult, "playbook"> {
+  const { playbook: _playbook, ...summary } = result;
+  return summary;
+}
 
 export interface AdmissionSnapshot {
   inFlight: number;
@@ -826,37 +840,63 @@ async function handleToolCall(name: string, args: any): Promise<any> {
       if (!agentCheck.ok) throw new Error(agentCheck.message);
       const workspace = workspaceCheck.value;
       const session = sessionCheck.value;
-      const config = await loadConfig({}, { cwd: workspace });
-
-      // Delegate to orchestrator (reads cass sessions) under the admission limiter.
-      const outcome = await withCassAdmission("memory_reflect", () =>
-        import("../orchestrator.js").then((m) =>
-          m.orchestrateReflection(config, {
-            days,
-            maxSessions,
-            dryRun,
-            workspace,
-            ...(agentCheck.value ? { agent: agentCheck.value } : {}),
-            session,
-          }),
-        ),
-      );
-
-      // Construct response
-      if (outcome.errors.length > 0) {
-        // If no sessions processed but errors occurred, treat as error
-        if (outcome.sessionsProcessed === 0) {
-          throw new Error(`Reflection failed: ${outcome.errors.join("; ")}`);
-        }
-        // Otherwise, just log them (partial success)
-        logError(`Reflection partial errors: ${outcome.errors.join("; ")}`);
+      let outcome: import("../orchestrator.js").ReflectionOutcome;
+      try {
+        const config = await loadConfig({}, { cwd: workspace });
+        // Delegate to orchestrator (reads cass sessions) under the admission limiter.
+        outcome = await withCassAdmission("memory_reflect", () =>
+          import("../orchestrator.js").then((m) =>
+            m.orchestrateReflection(config, {
+              days,
+              maxSessions,
+              dryRun,
+              workspace,
+              ...(agentCheck.value ? { agent: agentCheck.value } : {}),
+              session,
+            }),
+          ),
+        );
+      } catch (err) {
+        // Admission failures retain the distinct retryable protocol response.
+        // Once execution starts, errors belong in an MCP tool result. Do not
+        // invent zero partial counts when orchestration could not return them.
+        if (err instanceof AdmissionBusyError) throw err;
+        const message = err instanceof Error ? err.message : String(err);
+        throw new ToolExecutionError({
+          success: false,
+          error: { code: ErrorCode.REFLECTION_FAILED, message },
+          errors: [message],
+          dryRun,
+          message: `Reflection failed: ${message}`,
+        });
       }
 
+      const failed = outcome.errors.length > 0;
+      const { dryRunDeltas, globalResult, repoResult, projectResults, ...details } = outcome;
+      const summary = {
+        ...details,
+        ...(globalResult ? { globalResult: summarizeCuration(globalResult) } : {}),
+        ...(repoResult ? { repoResult: summarizeCuration(repoResult) } : {}),
+        ...(projectResults ? {
+          projectResults: projectResults.map(({ playbookPath, result }) => ({
+            playbookPath, result: summarizeCuration(result),
+          })),
+        } : {}),
+        success: !failed,
+        ...(failed ? {
+          error: { code: ErrorCode.REFLECTION_FAILED, message: "Reflection completed with errors." },
+        } : {}),
+      };
+      const finish = (payload: Record<string, unknown>) => {
+        maybeProfile("memory_reflect", t0);
+        if (failed) throw new ToolExecutionError(payload);
+        return payload;
+      };
+
       if (dryRun) {
-        const deltas = outcome.dryRunDeltas || [];
-        return {
-          sessionsProcessed: outcome.sessionsProcessed,
-          deltasGenerated: outcome.deltasGenerated,
+        const deltas = dryRunDeltas || [];
+        return finish({
+          ...summary,
           deltasApplied: 0,
           dryRun: true,
           proposedDeltas: deltas.map((d) => {
@@ -893,8 +933,8 @@ async function handleToolCall(name: string, args: any): Promise<any> {
             }
             return base;
           }),
-          message: `Would apply ${outcome.deltasGenerated} changes from ${outcome.sessionsProcessed} sessions`,
-        };
+          message: `${failed ? "Reflection completed with errors. " : ""}Would apply ${outcome.deltasGenerated} changes from ${outcome.sessionsProcessed} sessions`,
+        });
       }
 
       const applied = (outcome.globalResult?.applied || 0) + (outcome.repoResult?.applied || 0);
@@ -903,19 +943,18 @@ async function handleToolCall(name: string, args: any): Promise<any> {
         (outcome.globalResult?.inversions?.length || 0) +
         (outcome.repoResult?.inversions?.length || 0);
 
-      maybeProfile("memory_reflect", t0);
-
-      return {
-        sessionsProcessed: outcome.sessionsProcessed,
-        deltasGenerated: outcome.deltasGenerated,
+      return finish({
+        ...summary,
         deltasApplied: applied,
         skipped,
         inversions,
         message:
-          outcome.deltasGenerated > 0
+          failed
+            ? `Reflection completed with errors. Applied ${applied} changes from ${outcome.sessionsProcessed} sessions`
+            : outcome.deltasGenerated > 0
             ? `Applied ${applied} changes from ${outcome.sessionsProcessed} sessions`
             : "No new insights found",
-      };
+      });
     }
     default:
       throw new Error(`Unknown tool: ${name}`);
@@ -987,11 +1026,16 @@ async function handleResourceRead(uri: string): Promise<any> {
 function wrapToolResult(
   payload: unknown,
   isError = false,
-): { content: Array<{ type: "text"; text: string }>; isError?: boolean } {
+): { content: Array<{ type: "text"; text: string }>; structuredContent?: Record<string, unknown>; isError?: boolean } {
   const text = typeof payload === "string" ? payload : JSON.stringify(payload);
-  const wrapped: { content: Array<{ type: "text"; text: string }>; isError?: boolean } = {
+  const wrapped: { content: Array<{ type: "text"; text: string }>; structuredContent?: Record<string, unknown>; isError?: boolean } = {
     content: [{ type: "text", text }],
   };
+  // MCP 2025-06-18 exposes machine-readable results directly while retaining
+  // the serialized text for clients that only consume content blocks.
+  if (payload !== null && typeof payload === "object" && !Array.isArray(payload)) {
+    wrapped.structuredContent = payload as Record<string, unknown>;
+  }
   if (isError) wrapped.isError = true;
   return wrapped;
 }
@@ -1061,6 +1105,9 @@ async function routeRequest(body: JsonRpcRequest): Promise<JsonRpcResponse> {
         result: wrapToolResult(result),
       };
     } catch (err: any) {
+      if (err instanceof ToolExecutionError) {
+        return { jsonrpc: "2.0", id: body.id ?? null, result: wrapToolResult(err.payload, true) };
+      }
       // Load-shedding: a bounded CASS-backed call that couldn't be admitted is a
       // retryable "server busy" condition, not a hard failure. Surface it with a
       // distinct code + retryable data so clients back off and retry.
@@ -1071,9 +1118,8 @@ async function routeRequest(body: JsonRpcRequest): Promise<JsonRpcResponse> {
           ...err.snapshot,
         });
       }
-      // Input-validation / execution failures are surfaced as JSON-RPC errors
-      // (clients map these to tool-call failures). wrapToolResult's isError
-      // form is available for callers that prefer in-band error content.
+      // Invalid tool calls and unclassified server failures remain protocol
+      // errors; completed reflection failures retain their results above.
       return buildError(body.id ?? null, err?.message || "Tool call failed");
     }
   }

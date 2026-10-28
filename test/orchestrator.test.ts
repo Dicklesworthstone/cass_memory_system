@@ -1094,6 +1094,11 @@ describe("orchestrateReflection reflector failures (#78)", () => {
             expect(outcome.errors).toHaveLength(1);
             expect(outcome.errors[0]).toContain(sessionPath);
             expect(outcome.errors[0]).toContain("Reflector failed");
+            expect(outcome.failedSessions).toEqual([{
+              sessionPath,
+              error: expect.stringContaining("runReflector timed out"),
+              proposedDeltas: [],
+            }]);
 
             // Not processed; the failure is recorded for bounded retry (#85).
             const log = new ProcessedLog(expandPath(getProcessedLogPath()));
@@ -1104,6 +1109,207 @@ describe("orchestrateReflection reflector failures (#78)", () => {
           },
         );
       });
+    });
+  });
+});
+
+describe("orchestrateReflection incomplete session safety (#99)", () => {
+  for (const dryRun of [false, true]) {
+    test(`retains later-pass proposals without applying or grading them${dryRun ? " in dry-run" : ""}`, async () => {
+      await withIsolatedHome(async env => {
+        const bullet = createBullet({ id: "b-abc111", content: "Inspect the command exit status before accepting a result." });
+        writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([bullet])));
+        const before = readFileSync(env.playbookPath, "utf-8");
+        const sessionPath = path.join(env.home, "sessions", "incomplete.jsonl");
+        writeJsonlSession(sessionPath, [
+          { role: "user", content: "Investigate why this scheduled reflection reported success after processing failed." },
+          { role: "assistant", content: "// [cass: helpful b-abc111] - checking the exit status exposed the failure" },
+        ]);
+        const config = createTestConfig({
+          playbookPath: env.playbookPath, diaryDir: env.diaryDir, cassPath: "/__missing__/cass",
+          validationEnabled: false, semanticSearchEnabled: false, embeddingModel: "none",
+        });
+        let calls = 0;
+        await withEnv({ CASS_MEMORY_LLM: "none" }, () => withLlmShim({
+          reflector: () => {
+            if (++calls > 1) throw new Error("invalid_api_key: later reflection pass failed");
+            return { deltas: [{ type: "add", bullet: {
+              content: "Review incomplete reflection proposals before applying them.", category: "testing",
+            } }] };
+          },
+        }, async io => {
+          const result = await orchestrateReflection(config, { session: sessionPath, dryRun, io });
+          expect(calls).toBeGreaterThan(1);
+          expect(result.sessionsProcessed).toBe(0);
+          expect(result.deltasGenerated).toBe(0);
+          expect(result.errors).toHaveLength(1);
+          expect(result.failedSessions).toEqual([{
+            sessionPath,
+            error: expect.stringContaining("later reflection pass failed"),
+            proposedDeltas: [expect.objectContaining({ type: "add", sourceSession: sessionPath })],
+          }]);
+          expect(result.globalResult).toBeUndefined();
+          if (dryRun) expect(result.dryRunDeltas).toEqual([]);
+          expect(readFileSync(env.playbookPath, "utf-8")).toBe(before);
+          const ledger = new ProcessedLog(expandPath(getProcessedLogPath()));
+          await ledger.load();
+          expect(ledger.has(sessionPath)).toBe(false);
+          if (dryRun) expect(ledger.get(sessionPath)).toBeUndefined();
+          else {
+            expect(ledger.get(sessionPath)).toMatchObject({ status: "failed", failures: 1 });
+            expect(ledger.get(sessionPath)?.recordCount).toBeUndefined();
+          }
+        }));
+      });
+    });
+  }
+
+  test("a failed continuation retains its watermark and retries without double feedback or counters", async () => {
+    await withIsolatedHome(async env => {
+      const oldRule = createBullet({ id: "b-old111", content: "Check parser diagnostics before rewriting token handling." });
+      const newRule = createBullet({ id: "b-new222", content: "Validate new transport frames against their declared lengths." });
+      writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([oldRule, newRule])));
+      const sessionPath = path.join(env.home, "sessions", "continuation-fails.jsonl");
+      writeJsonlSession(sessionPath, [
+        { role: "user", content: "OLDTURN investigate the parser failure and inspect its diagnostics before changing code." },
+        { role: "assistant", content: "// [cass: helpful b-old111] - the original diagnostics identified the parser defect" },
+      ]);
+      const config = createTestConfig({
+        playbookPath: env.playbookPath, diaryDir: env.diaryDir, cassPath: "/__missing__/cass",
+        validationEnabled: false, semanticSearchEnabled: false, embeddingModel: "none",
+      });
+      const readEntry = async () => {
+        const ledger = new ProcessedLog(expandPath(getProcessedLogPath()));
+        await ledger.load();
+        return ledger.get(sessionPath);
+      };
+      const proposal = { type: "add" as const, bullet: {
+        content: "Reject transport frames whose payload length differs from the declared header.", category: "testing",
+      } };
+      await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
+        await withLlmShim({ reflector: { deltas: [] } }, async io => {
+          expect((await orchestrateReflection(config, { session: sessionPath, io })).errors).toEqual([]);
+        });
+        const prior = (await readEntry())!;
+        expect(prior.recordCount).toBe(2);
+        const before = readFileSync(env.playbookPath, "utf-8");
+        appendJsonl(sessionPath, [
+          { role: "user", content: "NEWTURN now inspect the incoming transport frame and validate its header length." },
+          { role: "assistant", content: "// [cass: helpful b-new222] - the new header check found truncated payloads" },
+        ]);
+        let failCalls = 0;
+        await withLlmShim({ reflector: prompt => {
+          expect(prompt).not.toContain("OLDTURN");
+          if (++failCalls > 1) throw new Error("invalid_api_key: continuation pass failed");
+          return { deltas: [proposal] };
+        } }, async io => {
+          const failed = await orchestrateReflection(config, { session: sessionPath, io });
+          expect(failed.errors).toHaveLength(1);
+          expect(failed.sessionsProcessed).toBe(0);
+          expect(failed.deltasGenerated).toBe(0);
+          expect(failed.failedSessions?.[0]?.proposedDeltas).toHaveLength(1);
+        });
+        expect(readFileSync(env.playbookPath, "utf-8")).toBe(before);
+        expect(await readEntry()).toMatchObject({
+          status: "failed", failures: 1, recordCount: prior.recordCount,
+          lastRecordHash: prior.lastRecordHash, processedAt: prior.processedAt,
+        });
+
+        let retryCalls = 0;
+        await withLlmShim({ reflector: prompt => {
+          expect(prompt).not.toContain("OLDTURN");
+          return { deltas: ++retryCalls === 1 ? [proposal] : [] };
+        } }, async io => {
+          const recovered = await orchestrateReflection(config, { session: sessionPath, io });
+          expect(recovered.errors).toEqual([]);
+          expect(recovered.failedSessions).toBeUndefined();
+          expect(recovered.sessionsProcessed).toBe(1);
+          expect((await readEntry())?.recordCount).toBe(4);
+          expect((await readEntry())?.status).toBeUndefined();
+          const saved = readPlaybook(env.playbookPath);
+          expect(saved.bullets.filter((b: PlaybookBullet) => b.content === proposal.bullet.content)).toHaveLength(1);
+          for (const id of [oldRule.id, newRule.id]) {
+            const rule = saved.bullets.find((b: PlaybookBullet) => b.id === id);
+            expect(rule.helpfulCount).toBe(1);
+            expect(rule.feedbackEvents).toHaveLength(1);
+          }
+          expect(saved.metadata.totalReflections).toBe(2);
+          expect(saved.metadata.totalSessionsProcessed).toBe(2);
+          const stable = readFileSync(env.playbookPath, "utf-8");
+          const rerun = await orchestrateReflection(config, { session: sessionPath, io });
+          expect(rerun.errors).toEqual([]);
+          expect(rerun.sessionsProcessed).toBe(0);
+          expect(readFileSync(env.playbookPath, "utf-8")).toBe(stable);
+          expect(retryCalls).toBe(2);
+        });
+      });
+    });
+  });
+
+  test("a mixed batch commits complete sessions and retains failed proposals separately", async () => {
+    await withWorkspaceReflection(async f => {
+      f.config.maxReflectorIterations = 3;
+      writeFileSync(f.env.configPath, JSON.stringify(f.config));
+      const failedPath = f.session("later-pass-fails", f.alpha, "// [cass: helpful b-aaa111] - alpha check passed");
+      const healthyPath = f.session("complete-session", f.beta, "// [cass: helpful b-aaa111] - beta check passed");
+      f.discover([{ path: failedPath, workspace: f.alpha }, { path: healthyPath, workspace: f.beta }]);
+      const before = readFileSync(f.alphaPath, "utf-8");
+      const counts = new Map<string, number>();
+      const result = await f.run(prompt => {
+        const failed = prompt.includes("ALPHA_ONLY");
+        const key = failed ? failedPath : healthyPath;
+        const count = (counts.get(key) ?? 0) + 1;
+        counts.set(key, count);
+        if (failed && count > 1) throw new Error("invalid_api_key: alpha continuation failed");
+        return { deltas: count > 1 ? [] : [{ type: "add", bullet: {
+          content: failed ? "Inspect the alpha journal before replaying database migrations." : "Validate beta archive checksums before extracting deployment bundles.",
+          category: "testing", scope: "workspace",
+        } }] };
+      });
+      expect(result.errors).toHaveLength(1);
+      expect(result.sessionsProcessed).toBe(1);
+      expect(result.deltasGenerated).toBe(2); // completed rule plus its inline feedback
+      expect(result.failedSessions).toHaveLength(1);
+      expect(result.failedSessions?.[0]?.sessionPath).toBe(failedPath);
+      expect(result.failedSessions?.[0]?.proposedDeltas).toHaveLength(1);
+      expect(readFileSync(f.alphaPath, "utf-8")).toBe(before);
+      const beta = readPlaybook(f.betaPath);
+      expect(beta.bullets.some((b: PlaybookBullet) => b.content.includes("beta archive"))).toBe(true);
+      expect(beta.bullets.find((b: PlaybookBullet) => b.id === "b-aaa111").helpfulCount).toBe(1);
+      expect(readPlaybook(f.env.playbookPath).metadata.totalSessionsProcessed).toBe(1);
+      const ledger = new ProcessedLog(expandPath(getProcessedLogPath()));
+      await ledger.load();
+      expect(ledger.get(failedPath)).toMatchObject({ status: "failed", failures: 1 });
+      expect(ledger.get(failedPath)?.recordCount).toBeUndefined();
+      expect(ledger.has(healthyPath)).toBe(true);
+    });
+  });
+
+  test("a failure after grading discards the session's entire staged change set", async () => {
+    await withWorkspaceReflection(async f => {
+      const sessionPath = f.session("post-grading-failure", f.beta,
+        "All tests passed. // [cass: helpful b-aaa111] - integration checks worked\nUsed b-bbb222 to verify deployment readiness successfully.");
+      const globalBefore = readFileSync(f.env.playbookPath, "utf-8");
+      const repoBefore = readFileSync(f.betaPath, "utf-8");
+      const result = await f.run({ deltas: [{ type: "add", bullet: {
+        content: "Check binary package signatures before promoting a beta release.", category: "testing", scope: "workspace",
+      } }] }, {
+        session: sessionPath,
+        onProgress: event => {
+          if (event.phase === "session_done") throw new Error("progress consumer failed after grading");
+        },
+      });
+      expect(result.errors).toHaveLength(1);
+      expect(result.sessionsProcessed).toBe(0);
+      expect(result.deltasGenerated).toBe(0);
+      expect(result.failedSessions?.[0]?.proposedDeltas).toHaveLength(1);
+      expect(readFileSync(f.env.playbookPath, "utf-8")).toBe(globalBefore);
+      expect(readFileSync(f.betaPath, "utf-8")).toBe(repoBefore);
+      const ledger = new ProcessedLog(expandPath(getProcessedLogPath()));
+      await ledger.load();
+      expect(ledger.get(sessionPath)).toMatchObject({ status: "failed", failures: 1 });
+      expect(ledger.get(sessionPath)?.recordCount).toBeUndefined();
+      expect(ledger.getPendingOutcomeEntries()).toEqual([]);
     });
   });
 });

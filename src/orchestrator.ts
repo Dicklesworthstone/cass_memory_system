@@ -98,6 +98,12 @@ export interface ReflectionOutcome {
   projectResults?: Array<{ playbookPath: string; result: CurationResult }>;
   dryRunDeltas?: PlaybookDelta[];
   errors: string[];
+  /** Uncommitted reflector proposals retained for review after a session failed. */
+  failedSessions?: Array<{
+    sessionPath: string;
+    error: string;
+    proposedDeltas: PlaybookDelta[];
+  }>;
   /** Auto-recorded rule outcomes from processed sessions */
   autoOutcome?: {
     outcomesRecorded: number;
@@ -354,6 +360,7 @@ export async function orchestrateReflection(
     const processedLog = new ProcessedLog(logPath);
     await processedLog.load();
     const errors: string[] = [];
+    const failedSessions: NonNullable<ReflectionOutcome["failedSessions"]> = [];
     let autoOutcome: ReflectionOutcome["autoOutcome"] | undefined;
     const outcomeSummary = () => autoOutcome ??= {
       outcomesRecorded: 0,
@@ -519,6 +526,7 @@ export async function orchestrateReflection(
       if (endedAt) growthSignals.endedAt = endedAt;
       const sizeBytes = statSizeSync(sessionPath);
       if (sizeBytes !== undefined) growthSignals.sizeBytes = sizeBytes;
+      let proposedDeltas: PlaybookDelta[] | undefined;
 
       try {
         let content: string;
@@ -685,11 +693,12 @@ export async function orchestrateReflection(
         const diary = await generateDiaryFromContent(sessionPath, sliceNote + content, sessionConfig, diaryHint);
 
         const reflectResult = await reflectOnSession(diary, context.snapshot, sessionConfig, options.io);
-        if (reflectResult.failure !== undefined && reflectResult.deltas.length === 0) {
-          // The reflector never produced anything for this session (timeout,
-          // provider error, unparseable output). Throwing here keeps the
-          // session OUT of the processed log so the next run retries it,
-          // instead of recording it as "processed, 0 deltas" forever (#78).
+        proposedDeltas = reflectResult.deltas;
+        if (reflectResult.failure !== undefined) {
+          // A later pass can fail after earlier passes produced useful
+          // proposals. Keep those for review, but do not apply or grade an
+          // incomplete session: replay must not duplicate learned feedback or
+          // advance the transcript watermark past work that never completed.
           throw new Error(`Reflector failed: ${reflectResult.failure}`);
         }
 
@@ -727,12 +736,12 @@ export async function orchestrateReflection(
           delta.bullet.workspace = projectRoot;
         }
 
-        if (validatedDeltas.length > 0) {
-          for (const delta of validatedDeltas) {
-            deltaProvenance.set(delta, { sessionPath, context });
-          }
-          allDeltas.push(...validatedDeltas);
-        }
+        // Keep this session's entire change set local until every processing
+        // step succeeds. Grading or progress reporting can still fail after
+        // reflection; those failures must not leak proposals into curation.
+        const sessionDeltas = [...validatedDeltas];
+        let sessionInlineFeedbackCount = 0;
+        const sessionOutcomes: Array<{ input: OutcomeInput; context: ReflectionContext }> = [];
 
         // 4b. Auto-outcome: extract rule IDs, inline feedback, and classify session
         //
@@ -752,9 +761,8 @@ export async function orchestrateReflection(
           const inlineFeedback = parseInlineFeedback(gradableContent);
           if (inlineFeedback.length > 0) {
             const inlineDeltas = inlineFeedbackToDeltas(inlineFeedback, sessionPath);
-            for (const delta of inlineDeltas) deltaProvenance.set(delta, { sessionPath, context });
-            allDeltas.push(...inlineDeltas);
-            inlineFeedbackDeltaCount += inlineFeedback.length;
+            sessionDeltas.push(...inlineDeltas);
+            sessionInlineFeedbackCount = inlineFeedback.length;
           }
 
           // Extract rule IDs and classify session outcome for auto-recording.
@@ -767,29 +775,26 @@ export async function orchestrateReflection(
           if (ruleIds.length > 0) {
             const outcomeInput = classifySessionOutcome(gradableContent, diary, ruleIds);
             if (outcomeInput && context.workspace) {
-              pendingOutcomes.set(sessionPath, [
-                ...(pendingOutcomes.get(sessionPath) ?? []),
-                {
-                  context,
-                  input: {
-                    ...outcomeInput,
-                    workspace: context.workspace,
-                    // Full original records give occurrence keys the same
-                    // identity in global, workspace, and incremental passes.
-                    // Without structured records, retain the outcome but
-                    // abstain from inferring independent confidence evidence.
-                    transcriptEvidence: records ? buildTranscriptEvidence(
-                      sessionPath, records, sessionConfig, { startRecord: gradingStartRecord, ruleIds },
-                    ) : [],
-                  },
+              sessionOutcomes.push({
+                context,
+                input: {
+                  ...outcomeInput,
+                  workspace: context.workspace,
+                  // Full original records give occurrence keys the same
+                  // identity in global, workspace, and incremental passes.
+                  // Without structured records, retain the outcome but
+                  // abstain from inferring independent confidence evidence.
+                  transcriptEvidence: records ? buildTranscriptEvidence(
+                    sessionPath, records, sessionConfig, { startRecord: gradingStartRecord, ruleIds },
+                  ) : [],
                 },
-              ]);
+              });
             }
           }
         }
 
         // Defer marking as processed until merge succeeds to prevent data loss
-        pendingProcessedEntries.push({
+        const processedEntry: ProcessedEntry = {
           sessionPath,
           processedAt: now(),
           diaryId: diary.id,
@@ -797,8 +802,7 @@ export async function orchestrateReflection(
           pendingOutcomes: prior?.pendingOutcomes,
           ...watermarkFields,
           ...growthSignals,
-        });
-        sessionsProcessed++;
+        };
 
         options.onProgress?.({
           phase: "session_done",
@@ -807,9 +811,19 @@ export async function orchestrateReflection(
           sessionPath,
           deltasGenerated: validatedDeltas.length,
         });
+
+        // Publish the completed session as one batch. No fallible processing
+        // or caller callback follows publication inside this session's try.
+        for (const delta of sessionDeltas) deltaProvenance.set(delta, { sessionPath, context });
+        allDeltas.push(...sessionDeltas);
+        inlineFeedbackDeltaCount += sessionInlineFeedbackCount;
+        if (sessionOutcomes.length > 0) pendingOutcomes.set(sessionPath, sessionOutcomes);
+        pendingProcessedEntries.push(processedEntry);
+        sessionsProcessed++;
       } catch (err: any) {
         const message = err?.message || String(err);
         errors.push(`Failed to process ${sessionPath}: ${message}`);
+        if (proposedDeltas !== undefined) failedSessions.push({ sessionPath, error: message, proposedDeltas });
         // Bounded retry (#85): remember the failure, keeping any watermark from
         // an earlier successful pass, so discovery can back off. A processed
         // session without a watermark (only reachable via --force) keeps its
@@ -841,6 +855,7 @@ export async function orchestrateReflection(
         deltasGenerated: allDeltas.length,
         dryRunDeltas: allDeltas,
         errors,
+        ...(failedSessions.length > 0 ? { failedSessions } : {}),
       };
     }
 
@@ -868,7 +883,10 @@ export async function orchestrateReflection(
         entry.pendingOutcomes = [...(entry.pendingOutcomes ?? []), ...prepared];
       } catch (err: any) {
         errors.push(`Auto-outcome preparation failed for ${entry.sessionPath}: ${err?.message || String(err)}`);
-        return { sessionsProcessed: 0, deltasGenerated: 0, errors, autoOutcome };
+        return {
+          sessionsProcessed: 0, deltasGenerated: 0, errors, autoOutcome,
+          ...(failedSessions.length > 0 ? { failedSessions } : {}),
+        };
       }
     }
 
@@ -877,7 +895,10 @@ export async function orchestrateReflection(
       // playbook change and nothing to count, but retry state and refreshed
       // growth signals are still recorded.
       await processedLog.appendBatch([...pendingRefreshEntries, ...pendingFailureEntries]);
-      return { sessionsProcessed, deltasGenerated: 0, errors, autoOutcome };
+      return {
+        sessionsProcessed, deltasGenerated: 0, errors, autoOutcome,
+        ...(failedSessions.length > 0 ? { failedSessions } : {}),
+      };
     }
 
     // Sessions that will be committed to the processed log by this run. Even
@@ -1192,6 +1213,7 @@ export async function orchestrateReflection(
       ...(projectResults.length > 0 ? { projectResults } : {}),
       errors,
       autoOutcome,
+      ...(failedSessions.length > 0 ? { failedSessions } : {}),
     };
   }, lockWait);
 }

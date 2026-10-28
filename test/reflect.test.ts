@@ -892,11 +892,12 @@ describe("reflectOnSession reflector failures (#78)", () => {
         );
         expect(result.deltas).toEqual([]);
         expect(result.failure).toBeUndefined();
+        expect(calls).toBe(1);
       },
     );
   });
 
-  test("keeps deltas from a successful pass when a later iteration fails", async () => {
+  test("reports later iteration failure while retaining earlier proposals for review", async () => {
     const diary = createTestDiary();
     const playbook = createTestPlaybook();
     const delta: PlaybookDelta = {
@@ -924,7 +925,7 @@ describe("reflectOnSession reflector failures (#78)", () => {
         expect(result.deltas.map((d) => (d.type === "add" ? d.bullet.content : d.type))).toEqual([
           "Rule from pass one",
         ]);
-        expect(result.failure).toBeUndefined();
+        expect(result.failure).toContain("invalid_api_key: rejected on the second pass");
       },
     );
   });
