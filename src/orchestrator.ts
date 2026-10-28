@@ -30,9 +30,9 @@ import {
   mergePlaybooks,
   recordReflectionRun,
   resolveRepoPlaybookPath,
-  savePlaybook,
 } from "./playbook.js";
 import { reflectOnSession } from "./reflect.js";
+import { ReflectionCommit, recoverReflectionCommit } from "./reflection-commit.js";
 import { compileExtraPatterns, sanitize } from "./sanitize.js";
 import { buildSemanticDedupIndex, type SemanticDedupIndex } from "./semantic.js";
 import { containsCmSubprocessPayload, stripCmSubprocessPayloads } from "./subprocess-tag.js";
@@ -51,6 +51,7 @@ import {
   type ProcessedEntry,
 } from "./types.js";
 import {
+  canonicalStoragePath,
   ensureDir,
   expandPath,
   fileExists,
@@ -104,6 +105,8 @@ export interface ReflectionOutcome {
     error: string;
     proposedDeltas: PlaybookDelta[];
   }>;
+  /** Interrupted commits completed without repeating session processing. */
+  recoveredCommits?: Array<{ id: string; sessionsProcessed: number }>;
   /** Auto-recorded rule outcomes from processed sessions */
   autoOutcome?: {
     outcomesRecorded: number;
@@ -284,7 +287,11 @@ export async function orchestrateReflection(
   const runWorkspace = normalizeWorkspacePath(process.cwd());
   const configWorkspace = normalizeWorkspacePath(options.workspace ?? runWorkspace);
   const logPath = expandPath(getProcessedLogPath(options.workspace));
-  const globalPath = expandPath(config.playbookPath);
+  // Freeze the storage owner once. Directory aliases must share the same
+  // journal and lock, while a final-component symlink remains its own atomic
+  // replacement destination.
+  const globalPath = canonicalStoragePath(config.playbookPath);
+  config = { ...config, playbookPath: globalPath };
   const outcomeConfigs = new Map<string, Promise<Config>>([[configWorkspace, Promise.resolve(config)]]);
   const configForOutcomeWorkspace = (workspace?: string): Promise<Config> => {
     const owner = normalizeWorkspacePath(workspace ?? configWorkspace);
@@ -357,7 +364,17 @@ export async function orchestrateReflection(
   // (minutes of LLM calls) instead of failing after the 2 s interactive wait.
   const lockWait = process.env[HOOK_ACTIVE_ENV] === "1" ? HOOK_REFLECTION_LOCK_WAIT : {};
   return withLock(reflectionLockPath, async () => {
-    const processedLog = new ProcessedLog(logPath);
+    const recoveredCommits: NonNullable<ReflectionOutcome["recoveredCommits"]> = [];
+    const recoveredLogs = new Set<string>();
+    const rememberRecovery = (recovery: NonNullable<Awaited<ReturnType<typeof recoverReflectionCommit>>>) => {
+      recoveredCommits.push({ id: recovery.id, sessionsProcessed: recovery.sessionsProcessed });
+      recoveredLogs.add(recovery.logPath);
+    };
+    // Complete the frozen write set before discovery or any provider request.
+    // A dry run reports a pending commit without touching its files or ledger.
+    const recovered = await recoverReflectionCommit(globalPath, { dryRun: options.dryRun });
+    if (recovered) rememberRecovery(recovered);
+    let processedLog = new ProcessedLog(logPath);
     await processedLog.load();
     const errors: string[] = [];
     const failedSessions: NonNullable<ReflectionOutcome["failedSessions"]> = [];
@@ -371,9 +388,9 @@ export async function orchestrateReflection(
     // A failed recovery is retried on the next invocation, not repeatedly
     // during this run when newly reflected sessions are committed below.
     const attemptedOutcomes = new Set<string>();
-    const drainPendingOutcomes = async () => {
+    const drainPendingOutcomes = async (sourceLog: ProcessedLog = processedLog) => {
       const acknowledgements: Array<{ sessionPath: string; outcomeIds: string[] }> = [];
-      for (const entry of processedLog.getPendingOutcomeEntries()) {
+      for (const entry of sourceLog.getPendingOutcomeEntries()) {
         const completed = new Set<string>();
         const identity = (record: NonNullable<ProcessedEntry["pendingOutcomes"]>[number]) =>
           record.id ?? JSON.stringify([record.path, record.sessionId, record.recordedAt]);
@@ -398,16 +415,35 @@ export async function orchestrateReflection(
         acknowledgements.push({ sessionPath: entry.sessionPath, outcomeIds: [...completed] });
       }
       try {
-        await processedLog.acknowledgeOutcomes(acknowledgements);
+        await sourceLog.acknowledgeOutcomes(acknowledgements);
       } catch (err: any) {
         // The persisted queue still contains the exact same outcome IDs.
         // Replaying after an interrupted acknowledgement is idempotent.
         errors.push(`Auto-outcome acknowledgement failed: ${err?.message || String(err)}`);
       }
     };
+    const drainRecoveredOutcomes = async () => {
+      for (const recoveredLogPath of recoveredLogs) {
+        if (path.resolve(recoveredLogPath) === path.resolve(logPath)) continue;
+        try {
+          const sourceLog = new ProcessedLog(recoveredLogPath);
+          await sourceLog.load();
+          await drainPendingOutcomes(sourceLog);
+        } catch (err: any) {
+          errors.push(`Recovered commit outcomes could not be read from ${recoveredLogPath}: ${err?.message || String(err)}`);
+        }
+      }
+      await drainPendingOutcomes();
+    };
     // Recovery must run even when discovery finds no new sessions. A dry run
     // leaves both the pending queue and its outcome/feedback destinations alone.
-    if (!options.dryRun) await drainPendingOutcomes();
+    if (!options.dryRun) await drainRecoveredOutcomes();
+    if (recoveredCommits.length > 0) {
+      // Report recovery separately from newly reflected sessions. Returning
+      // here also prevents a retry launched in another workspace from running
+      // the frozen sessions again through that workspace's separate ledger.
+      return { sessionsProcessed: 0, deltasGenerated: 0, errors, autoOutcome, recoveredCommits };
+    }
 
     // 2. Discovery Phase. Each session gets its own applicable snapshot after
     // its workspace is known; the launch repository is not a batch-wide owner.
@@ -912,6 +948,7 @@ export async function orchestrateReflection(
     let globalResult: CurationResult | undefined;
     let repoResult: CurationResult | undefined;
     const projectResults: Array<{ playbookPath: string; result: CurationResult }> = [];
+    let transaction: ReflectionCommit;
 
     const batches = new Map<ReflectionContext, PlaybookDelta[]>();
     for (const delta of allDeltas) {
@@ -937,9 +974,9 @@ export async function orchestrateReflection(
       const repoDir = repoPath ? path.dirname(repoPath) : null;
       const semanticIndex = semanticIndexes.get(context);
       const repoAcceptsAdds = acceptsRepositoryAdds(context);
-      const storedGlobal = await loadPlaybook(globalPath);
+      const storedGlobal = await transaction.loadPlaybook(globalPath);
       const storedRepo = repoPath && (context.repoExists || repoAcceptsAdds)
-        ? await loadPlaybook(repoPath) : null;
+        ? await transaction.loadPlaybook(repoPath) : null;
       const globalPlaybook = scopedPlaybook(storedGlobal, context, false);
       const repoPlaybook = storedRepo ? scopedPlaybook(storedRepo, context, true) : null;
       let localGlobalResult: CurationResult | undefined;
@@ -1153,16 +1190,16 @@ export async function orchestrateReflection(
         if (repoPlaybook) applyToLayer(repoPlaybook, deprecations.filter(d => "bulletId" in d && owner(d.bulletId) === repoPlaybook));
       }
 
-      // Cross-layer replacements must reach disk before repository sources
-      // retire. A failure propagates without acknowledging any session; retry
-      // uses the curator's existing session-feedback idempotency.
+      // Stage complete replacement images before changing any live file. The
+      // durable commit keeps cross-layer replacements and their retirements
+      // together, including their exact IDs if the process is interrupted.
       const globalToSave = retainOtherScopes(storedGlobal, globalPlaybook, context, false);
-      await savePlaybook(globalToSave, globalPath, { updateLastReflection: true });
+      await transaction.savePlaybook(globalToSave, globalPath, { updateLastReflection: true });
       if (localGlobalResult) globalResult = accumulateCurationResult(globalResult,
         { ...localGlobalResult, playbook: globalToSave });
       if (localRepoResult && storedRepo && repoPlaybook && repoPath) {
         const repoToSave = retainOtherScopes(storedRepo, repoPlaybook, context, true);
-        await savePlaybook(repoToSave, repoPath, { updateLastReflection: true });
+        await transaction.savePlaybook(repoToSave, repoPath, { updateLastReflection: true });
         const saved = { ...localRepoResult, playbook: repoToSave };
         repoResult = accumulateCurationResult(repoResult, saved);
         const previous = projectResults.find(project => samePlaybookPath(project.playbookPath, repoPath));
@@ -1171,31 +1208,54 @@ export async function orchestrateReflection(
       }
     };
 
-    // Every batch takes global first and at most one repository lock. No
-    // nested cross-repository locks are needed, including shared worktrees.
+    // The global lock serializes preparation and commit recovery across
+    // workspaces. Commit acquires repository locks in a stable order, checks
+    // every original image, then publishes and applies its durable manifest.
     await withLock(globalPath, async () => {
-      for (const [context, deltas] of batches) {
-        if (context.repoPath && (context.repoExists || acceptsRepositoryAdds(context))) {
-          if (samePlaybookPath(context.repoPath, globalPath)) {
-            throw new Error("Global and repository playbook paths must differ for reflection");
-          }
-          await withLock(context.repoPath, () => performMerge(context, deltas));
-        } else await performMerge(context, deltas);
+      const pending = await recoverReflectionCommit(globalPath, { skipGlobalLock: true });
+      if (pending) {
+        // Another workspace may have been interrupted while this run was
+        // generating proposals. Finish its commit first; leave our sessions
+        // eligible for a later invocation against the recovered state.
+        rememberRecovery(pending);
+        return;
       }
-      // Run-level counters advance once, after every owning file was saved.
-      const globalToSave = await loadPlaybook(globalPath);
-      recordReflectionRun(globalToSave, committedSessionCount);
-      await savePlaybook(globalToSave, globalPath, { updateLastReflection: true });
-      if (globalResult) globalResult.playbook = globalToSave;
+      transaction = await ReflectionCommit.create(globalPath, logPath, [
+        ...pendingProcessedEntries,
+        ...pendingRefreshEntries,
+        ...pendingFailureEntries,
+      ], { sessionsProcessed: committedSessionCount });
+      try {
+        for (const [context, deltas] of batches) {
+          if (context.repoPath && (context.repoExists || acceptsRepositoryAdds(context))) {
+            if (samePlaybookPath(context.repoPath, globalPath)) {
+              throw new Error("Global and repository playbook paths must differ for reflection");
+            }
+          }
+          await performMerge(context, deltas);
+        }
+        // Counters and ledger entries are part of the same frozen commit.
+        const globalToSave = await transaction.loadPlaybook(globalPath);
+        recordReflectionRun(globalToSave, committedSessionCount);
+        await transaction.savePlaybook(globalToSave, globalPath, { updateLastReflection: true });
+        await transaction.commit();
+        if (globalResult) globalResult.playbook = globalToSave;
+      } catch (error) {
+        // Prepared-only staging is disposable. Once the manifest is durable,
+        // abort leaves it intact so a later run can finish the exact commit.
+        await transaction.abort();
+        throw error;
+      }
     });
 
-    // Persist the watermark and prepared outcome queue together, only after
-    // curation succeeds. Losing outcome I/O later cannot lose the retry work.
-    await processedLog.appendBatch([
-      ...pendingProcessedEntries,
-      ...pendingRefreshEntries,
-      ...pendingFailureEntries,
-    ]);
+    // The durable commit acknowledged the watermark and outcome queue. Reload
+    // the ledger so outcome delivery sees precisely that committed state.
+    processedLog = new ProcessedLog(logPath);
+    await processedLog.load();
+    if (recoveredCommits.length > 0) {
+      await drainRecoveredOutcomes();
+      return { sessionsProcessed: 0, deltasGenerated: 0, errors, autoOutcome, recoveredCommits };
+    }
 
     // 6. Persist and apply outcomes from their durable queue. Completion is
     // acknowledged only after both operations succeed; replays use their

@@ -7,6 +7,7 @@ import { sanitize } from "./sanitize.js";
 import { OutcomeRecordSchema, ProcessedEntrySchema, type ProcessedEntry } from "./types.js";
 import {
   atomicWrite,
+  canonicalStoragePath,
   ensureDir,
   ensureDurableDirectory,
   expandPath,
@@ -420,7 +421,7 @@ class ReflectionCommitRecoveryError extends Error {}
 
 const ReflectionCommitEnvelopeSchema = z.object({
   reflectionCommit: z.object({
-    owner: z.string().trim().min(1),
+    owner: z.string().min(1),
     id: z.string().min(1),
   }).strict(),
   entries: z.array(ProcessedEntrySchema.extend({
@@ -435,7 +436,7 @@ function normalizeCommitOwner(owner: string): string {
   }
   // Preserve the logical file address. Atomic replacement may replace a final
   // symlink, so realpath would change this identity between commit and replay.
-  return path.resolve(expandPath(owner.trim()));
+  return canonicalStoragePath(owner);
 }
 
 function parseReflectionCommit(value: unknown, source: string) {

@@ -937,6 +937,16 @@ async function handleToolCall(name: string, args: any): Promise<any> {
         });
       }
 
+      if (outcome.recoveredCommits?.length) {
+        // Recovery completes a previously prepared write set. Its original
+        // curation counts were not recomputed; do not fabricate zero applied
+        // changes for an invocation that may have finished pending writes.
+        return finish({
+          ...summary,
+          message: `${failed ? "Reflection completed with errors. " : ""}Recovered ${outcome.recoveredCommits.length} interrupted reflection commit(s). No new sessions were reflected; run again to process new work.`,
+        });
+      }
+
       const applied = (outcome.globalResult?.applied || 0) + (outcome.repoResult?.applied || 0);
       const skipped = (outcome.globalResult?.skipped || 0) + (outcome.repoResult?.skipped || 0);
       const inversions =

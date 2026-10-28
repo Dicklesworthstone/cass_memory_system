@@ -875,6 +875,24 @@ failures the same way while retaining proposed deltas. Ordinary diagnostic
 warnings do not make an otherwise successful run fail. Scheduled jobs can check
 the process exit status; failed sessions remain eligible for a later retry.
 
+Reflection also recovers interrupted storage commits. Before replacing any
+playbook, it persists the exact prepared changes and their session watermarks.
+If the process stops between playbook writes or before the processing ledger is
+acknowledged, rerun the command: recovery finishes those prepared changes without
+calling the model again or counting the sessions twice. JSON reports this work
+in `recoveredCommits`, separately from newly processed sessions. A recovery run
+then returns; the next invocation can process new sessions. Pending automatic
+outcomes retain their original identities and are delivered after recovery.
+
+Recovery preserves subsequent feedback on files already committed. If an
+uncommitted destination has changed since preparation, it retains both versions
+and refuses to overwrite the newer data. The error identifies the affected file;
+resolve that conflict before retrying. Keep the pending manifest and its stage
+directory under `~/.cass-memory/reflections/commits/` until recovery succeeds.
+`--dry-run` reports a pending commit and leaves it untouched. Each staged
+playbook keeps the ordinary 16 MiB limit; a commit is bounded to 64 target files,
+256 MiB of staged data, and a 16 MiB manifest.
+
 Each session uses its source project's applicable rules and reflection policy.
 Inline feedback, replacements, deprecations, and merges retain that ownership
 through curation. Linked worktrees use their local playbook when present and

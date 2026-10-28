@@ -6,7 +6,7 @@ import os from "node:os";
 import { join, resolve } from "node:path";
 import { InputLimitError, PLAYBOOK_INPUT_LIMITS } from "../src/input-limits.js";
 import { getProcessedLogPath, ProcessedLog } from "../src/tracking.js";
-import { atomicWrite } from "../src/utils.js";
+import { atomicWrite, canonicalStoragePath } from "../src/utils.js";
 import { withTempDir } from "./helpers/index.js";
 
 // =============================================================================
@@ -1112,5 +1112,72 @@ directoryDurabilityIt("retries failed ancestor flushes even after mkdir already 
       openSpy.mockRestore();
       for (const restore of restoreHandles) restore();
     }
+  });
+});
+
+describe("canonical reflection commit owners", () => {
+  it("rejects absent, non-string and blank storage paths instead of treating them as cwd", () => {
+    for (const value of [undefined, null, 42, "", "   "]) {
+      expect(() => canonicalStoragePath(value as unknown as string)).toThrow("non-empty string");
+    }
+  });
+
+  it("shares an ACK across directory aliases, including parents created after commitment", async () => {
+    await withTempDir("tracking-commit-owner-alias", async (directory) => {
+      const realParent = join(directory, "real");
+      const aliasParent = join(directory, "alias");
+      await mkdir(realParent);
+      await fs.symlink(realParent, aliasParent, process.platform === "win32" ? "junction" : "dir");
+      const aliasOwner = join(aliasParent, "future", "playbook.yaml");
+      const realOwner = join(await fs.realpath(realParent), "future", "playbook.yaml");
+      expect(canonicalStoragePath(aliasOwner)).toBe(realOwner);
+      const logPath = join(directory, "processed.log");
+      const log = new ProcessedLog(logPath);
+      await log.appendCommittedBatch(aliasOwner, "aliased-commit", []);
+      expect(log.hasCommittedBatch(realOwner, "aliased-commit")).toBe(true);
+      await mkdir(join(realParent, "future"));
+      const loaded = new ProcessedLog(logPath);
+      await loaded.load();
+      expect(loaded.hasCommittedBatch(aliasOwner, "aliased-commit")).toBe(true);
+      expect(loaded.hasCommittedBatch(realOwner, "aliased-commit")).toBe(true);
+      expect(await loaded.appendCommittedBatch(realOwner, "aliased-commit", []))
+        .toEqual({ alreadyCommitted: true });
+    });
+  });
+
+  const posixIt = process.platform === "win32" ? it.skip : it;
+  posixIt("keeps a final-component symlink distinct and stable when atomic replacement replaces it", async () => {
+    await withTempDir("tracking-commit-owner-final-link", async (directory) => {
+      const target = join(directory, "target.yaml");
+      const alias = join(directory, "alias.yaml");
+      await writeFile(target, "original target");
+      await fs.symlink(target, alias);
+      const logPath = join(directory, "processed.log");
+      const log = new ProcessedLog(logPath);
+      await log.appendCommittedBatch(alias, "final-link-commit", []);
+      expect(log.hasCommittedBatch(alias, "final-link-commit")).toBe(true);
+      expect(log.hasCommittedBatch(target, "final-link-commit")).toBe(false);
+      await atomicWrite(alias, "replacement at alias");
+      expect(await readFile(target, "utf8")).toBe("original target");
+      const loaded = new ProcessedLog(logPath);
+      await loaded.load();
+      expect(loaded.hasCommittedBatch(alias, "final-link-commit")).toBe(true);
+      expect(loaded.hasCommittedBatch(target, "final-link-commit")).toBe(false);
+      expect(await loaded.appendCommittedBatch(alias, "final-link-commit", []))
+        .toEqual({ alreadyCommitted: true });
+    });
+  });
+
+  posixIt("preserves meaningful trailing spaces in storage filenames", async () => {
+    await withTempDir("tracking-commit-owner-spaces", async (directory) => {
+      const owner = join(directory, "playbook.yaml ");
+      const trimmedOwner = join(directory, "playbook.yaml");
+      const logPath = join(directory, "processed.log");
+      await new ProcessedLog(logPath).appendCommittedBatch(owner, "spaced-filename", []);
+      const loaded = new ProcessedLog(logPath);
+      await loaded.load();
+      expect(loaded.hasCommittedBatch(owner, "spaced-filename")).toBe(true);
+      expect(loaded.hasCommittedBatch(trimmedOwner, "spaced-filename")).toBe(false);
+    });
   });
 });

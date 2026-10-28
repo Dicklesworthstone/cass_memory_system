@@ -296,6 +296,7 @@ export async function reflectCommand(
     deltasGenerated: result.deltasGenerated,
     errors: result.errors,
     ...(result.failedSessions ? { failedSessions: result.failedSessions } : {}),
+    ...(result.recoveredCommits ? { recoveredCommits: result.recoveredCommits } : {}),
   };
   const printResult = (data: Record<string, unknown>): void => {
     if (failure) {
@@ -420,7 +421,7 @@ export async function reflectCommand(
   }
 
   // CLI Output
-  if (result.sessionsProcessed === 0 && result.errors.length === 0) {
+  if (result.sessionsProcessed === 0 && result.errors.length === 0 && !result.recoveredCommits?.length) {
     console.log(chalk.green("No new sessions to reflect on."));
   } else {
     console.log(failure
@@ -431,11 +432,23 @@ export async function reflectCommand(
         [
           { key: "Sessions processed", value: String(result.sessionsProcessed) },
           { key: "Deltas generated", value: String(result.deltasGenerated) },
+          ...(result.recoveredCommits?.length ? [
+            { key: "Interrupted commits recovered", value: String(result.recoveredCommits.length) },
+            { key: "Previously processed sessions", value: String(result.recoveredCommits.reduce(
+              (count, commit) => count + commit.sessionsProcessed, 0,
+            )) },
+          ] : []),
         ],
         { indent: "  ", width: maxWidth },
       ),
     );
     console.log("");
+
+    if (result.recoveredCommits?.length) {
+      console.log(chalk.green("Finished the interrupted commit without repeating session processing."));
+      console.log(chalk.gray(`Run ${cli} reflect again to process new sessions.`));
+      console.log("");
+    }
 
     if (result.globalResult) {
       console.log(chalk.bold(`Global Updates:`));

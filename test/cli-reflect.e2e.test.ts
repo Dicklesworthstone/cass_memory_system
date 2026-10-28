@@ -13,14 +13,17 @@
  * - Test error cases: no sessions, invalid session format
  * - Detailed logging: sessions processed, deltas generated, playbook changes
  */
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import fs, { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
 import { reflectCommand } from "../src/commands/reflect.js";
+import { loadConfig } from "../src/config.js";
 import { PLAYBOOK_INPUT_LIMITS } from "../src/input-limits.js";
+import { prepareOutcome } from "../src/outcome.js";
 import { loadPlaybook } from "../src/playbook.js";
+import { ReflectionCommit, reflectionCommitPendingPath } from "../src/reflection-commit.js";
 import { getProcessedLogPath, ProcessedLog } from "../src/tracking.js";
 import { createTestBullet } from "./helpers/factories.js";
 import { createTestLogger, type TestLogger } from "./helpers/logger.js";
@@ -163,6 +166,103 @@ describe("E2E: reflect failure status (#99)", () => {
       { role: "assistant", content: "Check both the structured result and the process exit status for failures." },
     ].map(record => JSON.stringify(record)).join("\n") + "\n");
     return sessionPath;
+  }
+
+  for (const blockedOutcome of [false, true]) {
+    it(`reports durable commit recovery accurately${blockedOutcome ? " when queued outcome storage fails" : " on success"}`, async () => {
+      await withTempCassHome(async env => {
+        await setup(env);
+        const session = await writeSession(env, "durable-recovery");
+        await writeFile(env.playbookPath, yaml.stringify(createTestPlaybook([createTestBullet({
+          id: "b-recovery1", content: "Retain the prepared outcome while recovering a reflection commit.",
+        })])));
+        const providerCalled = path.join(env.home, "provider-called");
+        const cliPath = path.join(env.home, "unexpected-provider");
+        await writeFile(cliPath, `#!${process.execPath}\nawait Bun.write(${JSON.stringify(providerCalled)}, "called");\nprocess.exit(1);\n`, { mode: 0o755 });
+        const savedConfig = JSON.parse(await readFile(env.configPath, "utf8"));
+        await writeFile(env.configPath, JSON.stringify({ ...savedConfig, provider: "cli", cliCommand: cliPath }));
+        const config = await loadConfig({}, { cwd: env.home });
+        const pending = await prepareOutcome({
+          sessionId: session, workspace: env.home, outcome: "success", rulesUsed: ["b-recovery1"],
+        }, config);
+        if (blockedOutcome) await mkdir(pending.path);
+        const logPath = getProcessedLogPath();
+        const tx = await ReflectionCommit.create(env.playbookPath, logPath, [{
+          sessionPath: session, processedAt: new Date().toISOString(), deltasGenerated: 1,
+          pendingOutcomes: [pending],
+        }], { sessionsProcessed: 1 });
+        const staged = await tx.loadPlaybook(env.playbookPath);
+        staged.bullets.push(createTestBullet({ id: "b-frozen1", content: "Replay the exact prepared changes after an interrupted write." }));
+        staged.metadata.totalReflections = 1;
+        staged.metadata.totalSessionsProcessed = 1;
+        await tx.savePlaybook(staged, env.playbookPath);
+        const realRename = fs.rename.bind(fs);
+        const fault = spyOn(fs, "rename").mockImplementation(async (from, to) => {
+          if (String(to) === env.playbookPath) throw new Error("injected publication interruption");
+          return realRename(from, to);
+        });
+        try {
+          await expect(tx.commit()).rejects.toThrow("injected publication interruption");
+        } finally {
+          fault.mockRestore();
+        }
+        const pendingPath = reflectionCommitPendingPath(env.playbookPath);
+        const beforePlaybook = await readFile(env.playbookPath, "utf8");
+        const beforeJournal = await readFile(pendingPath, "utf8");
+        const providerEnv = { CASS_MEMORY_LLM: undefined, CM_REFLECTOR_STUBS: undefined, CASS_CLI_COMMAND: cliPath };
+        const dryRun = runReflect(env, ["--session", session, "--json", "--dry-run"], providerEnv);
+        expect(dryRun.error).toBeUndefined();
+        expect(dryRun.status).not.toBe(0);
+        const preview = JSON.parse(dryRun.stdout);
+        expect(preview.success).toBe(false);
+        expect(preview.error.message).toMatch(/pending|commit|recovery/i);
+        expect(await readFile(env.playbookPath, "utf8")).toBe(beforePlaybook);
+        expect(await readFile(pendingPath, "utf8")).toBe(beforeJournal);
+        expect(await exists(logPath)).toBe(false);
+        expect(await exists(providerCalled)).toBe(false);
+
+        const recovered = runReflect(env, ["--session", session, "--json"], providerEnv);
+        expect(recovered.error).toBeUndefined();
+        const payload = JSON.parse(recovered.stdout);
+        expect(payload.success).toBe(!blockedOutcome);
+        expect(payload.data.sessionsProcessed).toBe(0);
+        expect(payload.data.deltasGenerated).toBe(0);
+        expect(payload.data.recoveredCommits).toEqual([{ id: tx.id, sessionsProcessed: 1 }]);
+        expect(payload.data.global).toBeUndefined();
+        expect(payload.data.repo).toBeUndefined();
+        expect(await exists(pendingPath)).toBe(false);
+        const log = new ProcessedLog(logPath);
+        await log.load();
+        expect(log.has(session)).toBe(true);
+        if (blockedOutcome) {
+          expect(recovered.status).not.toBe(0);
+          expect(payload.error.code).toBe("REFLECTION_FAILED");
+          expect(payload.data.errors[0]).toContain("Auto-outcome recovery failed");
+          expect(log.get(session)?.pendingOutcomes).toHaveLength(1);
+          await rename(pending.path, `${pending.path}.blocked-directory`);
+          const retry = runReflect(env, ["--session", session, "--json"], providerEnv);
+          expect(retry.error).toBeUndefined();
+          expect(retry.status).toBe(0);
+          const retried = JSON.parse(retry.stdout);
+          expect(retried.success).toBe(true);
+          expect(retried.data.errors).toEqual([]);
+          expect(retried.data.autoOutcome.feedbackApplied).toBe(1);
+        } else {
+          expect(recovered.status).toBe(0);
+          expect(payload.data.errors).toEqual([]);
+          expect(payload.data.autoOutcome.feedbackApplied).toBe(1);
+        }
+        await log.load();
+        expect(log.get(session)?.pendingOutcomes).toEqual([]);
+        const saved = await loadPlaybook(env.playbookPath);
+        expect(saved.metadata.totalReflections).toBe(1);
+        expect(saved.metadata.totalSessionsProcessed).toBe(1);
+        expect(saved.bullets.find(b => b.id === "b-recovery1")?.helpfulCount).toBe(1);
+        expect(saved.bullets.filter(b => b.id === "b-frozen1")).toHaveLength(1);
+        expect((await readFile(pending.path, "utf8")).trim().split("\n")).toHaveLength(1);
+        expect(await exists(providerCalled)).toBe(false);
+      });
+    });
   }
 
   for (const dryRun of [false, true]) {

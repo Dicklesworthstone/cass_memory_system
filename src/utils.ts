@@ -1,6 +1,6 @@
 import { exec } from "node:child_process";
 import crypto from "node:crypto";
-import { writeSync } from "node:fs";
+import { realpathSync, writeSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -1292,6 +1292,27 @@ export async function checkDiskSpace(dirPath: string): Promise<{ ok: boolean; fr
 export async function withLock<T>(filePath: string, operation: () => Promise<T>): Promise<T> {
   const { withLock: lock } = await import("./lock.js");
   return lock(filePath, operation);
+}
+
+/** Resolve directory aliases without following the replaceable final component. */
+export function canonicalStoragePath(filePath: string): string {
+  if (typeof filePath !== "string" || !filePath.trim()) {
+    throw new Error("Storage path must be a non-empty string");
+  }
+  const resolved = path.resolve(expandPath(filePath));
+  const suffix = [path.basename(resolved)];
+  let directory = path.dirname(resolved);
+  for (;;) {
+    try {
+      return path.join(realpathSync(directory), ...suffix);
+    } catch (error: any) {
+      if (error?.code !== "ENOENT") throw error;
+      const parent = path.dirname(directory);
+      if (parent === directory) throw error;
+      suffix.unshift(path.basename(directory));
+      directory = parent;
+    }
+  }
 }
 
 /** Flush a replacement/creation's directory entry after its file is synced. */

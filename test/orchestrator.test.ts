@@ -7,15 +7,18 @@
  * - Setting `config.validationEnabled=false` to bypass validator/evidence calls
  * - Pointing `config.cassPath` at a non-existent binary so `cassExport` uses fallback parsing
  */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import fs from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
 
+import { recordFeedback } from "../src/commands/mark.js";
 import { withLock } from "../src/lock.js";
 import type { LLMIO } from "../src/llm.js";
 import { orchestrateReflection, type ReflectionOptions } from "../src/orchestrator.js";
 import { prepareOutcome } from "../src/outcome.js";
+import { reflectionCommitPendingPath } from "../src/reflection-commit.js";
 import { slugifyProjectDir, tagCmSubprocessPrompt } from "../src/subprocess-tag.js";
 import { getProcessedLogPath, ProcessedLog } from "../src/tracking.js";
 import type { Config, PlaybookBullet, PlaybookDelta, ProcessedEntry } from "../src/types.js";
@@ -2001,11 +2004,13 @@ describe("orchestrateReflection session workspace ownership", () => {
     });
   });
 
-  test("an interrupted mixed batch retries saved feedback without losing or duplicating either owner", async () => {
+  test("a blocked mixed batch leaves both owners unchanged before publication and retries exactly once", async () => {
     await withWorkspaceReflection(async f => {
       const alpha = f.session("alpha-retry", f.alpha, "// [cass: helpful b-aaa111] - alpha check passed");
       const beta = f.session("beta-retry", f.beta, "// [cass: helpful b-aaa111] - beta check passed");
       f.discover([{ path: alpha }, { path: beta }]);
+      const paths = [f.env.playbookPath, f.alphaPath, f.betaPath];
+      const before = paths.map(file => readFileSync(file, "utf8"));
       await withLock(f.betaPath, async () => {
         await expect(f.run()).rejects.toThrow("lock");
       });
@@ -2013,7 +2018,11 @@ describe("orchestrateReflection session workspace ownership", () => {
       await log.load();
       expect(log.has(alpha)).toBe(false);
       expect(log.has(beta)).toBe(false);
-      expect(readPlaybook(f.alphaPath).bullets[0].helpfulCount).toBe(1);
+      // A lock failure while staging cannot publish any portion of the run.
+      // Only a published commit may leave recoverable partial live writes.
+      expect(paths.map(file => readFileSync(file, "utf8"))).toEqual(before);
+      expect(existsSync(reflectionCommitPendingPath(f.env.playbookPath))).toBe(false);
+      expect(readPlaybook(f.alphaPath).bullets[0].helpfulCount).toBe(0);
       expect(readPlaybook(f.betaPath).bullets[0].helpfulCount).toBe(0);
       const result = await f.run();
       expect(result.errors).toEqual([]);
@@ -2023,6 +2032,8 @@ describe("orchestrateReflection session workspace ownership", () => {
       await log.load();
       expect(log.has(alpha)).toBe(true);
       expect(log.has(beta)).toBe(true);
+      expect(readPlaybook(f.env.playbookPath).metadata.totalReflections).toBe(1);
+      expect(readPlaybook(f.env.playbookPath).metadata.totalSessionsProcessed).toBe(2);
     });
   });
 
@@ -2119,6 +2130,191 @@ describe("orchestrateReflection session workspace ownership", () => {
       expect(prompts.join("\n")).not.toContain("ALPHA_ONLY");
       expect(readFileSync(f.alphaPath, "utf-8")).toBe(before);
       expect(readPlaybook(f.betaPath).bullets[0].helpfulCount).toBe(1);
+    });
+  });
+});
+
+function prepareDurableReflection(f: WorkspaceReflectionFixture) {
+  writeFileSync(f.env.playbookPath, yaml.stringify(createTestPlaybook([createBullet({
+    id: "b-global1", content: "Keep independent feedback attached to its original session.",
+    helpfulCount: 0, feedbackEvents: [],
+  })])));
+  const sessions = [f.alpha, f.beta].map((workspace, index) => f.session(
+    `durable-${index}`, workspace,
+    "The work is complete and all tests passed. Perfect, thanks!\n" +
+      "// [cass: helpful b-aaa111] - the integration check helped\n" +
+      "// [cass: helpful b-global1] - preserve the session evidence",
+    "Following b-bbb222, investigate the release process and verify the resulting changes carefully.",
+  ));
+  f.discover(sessions.map(session => ({ path: session })));
+  const contents = [
+    "Use immutable checksum manifests to track archived exports.",
+    "Require independent smoke tests before shipping database schema migrations.",
+  ];
+  let calls = 0;
+  const reflector: LlmShimConfig["reflector"] = (prompt: string) => {
+    calls++;
+    const index = prompt.includes("ALPHA_ONLY") ? 0 : 1;
+    return { deltas: [{
+      type: "add", bullet: { content: contents[index]!, category: "testing" },
+      reason: "Preserve this validated session proposal across an interrupted commit.",
+      sourceSession: sessions[index]!,
+    }] };
+  };
+  const logPath = expandPath(getProcessedLogPath());
+  const pendingPath = reflectionCommitPendingPath(f.env.playbookPath);
+  const outcomePaths = [f.alphaPath, f.betaPath].map(file => path.join(path.dirname(file), "outcomes.jsonl"));
+  const snapshot = () => [f.env.playbookPath, f.alphaPath, f.betaPath, logPath, pendingPath, ...outcomePaths]
+    .map(file => [file, existsSync(file) ? readFileSync(file, "utf8") : null]);
+  return { sessions, contents, reflector, calls: () => calls, logPath, pendingPath, outcomePaths, snapshot };
+}
+
+describe("orchestrateReflection interrupted commit recovery", () => {
+  test.each(["first playbook", "later repository", "ledger append", "pending cleanup"])(
+    "recovers after %s without repeating model work, feedback, counters, or outcomes",
+    async (boundary) => {
+      await withWorkspaceReflection(async f => {
+        const fixture = prepareDurableReflection(f);
+        const failureMessage = `injected interruption at ${boundary}`;
+        let interruptions = 0;
+        const fail = () => { interruptions++; throw new Error(failureMessage); };
+        let restoreFault: () => void;
+        if (boundary === "ledger append") {
+          const fault = spyOn(ProcessedLog.prototype, "appendCommittedBatch").mockImplementation(async () => fail());
+          restoreFault = () => fault.mockRestore();
+        } else if (boundary === "pending cleanup") {
+          const realUnlink = fs.unlink.bind(fs);
+          const fault = spyOn(fs, "unlink").mockImplementation(async file => {
+            if (String(file) === fixture.pendingPath) fail();
+            return realUnlink(file);
+          });
+          restoreFault = () => fault.mockRestore();
+        } else {
+          const target = boundary === "first playbook" ? f.env.playbookPath : f.betaPath;
+          const realRename = fs.rename.bind(fs);
+          const fault = spyOn(fs, "rename").mockImplementation(async (from, to) => {
+            if (String(to) === target) fail();
+            return realRename(from, to);
+          });
+          restoreFault = () => fault.mockRestore();
+        }
+        try {
+          await expect(f.run(fixture.reflector)).rejects.toThrow(failureMessage);
+        } finally {
+          restoreFault();
+        }
+        expect(interruptions).toBe(1);
+        expect(fixture.calls()).toBe(2);
+        expect(existsSync(fixture.pendingPath)).toBe(true);
+        expect(fixture.outcomePaths.map(file => existsSync(file))).toEqual([false, false]);
+
+        const manualMark = boundary !== "first playbook";
+        if (manualMark) {
+          expect(readPlaybook(f.env.playbookPath).bullets.find((b: PlaybookBullet) => b.id === "b-global1").helpfulCount).toBe(2);
+          await recordFeedback("b-global1", {
+            helpful: true, reason: "A real mark made after the interrupted commit.",
+            session: "manual-after-interruption", workspace: f.alpha,
+          });
+        }
+        if (boundary === "later repository") {
+          expect(readPlaybook(f.alphaPath).bullets[0].helpfulCount).toBe(1);
+          expect(readPlaybook(f.betaPath).bullets[0].helpfulCount).toBe(0);
+        }
+        const beforeDryRun = fixture.snapshot();
+        let unexpectedCalls = 0;
+        const neverReflect = () => {
+          unexpectedCalls++;
+          throw new Error("Recovery must use the frozen proposals without calling the provider.");
+        };
+        await expect(f.run(neverReflect, { dryRun: true })).rejects.toThrow(/pending|commit|recovery/i);
+        expect(fixture.snapshot()).toEqual(beforeDryRun);
+        expect(unexpectedCalls).toBe(0);
+
+        // A pending run owns its original ledger, even if the next caller
+        // explicitly selects a different workspace and ledger namespace.
+        const recovered = await f.run(neverReflect, boundary === "ledger append" ? { workspace: f.beta } : {});
+        expect(recovered.errors).toEqual([]);
+        expect(recovered.sessionsProcessed).toBe(0);
+        expect(recovered.recoveredCommits).toEqual([expect.objectContaining({
+          id: expect.any(String), sessionsProcessed: 2,
+        })]);
+        expect(unexpectedCalls).toBe(0);
+        expect(fixture.calls()).toBe(2);
+        expect(existsSync(fixture.pendingPath)).toBe(false);
+        expect(recovered.autoOutcome?.outcomesRecorded).toBe(2);
+        expect(recovered.autoOutcome?.feedbackApplied).toBe(2);
+
+        const global = readPlaybook(f.env.playbookPath);
+        expect(global.metadata.totalReflections).toBe(1);
+        expect(global.metadata.totalSessionsProcessed).toBe(2);
+        expect(global.bullets.filter((b: PlaybookBullet) => fixture.contents.includes(b.content))).toHaveLength(2);
+        const shared = global.bullets.find((b: PlaybookBullet) => b.id === "b-global1");
+        expect(shared.helpfulCount).toBe(manualMark ? 3 : 2);
+        expect(shared.feedbackEvents.map((event: { sessionPath?: string }) => event.sessionPath).sort()).toEqual(
+          [...fixture.sessions, ...(manualMark ? ["manual-after-interruption"] : [])].sort(),
+        );
+        const log = new ProcessedLog(fixture.logPath);
+        await log.load();
+        for (const [index, file] of [f.alphaPath, f.betaPath].entries()) {
+          const rules = readPlaybook(file).bullets as PlaybookBullet[];
+          expect(rules.find(b => b.id === "b-aaa111")?.helpfulCount).toBe(1);
+          expect(rules.find(b => b.id === "b-aaa111")?.feedbackEvents).toHaveLength(1);
+          expect(rules.find(b => b.id === "b-bbb222")?.helpfulCount).toBe(1);
+          expect(rules.find(b => b.id === "b-bbb222")?.feedbackEvents).toHaveLength(1);
+          expect(log.has(fixture.sessions[index]!)).toBe(true);
+          expect(log.get(fixture.sessions[index]!)).toMatchObject({ recordCount: 2, pendingOutcomes: [] });
+          const records = readFileSync(fixture.outcomePaths[index]!, "utf8").trim().split("\n").map(line => JSON.parse(line));
+          expect(records).toHaveLength(1);
+          expect(records[0]).toMatchObject({ sessionId: fixture.sessions[index], rulesUsed: ["b-bbb222"] });
+        }
+        if (boundary === "ledger append") {
+          const otherLog = new ProcessedLog(getProcessedLogPath(f.beta));
+          await otherLog.load();
+          expect(fixture.sessions.some(session => otherLog.has(session))).toBe(false);
+        }
+        const afterRecovery = fixture.snapshot();
+        const again = await f.run(neverReflect);
+        expect(again.errors).toEqual([]);
+        expect(again.sessionsProcessed).toBe(0);
+        expect(unexpectedCalls).toBe(0);
+        expect(fixture.snapshot()).toEqual(afterRecovery);
+      });
+    },
+  );
+
+  test("refuses a changed unapplied playbook before overwriting any current learned state", async () => {
+    await withWorkspaceReflection(async f => {
+      const fixture = prepareDurableReflection(f);
+      const originalGlobal = readFileSync(f.env.playbookPath, "utf8");
+      const originalAlpha = readFileSync(f.alphaPath, "utf8");
+      const realRename = fs.rename.bind(fs);
+      const fault = spyOn(fs, "rename").mockImplementation(async (from, to) => {
+        if (String(to) === f.env.playbookPath) throw new Error("injected first replacement failure");
+        return realRename(from, to);
+      });
+      try {
+        await expect(f.run(fixture.reflector)).rejects.toThrow("injected first replacement failure");
+      } finally {
+        fault.mockRestore();
+      }
+      expect(existsSync(fixture.pendingPath)).toBe(true);
+      await recordFeedback("b-aaa111", { helpful: true, session: "newer-manual-mark", workspace: f.beta });
+      const beforeRecovery = fixture.snapshot();
+      let unexpectedCalls = 0;
+      await expect(f.run(() => {
+        unexpectedCalls++;
+        throw new Error("Conflicting recovery must stop before calling the provider.");
+      })).rejects.toThrow(/changed|conflict|modified/i);
+      expect(unexpectedCalls).toBe(0);
+      expect(fixture.calls()).toBe(2);
+      expect(fixture.snapshot()).toEqual(beforeRecovery);
+      expect(readFileSync(f.env.playbookPath, "utf8")).toBe(originalGlobal);
+      expect(readFileSync(f.alphaPath, "utf8")).toBe(originalAlpha);
+      expect(readPlaybook(f.betaPath).bullets[0].helpfulCount).toBe(1);
+      expect(readPlaybook(f.betaPath).bullets[0].feedbackEvents[0].sessionPath).toBe("newer-manual-mark");
+      const log = new ProcessedLog(fixture.logPath);
+      await log.load();
+      expect(fixture.sessions.some(session => log.has(session))).toBe(false);
     });
   });
 });
