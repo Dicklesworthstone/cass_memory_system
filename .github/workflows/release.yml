@@ -10,6 +10,21 @@ on:
         description: 'Version tag (e.g., v0.1.0)'
         required: true
         type: string
+      artifact_run_id:
+        description: 'Optional completed Release run to promote without rebuilding'
+        required: false
+        default: ''
+        type: string
+      source_sha:
+        description: 'Required for promotion: exact tested 40-character commit SHA'
+        required: false
+        default: ''
+        type: string
+      checksums:
+        description: 'Required for promotion: JSON map of five binaries and install.sh to {size,sha256}'
+        required: false
+        default: ''
+        type: string
 
 # Prevent concurrent releases
 concurrency:
@@ -22,6 +37,7 @@ permissions:
 jobs:
   # Linux x64 and Windows x64 cross-compile from ubuntu-latest.
   build-linux-windows:
+    if: github.event_name != 'workflow_dispatch' || inputs.artifact_run_id == ''
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -110,6 +126,7 @@ jobs:
   # AMFI terminates unsigned arm64 Mach-Os with SIGKILL at exec.
   # See issue #43.
   build-macos:
+    if: github.event_name != 'workflow_dispatch' || inputs.artifact_run_id == ''
     runs-on: macos-15
     timeout-minutes: 20
 
@@ -193,116 +210,266 @@ jobs:
 
   release:
     needs: [build-linux-windows, build-macos]
-    runs-on: ubuntu-latest
+    if: >-
+      ${{ always() && !cancelled() &&
+          ((github.event_name == 'workflow_dispatch' && inputs.artifact_run_id != '') ||
+           (needs.build-linux-windows.result == 'success' && needs.build-macos.result == 'success')) }}
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact_run_id != '' && 'macos-15' || 'ubuntu-latest' }}
     timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
 
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Download Linux/Windows artifacts
-        uses: actions/download-artifact@v4
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
         with:
-          name: linux-windows-binaries
-          path: release
+          bun-version: latest
 
-      - name: Download macOS artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: macos-binaries
-          path: release
-
-      - name: List release assets
-        run: ls -la release/
-
-      - name: Generate checksums
+      - name: Verify source and prepare release assets
+        id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROMOTION_RUN_ID: ${{ inputs.artifact_run_id }}
+          EXPECTED_SOURCE_SHA: ${{ inputs.source_sha }}
+          EXPECTED_CHECKSUMS: ${{ inputs.checksums }}
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          cd release
-          sha256sum cass-memory-linux-x64 > cass-memory-linux-x64.sha256
-          sha256sum cass-memory-linux-arm64 > cass-memory-linux-arm64.sha256
-          sha256sum cass-memory-macos-arm64 > cass-memory-macos-arm64.sha256
-          sha256sum cass-memory-macos-x64 > cass-memory-macos-x64.sha256
-          sha256sum cass-memory-windows-x64.exe > cass-memory-windows-x64.exe.sha256
-          ls -la
+          bun run - <<'BUN'
+          import { createHash } from "node:crypto";
+          import { createWriteStream } from "node:fs";
+          import { appendFile, lstat, mkdir, mkdtemp, readdir, writeFile } from "node:fs/promises";
+          import { join } from "node:path";
+          import { Readable, Transform } from "node:stream";
+          import { pipeline } from "node:stream/promises";
 
-      - name: Get version
-        id: version
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
-          else
-            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-          fi
+          const artifactFiles = {
+            "linux-windows-binaries": ["cass-memory-linux-x64", "cass-memory-linux-arm64", "cass-memory-windows-x64.exe"],
+            "macos-binaries": ["cass-memory-macos-arm64", "cass-memory-macos-x64"],
+          };
+          const binaries = Object.values(artifactFiles).flat();
+          const proofNames = [...binaries, "install.sh"].sort();
+          const requireThat = (condition, message) => { if (!condition) throw new Error(message); };
+          const sameNames = (actual, expected) => JSON.stringify([...actual].sort()) === JSON.stringify([...expected].sort());
+          const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+
+          // Exported so the exact inline release logic can be exercised with fixture APIs.
+          export async function prepareRelease(env = process.env, fetchImpl = fetch) {
+            const repo = env.GITHUB_REPOSITORY;
+            const token = env.GH_TOKEN;
+            const currentRunId = env.GITHUB_RUN_ID;
+            const promotionId = env.PROMOTION_RUN_ID || "";
+            const requestedSha = env.EXPECTED_SOURCE_SHA || "";
+            const checksumInput = env.EXPECTED_CHECKSUMS || "";
+            const promotion = env.GITHUB_EVENT_NAME === "workflow_dispatch" && promotionId !== "";
+            requireThat(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo || "") && token, "Missing repository or API token");
+            requireThat(/^[1-9][0-9]*$/.test(currentRunId || ""), "Invalid current run ID");
+            requireThat(promotion || (!promotionId && !requestedSha && !checksumInput), "Promotion inputs must be supplied together on workflow_dispatch");
+            requireThat(!promotion || (/^[1-9][0-9]*$/.test(promotionId) && /^[0-9a-f]{40}$/.test(requestedSha) && checksumInput), "Promotion requires run ID, exact source SHA and checksums");
+            const runId = promotion ? promotionId : currentRunId;
+            const sourceSha = promotion ? requestedSha : env.GITHUB_SHA;
+            requireThat(/^[0-9a-f]{40}$/.test(sourceSha || ""), "Invalid source SHA");
+            requireThat(!promotion || runId !== currentRunId, "Cannot promote the currently running workflow");
+
+            let expected;
+            if (promotion) {
+              expected = JSON.parse(checksumInput);
+              requireThat(expected && typeof expected === "object" && !Array.isArray(expected) && sameNames(Object.keys(expected), proofNames), "Checksums must contain exactly five binaries and install.sh");
+              for (const name of proofNames) {
+                const proof = expected[name];
+                requireThat(proof && typeof proof === "object" && !Array.isArray(proof) && sameNames(Object.keys(proof), ["size", "sha256"]), `Invalid proof fields for ${name}`);
+                requireThat(Number.isSafeInteger(proof.size) && proof.size > 0 && proof.size <= 1024 ** 3 && /^[0-9a-f]{64}$/.test(proof.sha256), `Invalid size or SHA-256 for ${name}`);
+              }
+            }
+
+            const apiBase = `https://api.github.com/repos/${repo}`;
+            const userAgent = "cass_memory_system-release (+https://github.com/Dicklesworthstone/cass_memory_system)";
+            const apiResponse = (path) => fetchImpl(`${apiBase}${path}`, {
+              redirect: "manual",
+              headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": userAgent },
+            });
+            const api = async (path, allowMissing = false) => {
+              const response = await apiResponse(path);
+              if (allowMissing && response.status === 404) return null;
+              requireThat(response.ok, `GitHub API HTTP ${response.status}: ${path}`);
+              return response.json();
+            };
+
+            const currentRun = await api(`/actions/runs/${currentRunId}`);
+            const sourceRun = promotion ? await api(`/actions/runs/${runId}`) : currentRun;
+            requireThat(String(sourceRun.id) === runId && sourceRun.repository?.full_name === repo && sourceRun.head_repository?.full_name === repo && sourceRun.repository?.id === currentRun.repository?.id && sourceRun.head_repository?.id === sourceRun.repository?.id, "Source run must belong to this repository, not a fork");
+            requireThat(sourceRun.path === ".github/workflows/release.yml" && sourceRun.workflow_id === currentRun.workflow_id && ["push", "workflow_dispatch"].includes(sourceRun.event), "Source run must be this Release workflow on a trusted event");
+            requireThat(sourceRun.head_sha === sourceSha, "Source run does not match the expected tested commit");
+            requireThat(!promotion || sourceRun.status === "completed", "Cancel or finish the source publisher before promotion");
+            requireThat(Number.isSafeInteger(sourceRun.run_attempt) && sourceRun.run_attempt > 0, "Invalid source attempt");
+            const jobs = await api(`/actions/runs/${runId}/attempts/${sourceRun.run_attempt}/jobs?per_page=100`);
+            requireThat(Array.isArray(jobs.jobs) && jobs.total_count === jobs.jobs.length, "Incomplete source job listing");
+            for (const name of ["build-linux-windows", "build-macos"]) {
+              const matches = jobs.jobs.filter((job) => job.name === name);
+              requireThat(matches.length === 1 && matches[0].status === "completed" && matches[0].conclusion === "success" && matches[0].head_sha === sourceSha, `Source build did not succeed at the tested commit: ${name}`);
+            }
+
+            const sourceFile = async (name) => {
+              const file = await api(`/contents/${name}?ref=${sourceSha}`);
+              requireThat(file.type === "file" && file.path === name && file.encoding === "base64" && typeof file.content === "string", `Invalid source file: ${name}`);
+              const bytes = Buffer.from(file.content, "base64");
+              requireThat(bytes.length === file.size, `Incomplete source file: ${name}`);
+              return bytes;
+            };
+            const pkg = JSON.parse((await sourceFile("package.json")).toString("utf8"));
+            requireThat(typeof pkg.version === "string" && /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(pkg.version), "Invalid source package version");
+            const version = env.GITHUB_EVENT_NAME === "workflow_dispatch" ? env.RELEASE_VERSION : env.GITHUB_REF_NAME;
+            requireThat(version === `v${pkg.version}`, "Requested tag does not match the source package version");
+            const installer = await sourceFile("install.sh");
+            const verified = {};
+            const record = (name, proof) => {
+              requireThat(!promotion || (proof.size === expected[name].size && proof.sha256 === expected[name].sha256), `Verified bytes do not match the approved proof: ${name}`);
+              verified[name] = proof;
+            };
+            record("install.sh", { size: installer.length, sha256: sha256(installer) });
+
+            const collection = await api(`/actions/runs/${runId}/artifacts?per_page=100`);
+            requireThat(collection.total_count === 2 && collection.artifacts?.length === 2 && sameNames(collection.artifacts.map((artifact) => artifact.name), Object.keys(artifactFiles)), "Expected exactly the Linux/Windows and macOS artifacts");
+            for (const artifact of collection.artifacts) {
+              requireThat(Number.isSafeInteger(artifact.id) && artifact.id > 0 && !artifact.expired && artifact.workflow_run?.id === sourceRun.id && artifact.workflow_run?.head_sha === sourceSha && artifact.workflow_run?.repository_id === sourceRun.repository.id && artifact.workflow_run?.head_repository_id === sourceRun.repository.id, `Invalid artifact provenance: ${artifact.name}`);
+              requireThat(/^sha256:[0-9a-f]{64}$/.test(artifact.digest || "") && Number.isSafeInteger(artifact.size_in_bytes) && artifact.size_in_bytes > 0 && artifact.size_in_bytes <= 1024 ** 3, `Missing artifact digest or invalid archive size: ${artifact.name}`);
+            }
+
+            const directory = join(env.GITHUB_WORKSPACE, "release");
+            await mkdir(directory);
+            const temporary = await mkdtemp(join(env.RUNNER_TEMP, "cass-release-"));
+            const save = async (body, destination, requiredSize, requiredHash) => {
+              requireThat(body, "Missing download stream");
+              let size = 0;
+              const hash = createHash("sha256");
+              const guard = new Transform({ transform(chunk, _encoding, callback) {
+                size += chunk.length;
+                if (size > (requiredSize ?? 1024 ** 3)) return callback(new Error("Download or extracted member exceeds its size limit"));
+                hash.update(chunk);
+                callback(null, chunk);
+              } });
+              await pipeline(Readable.fromWeb(body), guard, createWriteStream(destination, { flags: "wx", mode: 0o644 }));
+              const digest = hash.digest("hex");
+              requireThat(size > 0 && (requiredSize === undefined || size === requiredSize) && (!requiredHash || digest === requiredHash), "Downloaded or extracted bytes failed size/SHA-256 verification");
+              const stat = await lstat(destination);
+              requireThat(stat.isFile() && !stat.isSymbolicLink() && stat.size === size, "Release member must be a regular file");
+              return { size, sha256: digest };
+            };
+
+            for (const artifact of collection.artifacts) {
+              const archive = join(temporary, `${artifact.id}.zip`);
+              const artifactPath = `/actions/artifacts/${artifact.id}/zip`;
+              let response = await apiResponse(artifactPath);
+              let location = `${apiBase}${artifactPath}`;
+              for (let redirects = 0; [301, 302, 303, 307, 308].includes(response.status); redirects++) {
+                requireThat(redirects < 5 && response.headers.get("location"), "Invalid artifact redirect chain");
+                const next = new URL(response.headers.get("location"), location);
+                requireThat(next.protocol === "https:" && !next.username && !next.password, "Artifact redirects must use HTTPS");
+                location = next.href;
+                // Never forward the repository token to artifact storage or another redirect.
+                response = await fetchImpl(location, { redirect: "manual", headers: { "User-Agent": userAgent } });
+              }
+              requireThat(response.ok, `Artifact download failed: HTTP ${response.status}`);
+              await save(response.body, archive, artifact.size_in_bytes, artifact.digest.slice("sha256:".length));
+
+              const listing = Bun.spawn(["unzip", "-Z1", archive], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+              const [listText, listError, listCode] = await Promise.all([new Response(listing.stdout).text(), new Response(listing.stderr).text(), listing.exited]);
+              requireThat(listCode === 0, `Cannot list verified artifact: ${listError}`);
+              const members = listText.replace(/\r\n/g, "\n").replace(/\n$/, "").split("\n");
+              const names = artifactFiles[artifact.name];
+              requireThat(sameNames(members, names), `Unexpected, duplicate or unsafe ZIP members: ${artifact.name}`);
+              for (const name of names) {
+                // Streaming a named member creates our own regular file; archive paths,
+                // executable bits and symlink attributes are never extracted or trusted.
+                const child = Bun.spawn(["unzip", "-p", archive, name], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+                const errorText = new Response(child.stderr).text();
+                let proof;
+                try {
+                  proof = await save(child.stdout, join(directory, name), expected?.[name].size, expected?.[name].sha256);
+                } catch (error) {
+                  child.kill();
+                  await Promise.allSettled([child.exited, errorText]);
+                  throw error;
+                }
+                const [code, error] = await Promise.all([child.exited, errorText]);
+                requireThat(code === 0, `Cannot extract ${name}: ${error}`);
+                record(name, proof);
+                await writeFile(join(directory, `${name}.sha256`), `${proof.sha256}  ${name}\n`, { flag: "wx" });
+              }
+            }
+            await writeFile(join(directory, "install.sh.sha256"), `${verified["install.sh"].sha256}  install.sh\n`, { flag: "wx" });
+            requireThat(sameNames(await readdir(directory), [...binaries, ...binaries.map((name) => `${name}.sha256`), "install.sh.sha256"]), "Release must contain exactly eleven verified assets");
+
+            const tag = await api(`/git/ref/tags/${encodeURIComponent(version)}`, true);
+            if (tag) {
+              let object = tag.object;
+              for (let depth = 0; object?.type === "tag"; depth++) {
+                requireThat(depth < 8 && /^[0-9a-f]{40}$/.test(object.sha), "Invalid annotated tag chain");
+                object = (await api(`/git/tags/${object.sha}`)).object;
+              }
+              requireThat(object?.type === "commit" && object.sha === sourceSha, "Existing release tag points at a different commit");
+            }
+            if (promotion) {
+              const latest = await api(`/actions/runs/${runId}`);
+              requireThat(latest.status === "completed" && latest.run_attempt === sourceRun.run_attempt && latest.head_sha === sourceSha, "Source run changed or restarted during promotion");
+            }
+            await appendFile(env.GITHUB_OUTPUT, `version=${version}\nsource_sha=${sourceSha}\n`);
+            console.log(JSON.stringify({ sourceRunId: runId, sourceSha, version, verified }, null, 2));
+            return { version, sourceSha, verified };
+          }
+
+          if (import.meta.main) await prepareRelease();
+          BUN
 
       - name: Create Release
+        id: publish
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.version.outputs.version }}
-          target_commitish: ${{ github.sha }}
-          name: cass-memory ${{ steps.version.outputs.version }}
+          tag_name: ${{ steps.prepare.outputs.version }}
+          target_commitish: ${{ steps.prepare.outputs.source_sha }}
+          name: cass-memory ${{ steps.prepare.outputs.version }}
           draft: false
-          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
+          prerelease: ${{ contains(steps.prepare.outputs.version, '-') }}
           generate_release_notes: true
+          fail_on_unmatched_files: true
           files: |
-            release/*
+            release/cass-memory-linux-x64
+            release/cass-memory-linux-x64.sha256
+            release/cass-memory-linux-arm64
+            release/cass-memory-linux-arm64.sha256
+            release/cass-memory-macos-arm64
+            release/cass-memory-macos-arm64.sha256
+            release/cass-memory-macos-x64
+            release/cass-memory-macos-x64.sha256
+            release/cass-memory-windows-x64.exe
+            release/cass-memory-windows-x64.exe.sha256
+            release/install.sh.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  publish-installer:
-    needs: release
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Generate installer checksum
-        run: sha256sum install.sh > install.sh.sha256
-
-      - name: Get version
-        id: version
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
-          else
-            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Upload installer checksum to release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.version.outputs.version }}
-          files: install.sh.sha256
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  # ==========================================================================
-  # Notify Package Managers to Update
-  # ==========================================================================
-  notify-homebrew-tap:
-    name: Notify Homebrew Tap
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    needs: publish-installer
-    # Skip if the tap dispatch token is not configured.
-    if: ${{ github.repository_owner == 'Dicklesworthstone' }}
-    steps:
-      - name: Check for dispatch token
-        id: check_token
+      # Keep follow-up publication in this job so each step does not need a new runner.
+      - name: Check package-manager dispatch tokens
+        id: tokens
+        if: ${{ !cancelled() && steps.publish.outcome == 'success' && github.repository_owner == 'Dicklesworthstone' }}
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
         run: |
           if [ -n "$HOMEBREW_TAP_TOKEN" ]; then
-            echo "has_token=true" >> "$GITHUB_OUTPUT"
+            echo "homebrew=true" >> "$GITHUB_OUTPUT"
           else
-            echo "has_token=false" >> "$GITHUB_OUTPUT"
+            echo "homebrew=false" >> "$GITHUB_OUTPUT"
             echo "HOMEBREW_TAP_TOKEN is not configured — skipping dispatch."
+          fi
+          if [ -n "$SCOOP_BUCKET_TOKEN" ]; then
+            echo "scoop=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "scoop=false" >> "$GITHUB_OUTPUT"
+            echo "SCOOP_BUCKET_TOKEN is not configured — skipping dispatch."
           fi
 
       - name: Trigger formula update
-        if: steps.check_token.outputs.has_token == 'true'
+        if: ${{ !cancelled() && steps.publish.outcome == 'success' && steps.tokens.outputs.homebrew == 'true' }}
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
@@ -311,37 +478,11 @@ jobs:
           client-payload: |
             {
               "tool": "cm",
-              "version": "${{ needs.publish-installer.outputs.version }}"
+              "version": "${{ steps.prepare.outputs.version }}"
             }
 
-      - name: Log dispatch
-        if: steps.check_token.outputs.has_token == 'true'
-        run: |
-          echo "Dispatched formula-update event to homebrew-tap"
-          echo "   Tool: cm"
-          echo "   Version: ${{ needs.publish-installer.outputs.version }}"
-
-  notify-scoop-bucket:
-    name: Notify Scoop Bucket
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    needs: publish-installer
-    if: ${{ github.repository_owner == 'Dicklesworthstone' }}
-    steps:
-      - name: Check for dispatch token
-        id: check_token
-        env:
-          SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
-        run: |
-          if [ -n "$SCOOP_BUCKET_TOKEN" ]; then
-            echo "has_token=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_token=false" >> "$GITHUB_OUTPUT"
-            echo "SCOOP_BUCKET_TOKEN is not configured — skipping dispatch."
-          fi
-
       - name: Trigger manifest update
-        if: steps.check_token.outputs.has_token == 'true'
+        if: ${{ !cancelled() && steps.publish.outcome == 'success' && steps.tokens.outputs.scoop == 'true' }}
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.SCOOP_BUCKET_TOKEN }}
@@ -350,12 +491,5 @@ jobs:
           client-payload: |
             {
               "tool": "cm",
-              "version": "${{ needs.publish-installer.outputs.version }}"
+              "version": "${{ steps.prepare.outputs.version }}"
             }
-
-      - name: Log dispatch
-        if: steps.check_token.outputs.has_token == 'true'
-        run: |
-          echo "Dispatched manifest-update event to scoop-bucket"
-          echo "   Tool: cm"
-          echo "   Version: ${{ needs.publish-installer.outputs.version }}"
