@@ -2494,6 +2494,79 @@ describe("orchestrateReflection durable outcome recovery", () => {
     });
   });
 
+  test.skipIf(process.platform === "win32")("keeps queued feedback until a visible replacement and its duplicate replay are durably flushed", async () => {
+    await withQueuedAutoOutcome(async ({ env, config, io, sessionPath, outcomePath, entry, reflectorCalls }) => {
+      const originalPending = (await entry()).pendingOutcomes!;
+      renameSync(outcomePath, `${outcomePath}.blocked-directory`);
+      const originalOpen = fs.open.bind(fs);
+      const originalRename = fs.rename.bind(fs);
+      const restoreHandles: Array<() => void> = [];
+      let phase: "replacement" | "duplicate" | "healthy" = "replacement";
+      let replaced = false;
+      let directoryFailures = 0;
+      let duplicateFailures = 0;
+      const renameSpy = spyOn(fs, "rename").mockImplementation(async (from, to) => {
+        await originalRename(from, to);
+        if (String(to) === env.playbookPath) replaced = true;
+      });
+      const openSpy = spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+        const handle = await originalOpen(...args);
+        const directoryFailure = phase === "replacement" && replaced && String(args[0]) === path.dirname(env.playbookPath);
+        const duplicateFailure = phase === "duplicate" && String(args[0]) === env.playbookPath;
+        if (directoryFailure || duplicateFailure) {
+          const syncSpy = spyOn(handle, "sync").mockImplementation(async () => {
+            if (directoryFailure) {
+              directoryFailures++;
+              throw new Error("injected feedback replacement directory flush failure");
+            }
+            duplicateFailures++;
+            throw new Error("injected duplicate feedback file flush failure");
+          });
+          restoreHandles.push(() => syncSpy.mockRestore());
+        }
+        return handle;
+      });
+      try {
+        const interrupted = await orchestrateReflection(config, { session: sessionPath, io });
+        expect(directoryFailures).toBe(1);
+        expect(interrupted.errors.some(message => message.includes("replacement directory flush failure"))).toBe(true);
+        expect((await entry()).pendingOutcomes).toEqual(originalPending);
+        expect(readPlaybook(env.playbookPath).bullets[0].helpfulCount).toBe(1);
+        const visible = readFileSync(env.playbookPath, "utf8");
+
+        phase = "duplicate";
+        const unflushed = await orchestrateReflection(config, { session: sessionPath, io });
+        expect(duplicateFailures).toBe(1);
+        expect(unflushed.errors.some(message => message.includes("duplicate feedback file flush failure"))).toBe(true);
+        expect((await entry()).pendingOutcomes).toEqual(originalPending);
+        expect(readFileSync(env.playbookPath, "utf8")).toBe(visible);
+        expect(reflectorCalls()).toBe(1);
+
+        phase = "healthy";
+        await recordFeedback("b-global1", {
+          helpful: true, session: "manual-between-outcome-retries", workspace: env.home,
+        });
+        const withNewMark = readFileSync(env.playbookPath, "utf8");
+        const recovered = await orchestrateReflection(config, { session: sessionPath, io });
+        expect(recovered.errors).toEqual([]);
+        expect(recovered.sessionsProcessed).toBe(0);
+        expect(recovered.autoOutcome?.feedbackApplied).toBe(0);
+        expect((await entry()).pendingOutcomes).toEqual([]);
+        expect(readFileSync(env.playbookPath, "utf8")).toBe(withNewMark);
+        const bullet = readPlaybook(env.playbookPath).bullets[0] as PlaybookBullet;
+        expect(bullet.helpfulCount).toBe(2);
+        expect(bullet.feedbackEvents.filter(event => event.outcomeId === originalPending[0]!.id)).toHaveLength(1);
+        expect(bullet.feedbackEvents.filter(event => event.sessionPath === "manual-between-outcome-retries")).toHaveLength(1);
+        expect(readFileSync(outcomePath, "utf8").trim().split("\n")).toHaveLength(1);
+        expect(reflectorCalls()).toBe(1);
+      } finally {
+        openSpy.mockRestore();
+        renameSpy.mockRestore();
+        for (const restore of restoreHandles) restore();
+      }
+    });
+  });
+
   test("recovers feedback after one playbook saved and a second playbook was temporarily locked", async () => {
     await withQueuedAutoOutcome(async ({ env, config, io, sessionPath, outcomePath, repoPath, entry, reflectorCalls }) => {
       renameSync(outcomePath, `${outcomePath}.blocked-directory`);

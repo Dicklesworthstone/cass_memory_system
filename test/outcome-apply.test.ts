@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -262,6 +262,87 @@ describe("durable outcome identity and ownership", () => {
     });
   });
 
+  for (const failedFlush of ["file", ...(process.platform === "win32" ? [] : ["directory"])]) {
+    test(`reflushes a visible outcome after an uncertain ${failedFlush} flush without appending it again`, async () => {
+      await withTempCassHome(async env => {
+        const config = createTestConfig({ playbookPath: path.join(env.cassMemoryDir, "playbook.yaml") });
+        const record = await prepareOutcome({ sessionId: "uncertain", outcome: "success", workspace: env.home }, config);
+        const originalOpen = fs.open.bind(fs);
+        const restoreHandles: Array<() => void> = [];
+        let recordOpened = false;
+        let failing = true;
+        let flushes = 0;
+        const openSpy = spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+          const handle = await originalOpen(...args);
+          if (String(args[0]) === record.path) recordOpened = true;
+          if (recordOpened && String(args[0]) === (failedFlush === "file" ? record.path : path.dirname(record.path))) {
+            const sync = handle.sync.bind(handle);
+            const syncSpy = spyOn(handle, "sync").mockImplementation(async () => {
+              flushes++;
+              if (failing) throw new Error(`injected outcome ${failedFlush} flush failure`);
+              await sync();
+            });
+            restoreHandles.push(() => syncSpy.mockRestore());
+          }
+          return handle;
+        });
+        try {
+          await expect(persistOutcomeRecord(record, config)).rejects.toThrow("flush failure");
+          const visible = await fs.readFile(record.path, "utf8");
+          expect(JSON.parse(visible.trim()).id).toBe(record.id);
+          await expect(persistOutcomeRecord(record, config)).rejects.toThrow("flush failure");
+          expect(await fs.readFile(record.path, "utf8")).toBe(visible);
+          failing = false;
+          expect((await persistOutcomeRecord(record, config)).id).toBe(record.id);
+          expect(flushes).toBeGreaterThanOrEqual(3);
+          expect(await fs.readFile(record.path, "utf8")).toBe(visible);
+          expect((await loadOutcomes(config, 100, env.home)).map(value => value.id)).toEqual([record.id]);
+        } finally {
+          openSpy.mockRestore();
+          for (const restore of restoreHandles) restore();
+        }
+      });
+    });
+  }
+
+  test.skipIf(process.platform === "win32")("retries a newly created outcome directory whose ancestor flush failed", async () => {
+    await withTempCassHome(async env => {
+      const config = createTestConfig({ playbookPath: path.join(env.cassMemoryDir, "playbook.yaml") });
+      const record = await prepareOutcome({ sessionId: "new-directory", outcome: "success", workspace: env.home }, config);
+      await fs.rename(env.cassMemoryDir, `${env.cassMemoryDir}.held`);
+      const originalOpen = fs.open.bind(fs);
+      const restoreHandles: Array<() => void> = [];
+      let failing = true;
+      let flushes = 0;
+      const openSpy = spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+        const handle = await originalOpen(...args);
+        if (String(args[0]) === env.home) {
+          const sync = handle.sync.bind(handle);
+          const syncSpy = spyOn(handle, "sync").mockImplementation(async () => {
+            flushes++;
+            if (failing) throw new Error("injected outcome ancestor flush failure");
+            await sync();
+          });
+          restoreHandles.push(() => syncSpy.mockRestore());
+        }
+        return handle;
+      });
+      try {
+        await expect(persistOutcomeRecord(record, config)).rejects.toThrow("ancestor flush failure");
+        expect((await fs.stat(env.cassMemoryDir)).isDirectory()).toBe(true);
+        await expect(fs.stat(record.path)).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(persistOutcomeRecord(record, config)).rejects.toThrow("ancestor flush failure");
+        failing = false;
+        await persistOutcomeRecord(record, config);
+        expect(flushes).toBe(3);
+        expect((await loadOutcomes(config, 100, env.home)).map(value => value.id)).toEqual([record.id]);
+      } finally {
+        openSpy.mockRestore();
+        for (const restore of restoreHandles) restore();
+      }
+    });
+  });
+
   test("context enrichment cannot select another plain workspace from a shared global log", async () => {
     await withTempCassHome(async env => {
       const firstWorkspace = path.join(env.home, "first");
@@ -374,6 +455,47 @@ describe("automatic transcript evidence consumption", () => {
       expect((await applyOutcomeFeedback(loaded, config)).applied).toBe(0);
       expect((await read()).bullets.map(bullet => bullet.helpfulCount)).toEqual([1, 1]);
       expect((await read()).bullets[0].feedbackEvents[0].transcriptEvidenceKeys).toEqual([key("1")]);
+    });
+  });
+
+  test("reflushes already-consumed evidence for a new outcome without rewriting feedback", async () => {
+    await withEvidencePlaybook(async ({ config, prepare, read }) => {
+      const first = await prepare([evidence("b-evidence1", "1")]);
+      const repeated = await prepare([evidence("b-evidence1", "1")]);
+      expect(repeated.id).not.toBe(first.id);
+      expect((await applyOutcomeFeedback(first, config)).applied).toBe(1);
+      const before = await fs.readFile(config.playbookPath, "utf8");
+      const originalOpen = fs.open.bind(fs);
+      const restoreHandles: Array<() => void> = [];
+      let failing = true;
+      let flushes = 0;
+      const openSpy = spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+        const handle = await originalOpen(...args);
+        if (String(args[0]) === config.playbookPath) {
+          const sync = handle.sync.bind(handle);
+          const syncSpy = spyOn(handle, "sync").mockImplementation(async () => {
+            flushes++;
+            if (failing) throw new Error("injected consumed-evidence flush failure");
+            await sync();
+          });
+          restoreHandles.push(() => syncSpy.mockRestore());
+        }
+        return handle;
+      });
+      try {
+        await expect(applyOutcomeFeedback(repeated, config)).rejects.toThrow("consumed-evidence flush failure");
+        expect(await fs.readFile(config.playbookPath, "utf8")).toBe(before);
+        failing = false;
+        expect((await applyOutcomeFeedback(repeated, config)).applied).toBe(0);
+        expect(flushes).toBe(2);
+        expect(await fs.readFile(config.playbookPath, "utf8")).toBe(before);
+        const bullet = (await read()).bullets[0];
+        expect(bullet.helpfulCount).toBe(1);
+        expect(bullet.feedbackEvents.map(event => event.outcomeId)).toEqual([first.id!]);
+      } finally {
+        openSpy.mockRestore();
+        for (const restore of restoreHandles) restore();
+      }
     });
   });
 

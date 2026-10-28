@@ -12,11 +12,13 @@ import { OutcomeInputSchema, OutcomeRecordSchema, type Config, type DiaryEntry, 
 import { normalizeWorkspacePath, resolveProjectRoot } from "./workspace.js";
 import {
   ensureDir,
+  ensureDurableDirectory,
   expandPath,
   fileExists,
   now,
   resolveGlobalDir,
   resolveRepoDir,
+  syncDirectory,
   validateNonEmptyString,
 } from "./utils.js";
 
@@ -361,9 +363,10 @@ export async function persistOutcomeRecord(record: OutcomeRecord, config: Config
   if (!locations.logs.has(normalizeWorkspacePath(parsed.path))) {
     throw new Error("Outcome log does not belong to its recorded workspace");
   }
-  await ensureDir(path.dirname(parsed.path));
+  await ensureDurableDirectory(path.dirname(parsed.path));
   await withLock(parsed.path, async () => {
     let content = "";
+    let alreadyRecorded = false;
     try {
       content = await fs.readFile(parsed.path, "utf8");
     } catch (error: any) {
@@ -377,19 +380,25 @@ export async function persistOutcomeRecord(record: OutcomeRecord, config: Config
         if (outcomeIdentity(prior) !== outcomeIdentity(cleaned)) {
           throw new Error("Outcome ID already belongs to a different event");
         }
-        return;
+        alreadyRecorded = true;
+        break;
       }
     }
-    const handle = await fs.open(parsed.path, "a");
+    // A complete line may be visible after an earlier fsync failed. Reflush
+    // that exact record before the caller can acknowledge its durable queue.
+    const handle = await fs.open(parsed.path, alreadyRecorded ? "r+" : "a");
     try {
-      // Preserve an interrupted tail, but keep it from consuming the next
-      // valid JSONL record. Never truncate or silently rewrite the log.
-      const separator = content.length > 0 && !content.endsWith("\n") ? "\n" : "";
-      await handle.writeFile(separator + JSON.stringify(cleaned) + "\n", "utf8");
+      if (!alreadyRecorded) {
+        // Preserve an interrupted tail, but keep it from consuming the next
+        // valid JSONL record. Never truncate or silently rewrite the log.
+        const separator = content.length > 0 && !content.endsWith("\n") ? "\n" : "";
+        await handle.writeFile(separator + JSON.stringify(cleaned) + "\n", "utf8");
+      }
       await handle.sync();
     } finally {
       await handle.close();
     }
+    await syncDirectory(path.dirname(parsed.path));
   });
   return cleaned;
 }
@@ -564,6 +573,7 @@ export async function applyOutcomeFeedback(
       const bullets = new Map(playbook.bullets.map(bullet => [bullet.id, bullet]));
       const consumedEvidence = new Map<string, Set<string>>();
       let modified = false;
+      let reusedFeedback = false;
 
       for (const item of items) {
         const bullet = bullets.get(item.bulletId);
@@ -583,6 +593,7 @@ export async function applyOutcomeFeedback(
                 && e.timestamp === item.feedback.timestamp,
         );
         if (alreadyRecorded) {
+          reusedFeedback = true;
           continue;
         }
 
@@ -594,7 +605,10 @@ export async function applyOutcomeFeedback(
             consumedEvidence.set(bullet.id, consumed);
           }
           const novel = feedback.transcriptEvidenceKeys.filter(key => !consumed.has(key));
-          if (novel.length === 0) continue;
+          if (novel.length === 0) {
+            reusedFeedback = true;
+            continue;
+          }
           // One event per graded batch with genuinely new evidence. Partial
           // overlaps consume only new keys, regardless of processing order or
           // verdict. UUID replay and evidence consumption share this lock/save.
@@ -618,6 +632,17 @@ export async function applyOutcomeFeedback(
 
       if (modified) {
         await savePlaybook(playbook, targetPath);
+      } else if (reusedFeedback) {
+        // A prior atomic replacement may be visible before its directory
+        // flush completed. Preserve any newer marks while establishing the
+        // durability of the current image before acknowledging an outcome.
+        const handle = await fs.open(targetPath, "r+");
+        try {
+          await handle.sync();
+        } finally {
+          await handle.close();
+        }
+        await ensureDurableDirectory(path.dirname(targetPath));
       }
     });
   }
