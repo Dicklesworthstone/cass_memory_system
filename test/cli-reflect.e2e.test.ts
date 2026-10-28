@@ -20,7 +20,9 @@ import path from "node:path";
 import yaml from "yaml";
 import { reflectCommand } from "../src/commands/reflect.js";
 import { PLAYBOOK_INPUT_LIMITS } from "../src/input-limits.js";
+import { loadPlaybook } from "../src/playbook.js";
 import { getProcessedLogPath, ProcessedLog } from "../src/tracking.js";
+import { createTestBullet } from "./helpers/factories.js";
 import { createTestLogger, type TestLogger } from "./helpers/logger.js";
 import {
   cleanupEnvironment,
@@ -305,6 +307,72 @@ else console.log("[]");
       expect(payload.data.deltasGenerated).toBe(1);
       expect(payload.data.global.applied).toBe(1);
       expect(payload.data.errors).toEqual([]);
+    });
+  });
+
+  it("successfully reflects after CLI repair without losing legacy feedback or restoring inline embeddings", async () => {
+    await withTempCassHome(async env => {
+      await setup(env);
+      const timestamp = new Date().toISOString();
+      const legacyBullet = createTestBullet({
+        id: "b-legacy-preserved",
+        content: "Run SQLite foreign-key checks before publishing database migrations.",
+        helpfulCount: 2,
+        feedbackEvents: [
+          { type: "helpful", timestamp, context: "Caught an invalid migration", sessionPath: "/archive/database-a.jsonl" },
+          { type: "helpful", timestamp, context: "Preserved referential integrity", sessionPath: "/archive/database-b.jsonl" },
+        ],
+        sourceSessions: ["/archive/database-a.jsonl", "/archive/database-b.jsonl"],
+        sourceAgents: ["codex"],
+        tags: ["database"],
+        embedding: [0.1, 0.2, 0.3],
+      });
+      const legacy = createTestPlaybook([legacyBullet]);
+      legacy.metadata.totalReflections = 7;
+      legacy.metadata.totalSessionsProcessed = 11;
+      const original = yaml.stringify(legacy);
+      await writeFile(env.playbookPath, original);
+
+      const repaired = spawnSync(process.execPath, ["run", cmPath, "playbook", "repair", "--strip-embeddings", "--json"], {
+        cwd: env.home,
+        env: { ...process.env, HOME: env.home, USERPROFILE: env.home, NO_COLOR: "1", FORCE_COLOR: "0" },
+        encoding: "utf-8",
+        timeout: 30_000,
+      });
+      expect(repaired.error).toBeUndefined();
+      expect(repaired.status).toBe(0);
+      const repairPayload = JSON.parse(repaired.stdout);
+      expect(repairPayload.success).toBe(true);
+      expect(repairPayload.data).toMatchObject({ changed: true, embeddingsRemoved: 1, bulletCount: 1, preservationVerified: true });
+      expect(await readFile(repairPayload.data.backupPath, "utf8")).toBe(original);
+
+      const sessionPath = await writeSession(env, "after-repair");
+      const reflected = runReflect(env, ["--session", sessionPath, "--json"]);
+      expect(reflected.error).toBeUndefined();
+      expect(reflected.status).toBe(0);
+      const payload = JSON.parse(reflected.stdout);
+      expect(payload.success).toBe(true);
+      expect(payload.data).toMatchObject({ sessionsProcessed: 1, deltasGenerated: 1, errors: [] });
+      expect(payload.data.global.applied).toBe(1);
+
+      // Exercise the ordinary bounded reader after reflection's normal writer.
+      const saved = await loadPlaybook(env.playbookPath);
+      expect(saved.bullets).toHaveLength(2);
+      const preserved = saved.bullets.find(bullet => bullet.id === legacyBullet.id);
+      const { embedding, ...legacyState } = legacyBullet;
+      expect(preserved).toEqual(legacyState);
+      expect(saved.bullets.map(bullet => bullet.content)).toContain(rule);
+      expect(saved.bullets.every(bullet => !Object.hasOwn(bullet, "embedding"))).toBe(true);
+      expect(saved.metadata.totalReflections).toBe(8);
+      expect(saved.metadata.totalSessionsProcessed).toBe(12);
+      const stored = yaml.parse(await readFile(env.playbookPath, "utf8"));
+      expect(stored.bullets.every((bullet: Record<string, unknown>) => !Object.hasOwn(bullet, "embedding"))).toBe(true);
+
+      const log = new ProcessedLog(getProcessedLogPath());
+      await log.load();
+      expect(log.has(sessionPath)).toBe(true);
+      expect(log.get(sessionPath)).toMatchObject({ sessionPath, deltasGenerated: 1 });
+      expect(await readFile(repairPayload.data.backupPath, "utf8")).toBe(original);
     });
   });
 

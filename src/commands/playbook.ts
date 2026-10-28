@@ -35,6 +35,7 @@ import {
   loadMergedPlaybook,
   loadPlaybook,
   mergeImportedBullet,
+  repairPlaybookEmbeddings,
   type ScrubResult,
   savePlaybook,
   scrubFeedbackFromSessions,
@@ -430,7 +431,7 @@ async function handleBatchAdd(
 }
 
 export async function playbookCommand(
-  action: "list" | "add" | "remove" | "get" | "export" | "import" | "scrub" | "conflicts",
+  action: "list" | "add" | "remove" | "get" | "export" | "import" | "scrub" | "conflicts" | "repair",
   args: string[],
   flags: {
     category?: string;
@@ -451,10 +452,16 @@ export async function playbookCommand(
     fromSessions?: string[];
     cmSubprocessCalls?: boolean;
     deprecateOrphans?: boolean;
+    stripEmbeddings?: boolean;
   },
 ) {
   const startedAtMs = Date.now();
   const command = `playbook:${action}`;
+  // Explicit file repair must also work when unrelated configuration is broken.
+  if (action === "repair") {
+    await handleRepair(flags, command, startedAtMs);
+    return;
+  }
   const config = await loadConfig();
 
   if (action === "scrub") {
@@ -1534,6 +1541,86 @@ async function handleScrub(
   if (flags.dryRun && summary.bulletsTouched > 0) {
     console.log();
     console.log(chalk.gray("Re-run without --dry-run to apply (playbooks are backed up first)."));
+  }
+}
+
+async function handleRepair(
+  flags: { stripEmbeddings?: boolean; file?: string; repo?: boolean; dryRun?: boolean; json?: boolean },
+  command: string,
+  startedAtMs: number,
+): Promise<void> {
+  const errorOptions = { json: flags.json, command, startedAtMs };
+  if (!flags.stripEmbeddings) {
+    reportError("Choose the repair explicitly with --strip-embeddings", {
+      ...errorOptions,
+      code: ErrorCode.MISSING_REQUIRED,
+      hint: `${getCliName()} playbook repair --strip-embeddings --dry-run --json`,
+    });
+    return;
+  }
+  if (flags.file !== undefined && flags.repo) {
+    reportError("Use either --file or --repo to select one playbook", {
+      ...errorOptions,
+      code: ErrorCode.INVALID_INPUT,
+    });
+    return;
+  }
+  if (flags.file !== undefined &&
+      (!flags.file.trim() || flags.file === "-" || /^(?:[a-z][a-z\d+.-]*:\/\/|file:)/i.test(flags.file))) {
+    reportError("--file must name a trusted local file, not stdin or a URL", {
+      ...errorOptions,
+      code: ErrorCode.INVALID_INPUT,
+    });
+    return;
+  }
+
+  try {
+    let targetPath: string;
+    if (flags.file !== undefined) {
+      targetPath = flags.file;
+    } else if (flags.repo) {
+      const repoDir = await resolveRepoDir();
+      if (!repoDir) {
+        reportError("No repository found; use --file to name the trusted local playbook", {
+          ...errorOptions,
+          code: ErrorCode.INVALID_INPUT,
+        });
+        return;
+      }
+      targetPath = path.join(repoDir, "playbook.yaml");
+    } else {
+      targetPath = (await loadConfig()).playbookPath;
+    }
+
+    const result = await repairPlaybookEmbeddings(targetPath, { dryRun: flags.dryRun });
+    if (isJsonOutput(flags) || isToonOutput(flags)) {
+      printStructuredResult(command, result, flags, {
+        startedAtMs,
+        effect: result.changed,
+        reason: result.dryRun ? "Dry run: no files changed" : result.changed ? undefined : "No inline embeddings found",
+      });
+      return;
+    }
+    console.log(chalk.bold(result.dryRun ? "PLAYBOOK REPAIR (dry run - no files changed)" : "PLAYBOOK REPAIR"));
+    console.log(`Playbook: ${result.path}`);
+    console.log(`${result.bulletCount} bullets preserved; ${result.embeddingsRemoved} derived inline embeddings ${result.dryRun ? "would be removed" : "removed"}.`);
+    console.log(`Size: ${result.originalBytes} -> ${result.repairedBytes} bytes (${result.bytesSaved} bytes saved).`);
+    console.log("Verified: all non-embedding fields preserved; repaired file passes ordinary input limits.");
+    if (result.backupPath) console.log(`Backup: ${result.backupPath}`);
+    if (result.dryRun && result.wouldChange) {
+      console.log("Re-run without --dry-run to apply with a verified backup and atomic replacement.");
+    } else if (!result.wouldChange) {
+      console.log("No inline embeddings found; no files changed.");
+    }
+  } catch (err) {
+    reportError(err, {
+      ...errorOptions,
+      recovery: [
+        "Keep the original playbook and any reported backup; repair does not discard learned state.",
+        "Check that this is a trusted local, regular playbook file and stop other writers before retrying.",
+        "Use --dry-run to preview. If the repaired data still exceeds ordinary limits, reduce or split it manually.",
+      ],
+    });
   }
 }
 

@@ -1,6 +1,9 @@
+import crypto from "node:crypto";
+import { constants, type Stats } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import yaml from "yaml";
+import { isDeepStrictEqual } from "node:util";
+import yaml, { isMap, isScalar, isSeq, Lexer } from "yaml";
 import type { z } from "zod";
 import {
   assertInputLimits,
@@ -113,10 +116,19 @@ export async function savePlaybook(
   if (options.updateLastReflection) {
     playbook.metadata.lastReflection = now();
   }
-  assertInputLimits(playbook, PLAYBOOK_INPUT_LIMITS, filePath);
+  // Semantic search hydrates vectors in memory from the external cache. They
+  // are derived data, not learned state, and must never inflate the YAML again.
+  if (playbook.bullets.length > PLAYBOOK_INPUT_LIMITS.maxArrayLength) {
+    throw new InputLimitError(filePath, `maximum array length is ${PLAYBOOK_INPUT_LIMITS.maxArrayLength}`);
+  }
+  const persisted = {
+    ...playbook,
+    bullets: playbook.bullets.map(({ embedding: _embedding, ...bullet }) => bullet),
+  };
+  assertInputLimits(persisted, PLAYBOOK_INPUT_LIMITS, filePath);
   // The expanded structure was bounded above. Do not introduce aliases that
   // could make our own saved file exceed the reader's alias-expansion limit.
-  const yamlStr = yaml.stringify(playbook, { aliasDuplicateObjects: false });
+  const yamlStr = yaml.stringify(persisted, { aliasDuplicateObjects: false });
   assertTextSize(yamlStr, PLAYBOOK_INPUT_LIMITS.maxBytes, filePath);
   await atomicWrite(filePath, yamlStr);
 }
@@ -138,6 +150,284 @@ export function recordReflectionRun(playbook: Playbook, sessionsProcessed: numbe
 }
 
 // --- Error Recovery ---
+
+/** Only the explicit, trusted-local repair operation may use these ceilings. */
+export const PLAYBOOK_REPAIR_INPUT_LIMITS = Object.freeze({
+  ...PLAYBOOK_INPUT_LIMITS,
+  maxBytes: 64 * 1024 * 1024,
+  maxNodes: 2_000_000,
+});
+
+export interface PlaybookEmbeddingRepairResult {
+  path: string;
+  dryRun: boolean;
+  changed: boolean;
+  wouldChange: boolean;
+  originalBytes: number;
+  repairedBytes: number;
+  bytesSaved: number;
+  bulletCount: number;
+  embeddingsRemoved: number;
+  backupPath: string | null;
+  sha256Before: string;
+  sha256After: string;
+  preservationVerified: true;
+}
+
+function sameRepairFile(a: Stats, b: Stats): boolean {
+  return a.dev === b.dev && a.ino === b.ino && a.size === b.size &&
+    a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
+}
+
+/** Read a stable regular file without following a final symlink or a FIFO. */
+async function readRepairFile(filePath: string): Promise<{ bytes: Buffer; stat: Stats }> {
+  const before = await fs.lstat(filePath);
+  if (!before.isFile() || before.nlink !== 1) {
+    throw new Error(`Repair requires a regular local file with no symbolic or hard links: ${filePath}`);
+  }
+  const handle = await fs.open(
+    filePath, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0),
+  );
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || !sameRepairFile(before, stat)) {
+      throw new Error("Playbook changed while opening it; stop other writers and retry repair");
+    }
+    if (stat.size > PLAYBOOK_REPAIR_INPUT_LIMITS.maxBytes) {
+      throw new InputLimitError(filePath, `trusted repair maximum file size is ${PLAYBOOK_REPAIR_INPUT_LIMITS.maxBytes} bytes`);
+    }
+    // One sentinel byte detects growth; no read can exceed the fixed ceiling.
+    const bytes = Buffer.allocUnsafe(stat.size + 1);
+    let total = 0;
+    while (total < bytes.length) {
+      const read = await handle.read(bytes, total, Math.min(64 * 1024, bytes.length - total), null);
+      if (read.bytesRead === 0) break;
+      total += read.bytesRead;
+    }
+    if (total !== stat.size || !sameRepairFile(stat, await handle.stat()) ||
+        !sameRepairFile(stat, await fs.lstat(filePath))) {
+      throw new Error("Playbook changed while reading it; stop other writers and retry repair");
+    }
+    return { bytes: bytes.subarray(0, total), stat };
+  } finally {
+    await handle.close();
+  }
+}
+
+function parseRepairPlaybook(content: string, source: string): Record<string, unknown> {
+  assertTextSize(content, PLAYBOOK_REPAIR_INPUT_LIMITS.maxBytes, source);
+  try {
+    // Bound parser allocation before constructing the YAML document, including
+    // legacy vectors that exceed the ordinary expanded-value ceiling.
+    let tokens = 0;
+    for (const token of new Lexer().lex(content)) {
+      if (token === "\x02" || token === "\x1f" || /^[ \t\r\n]*$/.test(token)) continue;
+      if (++tokens > PLAYBOOK_REPAIR_INPUT_LIMITS.maxNodes * 4) {
+        throw new InputLimitError(source, "trusted repair YAML token count exceeded");
+      }
+    }
+    const document = yaml.parseDocument(content, {
+      resolveKnownTags: false,
+      prettyErrors: false,
+    });
+    // Coerced/duplicate keys or unsupported tags can silently lose state before
+    // a round-trip comparison. Fail closed instead of guessing their meaning.
+    const problem = document.errors[0] ?? document.warnings[0];
+    if (problem) throw new Error(`Cannot safely repair YAML: ${problem.message.slice(0, 500)}`);
+    // Inspect the AST before conversion: coercing numeric/complex keys to JS
+    // property names can collide or change their meaning before comparison.
+    // Recurse only to the fixed depth bound, without following aliases here.
+    let nodes = 0;
+    const checkKeys = (node: unknown, depth: number): void => {
+      if (++nodes > PLAYBOOK_REPAIR_INPUT_LIMITS.maxNodes ||
+          depth > PLAYBOOK_REPAIR_INPUT_LIMITS.maxDepth) {
+        throw new InputLimitError(source, "trusted repair YAML structure exceeds safe limits");
+      }
+      if (isMap(node)) {
+        if (node.items.length > PLAYBOOK_REPAIR_INPUT_LIMITS.maxObjectKeys) {
+          throw new InputLimitError(source, "trusted repair maximum object key count exceeded");
+        }
+        for (const pair of node.items) {
+          if (!isScalar(pair.key) || typeof pair.key.value !== "string") {
+            throw new Error("Cannot safely repair YAML with non-string or complex mapping keys");
+          }
+          checkKeys(pair.value, depth + 1);
+        }
+      } else if (isSeq(node)) {
+        if (node.items.length > PLAYBOOK_REPAIR_INPUT_LIMITS.maxArrayLength) {
+          throw new InputLimitError(source, "trusted repair maximum array length exceeded");
+        }
+        for (const item of node.items) checkKeys(item, depth + 1);
+      }
+    };
+    checkKeys(document.contents, 0);
+    const raw: unknown = document.toJS({ maxAliasCount: 100 });
+    assertInputLimits(raw, PLAYBOOK_REPAIR_INPUT_LIMITS, source);
+    if (!raw || typeof raw !== "object" || Array.isArray(raw) ||
+        !Array.isArray((raw as Record<string, unknown>).bullets)) {
+      throw new Error("Repair requires a playbook object with an explicit bullets array");
+    }
+    return raw as Record<string, unknown>;
+  } catch (err) {
+    if (err instanceof RangeError ||
+        (err instanceof Error && /Excessive alias count|resource exhaustion/i.test(err.message))) {
+      throw new InputLimitError(source, "trusted repair YAML nesting or alias expansion exceeds safe limits");
+    }
+    throw err;
+  }
+}
+
+/** Called only after structural bounds/cycle checks; recursion is at most 32. */
+function assertRepairStateIsLossless(value: unknown): void {
+  if (typeof value === "number" &&
+      (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value)))) {
+    throw new Error("Cannot safely repair non-finite numbers or unsafe integers in learned state");
+  }
+  if (value === null || typeof value !== "object") return;
+  if (!Array.isArray(value) && Object.getPrototypeOf(value) !== Object.prototype &&
+      Object.getPrototypeOf(value) !== null) {
+    throw new Error("Cannot safely repair non-plain YAML values in learned state");
+  }
+  for (const child of Object.values(value)) assertRepairStateIsLossless(child);
+}
+
+async function syncRepairDirectory(directory: string): Promise<void> {
+  // Node cannot open directories for fsync on Windows. File flushes and a
+  // single replacement rename still apply there; never move the source aside.
+  if (process.platform === "win32") return;
+  const handle = await fs.open(directory, constants.O_RDONLY);
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * Explicit recovery for a TRUSTED local legacy playbook. Ordinary readers and
+ * imports never call this. Only bullets[*].embedding is removed; no schema
+ * defaults, migrations, filtering or rescoring are applied to learned state.
+ * The external cache is deliberately untouched: inline vectors lack reliable
+ * model provenance, while existing cache entries remain usable by ID/content.
+ */
+export async function repairPlaybookEmbeddings(
+  filePath: string,
+  options: { dryRun?: boolean } = {},
+): Promise<PlaybookEmbeddingRepairResult> {
+  const expanded = path.resolve(expandPath(filePath));
+  const directory = await fs.realpath(path.dirname(expanded));
+  const target = path.join(directory, path.basename(expanded));
+  const dryRun = options.dryRun === true;
+
+  const repair = async (): Promise<PlaybookEmbeddingRepairResult> => {
+    const original = await readRepairFile(target);
+    // Re-encoding a lossy UTF-8 decode could silently alter learned text.
+    const content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(original.bytes);
+    const raw = parseRepairPlaybook(content, target);
+    let embeddingsRemoved = 0;
+    const bullets = (raw.bullets as unknown[]).map((value) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("Cannot repair a playbook containing a non-object bullet");
+      }
+      const bullet = value as Record<string, unknown>;
+      if (!Object.hasOwn(bullet, "embedding")) return { ...bullet };
+      if (!Array.isArray(bullet.embedding) ||
+          !bullet.embedding.every((n) => typeof n === "number" && Number.isFinite(n))) {
+        throw new Error("Cannot strip an embedding that is not a derived numeric vector");
+      }
+      embeddingsRemoved++;
+      // Clone rather than delete: an alias outside bullets may refer to the
+      // same object, and its fields must remain completely untouched.
+      const { embedding: _embedding, ...surviving } = bullet;
+      return surviving;
+    });
+    const repaired = { ...raw, bullets };
+    assertInputLimits(repaired, PLAYBOOK_INPUT_LIMITS, target);
+    assertRepairStateIsLossless(repaired);
+    const candidate = embeddingsRemoved > 0
+      ? yaml.stringify(repaired, { aliasDuplicateObjects: false })
+      : content;
+    const reparsed = parseYamlInput(candidate, PLAYBOOK_INPUT_LIMITS, target);
+    const validation = PlaybookSchema.safeParse(reparsed);
+    if (!validation.success) {
+      throw new Error(`Repaired playbook is invalid: ${formatValidationIssues(validation.error)}`);
+    }
+    if (!isDeepStrictEqual(repaired, reparsed)) {
+      throw new Error("Repair preservation check failed; no playbook data was replaced");
+    }
+    const replacement = embeddingsRemoved > 0 ? Buffer.from(candidate, "utf8") : original.bytes;
+    const sha256 = (bytes: Buffer) => crypto.createHash("sha256").update(bytes).digest("hex");
+    const result: PlaybookEmbeddingRepairResult = {
+      path: target, dryRun, changed: false, wouldChange: embeddingsRemoved > 0,
+      originalBytes: original.bytes.length, repairedBytes: replacement.length,
+      bytesSaved: original.bytes.length - replacement.length,
+      bulletCount: bullets.length, embeddingsRemoved, backupPath: null,
+      sha256Before: sha256(original.bytes), sha256After: sha256(replacement),
+      preservationVerified: true,
+    };
+    if (dryRun || embeddingsRemoved === 0) return result;
+
+    const assertUnchanged = async () => {
+      const current = await readRepairFile(target);
+      if (!sameRepairFile(original.stat, current.stat) || !current.bytes.equals(original.bytes)) {
+        throw new Error("Playbook changed during repair; stop other writers and retry");
+      }
+    };
+    const suffix = `${new Date().toISOString().replace(/[:.]/g, "-")}.${crypto.randomUUID()}`;
+    const backupPath = `${target}.backup.strip-embeddings.${suffix}`;
+    const temporaryPath = `${target}.repair.${suffix}.tmp`;
+    let temporaryCreated = false;
+    let replaced = false;
+    let backupVerified = false;
+    try {
+      await assertUnchanged();
+      const backup = await fs.open(backupPath, "wx", 0o600);
+      result.backupPath = backupPath;
+      try {
+        await backup.writeFile(original.bytes);
+        await backup.sync();
+      } finally {
+        await backup.close();
+      }
+      const verifiedBackup = await readRepairFile(backupPath);
+      if (!verifiedBackup.bytes.equals(original.bytes)) throw new Error("Backup verification failed");
+      // Make the backup directory entry durable before replacing the source.
+      await syncRepairDirectory(directory);
+      backupVerified = true;
+
+      const temporary = await fs.open(temporaryPath, "wx", 0o600);
+      temporaryCreated = true;
+      try {
+        await temporary.writeFile(replacement);
+        await temporary.sync();
+      } finally {
+        await temporary.close();
+      }
+      const staged = await readRepairFile(temporaryPath);
+      if (!staged.bytes.equals(replacement)) throw new Error("Repaired file verification failed");
+      // Cooperative writers share withLock; also detect non-cooperating edits
+      // or replacements since the snapshot. Stop external editors for repair.
+      await assertUnchanged();
+      await fs.rename(temporaryPath, target);
+      replaced = true;
+      temporaryCreated = false;
+      await syncRepairDirectory(directory);
+      result.changed = true;
+      return result;
+    } catch (err) {
+      const state = replaced ? "Repaired file installed, but final directory flush failed" : "Repair aborted";
+      const backup = result.backupPath
+        ? `; ${backupVerified ? "verified original backup" : "backup file (may be incomplete)"}: ${result.backupPath}`
+        : "";
+      throw new Error(`${state}${backup}: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      // Keep every backup, including incomplete ones after an I/O failure.
+      if (temporaryCreated) await fs.unlink(temporaryPath).catch(() => {});
+    }
+  };
+  // A preview must not create a lock, backup, temporary file or directory.
+  return dryRun ? repair() : withLock(target, repair);
+}
 
 export interface PlaybookRecoveryResult {
   playbook: Playbook;

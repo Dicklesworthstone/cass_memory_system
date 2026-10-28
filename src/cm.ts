@@ -193,6 +193,7 @@ export function createProgram(argv: string[] = process.argv): Command {
         "playbook get b-abc123 --json",
         "playbook export --json > playbook.json",
         "playbook import playbook.json --replace --json",
+        "playbook repair --strip-embeddings --dry-run --json",
       ]),
     );
 
@@ -312,6 +313,24 @@ export function createProgram(argv: string[] = process.argv): Command {
       ]),
     )
     .action(async (file: string, opts: any) => await playbookCommand("import", [file], opts));
+
+  playbook
+    .command("repair")
+    .description("Repair a trusted local playbook by removing derived inline embeddings (backs up first)")
+    .option("--strip-embeddings", "Remove only bullets' derived embedding fields; preserve learned state")
+    .option("--file <path>", "Trusted local playbook to repair (default: configured playbook)")
+    .option("--repo", "Repair this repository's .cass/playbook.yaml instead of the configured playbook")
+    .option("--dry-run", "Validate and preview the repair without writing a backup or changing the playbook")
+    .option("-j, --json", "Output JSON result")
+    .addHelpText("after", () =>
+      formatCommandExamples([
+        "playbook repair --strip-embeddings --dry-run --json",
+        "playbook repair --strip-embeddings --json",
+        "playbook repair --strip-embeddings --file /trusted/path/playbook.yaml --dry-run",
+        "playbook repair --strip-embeddings --repo --dry-run",
+      ]),
+    )
+    .action(async (opts: any) => await playbookCommand("repair", [], opts));
 
   playbook
     .command("conflicts")

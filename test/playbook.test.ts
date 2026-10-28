@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import yaml from "yaml";
-import { InputLimitError, PLAYBOOK_INPUT_LIMITS } from "../src/input-limits.js";
+import { assertInputLimits, InputLimitError, PLAYBOOK_INPUT_LIMITS } from "../src/input-limits.js";
 
 import {
   addBullet,
@@ -22,10 +22,17 @@ import {
   loadPlaybook,
   loadPlaybookWithRecovery,
   recordReflectionRun,
+  repairPlaybookEmbeddings,
   savePlaybook,
   ToxicEntry,
 } from "../src/playbook.js";
+import {
+  EMBEDDING_CACHE_VERSION,
+  findSimilarBulletsSemantic,
+  loadOrComputeEmbeddingsForBullets,
+} from "../src/semantic.js";
 import { type Playbook, PlaybookBullet } from "../src/types.js";
+import { hashContent } from "../src/utils.js";
 import { createTestBullet, createTestConfig } from "./helpers/index.js";
 
 async function writePlaybookFile(file: string, playbook: Playbook) {
@@ -497,6 +504,252 @@ describe("savePlaybook", () => {
 
       const loaded = await loadPlaybook(file);
       expect(loaded.bullets[0].content).toBe("New rule");
+    });
+  });
+});
+
+describe("embedding-free playbook persistence (#99)", () => {
+  it("retains learned state through repair, feedback, reflection counters, and subsequent writes", async () => {
+    await withTempDir(async dir => {
+      const file = path.join(dir, "playbook.yaml");
+      const retained = createEmptyPlaybook("legacy-learning");
+      retained.metadata = {
+        createdAt: "2025-03-01T00:00:00.000Z",
+        lastReflection: "2026-10-01T00:00:00.000Z",
+        totalReflections: 17,
+        totalSessionsProcessed: 41,
+      };
+      retained.deprecatedPatterns = [{
+        pattern: "Ignore failed reflection jobs",
+        deprecatedAt: "2026-10-01T00:00:00.000Z",
+        reason: "Failures need investigation",
+        replacement: "Check the process exit status",
+      }];
+      retained.bullets = [
+        createTestBullet({
+          id: "b-preserve-feedback",
+          content: "Check the reflection exit status before counting a session as learned.",
+          helpfulCount: 1,
+          feedbackEvents: [{
+            type: "helpful", timestamp: "2026-10-01T00:00:00.000Z",
+            sessionPath: "/sessions/original.jsonl", context: "Caught a failed job",
+          }],
+          sourceSessions: ["/sessions/original.jsonl"],
+          sourceAgents: ["claude"],
+          tags: ["reliability", "cron"],
+          pinned: true,
+          pinnedReason: "Keep automated learning observable",
+        }),
+        createTestBullet({
+          id: "b-preserve-scope",
+          content: "Type-check TypeScript before publishing a package.",
+          scope: "language", scopeKey: "typescript", maturity: "proven",
+          sourceSessions: ["/sessions/build.jsonl"], sourceAgents: ["codex"],
+        }),
+      ];
+      const legacy = structuredClone(retained);
+      legacy.bullets[0].embedding = [0.25, 0.5, 0.75];
+      legacy.bullets[1].embedding = [-0.25, 0.75, 0.5];
+      const original = yaml.stringify(legacy);
+      await fs.writeFile(file, original);
+
+      const repair = await repairPlaybookEmbeddings(file);
+      expect(repair.changed).toBe(true);
+      expect(repair.embeddingsRemoved).toBe(2);
+      expect(await fs.readFile(repair.backupPath!, "utf8")).toBe(original);
+      const loaded = await loadPlaybook(file);
+      expect(loaded).toEqual(retained);
+
+      const feedback = {
+        type: "helpful" as const, timestamp: "2026-10-28T12:00:00.000Z",
+        sessionPath: "/sessions/after-repair.jsonl", context: "The recovered rule remains useful",
+      };
+      loaded.bullets[0].feedbackEvents.push(feedback);
+      loaded.bullets[0].helpfulCount++;
+      loaded.bullets[0].updatedAt = feedback.timestamp;
+      recordReflectionRun(loaded, 2);
+      await savePlaybook(loaded, file, { updateLastReflection: true });
+
+      const reloaded = await loadPlaybook(file);
+      const expected = structuredClone(retained);
+      expected.bullets[0].feedbackEvents.push(feedback);
+      expected.bullets[0].helpfulCount = 2;
+      expected.bullets[0].updatedAt = feedback.timestamp;
+      expected.metadata.totalReflections = 18;
+      expected.metadata.totalSessionsProcessed = 43;
+      expected.metadata.lastReflection = loaded.metadata.lastReflection;
+      expect(reloaded).toEqual(expected);
+      expect(reloaded.metadata.lastReflection).not.toBe(retained.metadata.lastReflection);
+      expect(reloaded.bullets.map(bullet => bullet.id)).toEqual(retained.bullets.map(bullet => bullet.id));
+      expect(reloaded.bullets.every(bullet => !Object.hasOwn(bullet, "embedding"))).toBe(true);
+      expect(await fs.readFile(repair.backupPath!, "utf8")).toBe(original);
+    });
+  });
+
+  it("reuses the untouched external cache after repair and never persists hydrated vectors", async () => {
+    await withTempDir(async dir => {
+      const file = path.join(dir, "playbook.yaml");
+      const cachePath = path.join(dir, "embeddings", "bullets.json");
+      const retained = createEmptyPlaybook("cached-rules");
+      retained.bullets = [
+        createTestBullet({ id: "b-cache-first", content: "Inspect errors from the reflection job." }),
+        createTestBullet({ id: "b-cache-second", content: "Keep backups before migrating learned rules." }),
+      ];
+      const cache = {
+        version: EMBEDDING_CACHE_VERSION,
+        model: "none",
+        bullets: {
+          "b-cache-first": {
+            contentHash: hashContent(retained.bullets[0].content),
+            embedding: [1, 0, 0], computedAt: "2026-10-01T00:00:00.000Z",
+          },
+          "b-cache-second": {
+            contentHash: hashContent(retained.bullets[1].content),
+            embedding: [0, 1, 0], computedAt: "2026-10-02T00:00:00.000Z",
+          },
+          "b-other-playbook": {
+            contentHash: hashContent("A rule owned by another playbook"),
+            embedding: [0, 0, 1], computedAt: "2026-10-03T00:00:00.000Z",
+          },
+        },
+      };
+      // Deliberate non-default formatting detects even a needless cache rewrite.
+      const cacheBytes = JSON.stringify(cache, null, 4) + "\n";
+      await fs.mkdir(path.dirname(cachePath), { recursive: true });
+      await fs.writeFile(cachePath, cacheBytes);
+      const legacy = structuredClone(retained);
+      // Unproven inline vectors must not overwrite the model-labelled cache.
+      legacy.bullets[0].embedding = [-1, 0, 0];
+      legacy.bullets[1].embedding = [0, -1, 0];
+      await writePlaybookFile(file, legacy);
+
+      await repairPlaybookEmbeddings(file);
+      expect(await fs.readFile(cachePath, "utf8")).toBe(cacheBytes);
+      const loaded = await loadPlaybook(file);
+      expect(loaded).toEqual(retained);
+      const hydrated = await loadOrComputeEmbeddingsForBullets(loaded.bullets, { cachePath, model: "none" });
+      expect(hydrated.stats).toEqual({ reused: 2, computed: 0, skipped: 0 });
+      expect(loaded.bullets[0].embedding).toEqual([1, 0, 0]);
+      expect(loaded.bullets[1].embedding).toEqual([0, 1, 0]);
+      const matches = await findSimilarBulletsSemantic("reflection errors", loaded.bullets, 2, {
+        cachePath, model: "none", queryEmbedding: [1, 0, 0], threshold: 0.9,
+      });
+      expect(matches.map(match => match.bullet.id)).toEqual(["b-cache-first"]);
+
+      const snapshot = structuredClone(loaded);
+      const vector = loaded.bullets[0].embedding;
+      await savePlaybook(loaded, file);
+      expect(loaded).toEqual(snapshot);
+      expect(loaded.bullets[0].embedding).toBe(vector);
+      expect(yaml.parse(await fs.readFile(file, "utf8"))).toEqual(retained);
+      expect(await loadPlaybook(file)).toEqual(retained);
+      expect(await fs.readFile(cachePath, "utf8")).toBe(cacheBytes);
+    });
+  });
+
+  it("omits more than 200,000 in-memory embedding values before applying ordinary write limits", async () => {
+    await withTempDir(async dir => {
+      const file = path.join(dir, "playbook.yaml");
+      const playbook = createEmptyPlaybook("hydrated-large-playbook");
+      playbook.bullets = Array.from({ length: 600 }, (_, index) => createTestBullet({
+        id: `b-hydrated-${index}`,
+        content: `Preserve learned rule ${index} when saving cached embeddings.`,
+        embedding: Array.from({ length: 384 }, (_, component) => (component - 192) / 384),
+      }));
+      expect(600 * 384).toBeGreaterThan(PLAYBOOK_INPUT_LIMITS.maxNodes);
+      expect(() => assertInputLimits(playbook, PLAYBOOK_INPUT_LIMITS, file)).toThrow(InputLimitError);
+      const vectors = playbook.bullets.map(bullet => bullet.embedding);
+
+      await savePlaybook(playbook, file);
+      const loaded = await loadPlaybook(file);
+      expect(loaded.bullets).toHaveLength(600);
+      expect(loaded.bullets.map(bullet => [bullet.id, bullet.content]))
+        .toEqual(playbook.bullets.map(bullet => [bullet.id, bullet.content]));
+      expect(loaded.bullets.every(bullet => !Object.hasOwn(bullet, "embedding"))).toBe(true);
+      expect(playbook.bullets.every((bullet, index) => bullet.embedding === vectors[index])).toBe(true);
+      expect((await fs.stat(file)).size).toBeLessThan(PLAYBOOK_INPUT_LIMITS.maxBytes);
+    });
+  });
+
+  const invalidRetainedState: Array<{
+    name: string;
+    message: string;
+    mutate: (playbook: Playbook) => void;
+  }> = [
+    {
+      name: "bullet count", message: "maximum array length",
+      mutate: playbook => { playbook.bullets = Array(PLAYBOOK_INPUT_LIMITS.maxArrayLength + 1).fill(playbook.bullets[0]); },
+    },
+    {
+      name: "feedback count", message: "maximum array length",
+      mutate: playbook => {
+        playbook.bullets[0].feedbackEvents = Array(PLAYBOOK_INPUT_LIMITS.maxArrayLength + 1)
+          .fill({ type: "helpful", timestamp: "2026-10-01T00:00:00.000Z" });
+      },
+    },
+    {
+      name: "expanded text bytes", message: "maximum expanded text size",
+      mutate: playbook => { playbook.description = "é".repeat(PLAYBOOK_INPUT_LIMITS.maxBytes / 2 + 1); },
+    },
+    {
+      name: "object keys", message: "maximum object key count",
+      mutate: playbook => {
+        Object.assign(playbook, { extension: Object.fromEntries(
+          Array.from({ length: PLAYBOOK_INPUT_LIMITS.maxObjectKeys + 1 }, (_, index) => [`field-${index}`, true]),
+        ) });
+      },
+    },
+    {
+      name: "nesting depth", message: "maximum nesting depth",
+      mutate: playbook => {
+        let extension: Record<string, unknown> = {};
+        for (let depth = 0; depth <= PLAYBOOK_INPUT_LIMITS.maxDepth; depth++) extension = { child: extension };
+        Object.assign(playbook, { extension });
+      },
+    },
+    {
+      name: "expanded nodes", message: "maximum expanded value count",
+      mutate: playbook => {
+        Object.assign(playbook, { extension: Array.from({ length: 21 }, () => Array(10_000).fill(0)) });
+      },
+    },
+  ];
+
+  for (const invalid of invalidRetainedState) {
+    it(`still rejects excessive non-embedding ${invalid.name} without replacing the saved playbook`, async () => {
+      await withTempDir(async dir => {
+        const file = path.join(dir, "playbook.yaml");
+        const playbook = createEmptyPlaybook("protected-state");
+        playbook.bullets = [createTestBullet({
+          id: "b-retained", content: "Keep the last valid playbook on write failure.", embedding: [1, 0, 0],
+        })];
+        await savePlaybook(playbook, file);
+        const original = await fs.readFile(file, "utf8");
+        invalid.mutate(playbook);
+
+        await expect(savePlaybook(playbook, file)).rejects.toThrow(invalid.message);
+        expect(await fs.readFile(file, "utf8")).toBe(original);
+        expect((await loadPlaybook(file)).bullets.map(bullet => bullet.id)).toEqual(["b-retained"]);
+        expect(await fs.readdir(dir)).toEqual(["playbook.yaml"]);
+      });
+    });
+  }
+
+  it("still enforces the serialized byte limit after omitting vectors", async () => {
+    await withTempDir(async dir => {
+      const file = path.join(dir, "playbook.yaml");
+      const playbook = createEmptyPlaybook("serialized-limit");
+      playbook.bullets = [createTestBullet({ content: "Preserve the prior saved rule.", embedding: [1, 0, 0] })];
+      await savePlaybook(playbook, file);
+      const original = await fs.readFile(file, "utf8");
+      // YAML escapes each control character as four bytes, so raw text is
+      // comfortably bounded while its serialized representation is too large.
+      playbook.description = "\u0001".repeat(PLAYBOOK_INPUT_LIMITS.maxBytes / 4);
+      expect(() => assertInputLimits(playbook, PLAYBOOK_INPUT_LIMITS, file)).not.toThrow();
+
+      await expect(savePlaybook(playbook, file)).rejects.toThrow("maximum file size");
+      expect(await fs.readFile(file, "utf8")).toBe(original);
+      expect(await fs.readdir(dir)).toEqual(["playbook.yaml"]);
     });
   });
 });

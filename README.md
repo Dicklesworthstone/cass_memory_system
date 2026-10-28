@@ -867,6 +867,14 @@ cm reflect --workspace ~/code/api --agent claude,codex --json
 0 2 * * * /usr/local/bin/cm reflect --days 7 >> ~/.cass-memory/reflect.log 2>&1
 ```
 
+If session discovery or processing fails, `cm reflect` exits nonzero and its
+JSON envelope has `success: false` with `error.code: "REFLECTION_FAILED"`.
+Successful work from other sessions remains committed and is reported in `data`,
+alongside `sessionsProcessed`, `deltasGenerated`, and `errors`. Dry runs report
+failures the same way while retaining proposed deltas. Ordinary diagnostic
+warnings do not make an otherwise successful run fail. Scheduled jobs can check
+the process exit status; failed sessions remain eligible for a later retry.
+
 Each session uses its source project's applicable rules and reflection policy.
 Inline feedback, replacements, deprecations, and merges retain that ownership
 through curation. Linked worktrees use their local playbook when present and
@@ -1010,6 +1018,10 @@ cm playbook export > playbook-backup.yaml
 # or near-identical wording) merge their feedback into it instead of becoming
 # duplicates; direct instruction conflicts are reported for review.
 cm playbook import shared-playbook.yaml
+
+# Recover a trusted legacy playbook whose inline embeddings exceed input limits
+cm playbook repair --strip-embeddings --dry-run --json
+cm playbook repair --strip-embeddings --json
 
 # Review directly opposing instructions and their matched clause evidence
 cm playbook conflicts --json
@@ -2341,6 +2353,11 @@ to reset global configuration. Writes are checked before replacing existing
 files. These hard ceilings cannot be raised by repository configuration. Reduce
 oversized collections or split import batches before retrying.
 
+For trusted local legacy playbooks containing derived inline embeddings, the
+explicit `cm playbook repair --strip-embeddings` operation has a separate,
+bounded migration reader. It does not change these ordinary limits or make
+oversized imports acceptable. See [legacy playbook recovery](#oversized-legacy-playbooks).
+
 ### Local-First Design
 
 - **All data stays on your machine** - No cloud sync, no telemetry
@@ -2922,6 +2939,57 @@ cm context "test" --json  # Check degraded field
 ```
 
 ### Recovery Steps
+
+#### Oversized legacy playbooks
+
+An older playbook may contain enough inline `embedding` arrays to exceed the
+16 MiB ordinary read limit or the 200,000-value structural limit. Use the
+supported repair operation on a **trusted local file**. Stop scheduled reflection
+jobs and other playbook writers while repairing it.
+
+```bash
+# Preview the configured playbook without changing it or creating a backup
+cm playbook repair --strip-embeddings --dry-run --json
+
+# Apply the reviewed repair, creating a verified backup first
+cm playbook repair --strip-embeddings --json
+
+# Or explicitly select a trusted file (also works with broken configuration)
+cm playbook repair --strip-embeddings --file /trusted/path/playbook.yaml --dry-run
+
+# Select only this repository's playbook
+cm playbook repair --strip-embeddings --repo --dry-run
+
+# Verify normal operations after applying the repair
+cm stats --json
+cm context "test memory retrieval" --json
+```
+
+Repair removes only each bullet's derived `embedding` field. It preserves all
+bullets, IDs, feedback, counters, timestamps, provenance, and other non-embedding
+fields, including fields unknown to the current schema. It verifies that the
+result passes the unchanged ordinary read limits and schema before replacing
+the file. The preview reports bullet/vector counts, original and repaired sizes,
+SHA-256 hashes, and preservation status. Applying the repair requires a verified,
+exclusive backup and uses atomic replacement under the playbook lock; any
+validation or backup failure leaves the original in place. The JSON result gives
+the backup path. Keep that backup until subsequent operations are verified.
+YAML formatting and comments may change during repair; the backup retains the
+exact original bytes.
+
+The migration reader accepts at most 64 MiB and 2,000,000 expanded values, with
+bounded arrays, keys, depth, YAML tokens, and aliases. Those migration-only bounds
+cannot be raised in configuration. If removing vectors does not bring the result
+within ordinary limits, repair refuses to replace it. Stdin, URLs, symlinks, and
+nonregular files are not supported repair inputs. `cm doctor` reports files near
+or over the ordinary limit and recommends a preview; `doctor --fix` does not
+silently run this migration.
+
+Existing external embeddings in `~/.cass-memory/embeddings/` remain available
+through their existing bullet IDs and content hashes. Repair leaves that cache
+untouched; missing vectors are regenerated when semantic search needs them.
+Normal playbook writes keep derived embeddings out of YAML, including after cache
+hydration, so subsequent reflection and feedback writes can continue safely.
 
 **Corrupted playbook:**
 ```bash

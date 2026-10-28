@@ -7,7 +7,7 @@ import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
 import { detectFixableIssues, doctorCommand } from "../src/commands/doctor.js";
-import { CONFIG_INPUT_LIMITS, InputLimitError } from "../src/input-limits.js";
+import { CONFIG_INPUT_LIMITS, InputLimitError, PLAYBOOK_INPUT_LIMITS } from "../src/input-limits.js";
 import { createTestConfig } from "./helpers/factories.js";
 import { makeCassStub, type TestEnv, withTempCassHome } from "./helpers/temp.js";
 
@@ -292,6 +292,53 @@ describe("doctorCommand", () => {
           }
         });
       }, "doctor-input-limits");
+    });
+
+    test("offers explicit recovery for an oversized playbook without applying it during doctor fixes", async () => {
+      await withTempCassHome(async (env) => {
+        await withCwd(env.home, async () => {
+          await writeFile(env.configPath, JSON.stringify({ embeddingModel: "none" }));
+          const original = createValidPlaybookYaml(1) + "#" + "x".repeat(PLAYBOOK_INPUT_LIMITS.maxBytes);
+          await writeFile(env.playbookPath, original);
+          const previousExitCode = process.exitCode;
+          try {
+            const { output } = await captureConsoleLog(() => doctorCommand({ json: true, fix: true, dryRun: true }));
+            const data = JSON.parse(output).data;
+            const sizeCheck = data.checks.find((check: any) => check.item === "Playbook size");
+            expect(sizeCheck.status).toBe("fail");
+            expect(sizeCheck.details).toMatchObject({ path: env.playbookPath, sizeBytes: Buffer.byteLength(original), maxBytes: PLAYBOOK_INPUT_LIMITS.maxBytes });
+            expect(data.recommendedActions.some((action: any) => action.command?.includes("playbook repair --strip-embeddings") && action.command.includes("--dry-run"))).toBe(true);
+            expect(data.fixPlan.wouldApply.some((id: string) => /repair|strip|embedding/.test(id))).toBe(false);
+            expect(await readFile(env.playbookPath, "utf8")).toBe(original);
+            expect((await readdir(env.cassMemoryDir)).some((name) => name.includes("backup"))).toBe(false);
+            await captureConsoleLog(() => doctorCommand({ json: true, fix: true, force: true, interactive: false }));
+            expect(await readFile(env.playbookPath, "utf8")).toBe(original);
+            expect((await readdir(env.cassMemoryDir)).some((name) => name.includes("backup"))).toBe(false);
+          } finally {
+            process.exitCode = previousExitCode;
+          }
+        });
+      });
+    });
+
+    test("warns near the playbook byte limit and leaves normal-sized playbooks unflagged", async () => {
+      await withTempCassHome(async (env) => {
+        await withCwd(env.home, async () => {
+          await writeFile(env.configPath, JSON.stringify({ embeddingModel: "none" }));
+          const previousExitCode = process.exitCode;
+          try {
+            const normal = createValidPlaybookYaml();
+            await writeFile(env.playbookPath, normal + "#" + "x".repeat(Math.ceil(PLAYBOOK_INPUT_LIMITS.maxBytes * 0.9)));
+            const near = JSON.parse((await captureConsoleLog(() => doctorCommand({ json: true }))).output).data;
+            expect(near.checks.find((check: any) => check.item === "Playbook size").status).toBe("warn");
+            await writeFile(env.playbookPath, normal);
+            const small = JSON.parse((await captureConsoleLog(() => doctorCommand({ json: true }))).output).data;
+            expect(small.checks.some((check: any) => check.item === "Playbook size")).toBe(false);
+          } finally {
+            process.exitCode = previousExitCode;
+          }
+        });
+      });
     });
 
     test("handles invalid JSON config gracefully", async () => {

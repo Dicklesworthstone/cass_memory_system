@@ -10,6 +10,7 @@ import {
   InputLimitError,
   parseJsonInput,
   parseYamlInput,
+  PLAYBOOK_INPUT_LIMITS,
   readBoundedFile,
 } from "../input-limits.js";
 import {
@@ -190,12 +191,42 @@ async function validateGuardParseable(
 
 async function getPlaybookSchemaVersion(
   playbookPath: string,
-): Promise<{ version: number | null; error?: string }> {
+): Promise<{ version: number | null; error?: string; limitExceeded?: boolean }> {
   try {
     const playbook = await loadPlaybook(playbookPath);
     return { version: playbook.schema_version };
   } catch (err: any) {
-    return { version: null, error: err?.message || String(err) };
+    return { version: null, error: err?.message || String(err), limitExceeded: err instanceof InputLimitError };
+  }
+}
+
+function playbookRepairPreviewCommand(filePath: string): string {
+  const quotedPath = `'${filePath.replace(/'/g, "'\\''")}'`;
+  return `${getCliName()} playbook repair --strip-embeddings --file ${quotedPath} --dry-run`;
+}
+
+async function checkPlaybookSize(filePath: string): Promise<HealthCheck | null> {
+  try {
+    const stat = await fs.stat(filePath);
+    if (!stat.isFile() || stat.size < PLAYBOOK_INPUT_LIMITS.maxBytes * 0.9) return null;
+    const oversized = stat.size > PLAYBOOK_INPUT_LIMITS.maxBytes;
+    const repairPreviewCommand = playbookRepairPreviewCommand(filePath);
+    return {
+      category: "Playbook",
+      item: "Playbook size",
+      status: oversized ? "fail" : "warn",
+      message: `${stat.size} bytes ${oversized ? "exceeds" : "is near"} the ${PLAYBOOK_INPUT_LIMITS.maxBytes}-byte input limit. ` +
+        `If this is a trusted legacy playbook with inline embeddings, preview recovery: ${repairPreviewCommand}`,
+      details: {
+        path: filePath,
+        sizeBytes: stat.size,
+        maxBytes: PLAYBOOK_INPUT_LIMITS.maxBytes,
+        repairPreviewCommand,
+      },
+    };
+  } catch {
+    // Missing/inaccessible files are reported by the existing storage/load checks.
+    return null;
   }
 }
 
@@ -286,6 +317,18 @@ function buildRecommendedActions(params: {
 }): RecommendedAction[] {
   const cli = getCliName();
   const actions: RecommendedAction[] = [];
+
+  for (const check of params.checks) {
+    const details = check.details as { repairPreviewCommand?: string } | undefined;
+    if (details?.repairPreviewCommand) {
+      actions.push({
+        label: "Preview removal of derived inline playbook embeddings",
+        command: details.repairPreviewCommand,
+        reason: "For a trusted local playbook, this verifies preservation and normal input limits. Re-run without --dry-run to apply with a verified backup. Doctor does not apply this migration automatically.",
+        urgency: check.status === "fail" ? "high" : "medium",
+      });
+    }
+  }
 
   const cassCheck = params.checks.find((c) => c.item === "cass");
   if (cassCheck?.status === "fail") {
@@ -546,8 +589,13 @@ async function computeDoctorChecks(
         category: "Playbook",
         item: "Global playbook.yaml",
         status: "fail",
-        message: `Playbook is invalid: ${schema.error}`,
-        details: { path: globalPlaybookPath },
+        message: schema.limitExceeded
+          ? `Playbook exceeds an input limit: ${schema.error}`
+          : `Playbook is invalid: ${schema.error}`,
+        details: {
+          path: globalPlaybookPath,
+          ...(schema.limitExceeded ? { repairPreviewCommand: playbookRepairPreviewCommand(globalPlaybookPath) } : {}),
+        },
       });
     } else if ((schema.version ?? 2) < 2) {
       checks.push({
@@ -713,8 +761,13 @@ async function computeDoctorChecks(
           category: "Playbook",
           item: "Repo .cass/playbook.yaml",
           status: "fail",
-          message: `Playbook is invalid: ${schema.error}`,
-          details: { path: repoPlaybookPath },
+          message: schema.limitExceeded
+            ? `Playbook exceeds an input limit: ${schema.error}`
+            : `Playbook is invalid: ${schema.error}`,
+          details: {
+            path: repoPlaybookPath,
+            ...(schema.limitExceeded ? { repairPreviewCommand: playbookRepairPreviewCommand(repoPlaybookPath) } : {}),
+          },
         });
       } else if ((schema.version ?? 2) < 2) {
         checks.push({
@@ -807,6 +860,17 @@ async function computeDoctorChecks(
   }
 
   checks.push(...(await computeGuardChecks(process.cwd())));
+
+  // Stat only: do not relax readers or parse a legacy file during diagnostics.
+  const playbookPaths = new Set([
+    path.resolve(globalDir, "playbook.yaml"),
+    path.resolve(expandPath(config.playbookPath)),
+    ...(cassDir ? [path.resolve(cassDir, "playbook.yaml")] : []),
+  ]);
+  for (const playbookPath of playbookPaths) {
+    const sizeCheck = await checkPlaybookSize(playbookPath);
+    if (sizeCheck) checks.push(sizeCheck);
+  }
 
   // 7) Memory quality: things that quietly degrade what agents are told.
   checks.push(...(await computeMemoryQualityChecks(config)));

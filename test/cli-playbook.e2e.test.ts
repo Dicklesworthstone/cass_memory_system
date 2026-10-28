@@ -5,10 +5,11 @@
  * getting, exporting, and importing playbook bullets.
  */
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
 import { playbookCommand } from "../src/commands/playbook.js";
+import { PLAYBOOK_INPUT_LIMITS } from "../src/input-limits.js";
 import { createE2ELogger } from "./helpers/e2e-logger.js";
 import { TestEnv, withTempCassHome } from "./helpers/temp.js";
 
@@ -92,6 +93,143 @@ function createTestBullet(
     updatedAt: now,
   };
 }
+
+describe("E2E: cm playbook repair", () => {
+  const cliPath = path.resolve(import.meta.dir, "../src/cm.ts");
+
+  async function runCli(env: TestEnv, args: string[]) {
+    const proc = Bun.spawn([process.execPath, "run", cliPath, ...args], {
+      cwd: env.home,
+      env: { ...process.env, HOME: env.home, CASS_MEMORY_HOME: env.cassMemoryDir, NO_COLOR: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited,
+    ]);
+    return { stdout, stderr, exitCode };
+  }
+
+  function repairFixture() {
+    return createTestPlaybook([{
+      ...createTestBullet({ id: "b-repair", content: "Preserve recovery evidence", helpfulCount: 3 }),
+      embedding: [0.1, 0.2, 0.3],
+      feedbackEvents: [{ type: "helpful", timestamp: "2026-10-28T00:00:00.000Z", context: "keep this" }],
+      extraLearnedState: { observations: ["keep unknown fields too"] },
+    }]);
+  }
+
+  it("requires an explicit repair operation and rejects ambiguous/nonlocal selectors", async () => {
+    await withTempCassHome(async (env) => {
+      const original = yaml.stringify(repairFixture());
+      await writeFile(env.playbookPath, original);
+      for (const args of [
+        [],
+        ["--strip-embeddings", "--file", env.playbookPath, "--repo"],
+        ["--strip-embeddings", "--file", "-"],
+        ["--strip-embeddings", "--file", "https://example.invalid/playbook.yaml"],
+      ]) {
+        const result = await runCli(env, ["playbook", "repair", ...args, "--json"]);
+        expect(result.exitCode).not.toBe(0);
+        expect(JSON.parse(result.stdout).success).toBe(false);
+      }
+      expect(await readFile(env.playbookPath, "utf8")).toBe(original);
+      expect((await readdir(env.cassMemoryDir)).filter((name) => name.includes("backup"))).toEqual([]);
+    });
+  });
+
+  it("previews and applies normal-sized repairs with useful output and a byte-exact backup", async () => {
+    await withTempCassHome(async (env) => {
+      const playbook = repairFixture();
+      const original = yaml.stringify(playbook);
+      await writeFile(env.playbookPath, original);
+      const preview = await runCli(env, ["playbook", "repair", "--strip-embeddings", "--dry-run", "--json"]);
+      expect(preview.exitCode).toBe(0);
+      const previewJson = JSON.parse(preview.stdout);
+      expect(previewJson.success).toBe(true);
+      expect(previewJson.effect).toBe(false);
+      expect(previewJson.data).toMatchObject({ dryRun: true, changed: false, wouldChange: true, bulletCount: 1, embeddingsRemoved: 1, backupPath: null, preservationVerified: true });
+      expect(previewJson.data.sha256Before).toMatch(/^[0-9a-f]{64}$/);
+      expect(previewJson.data.bytesSaved).toBeGreaterThan(0);
+      expect(await readFile(env.playbookPath, "utf8")).toBe(original);
+      expect((await readdir(env.cassMemoryDir)).filter((name) => name.includes("backup"))).toEqual([]);
+
+      const applied = await runCli(env, ["playbook", "repair", "--strip-embeddings", "--json"]);
+      expect(applied.exitCode).toBe(0);
+      const result = JSON.parse(applied.stdout);
+      expect(result.success).toBe(true);
+      expect(result.data.changed).toBe(true);
+      expect(await readFile(result.data.backupPath, "utf8")).toBe(original);
+      const { embedding, ...preserved } = playbook.bullets[0];
+      expect(yaml.parse(await readFile(env.playbookPath, "utf8"))).toEqual({ ...playbook, bullets: [preserved] });
+
+      const noOp = await runCli(env, ["playbook", "repair", "--strip-embeddings"]);
+      expect(noOp.exitCode).toBe(0);
+      expect(noOp.stdout).toContain("No inline embeddings found; no files changed.");
+      const stats = await runCli(env, ["stats", "--json"]);
+      expect(stats.exitCode).toBe(0);
+      expect(JSON.parse(stats.stdout).success).toBe(true);
+    });
+  });
+
+  it("can explicitly repair a local file even with broken configuration", async () => {
+    await withTempCassHome(async (env) => {
+      await writeFile(env.configPath, "{invalid config");
+      const alternate = path.join(env.home, "trusted-legacy.yaml");
+      await writeFile(alternate, yaml.stringify(repairFixture()));
+      const result = await runCli(env, ["playbook", "repair", "--strip-embeddings", "--file", alternate, "--dry-run", "--json"]);
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout).data.path).toBe(alternate);
+      expect(await readFile(env.configPath, "utf8")).toBe("{invalid config");
+    });
+  });
+
+  it("repairs only the selected repository playbook", async () => {
+    await withTempCassHome(async (env) => {
+      const initialized = Bun.spawnSync(["git", "init", "--initial-branch=main", env.home], { stdout: "ignore", stderr: "pipe" });
+      expect(initialized.exitCode).toBe(0);
+      const repoDir = path.join(env.home, ".cass");
+      await mkdir(repoDir);
+      const repoPath = path.join(repoDir, "playbook.yaml");
+      const original = yaml.stringify(repairFixture());
+      await writeFile(repoPath, original);
+      await writeFile(env.playbookPath, original);
+      const repaired = await runCli(env, ["playbook", "repair", "--strip-embeddings", "--repo", "--json"]);
+      expect(repaired.exitCode).toBe(0);
+      expect(JSON.parse(repaired.stdout).data.path).toBe(repoPath);
+      expect(yaml.parse(await readFile(repoPath, "utf8")).bullets[0].embedding).toBeUndefined();
+      expect(await readFile(env.playbookPath, "utf8")).toBe(original);
+    });
+  });
+
+  it("recovers a legacy playbook over the ordinary byte limit through the real CLI", async () => {
+    await withTempCassHome(async (env) => {
+      const bullets = Array.from({ length: 1708 }, (_, index) => ({
+        ...createTestBullet({ id: `b-legacy-${index}`, content: `Preserve lesson ${index}` }),
+        ...(index < 1583 ? { embedding: Array(384).fill(0.12345678901234568) } : {}),
+      }));
+      const original = yaml.stringify(createTestPlaybook(bullets), { aliasDuplicateObjects: false });
+      expect(Buffer.byteLength(original)).toBeGreaterThan(PLAYBOOK_INPUT_LIMITS.maxBytes);
+      await writeFile(env.playbookPath, original);
+      const failedStats = await runCli(env, ["stats", "--json"]);
+      expect(failedStats.exitCode).not.toBe(0);
+      expect(JSON.parse(failedStats.stdout).success).toBe(false);
+
+      const repaired = await runCli(env, ["playbook", "repair", "--strip-embeddings", "--json"]);
+      expect(repaired.exitCode).toBe(0);
+      const result = JSON.parse(repaired.stdout);
+      expect(result.data).toMatchObject({ bulletCount: 1708, embeddingsRemoved: 1583, changed: true, preservationVerified: true });
+      expect(result.data.repairedBytes).toBeLessThan(PLAYBOOK_INPUT_LIMITS.maxBytes);
+      expect(await readFile(result.data.backupPath, "utf8")).toBe(original);
+      const stats = await runCli(env, ["stats", "--json"]);
+      expect(stats.exitCode).toBe(0);
+      expect(JSON.parse(stats.stdout).success).toBe(true);
+      const saved = yaml.parse(await readFile(env.playbookPath, "utf8"));
+      expect(saved.bullets.map((bullet: any) => bullet.id)).toEqual(bullets.map((bullet) => bullet.id));
+      expect(saved.bullets.every((bullet: any) => !("embedding" in bullet))).toBe(true);
+    });
+  }, 60_000);
+});
 
 describe("E2E: CLI playbook command", () => {
   describe("list action", () => {
