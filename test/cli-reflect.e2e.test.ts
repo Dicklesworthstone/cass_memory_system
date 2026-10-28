@@ -14,10 +14,13 @@
  * - Detailed logging: sessions processed, deltas generated, playbook changes
  */
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
 import { reflectCommand } from "../src/commands/reflect.js";
+import { PLAYBOOK_INPUT_LIMITS } from "../src/input-limits.js";
+import { getProcessedLogPath, ProcessedLog } from "../src/tracking.js";
 import { createTestLogger, type TestLogger } from "./helpers/logger.js";
 import {
   cleanupEnvironment,
@@ -114,6 +117,213 @@ function createMockSession(sessionPath: string, agent: string = "claude") {
     score: 0.9,
   };
 }
+
+describe("E2E: reflect failure status (#99)", () => {
+  const cmPath = path.join(import.meta.dir, "..", "src", "cm.ts");
+  const rule = "Check the process exit status before treating a reflection job as healthy.";
+  const reflectorStubs = JSON.stringify([{
+    deltas: [{ type: "add", bullet: { content: rule, category: "testing" }, reason: "session evidence" }],
+  }]);
+
+  function runReflect(env: TestEnv, args: string[]) {
+    return spawnSync(process.execPath, ["run", cmPath, "reflect", ...args], {
+      cwd: env.home,
+      env: {
+        ...process.env,
+        HOME: env.home,
+        USERPROFILE: env.home,
+        CASS_MEMORY_LLM: "none",
+        CM_REFLECTOR_STUBS: reflectorStubs,
+        NO_COLOR: "1",
+        FORCE_COLOR: "0",
+      },
+      encoding: "utf-8",
+      timeout: 30_000,
+    });
+  }
+
+  async function setup(env: TestEnv, cassPath = path.join(env.home, "missing-cass")) {
+    await writeFile(env.playbookPath, yaml.stringify(createTestPlaybook([])));
+    await writeFile(env.configPath, JSON.stringify({
+      ...createTestConfig(cassPath),
+      playbookPath: env.playbookPath,
+      diaryDir: env.diaryDir,
+      validationEnabled: false,
+      semanticSearchEnabled: false,
+    }));
+  }
+
+  async function writeSession(env: TestEnv, name: string) {
+    const sessionPath = path.join(env.home, `${name}.jsonl`);
+    await writeFile(sessionPath, [
+      { role: "user", content: "Our reflection job failed but reported that it had completed successfully." },
+      { role: "assistant", content: "Check both the structured result and the process exit status for failures." },
+    ].map(record => JSON.stringify(record)).join("\n") + "\n");
+    return sessionPath;
+  }
+
+  for (const dryRun of [false, true]) {
+    it(`fails for an oversized playbook${dryRun ? " in dry-run" : ""} without losing error details`, async () => {
+      await withTempCassHome(async env => {
+        await setup(env);
+        const sessionPath = await writeSession(env, "oversized");
+        const oversized = yaml.stringify(createTestPlaybook([])) + "# " + "x".repeat(PLAYBOOK_INPUT_LIMITS.maxBytes);
+        await writeFile(env.playbookPath, oversized);
+        const configBefore = await readFile(env.configPath, "utf8");
+
+        const result = runReflect(env, ["--session", sessionPath, "--json", ...(dryRun ? ["--dry-run"] : [])]);
+        expect(result.error).toBeUndefined();
+        const payload = JSON.parse(result.stdout);
+        expect(result.status).not.toBe(0);
+        expect(payload.success).toBe(false);
+        expect(payload.command).toBe("reflect");
+        expect(payload.error.code).toBe("REFLECTION_FAILED");
+        expect(payload.error.exitCode).toBe(result.status);
+        expect(payload.data.sessionsProcessed).toBe(0);
+        expect(payload.data.deltasGenerated).toBe(0);
+        expect(payload.data.errors).toHaveLength(1);
+        expect(payload.data.errors[0]).toContain("Input limit exceeded");
+        expect(payload.data.errors[0]).toContain(sessionPath);
+        expect(payload.warnings).toEqual(payload.data.errors);
+        expect(typeof payload.metadata.executionMs).toBe("number");
+        if (dryRun) expect(payload.data.deltas).toEqual([]);
+
+        expect(await readFile(env.playbookPath, "utf8")).toBe(oversized);
+        // A failed run must not be mistaken for the first successful reflect
+        // and bake budget defaults into the user's configuration.
+        expect(await readFile(env.configPath, "utf8")).toBe(configBefore);
+        const log = new ProcessedLog(getProcessedLogPath());
+        await log.load();
+        expect(log.has(sessionPath)).toBe(false);
+        if (dryRun) expect(log.get(sessionPath)).toBeUndefined();
+        else expect(log.get(sessionPath)).toMatchObject({ status: "failed", failures: 1 });
+      });
+    });
+
+    it(`returns partial results when one session fails${dryRun ? " in dry-run" : ""}`, async () => {
+      await withTempCassHome(async env => {
+        const goodSession = await writeSession(env, "good");
+        const missingSession = path.join(env.home, "missing.jsonl");
+        const timeline = JSON.stringify({ groups: [{ date: "2026-10-28", sessions: [
+          { path: missingSession, agent: "claude" },
+          { path: goodSession, agent: "claude" },
+        ] }] });
+        // Discovery sees both sessions; export uses the real file fallback.
+        const cassPath = path.join(env.home, "cass-fixture");
+        await writeFile(cassPath, `#!${process.execPath}
+if (process.argv[2] === "timeline") console.log(${JSON.stringify(timeline)});
+else if (process.argv[2] === "export") process.exit(1);
+else console.log("[]");
+`, { mode: 0o755 });
+        await setup(env, cassPath);
+        const playbookBefore = await readFile(env.playbookPath, "utf8");
+        const configBefore = await readFile(env.configPath, "utf8");
+
+        const result = runReflect(env, ["--json", ...(dryRun ? ["--dry-run"] : [])]);
+        expect(result.error).toBeUndefined();
+        expect(result.status).not.toBe(0);
+        const payload = JSON.parse(result.stdout);
+        expect(payload.success).toBe(false);
+        expect(payload.error.exitCode).toBe(result.status);
+        expect(payload.data.sessionsProcessed).toBe(1);
+        expect(payload.data.deltasGenerated).toBe(1);
+        expect(payload.data.errors).toHaveLength(1);
+        expect(payload.data.errors[0]).toContain(missingSession);
+        expect(await readFile(env.configPath, "utf8")).toBe(configBefore);
+
+        const log = new ProcessedLog(getProcessedLogPath());
+        await log.load();
+        const saved = yaml.parse(await readFile(env.playbookPath, "utf8"));
+        if (dryRun) {
+          expect(payload.data.deltas).toHaveLength(1);
+          expect(payload.data.deltas[0].bullet.content).toBe(rule);
+          expect(await readFile(env.playbookPath, "utf8")).toBe(playbookBefore);
+          expect(log.get(goodSession)).toBeUndefined();
+          expect(log.get(missingSession)).toBeUndefined();
+        } else {
+          expect(payload.data.global.applied).toBe(1);
+          expect(saved.bullets.map((bullet: { content: string }) => bullet.content)).toContain(rule);
+          expect(saved.metadata.totalReflections).toBe(1);
+          expect(saved.metadata.totalSessionsProcessed).toBe(1);
+          expect(log.has(goodSession)).toBe(true);
+          expect(log.has(missingSession)).toBe(false);
+          expect(log.get(missingSession)).toMatchObject({ status: "failed", failures: 1 });
+
+          // A later successful run skips the already committed session.
+          const rerun = runReflect(env, ["--session", goodSession, "--json"]);
+          expect(rerun.status).toBe(0);
+          expect(JSON.parse(rerun.stdout).data.sessionsProcessed).toBe(0);
+          const afterRerun = yaml.parse(await readFile(env.playbookPath, "utf8"));
+          expect(afterRerun.metadata.totalSessionsProcessed).toBe(1);
+        }
+      });
+    });
+
+    it(`sets a nonzero exit status for human output${dryRun ? " in dry-run" : ""}`, async () => {
+      await withTempCassHome(async env => {
+        await setup(env);
+        const missingSession = path.join(env.home, "missing.jsonl");
+        const result = runReflect(env, ["--session", missingSession, ...(dryRun ? ["--dry-run"] : [])]);
+        expect(result.error).toBeUndefined();
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain("Failed to process");
+        expect(result.stdout).toContain("completed with errors");
+        expect(result.stdout).not.toContain("Reflection complete.");
+      });
+    });
+  }
+
+  it("reports discovery failure as failure rather than a successful empty run", async () => {
+    await withTempCassHome(async env => {
+      const cassPath = await makeCassStub(env.home, {
+        exitCode: 1,
+        search: '{"error":"search failed"}',
+        timeline: '{"error":"timeline failed"}',
+      });
+      await setup(env, cassPath);
+      const result = runReflect(env, ["--json"]);
+      expect(result.error).toBeUndefined();
+      expect(result.status).not.toBe(0);
+      const payload = JSON.parse(result.stdout);
+      expect(payload.success).toBe(false);
+      expect(payload.data.sessionsProcessed).toBe(0);
+      expect(payload.data.errors[0]).toContain("Session discovery failed");
+    });
+  });
+
+  it("keeps normal-sized successful reflection successful and reports its work", async () => {
+    await withTempCassHome(async env => {
+      await setup(env);
+      const sessionPath = await writeSession(env, "normal");
+      const result = runReflect(env, ["--session", sessionPath, "--json"]);
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(0);
+      const payload = JSON.parse(result.stdout);
+      expect(payload.success).toBe(true);
+      expect(payload.error).toBeUndefined();
+      expect(payload.data.sessionsProcessed).toBe(1);
+      expect(payload.data.deltasGenerated).toBe(1);
+      expect(payload.data.global.applied).toBe(1);
+      expect(payload.data.errors).toEqual([]);
+    });
+  });
+
+  it("keeps empty discovery successful even when a budget diagnostic is emitted", async () => {
+    await withTempCassHome(async env => {
+      const cassPath = await makeCassStub(env.home, { search: "[]", timeline: '{"groups":[]}' });
+      await setup(env, cassPath);
+      const result = runReflect(env, ["--json"]);
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(0);
+      expect(result.stderr).toContain("budget limits are code defaults");
+      const payload = JSON.parse(result.stdout);
+      expect(payload.success).toBe(true);
+      expect(payload.error).toBeUndefined();
+      expect(payload.data.sessionsProcessed).toBe(0);
+      expect(payload.data.errors).toEqual([]);
+    });
+  });
+});
 
 describe("E2E: CLI reflect command", () => {
   let logger: TestLogger;

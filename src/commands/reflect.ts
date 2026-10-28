@@ -6,6 +6,7 @@ import { formatKv, formatRule, getOutputStyle, icon, iconPrefix, wrapText } from
 import { createProgress, type ProgressReporter } from "../progress.js";
 import { ErrorCode, type PlaybookDelta } from "../types.js";
 import {
+  buildJsonErrorPayload,
   getCliName,
   printJson,
   printJsonResult,
@@ -273,6 +274,38 @@ export async function reflectCommand(
     },
   });
 
+  // A run can commit useful work from some sessions while others fail. Keep
+  // those results, but never tell automation that the whole run succeeded.
+  // The orchestrator's errors are processing failures; ordinary diagnostics
+  // (e.g. the default-budget notice) do not enter this collection.
+  const failure = result.errors.length > 0
+    ? buildJsonErrorPayload("Reflection completed with errors.", {
+        code: ErrorCode.REFLECTION_FAILED,
+        command,
+        startedAtMs,
+        recovery: [
+          "Review the reported errors and fix their causes.",
+          "Re-run reflection; successfully processed sessions remain recorded.",
+        ],
+      })
+    : undefined;
+  if (failure) process.exitCode = failure.error.exitCode;
+
+  const summary = {
+    sessionsProcessed: result.sessionsProcessed,
+    deltasGenerated: result.deltasGenerated,
+    errors: result.errors,
+  };
+  const printResult = (data: Record<string, unknown>): void => {
+    if (failure) {
+      // Retain data.errors and the existing warnings for consumers that show
+      // diagnostics, alongside the standard failure envelope and partial data.
+      printJson({ ...failure, data, warnings: result.errors });
+    } else {
+      printJsonResult(command, data, { startedAtMs });
+    }
+  };
+
   if (result.errors.length > 0 && !normalizedOptions.json) {
     console.error(chalk.yellow.bold(`${iconPrefix("warning")}Errors (${result.errors.length})`));
     const shown = Math.min(5, result.errors.length);
@@ -284,7 +317,8 @@ export async function reflectCommand(
   }
 
   if (normalizedOptions.json && progressRef.current) {
-    progressRef.current.complete("Reflection complete");
+    if (failure) progressRef.current.fail("Reflection completed with errors");
+    else progressRef.current.complete("Reflection complete");
     progressRef.current = null;
   }
 
@@ -293,7 +327,7 @@ export async function reflectCommand(
   // retroactively raise (or lower) this user's spend ceiling. Dry runs are
   // excluded — they promise not to write anything. This is a targeted write
   // of only the budget keys; the rest of the config file is preserved as-is.
-  if (!budgetBaked && !normalizedOptions.dryRun) {
+  if (!failure && !budgetBaked && !normalizedOptions.dryRun) {
     try {
       await bakeBudgetIntoConfig(config.budget);
     } catch (err: any) {
@@ -303,12 +337,12 @@ export async function reflectCommand(
 
   if (normalizedOptions.dryRun) {
     if (normalizedOptions.json) {
-      printJsonResult(command, { deltas: result.dryRunDeltas }, { startedAtMs });
+      printResult({ ...summary, deltas: result.dryRunDeltas ?? [] });
     } else {
       const deltas = result.dryRunDeltas || [];
       const byType = summarizeDeltas(deltas);
 
-      console.log(chalk.bold(`${iconPrefix("note")}DRY RUN`));
+      console.log(chalk.bold(`${iconPrefix("note")}DRY RUN${failure ? " (completed with errors)" : ""}`));
       console.log(divider);
       console.log(
         formatKv(
@@ -366,20 +400,13 @@ export async function reflectCommand(
   }
 
   if (normalizedOptions.json) {
-    printJsonResult(
-      command,
-      {
-        global: result.globalResult,
-        repo: result.repoResult,
-        ...(result.projectResults ? { projects: result.projectResults } : {}),
-        errors: result.errors,
-        autoOutcome: result.autoOutcome,
-      },
-      // Per-session and discovery failures are also surfaced as envelope
-      // warnings so a cron consumer can tell "nothing to learn" from "could
-      // not look" without parsing `data.errors` (#78).
-      { startedAtMs, warnings: result.errors.length > 0 ? result.errors : undefined },
-    );
+    printResult({
+      ...summary,
+      global: result.globalResult,
+      repo: result.repoResult,
+      ...(result.projectResults ? { projects: result.projectResults } : {}),
+      autoOutcome: result.autoOutcome,
+    });
     return;
   }
 
@@ -387,7 +414,9 @@ export async function reflectCommand(
   if (result.sessionsProcessed === 0 && result.errors.length === 0) {
     console.log(chalk.green("No new sessions to reflect on."));
   } else {
-    console.log(chalk.green(`\n${iconPrefix("check")}Reflection complete.`));
+    console.log(failure
+      ? chalk.yellow(`\n${iconPrefix("warning")}Reflection completed with errors.`)
+      : chalk.green(`\n${iconPrefix("check")}Reflection complete.`));
     console.log(
       formatKv(
         [
