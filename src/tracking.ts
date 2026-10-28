@@ -1,15 +1,19 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { z } from "zod";
+import { assertInputLimits, assertTextSize, formatValidationIssues, InputLimitError, PLAYBOOK_INPUT_LIMITS } from "./input-limits.js";
 import { sanitize } from "./sanitize.js";
-import { OutcomeRecordSchema, type ProcessedEntry } from "./types.js";
+import { OutcomeRecordSchema, ProcessedEntrySchema, type ProcessedEntry } from "./types.js";
 import {
   atomicWrite,
   ensureDir,
+  ensureDurableDirectory,
   expandPath,
   fileExists,
   now,
   resolveGlobalDir,
+  syncDirectory,
   warn,
   withLock,
 } from "./utils.js";
@@ -412,6 +416,52 @@ function normalizeSessionPathForLog(sessionPath: string): string {
 }
 
 class PendingOutcomeRecoveryError extends Error {}
+class ReflectionCommitRecoveryError extends Error {}
+
+const ReflectionCommitEnvelopeSchema = z.object({
+  reflectionCommit: z.object({
+    owner: z.string().trim().min(1),
+    id: z.string().min(1),
+  }).strict(),
+  entries: z.array(ProcessedEntrySchema.extend({
+    sessionPath: z.string().trim().min(1),
+    processedAt: z.string().min(1),
+  })).max(PLAYBOOK_INPUT_LIMITS.maxArrayLength),
+}).strict();
+
+function normalizeCommitOwner(owner: string): string {
+  if (typeof owner !== "string" || !owner.trim()) {
+    throw new ReflectionCommitRecoveryError("A reflection commit requires a non-empty playbook owner");
+  }
+  // Preserve the logical file address. Atomic replacement may replace a final
+  // symlink, so realpath would change this identity between commit and replay.
+  return path.resolve(expandPath(owner.trim()));
+}
+
+function parseReflectionCommit(value: unknown, source: string) {
+  assertInputLimits(value, PLAYBOOK_INPUT_LIMITS, source);
+  const parsed = ReflectionCommitEnvelopeSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new ReflectionCommitRecoveryError(
+      `Processed log contains an invalid reflection commit: ${formatValidationIssues(parsed.error)}`,
+    );
+  }
+  return {
+    reflectionCommit: {
+      owner: normalizeCommitOwner(parsed.data.reflectionCommit.owner),
+      id: parsed.data.reflectionCommit.id,
+    },
+    entries: parsed.data.entries.map(entry => ({
+      ...entry, sessionPath: normalizeSessionPathForLog(entry.sessionPath),
+    })),
+  };
+}
+
+function serializeProcessedRecord(value: unknown, source: string): string {
+  const line = JSON.stringify(value);
+  assertTextSize(line, PLAYBOOK_INPUT_LIMITS.maxBytes, source);
+  return line;
+}
 
 function mergePendingOutcomes(
   existing: ProcessedEntry["pendingOutcomes"],
@@ -428,6 +478,8 @@ function mergePendingOutcomes(
 
 export class ProcessedLog {
   private entries: Map<string, ProcessedEntry> = new Map();
+  private committedBatches: Map<string, string> = new Map();
+  private localUpdates: Map<string, ProcessedEntry> = new Map();
   private logPath: string;
 
   constructor(logPath: string) {
@@ -438,12 +490,28 @@ export class ProcessedLog {
     try {
       const content = await fs.readFile(this.logPath, "utf-8");
       const lines = content.split("\n").filter((line) => line.trim() && !line.startsWith("#"));
+      const entries = new Map<string, ProcessedEntry>();
+      const committedBatches = new Map<string, string>();
 
       for (const line of lines) {
         // Try JSONL first (new format)
         if (line.trim().startsWith("{")) {
           try {
+            // A ledger may contain many batches, but one record is bounded
+            // before parsing just like ordinary persisted playbook input.
+            assertTextSize(line, PLAYBOOK_INPUT_LIMITS.maxBytes, this.logPath);
             const entry = JSON.parse(line);
+            if (entry && typeof entry === "object" && Object.hasOwn(entry, "reflectionCommit")) {
+              // Validate the entire batch before applying any watermark or
+              // ACK. A torn JSON line is ignored below and can be replayed.
+              const batch = parseReflectionCommit(entry, this.logPath);
+              const { owner, id } = batch.reflectionCommit;
+              if (committedBatches.get(owner) !== id) {
+                for (const update of batch.entries) entries.set(update.sessionPath, update);
+                committedBatches.set(owner, id);
+              }
+              continue;
+            }
             if (entry && typeof entry === "object" && entry.pendingOutcomes !== undefined
               && (typeof entry.sessionPath !== "string" || !entry.sessionPath.trim())) {
               throw new PendingOutcomeRecoveryError("Processed log contains pending outcomes without a valid session path; repair the recovery records before reflecting");
@@ -451,7 +519,7 @@ export class ProcessedLog {
             if (entry.sessionPath) {
               const normalizedSessionPath = normalizeSessionPathForLog(entry.sessionPath);
               if (!normalizedSessionPath) continue;
-              this.entries.set(normalizedSessionPath, {
+              entries.set(normalizedSessionPath, {
                 ...pickIncrementalFields(entry),
                 sessionPath: normalizedSessionPath,
                 processedAt: entry.processedAt || new Date().toISOString(),
@@ -462,7 +530,8 @@ export class ProcessedLog {
             }
             continue;
           } catch (error) {
-            if (error instanceof PendingOutcomeRecoveryError) throw error;
+            if (error instanceof PendingOutcomeRecoveryError || error instanceof ReflectionCommitRecoveryError ||
+                error instanceof InputLimitError) throw error;
             // Fall through to TSV if JSON parse fails (hybrid file?)
           }
         }
@@ -476,7 +545,7 @@ export class ProcessedLog {
           if (sessionPath) {
             const normalizedSessionPath = normalizeSessionPathForLog(sessionPath);
             if (!normalizedSessionPath) continue;
-            this.entries.set(normalizedSessionPath, {
+            entries.set(normalizedSessionPath, {
               sessionPath: normalizedSessionPath,
               processedAt: processedAt || new Date().toISOString(),
               diaryId: id === "-" ? undefined : id,
@@ -485,8 +554,16 @@ export class ProcessedLog {
           }
         } catch {}
       }
+      this.entries = entries;
+      this.committedBatches = committedBatches;
+      this.localUpdates.clear();
     } catch (error) {
-      if (error instanceof Error && "code" in error && error.code === "ENOENT") return;
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+        this.entries.clear();
+        this.committedBatches.clear();
+        this.localUpdates.clear();
+        return;
+      }
       // Treating an unreadable log as empty could repeat reflection and lose
       // its pending outcomes. Only a genuinely absent log starts empty.
       throw error;
@@ -497,18 +574,81 @@ export class ProcessedLog {
     await withLock(this.logPath, async () => {
       const current = new ProcessedLog(this.logPath);
       await current.load();
-      const entries = new Map(this.entries);
-      for (const entry of current.getPendingOutcomeEntries()) {
-        const update = entries.get(entry.sessionPath) ?? entry;
+      // Compaction must retain newer writers' watermarks as well as the ACKs
+      // proving them committed. Only explicit add() calls are local updates.
+      const entries = new Map(current.entries);
+      for (const entry of this.localUpdates.values()) {
         entries.set(entry.sessionPath, {
-          ...update,
-          pendingOutcomes: mergePendingOutcomes(entry.pendingOutcomes, update.pendingOutcomes),
+          ...entry,
+          pendingOutcomes: mergePendingOutcomes(entries.get(entry.sessionPath)?.pendingOutcomes, entry.pendingOutcomes),
         });
       }
       const lines = ['# JSONL format: {"sessionPath":..., "processedAt":...}'];
-      for (const entry of entries.values()) lines.push(JSON.stringify(entry));
+      for (const entry of entries.values()) lines.push(serializeProcessedRecord(entry, this.logPath));
+      for (const [owner, id] of current.committedBatches) {
+        lines.push(serializeProcessedRecord({ reflectionCommit: { owner, id }, entries: [] }, this.logPath));
+      }
       await atomicWrite(this.logPath, lines.join("\n") + "\n");
       this.entries = entries;
+      this.committedBatches = current.committedBatches;
+      this.localUpdates.clear();
+    });
+  }
+
+  /** Visible ACK state; appendCommittedBatch also flushes it before cleanup. */
+  hasCommittedBatch(owner: string, id: string): boolean {
+    return this.committedBatches.get(normalizeCommitOwner(owner)) === id;
+  }
+
+  /**
+   * Publish one reflection's entries and ACK as one bounded JSONL record.
+   * Replaying an ACK never overwrites newer watermarks or requeues outcomes.
+   * The coordinator allows only one outstanding commit per playbook owner.
+   */
+  async appendCommittedBatch(
+    owner: string,
+    id: string,
+    entries: ProcessedEntry[],
+  ): Promise<{ alreadyCommitted: boolean }> {
+    const batch = parseReflectionCommit({ reflectionCommit: { owner, id }, entries }, this.logPath);
+    // Check the full encoding before creating a lock or touching the ledger.
+    serializeProcessedRecord(batch, this.logPath);
+    await ensureDurableDirectory(path.dirname(this.logPath));
+    return withLock(this.logPath, async () => {
+      const current = new ProcessedLog(this.logPath);
+      await current.load();
+      if (current.hasCommittedBatch(batch.reflectionCommit.owner, id)) {
+        // An earlier write may have reached the page cache but failed fsync.
+        // Do not let receipt cleanup turn that visible ACK into false success.
+        const handle = await fs.open(this.logPath, "a+", 0o600);
+        try {
+          await handle.sync();
+        } finally {
+          await handle.close();
+        }
+        await syncDirectory(path.dirname(this.logPath));
+        this.entries = current.entries;
+        this.committedBatches = current.committedBatches;
+        this.localUpdates.clear();
+        return { alreadyCommitted: true };
+      }
+      batch.entries = batch.entries.map(entry => {
+        const update = {
+          ...entry,
+          pendingOutcomes: mergePendingOutcomes(current.get(entry.sessionPath)?.pendingOutcomes, entry.pendingOutcomes),
+        };
+        current.add(update);
+        return update;
+      });
+      // Merging a prior queue can increase the batch: enforce limits again
+      // before the first write, not only on the caller's original proposal.
+      assertInputLimits(batch, PLAYBOOK_INPUT_LIMITS, this.logPath);
+      await this.writeRecords([serializeProcessedRecord(batch, this.logPath)]);
+      current.committedBatches.set(batch.reflectionCommit.owner, id);
+      this.entries = current.entries;
+      this.committedBatches = current.committedBatches;
+      this.localUpdates.clear();
+      return { alreadyCommitted: false };
     });
   }
 
@@ -530,7 +670,7 @@ export class ProcessedLog {
     }
 
     if (normalizedEntries.length === 0) return;
-    await ensureDir(path.dirname(this.logPath));
+    await ensureDurableDirectory(path.dirname(this.logPath));
 
     const doAppend = async () => {
       // A manual marker or stale writer must not erase another invocation's
@@ -547,6 +687,8 @@ export class ProcessedLog {
       });
       await this.writeEntries(merged);
       this.entries = current.entries;
+      this.committedBatches = current.committedBatches;
+      this.localUpdates.clear();
     };
 
     // Skip lock if caller already holds it (e.g., orchestrator)
@@ -579,12 +721,22 @@ export class ProcessedLog {
       }
       await this.writeEntries(updates);
       this.entries = current.entries;
+      this.committedBatches = current.committedBatches;
+      this.localUpdates.clear();
     });
   }
 
   /** Called only while the processed-log lock is held. */
   private async writeEntries(entries: ProcessedEntry[]): Promise<void> {
     if (entries.length === 0) return;
+    await this.writeRecords(entries.map(entry => serializeProcessedRecord(entry, this.logPath)));
+    // Failed writes must not acknowledge pending work in memory.
+    for (const entry of entries) this.entries.set(entry.sessionPath, entry);
+  }
+
+  /** The caller holds the processed-log lock and has bounded every record. */
+  private async writeRecords(records: string[]): Promise<void> {
+    if (records.length === 0) return;
     const handle = await fs.open(this.logPath, "a+", 0o600);
     try {
       const { size } = await handle.stat();
@@ -596,14 +748,15 @@ export class ProcessedLog {
         // complete entry, including its pending outcome recovery records.
         prefix = tail[0] === 10 ? "" : "\n";
       }
-      await handle.writeFile(prefix + entries.map(entry => JSON.stringify(entry)).join("\n") + "\n", "utf-8");
+      await handle.writeFile(prefix + records.join("\n") + "\n", "utf-8");
       await handle.sync();
     } finally {
       await handle.close();
     }
-    // Failed writes must not acknowledge pending work in memory: the same
-    // orchestrator run may still commit a newer watermark for this session.
-    for (const entry of entries) this.entries.set(entry.sessionPath, entry);
+    // Also flush the directory when the first append created the ledger.
+    // Flushing on every append makes recovery from an earlier failed flush
+    // safe without relying on an in-memory "created" flag.
+    await syncDirectory(path.dirname(this.logPath));
   }
 
   /**
@@ -634,7 +787,9 @@ export class ProcessedLog {
   add(entry: ProcessedEntry): void {
     const normalized = normalizeSessionPathForLog(entry.sessionPath);
     if (!normalized) return;
-    this.entries.set(normalized, { ...entry, sessionPath: normalized });
+    const update = { ...entry, sessionPath: normalized };
+    this.entries.set(normalized, update);
+    this.localUpdates.set(normalized, update);
   }
 
   /** Paths of processed sessions (failed attempts excluded). */

@@ -1,9 +1,12 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import crypto from "node:crypto";
+import fs from "node:fs/promises";
 import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import { join, resolve } from "node:path";
+import { InputLimitError, PLAYBOOK_INPUT_LIMITS } from "../src/input-limits.js";
 import { getProcessedLogPath, ProcessedLog } from "../src/tracking.js";
+import { atomicWrite } from "../src/utils.js";
 import { withTempDir } from "./helpers/index.js";
 
 // =============================================================================
@@ -798,5 +801,316 @@ describe("ProcessedLog - Edge Cases", () => {
       expect(log.has("")).toBe(false);
       expect(log.has("/valid/session.jsonl")).toBe(true);
     });
+  });
+});
+
+// =============================================================================
+// Reflection commits: durable acknowledgment across retries and compaction
+// =============================================================================
+describe("ProcessedLog - committed reflection batches", () => {
+  const timestamp = "2026-10-28T12:00:00.000Z";
+  const outcome = {
+    id: "outcome-commit-test",
+    sessionId: "/sessions/committed.jsonl",
+    outcome: "success" as const,
+    rulesUsed: ["b-committed"],
+    recordedAt: timestamp,
+    workspace: "/projects/committed",
+    path: "/projects/committed/.cass/outcomes.jsonl",
+    ruleTargets: [{ ruleId: "b-committed", playbookPath: "/projects/committed/.cass/playbook.yaml" }],
+  };
+  const entry = {
+    sessionPath: outcome.sessionId,
+    processedAt: timestamp,
+    deltasGenerated: 2,
+    recordCount: 3,
+    lastRecordHash: "record-three",
+    pendingOutcomes: [outcome],
+  };
+
+  it("round-trips a complete batch and its exact owner acknowledgment in one record", async () => {
+    await withTempDir("tracking-commit", async (directory) => {
+      const logPath = join(directory, "processed.log");
+      const owner = join(directory, "playbook.yaml");
+      const second = { ...entry, sessionPath: "/sessions/second.jsonl", pendingOutcomes: [] };
+      const log = new ProcessedLog(logPath);
+      expect(await log.appendCommittedBatch(owner, "commit-one", [entry, second]))
+        .toEqual({ alreadyCommitted: false });
+      const lines = (await readFile(logPath, "utf8")).split("\n").filter(line => line.startsWith("{"));
+      expect(lines).toHaveLength(1);
+      expect(JSON.parse(lines[0]!).entries).toHaveLength(2);
+      const loaded = new ProcessedLog(logPath);
+      await loaded.load();
+      expect(loaded.get(entry.sessionPath)).toEqual(entry);
+      expect(loaded.get(second.sessionPath)).toEqual(second);
+      expect(loaded.hasCommittedBatch(join(directory, "unused", "..", "playbook.yaml"), "commit-one")).toBe(true);
+      expect(loaded.hasCommittedBatch(owner, "different-commit")).toBe(false);
+      expect(loaded.hasCommittedBatch(join(directory, "another.yaml"), "commit-one")).toBe(false);
+    });
+  });
+
+  it("replays an ACK without regressing a newer manual watermark or resurrecting outcomes", async () => {
+    await withTempDir("tracking-commit-replay", async (directory) => {
+      const logPath = join(directory, "processed.log");
+      const owner = join(directory, "playbook.yaml");
+      await new ProcessedLog(logPath).appendCommittedBatch(owner, "commit-one", [entry]);
+      const newer = new ProcessedLog(logPath);
+      await newer.append({ ...entry, processedAt: "2026-10-28T13:00:00.000Z", recordCount: 9, pendingOutcomes: [] });
+      await newer.acknowledgeOutcomes([{ sessionPath: entry.sessionPath, outcomeIds: [outcome.id] }]);
+      const beforeReplay = await readFile(logPath, "utf8");
+      const replay = new ProcessedLog(logPath);
+      expect(await replay.appendCommittedBatch(owner, "commit-one", [entry]))
+        .toEqual({ alreadyCommitted: true });
+      expect(replay.get(entry.sessionPath)?.recordCount).toBe(9);
+      expect(replay.getPendingOutcomeEntries()).toEqual([]);
+      expect(await readFile(logPath, "utf8")).toBe(beforeReplay);
+      expect(newer.hasCommittedBatch(owner, "commit-one")).toBe(true);
+    });
+  });
+
+  it("retains the latest ACK for each owner and newer entries through stale compaction", async () => {
+    await withTempDir("tracking-commit-compaction", async (directory) => {
+      const logPath = join(directory, "processed.log");
+      const owner = join(directory, "playbook.yaml");
+      const otherOwner = join(directory, "other.yaml");
+      const stale = new ProcessedLog(logPath);
+      await stale.load();
+      const writer = new ProcessedLog(logPath);
+      await writer.appendCommittedBatch(owner, "commit-one", [entry]);
+      await writer.appendCommittedBatch(owner, "commit-two", [{ ...entry, recordCount: 8 }]);
+      await writer.appendCommittedBatch(otherOwner, "other-commit", [{ ...entry, sessionPath: "/sessions/other.jsonl" }]);
+      await writer.acknowledgeOutcomes([{ sessionPath: entry.sessionPath, outcomeIds: [outcome.id] }]);
+      stale.add({ sessionPath: "/sessions/manual.jsonl", processedAt: timestamp, deltasGenerated: 0 });
+      await stale.save();
+      const loaded = new ProcessedLog(logPath);
+      await loaded.load();
+      expect(loaded.get(entry.sessionPath)?.recordCount).toBe(8);
+      expect(loaded.get(entry.sessionPath)?.pendingOutcomes).toEqual([]);
+      expect(loaded.has("/sessions/manual.jsonl")).toBe(true);
+      expect(loaded.has("/sessions/other.jsonl")).toBe(true);
+      expect(loaded.hasCommittedBatch(owner, "commit-one")).toBe(false);
+      expect(loaded.hasCommittedBatch(owner, "commit-two")).toBe(true);
+      expect(loaded.hasCommittedBatch(otherOwner, "other-commit")).toBe(true);
+      expect(await loaded.appendCommittedBatch(owner, "commit-two", [entry]))
+        .toEqual({ alreadyCommitted: true });
+      expect(loaded.get(entry.sessionPath)?.recordCount).toBe(8);
+      expect(loaded.get(entry.sessionPath)?.pendingOutcomes).toEqual([]);
+      const acknowledgments = (await readFile(logPath, "utf8")).split("\n")
+        .filter(line => line.startsWith('{"reflectionCommit"'));
+      expect(acknowledgments).toHaveLength(2);
+    });
+  });
+
+  it("does not partially acknowledge a torn batch and replays it as a whole", async () => {
+    await withTempDir("tracking-commit-torn", async (directory) => {
+      const logPath = join(directory, "processed.log");
+      const owner = join(directory, "playbook.yaml");
+      const second = { ...entry, sessionPath: "/sessions/second.jsonl" };
+      const complete = JSON.stringify({ reflectionCommit: { owner, id: "commit-one" }, entries: [entry, second] });
+      const secondOffset = complete.indexOf(JSON.stringify(second));
+      await writeFile(logPath, complete.slice(0, secondOffset + 10));
+      const log = new ProcessedLog(logPath);
+      await log.load();
+      expect(log.getProcessedPaths().size).toBe(0);
+      expect(log.hasCommittedBatch(owner, "commit-one")).toBe(false);
+      expect(await log.appendCommittedBatch(owner, "commit-one", [entry, second]))
+        .toEqual({ alreadyCommitted: false });
+      const recovered = new ProcessedLog(logPath);
+      await recovered.load();
+      expect(recovered.get(entry.sessionPath)).toEqual(entry);
+      expect(recovered.get(second.sessionPath)).toEqual(second);
+      expect(recovered.hasCommittedBatch(owner, "commit-one")).toBe(true);
+    });
+  });
+
+  it("rejects a malformed complete batch before applying any of its entries", async () => {
+    await withTempDir("tracking-commit-invalid", async (directory) => {
+      const logPath = join(directory, "processed.log");
+      const owner = join(directory, "playbook.yaml");
+      const content = JSON.stringify({
+        reflectionCommit: { owner, id: "commit-one" },
+        entries: [entry, { ...entry, sessionPath: "/sessions/invalid.jsonl", recordCount: "invalid" }],
+      }) + "\n";
+      await writeFile(logPath, content);
+      const log = new ProcessedLog(logPath);
+      await expect(log.load()).rejects.toThrow("invalid reflection commit");
+      expect(log.getProcessedPaths().size).toBe(0);
+      expect(log.hasCommittedBatch(owner, "commit-one")).toBe(false);
+      await expect(log.appendCommittedBatch(owner, "commit-two", [entry])).rejects.toThrow("invalid reflection commit");
+      expect(await readFile(logPath, "utf8")).toBe(content);
+    });
+  });
+
+  it("merges an older pending queue into the committed batch instead of losing recovery work", async () => {
+    await withTempDir("tracking-commit-queue", async (directory) => {
+      const logPath = join(directory, "processed.log");
+      const owner = join(directory, "playbook.yaml");
+      await new ProcessedLog(logPath).append(entry);
+      const laterOutcome = { ...outcome, id: "outcome-later" };
+      await new ProcessedLog(logPath).appendCommittedBatch(owner, "commit-one", [{
+        ...entry, recordCount: 6, pendingOutcomes: [laterOutcome],
+      }]);
+      const loaded = new ProcessedLog(logPath);
+      await loaded.load();
+      expect(loaded.get(entry.sessionPath)?.recordCount).toBe(6);
+      expect(loaded.get(entry.sessionPath)?.pendingOutcomes).toEqual([outcome, laterOutcome]);
+    });
+  });
+
+  it("rejects oversized batch structure and encoding before creating a ledger or lock", async () => {
+    await withTempDir("tracking-commit-bounds", async (directory) => {
+      const logPath = join(directory, "processed.log");
+      const owner = join(directory, "playbook.yaml");
+      const log = new ProcessedLog(logPath);
+      await expect(log.appendCommittedBatch(owner, "too-many", Array(PLAYBOOK_INPUT_LIMITS.maxArrayLength + 1).fill(entry)))
+        .rejects.toBeInstanceOf(InputLimitError);
+      await expect(log.appendCommittedBatch(owner, "too-large", [{ ...entry, lastError: "x".repeat(PLAYBOOK_INPUT_LIMITS.maxBytes) }]))
+        .rejects.toBeInstanceOf(InputLimitError);
+      expect(await fs.readdir(directory)).toEqual([]);
+      expect(log.getProcessedPaths().size).toBe(0);
+    });
+  });
+
+  for (const failedFlush of ["file", ...(process.platform === "win32" ? [] : ["directory"])]) {
+    it(`does not ACK a failed ${failedFlush} flush and flushes visible duplicate bytes before succeeding`, async () => {
+      await withTempDir("tracking-commit-flush", async (directory) => {
+        const logPath = join(directory, "processed.log");
+        const owner = join(directory, "playbook.yaml");
+        const realOpen = fs.open.bind(fs);
+        const restoreHandles: Array<() => void> = [];
+        let failing = true;
+        let flushes = 0;
+        let ledgerOpened = false;
+        const openSpy = spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+          const handle = await realOpen(...args);
+          if (String(args[0]) === logPath && args[1] === "a+") ledgerOpened = true;
+          if (ledgerOpened && String(args[0]) === (failedFlush === "file" ? logPath : directory)) {
+            const sync = handle.sync.bind(handle);
+            const syncSpy = spyOn(handle, "sync").mockImplementation(async () => {
+              flushes++;
+              if (failing) throw new Error(`injected ${failedFlush} sync failure`);
+              await sync();
+            });
+            restoreHandles.push(() => syncSpy.mockRestore());
+          }
+          return handle;
+        });
+        try {
+          const log = new ProcessedLog(logPath);
+          await expect(log.appendCommittedBatch(owner, "commit-one", [entry])).rejects.toThrow("sync failure");
+          expect(log.hasCommittedBatch(owner, "commit-one")).toBe(false);
+          expect(log.get(entry.sessionPath)).toBeUndefined();
+          const visible = new ProcessedLog(logPath);
+          await visible.load();
+          expect(visible.hasCommittedBatch(owner, "commit-one")).toBe(true);
+          await expect(log.appendCommittedBatch(owner, "commit-one", [entry])).rejects.toThrow("sync failure");
+          expect(log.hasCommittedBatch(owner, "commit-one")).toBe(false);
+          failing = false;
+          expect(await log.appendCommittedBatch(owner, "commit-one", [entry])).toEqual({ alreadyCommitted: true });
+          expect(flushes).toBeGreaterThanOrEqual(3);
+          expect(log.hasCommittedBatch(owner, "commit-one")).toBe(true);
+          const records = (await readFile(logPath, "utf8")).split("\n").filter(line => line.startsWith("{"));
+          expect(records).toHaveLength(1);
+        } finally {
+          openSpy.mockRestore();
+          for (const restore of restoreHandles) restore();
+        }
+      });
+    });
+  }
+});
+
+// These fault probes exercise the same durable replacement primitive used by
+// playbooks, reflection receipts and processed-log compaction.
+describe("durable atomic replacement", () => {
+  it("keeps the old file when the staged file cannot be flushed", async () => {
+    await withTempDir("atomic-stage-flush", async (directory) => {
+      const target = join(directory, "state.json");
+      await writeFile(target, "original learned state");
+      const realOpen = fs.open.bind(fs);
+      const restoreHandles: Array<() => void> = [];
+      const openSpy = spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+        const handle = await realOpen(...args);
+        if (String(args[0]).startsWith(`${target}.tmp.`)) {
+          const syncSpy = spyOn(handle, "sync").mockImplementation(async () => { throw new Error("injected staged flush failure"); });
+          restoreHandles.push(() => syncSpy.mockRestore());
+        }
+        return handle;
+      });
+      try {
+        await expect(atomicWrite(target, "replacement state")).rejects.toThrow("staged flush failure");
+        expect(await readFile(target, "utf8")).toBe("original learned state");
+        expect(await fs.readdir(directory)).toEqual(["state.json"]);
+      } finally {
+        openSpy.mockRestore();
+        for (const restore of restoreHandles) restore();
+      }
+    });
+  });
+
+  const posixIt = process.platform === "win32" ? it.skip : it;
+  posixIt("reports a failed final directory flush while retaining the installed replacement", async () => {
+    await withTempDir("atomic-directory-flush", async (directory) => {
+      const target = join(directory, "state.json");
+      await writeFile(target, "original learned state");
+      const realOpen = fs.open.bind(fs);
+      const restoreHandles: Array<() => void> = [];
+      let staged = false;
+      const openSpy = spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+        const handle = await realOpen(...args);
+        if (String(args[0]).startsWith(`${target}.tmp.`)) staged = true;
+        if (staged && String(args[0]) === directory) {
+          const syncSpy = spyOn(handle, "sync").mockImplementation(async () => { throw new Error("injected directory flush failure"); });
+          restoreHandles.push(() => syncSpy.mockRestore());
+        }
+        return handle;
+      });
+      try {
+        await expect(atomicWrite(target, "replacement state")).rejects.toThrow("directory flush failure");
+        expect(await readFile(target, "utf8")).toBe("replacement state");
+        expect(await fs.readdir(directory)).toEqual(["state.json"]);
+      } finally {
+        openSpy.mockRestore();
+        for (const restore of restoreHandles) restore();
+      }
+    });
+  });
+});
+
+const directoryDurabilityIt = process.platform === "win32" ? it.skip : it;
+directoryDurabilityIt("retries failed ancestor flushes even after mkdir already created the directory chain", async () => {
+  await withTempDir("atomic-ancestor-flush", async (directory) => {
+    const target = join(directory, "new", "nested", "state.json");
+    const realOpen = fs.open.bind(fs);
+    const restoreHandles: Array<() => void> = [];
+    let failing = true;
+    let ancestorFlushes = 0;
+    const openSpy = spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+      const handle = await realOpen(...args);
+      if (String(args[0]) === directory) {
+        const sync = handle.sync.bind(handle);
+        const syncSpy = spyOn(handle, "sync").mockImplementation(async () => {
+          ancestorFlushes++;
+          if (failing) throw new Error("injected ancestor flush failure");
+          await sync();
+        });
+        restoreHandles.push(() => syncSpy.mockRestore());
+      }
+      return handle;
+    });
+    try {
+      await expect(atomicWrite(target, "durable state")).rejects.toThrow("ancestor flush failure");
+      expect((await stat(join(directory, "new", "nested"))).isDirectory()).toBe(true);
+      await expect(atomicWrite(target, "durable state")).rejects.toThrow("ancestor flush failure");
+      expect(ancestorFlushes).toBe(2);
+      await expect(stat(target)).rejects.toMatchObject({ code: "ENOENT" });
+      failing = false;
+      await atomicWrite(target, "durable state");
+      expect(ancestorFlushes).toBe(3);
+      expect(await readFile(target, "utf8")).toBe("durable state");
+    } finally {
+      openSpy.mockRestore();
+      for (const restore of restoreHandles) restore();
+    }
   });
 });

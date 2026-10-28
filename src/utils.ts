@@ -1294,19 +1294,54 @@ export async function withLock<T>(filePath: string, operation: () => Promise<T>)
   return lock(filePath, operation);
 }
 
+/** Flush a replacement/creation's directory entry after its file is synced. */
+export async function syncDirectory(directory: string): Promise<void> {
+  // Node cannot open directories for FlushFileBuffers on Windows. The file
+  // flush still happens before replacement there; do not suppress POSIX I/O
+  // failures, which would otherwise acknowledge an undurable commit.
+  if (process.platform === "win32") return;
+  const handle = await fs.open(directory, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+/** Create and flush the directory chain before publishing durable state. */
+export async function ensureDurableDirectory(directory: string): Promise<void> {
+  const expanded = path.resolve(expandPath(directory));
+  await fs.mkdir(expanded, { recursive: true });
+  // A previous mkdir may have succeeded before its flush failed. Existing
+  // directories therefore also need their ancestors flushed on a retry.
+  for (let current = expanded;;) {
+    await syncDirectory(current);
+    const parent = path.dirname(current);
+    if (parent === current) return;
+    current = parent;
+  }
+}
+
 export async function atomicWrite(filePath: string, content: string): Promise<void> {
   const expanded = typeof expandPath === "function" ? expandPath(filePath) : path.resolve(filePath);
-  await ensureDir(path.dirname(expanded));
+  await ensureDurableDirectory(path.dirname(expanded));
 
   const tempPath = `${expanded}.tmp.${crypto.randomBytes(8).toString("hex")}`;
   const backupPath = `${expanded}.bak.${crypto.randomBytes(8).toString("hex")}`;
 
   try {
-    await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
+    const temporary = await fs.open(tempPath, "wx", 0o600);
+    try {
+      await temporary.writeFile(content, "utf-8");
+      await temporary.sync();
+    } finally {
+      await temporary.close();
+    }
 
     // POSIX rename replaces atomically, but Windows may fail when the destination exists.
     try {
       await fs.rename(tempPath, expanded);
+      await syncDirectory(path.dirname(expanded));
       return;
     } catch (err: any) {
       const code = err?.code;
@@ -1334,6 +1369,7 @@ export async function atomicWrite(filePath: string, content: string): Promise<vo
 
       try {
         await fs.rename(tempPath, expanded);
+        await syncDirectory(path.dirname(expanded));
       } catch (replaceErr: any) {
         // Best-effort rollback if we moved the original aside and destination wasn't created.
         if (backedUp) {
