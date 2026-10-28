@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import yaml, { isMap, isScalar, isSeq, Lexer } from "yaml";
-import type { z } from "zod";
+import { z } from "zod";
 import {
   assertInputLimits,
   assertTextSize,
@@ -21,10 +21,13 @@ import { calculateMaturityState, getEffectiveScore, isStale } from "./scoring.js
 import {
   BulletMaturity,
   type Config,
+  DeprecatedPatternSchema,
+  FeedbackEventSchema,
   NewBulletData,
   type Playbook,
   type PlaybookBullet,
-  type PlaybookBulletSchema,
+  PlaybookBulletSchema,
+  PlaybookMetadataSchema,
   PlaybookSchema,
   type PlaybookStats,
 } from "./types.js";
@@ -61,6 +64,25 @@ export type ToxicEntry = BlockedEntry;
 
 // --- Core Functions ---
 
+// Persisted playbooks may contain evidence from older/newer producers (for
+// example derivedFrom and helpfulEvents). Validate and default the fields we
+// understand without deleting other learned state on the next mark/reflect
+// write. Keep these storage-only schemas private: LLM and import contracts
+// continue to use the existing schemas. loadPlaybook bounds the entire raw
+// document before this validation, including every retained extension field.
+const StoredPlaybookBulletSchema = PlaybookBulletSchema.extend({
+  feedbackEvents: z.array(FeedbackEventSchema.passthrough())
+    .max(PLAYBOOK_INPUT_LIMITS.maxArrayLength).default([]),
+}).passthrough();
+
+const StoredPlaybookSchema = PlaybookSchema.extend({
+  metadata: PlaybookMetadataSchema.passthrough(),
+  deprecatedPatterns: z.array(DeprecatedPatternSchema.passthrough())
+    .max(PLAYBOOK_INPUT_LIMITS.maxArrayLength).default([]),
+  bullets: z.array(StoredPlaybookBulletSchema)
+    .max(PLAYBOOK_INPUT_LIMITS.maxArrayLength).default([]),
+}).passthrough();
+
 export function createEmptyPlaybook(name = "playbook"): Playbook {
   return {
     schema_version: 2,
@@ -89,7 +111,7 @@ export async function loadPlaybook(filePath: string): Promise<Playbook> {
     if (!content.trim()) return createEmptyPlaybook();
 
     const raw = parseYamlInput(content, PLAYBOOK_INPUT_LIMITS, expanded);
-    const result = PlaybookSchema.safeParse(raw);
+    const result = StoredPlaybookSchema.safeParse(raw);
 
     if (!result.success) {
       logError(`Playbook validation failed for ${expanded}: ${formatValidationIssues(result.error)}`);

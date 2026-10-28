@@ -86,6 +86,22 @@ describe("extractBulletReasoning", () => {
     expect(extractBulletReasoning(bullet)).toBe("Valid evidence");
   });
 
+  it("displays valid preserved evidence without interpreting unfamiliar legacy values", () => {
+    const derivedFrom = { keyEvidence: [null, 42, { text: "opaque evidence" }, " Valid evidence "] };
+    expect(extractBulletReasoning({ derivedFrom } as any)).toBe("Valid evidence");
+    expect(derivedFrom.keyEvidence).toEqual([null, 42, { text: "opaque evidence" }, " Valid evidence "]);
+  });
+
+  it("falls back safely when retained legacy provenance has an unfamiliar shape", () => {
+    for (const derivedFrom of ["legacy", [], { keyEvidence: "opaque" }, {
+      keyEvidence: { length: 1 }, extractedBy: { name: "agent" }, timestamp: 123,
+    }]) {
+      expect(extractBulletReasoning({
+        derivedFrom, sourceAgents: ["claude"], createdAt: "2025-11-15T10:00:00Z",
+      } as any)).toBe("From claude session on 11/15/2025");
+    }
+  });
+
   it("handles invalid timestamp gracefully", () => {
     const bullet = {
       sourceAgents: ["claude"],

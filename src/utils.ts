@@ -2388,15 +2388,21 @@ export function formatLastHelpful(bullet: {
   helpfulEvents?: Array<{ timestamp: string }>;
   feedbackEvents?: Array<{ type: string; timestamp: string }>;
 }): string {
-  // Find helpful events from either helpfulEvents or feedbackEvents
-  let helpfulTimestamps: string[] = [];
-
-  if (bullet.helpfulEvents && bullet.helpfulEvents.length > 0) {
-    helpfulTimestamps = bullet.helpfulEvents.map((e) => e.timestamp);
-  } else if (bullet.feedbackEvents && bullet.feedbackEvents.length > 0) {
-    helpfulTimestamps = bullet.feedbackEvents
-      .filter((e) => e.type === "helpful")
-      .map((e) => e.timestamp);
+  // Storage preserves legacy evidence without imposing today's schema on its
+  // unknown fields. Ignore unfamiliar shapes for display, and consider both
+  // formats so a newly recorded mark is not hidden by older legacy events.
+  const helpfulTimestamps: string[] = [];
+  if (Array.isArray(bullet.helpfulEvents)) {
+    for (const event of bullet.helpfulEvents) {
+      if (event && typeof event.timestamp === "string") helpfulTimestamps.push(event.timestamp);
+    }
+  }
+  if (Array.isArray(bullet.feedbackEvents)) {
+    for (const event of bullet.feedbackEvents) {
+      if (event?.type === "helpful" && typeof event.timestamp === "string") {
+        helpfulTimestamps.push(event.timestamp);
+      }
+    }
   }
 
   if (helpfulTimestamps.length === 0) {
@@ -3810,6 +3816,8 @@ interface BulletWithProvenance {
  */
 export function extractBulletReasoning(bullet: BulletWithProvenance): string {
   const MAX_LENGTH = 200;
+  const provenance = bullet.derivedFrom && typeof bullet.derivedFrom === "object" &&
+    !Array.isArray(bullet.derivedFrom) ? bullet.derivedFrom : undefined;
 
   // 1. Check explicit reasoning field first
   if (bullet.reasoning && bullet.reasoning.trim()) {
@@ -3817,10 +3825,10 @@ export function extractBulletReasoning(bullet: BulletWithProvenance): string {
   }
 
   // 2. Check derivedFrom.keyEvidence
-  if (bullet.derivedFrom?.keyEvidence && bullet.derivedFrom.keyEvidence.length > 0) {
+  if (Array.isArray(provenance?.keyEvidence) && provenance.keyEvidence.length > 0) {
     // Join evidence items, take first that fits
-    const evidence = bullet.derivedFrom.keyEvidence
-      .filter((e) => e && e.trim())
+    const evidence = provenance.keyEvidence
+      .filter((e) => typeof e === "string" && e.trim())
       .map((e) => e.trim());
 
     if (evidence.length > 0) {
@@ -3831,8 +3839,10 @@ export function extractBulletReasoning(bullet: BulletWithProvenance): string {
   }
 
   // 3. Fallback to session metadata
-  const agent = bullet.sourceAgents?.[0] || bullet.derivedFrom?.extractedBy;
-  const timestamp = bullet.derivedFrom?.timestamp || bullet.createdAt;
+  const agent = bullet.sourceAgents?.[0] ||
+    (typeof provenance?.extractedBy === "string" ? provenance.extractedBy : undefined);
+  const timestamp = (typeof provenance?.timestamp === "string" ? provenance.timestamp : undefined) ||
+    bullet.createdAt;
 
   if (agent || timestamp) {
     const agentStr = agent || "unknown";

@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import yaml from "yaml";
+import { recordFeedback } from "../src/commands/mark.js";
 import { assertInputLimits, InputLimitError, PLAYBOOK_INPUT_LIMITS } from "../src/input-limits.js";
 
 import {
@@ -31,8 +32,8 @@ import {
   findSimilarBulletsSemantic,
   loadOrComputeEmbeddingsForBullets,
 } from "../src/semantic.js";
-import { type Playbook, PlaybookBullet } from "../src/types.js";
-import { hashContent } from "../src/utils.js";
+import { type Playbook, PlaybookBullet, PlaybookSchema } from "../src/types.js";
+import { extractBulletReasoning, hashContent } from "../src/utils.js";
 import { createTestBullet, createTestConfig } from "./helpers/index.js";
 
 async function writePlaybookFile(file: string, playbook: Playbook) {
@@ -504,6 +505,167 @@ describe("savePlaybook", () => {
 
       const loaded = await loadPlaybook(file);
       expect(loaded.bullets[0].content).toBe("New rule");
+    });
+  });
+});
+
+describe("persisted legacy evidence preservation (#99)", () => {
+  it.serial("retains legacy evidence through repair, a real mark, and reflection metadata writes", async () => {
+    await withTempDir(async dir => {
+      const file = path.join(dir, "playbook.yaml");
+      const createdAt = "2026-10-01T00:00:00.000Z";
+      const legacy = {
+        ...createEmptyPlaybook("legacy-evidence"),
+        evidenceSources: { sessions: ["original-session"], embedding: { retain: "top-level evidence" } },
+        metadata: {
+          createdAt, totalReflections: 7, totalSessionsProcessed: 11,
+          checkpoint: { source: "legacy-session-index", sequence: "9007199254740993" },
+        },
+        deprecatedPatterns: [{
+          pattern: "Ignore failed writes", deprecatedAt: createdAt, reason: "Data preservation",
+          evidence: { incident: "previous-write-failure" },
+        }],
+        bullets: [{
+          ...createTestBullet({ id: "b-legacy-evidence", content: "Use atomic writes for learned state.", helpfulCount: 1 }),
+          derivedFrom: {
+            sessionPath: "/sessions/original.jsonl", extractedBy: "claude", timestamp: createdAt,
+            keyEvidence: ["Missing transaction boundary caused partial writes."],
+          },
+          helpfulEvents: [{ timestamp: createdAt, context: "Original validation evidence" }],
+          harmfulEvents: [{ timestamp: createdAt, reason: "wrong_context", context: "An earlier counterexample" }],
+          verification: { type: "file_exists", pattern: "src/storage.ts", mode: "exists" },
+          feedbackEvents: [{
+            type: "helpful" as const, timestamp: createdAt, outcomeId: "original-outcome",
+            evidence: { sessionHash: "original-session-hash", lines: [10, 11] },
+          }],
+          extension: { annotation: "Keep nested state", embedding: [4, 5] },
+          embedding: [0.25, 0.5, 0.75],
+        }],
+      };
+      const source = yaml.stringify(legacy, { aliasDuplicateObjects: false });
+      await fs.writeFile(file, source);
+      const repair = await repairPlaybookEmbeddings(file);
+      expect(repair.embeddingsRemoved).toBe(1);
+      expect(extractBulletReasoning((await loadPlaybook(file)).bullets[0]))
+        .toBe(legacy.bullets[0].derivedFrom.keyEvidence[0]);
+
+      const previousGlobalDir = process.env.CASS_MEMORY_HOME;
+      process.env.CASS_MEMORY_HOME = dir;
+      try {
+        const feedback = await recordFeedback("b-legacy-evidence", {
+          helpful: true, workspace: dir, session: "/sessions/after-repair.jsonl", reason: "A successful post-repair use",
+        });
+        expect(feedback.type).toBe("helpful");
+      } finally {
+        if (previousGlobalDir === undefined) delete process.env.CASS_MEMORY_HOME;
+        else process.env.CASS_MEMORY_HOME = previousGlobalDir;
+      }
+
+      const loaded = await loadPlaybook(file);
+      expect(loaded.bullets[0].feedbackEvents).toHaveLength(2);
+      expect(loaded.bullets[0].helpfulCount).toBe(2);
+      recordReflectionRun(loaded, 1);
+      await savePlaybook(loaded, file, { updateLastReflection: true });
+
+      const stored = yaml.parse(await fs.readFile(file, "utf8"));
+      expect(stored.evidenceSources).toEqual(legacy.evidenceSources);
+      expect(stored.metadata.checkpoint).toEqual(legacy.metadata.checkpoint);
+      expect(stored.metadata.totalReflections).toBe(8);
+      expect(stored.metadata.totalSessionsProcessed).toBe(12);
+      expect(stored.deprecatedPatterns).toEqual(legacy.deprecatedPatterns);
+      expect(stored.bullets[0].derivedFrom).toEqual(legacy.bullets[0].derivedFrom);
+      expect(stored.bullets[0].helpfulEvents).toEqual(legacy.bullets[0].helpfulEvents);
+      expect(stored.bullets[0].harmfulEvents).toEqual(legacy.bullets[0].harmfulEvents);
+      expect(stored.bullets[0].verification).toEqual(legacy.bullets[0].verification);
+      expect(stored.bullets[0].feedbackEvents[0]).toEqual(legacy.bullets[0].feedbackEvents[0]);
+      expect(stored.bullets[0].feedbackEvents[1].context).toBe("A successful post-repair use");
+      expect(stored.bullets[0].extension).toEqual(legacy.bullets[0].extension);
+      expect(Object.hasOwn(stored.bullets[0], "embedding")).toBe(false);
+      expect(extractBulletReasoning((await loadPlaybook(file)).bullets[0]))
+        .toBe(legacy.bullets[0].derivedFrom.keyEvidence[0]);
+      expect(await fs.readFile(repair.backupPath!, "utf8")).toBe(source);
+    });
+  });
+
+  it("preserves ordinary playbook extensions while applying the existing defaults", async () => {
+    await withTempDir(async dir => {
+      const file = path.join(dir, "playbook.yaml");
+      const createdAt = "2026-10-01T00:00:00.000Z";
+      const raw = {
+        metadata: { createdAt, evidenceIndex: { version: 3 } },
+        bullets: [{
+          id: "b-minimal", category: "testing", content: "Keep existing evidence.", createdAt, updatedAt: createdAt,
+          derivedFrom: { keyEvidence: ["A useful earlier observation"] },
+        }],
+        extension: { producer: "other-cm-version" },
+      };
+      await fs.writeFile(file, JSON.stringify(raw));
+      const loaded = await loadPlaybook(file);
+      expect(loaded.name).toBe("playbook");
+      expect(loaded.schema_version).toBe(2);
+      expect(loaded.deprecatedPatterns).toEqual([]);
+      expect(loaded.metadata.totalReflections).toBe(0);
+      expect(loaded.metadata.totalSessionsProcessed).toBe(0);
+      expect(loaded.bullets[0]).toMatchObject({ scope: "global", source: "learned", helpfulCount: 0, harmfulCount: 0 });
+      expect(loaded.bullets[0].feedbackEvents).toEqual([]);
+      await savePlaybook(loaded, file);
+      const stored = yaml.parse(await fs.readFile(file, "utf8"));
+      expect(stored.extension).toEqual(raw.extension);
+      expect(stored.metadata.evidenceIndex).toEqual(raw.metadata.evidenceIndex);
+      expect(stored.bullets[0].derivedFrom).toEqual(raw.bullets[0].derivedFrom);
+
+      // Storage preservation must not broaden model/import schema contracts.
+      const ordinarySchemaResult = PlaybookSchema.parse(raw);
+      expect(Object.hasOwn(ordinarySchemaResult, "extension")).toBe(false);
+      expect(Object.hasOwn(ordinarySchemaResult.metadata, "evidenceIndex")).toBe(false);
+      expect(Object.hasOwn(ordinarySchemaResult.bullets[0], "derivedFrom")).toBe(false);
+    });
+  });
+
+  const invalidKnownFields = [
+    { name: "metadata counter", fields: { metadata: { createdAt: "now", totalReflections: "invalid" } } },
+    { name: "bullet content", fields: { bullets: [{ ...createTestBullet(), content: { text: "invalid" } }] } },
+    { name: "feedback type", fields: { bullets: [{ ...createTestBullet(), feedbackEvents: [{ type: "invalid", timestamp: "now" }] }] } },
+    { name: "deprecated-pattern reason", fields: { deprecatedPatterns: [{ pattern: "old", deprecatedAt: "now", reason: 123 }] } },
+  ];
+  for (const invalid of invalidKnownFields) {
+    it(`still rejects an invalid known ${invalid.name} without changing the file`, async () => {
+      await withTempDir(async dir => {
+        const file = path.join(dir, "playbook.yaml");
+        const source = JSON.stringify({ ...createEmptyPlaybook(), ...invalid.fields, extension: { retain: true } });
+        await fs.writeFile(file, source);
+        await expect(loadPlaybook(file)).rejects.toThrow("is invalid");
+        expect(await fs.readFile(file, "utf8")).toBe(source);
+        expect(await fs.readdir(dir)).toEqual(["playbook.yaml"]);
+      });
+    });
+  }
+
+  it("bounds unknown extension data before storage validation and before writes", async () => {
+    await withTempDir(async dir => {
+      const file = path.join(dir, "playbook.yaml");
+      const oversized = Array(PLAYBOOK_INPUT_LIMITS.maxArrayLength + 1).fill("evidence");
+      const unknownFields = [
+        { extension: oversized },
+        { metadata: { createdAt: "now", evidence: oversized } },
+        { bullets: [{ ...createTestBullet(), derivedFrom: { keyEvidence: oversized } }] },
+        { bullets: [{ ...createTestBullet(), feedbackEvents: [{ type: "helpful", timestamp: "now", evidence: oversized }] }] },
+        { deprecatedPatterns: [{ pattern: "old", deprecatedAt: "now", reason: "legacy", evidence: oversized }] },
+      ];
+      for (const fields of unknownFields) {
+        const source = JSON.stringify({ ...createEmptyPlaybook(), ...fields });
+        await fs.writeFile(file, source);
+        await expect(loadPlaybook(file)).rejects.toBeInstanceOf(InputLimitError);
+        expect(await fs.readFile(file, "utf8")).toBe(source);
+      }
+
+      const ordinary = { ...createEmptyPlaybook(), extension: { notes: ["Keep this evidence"] } };
+      await fs.writeFile(file, JSON.stringify(ordinary));
+      const loaded = await loadPlaybook(file);
+      const baseline = await fs.readFile(file, "utf8");
+      (loaded as Playbook & { extension: unknown }).extension = oversized;
+      await expect(savePlaybook(loaded, file)).rejects.toBeInstanceOf(InputLimitError);
+      expect(await fs.readFile(file, "utf8")).toBe(baseline);
     });
   });
 });

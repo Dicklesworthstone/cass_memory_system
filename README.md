@@ -2990,6 +2990,9 @@ through their existing bullet IDs and content hashes. Repair leaves that cache
 untouched; missing vectors are regenerated when semantic search needs them.
 Normal playbook writes keep derived embeddings out of YAML, including after cache
 hydration, so subsequent reflection and feedback writes can continue safely.
+Ordinary loads and saves also retain legacy evidence such as `derivedFrom` and
+`helpfulEvents`, including nested fields unknown to the current schema. Known
+fields remain validated, and retained fields still count toward resource limits.
 
 **Corrupted playbook:**
 ```bash

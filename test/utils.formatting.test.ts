@@ -197,15 +197,25 @@ describe("formatLastHelpful", () => {
     expect(formatLastHelpful(bullet)).toBe("5 minutes ago");
   });
 
-  it("prefers helpfulEvents over feedbackEvents", () => {
+  it("uses the latest helpful event across legacy and current formats", () => {
     const helpfulEventTime = new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString();
     const feedbackEventTime = new Date().toISOString();
     const bullet = {
       helpfulEvents: [{ timestamp: helpfulEventTime }],
       feedbackEvents: [{ type: "helpful", timestamp: feedbackEventTime }],
     };
-    // Should use helpfulEvents (1 hour ago), not feedbackEvents (just now)
-    expect(formatLastHelpful(bullet)).toBe("1 hour ago");
+    expect(formatLastHelpful(bullet)).toBe("just now");
+    expect(formatLastHelpful({
+      helpfulEvents: [{ timestamp: feedbackEventTime }],
+      feedbackEvents: [{ type: "helpful", timestamp: helpfulEventTime }],
+    })).toBe("just now");
+  });
+
+  it("ignores unfamiliar retained legacy event shapes without hiding current feedback", () => {
+    const feedbackEvents = [{ type: "helpful", timestamp: new Date().toISOString() }];
+    for (const helpfulEvents of ["legacy", { length: 1 }, [null, 42, { timestamp: {} }]]) {
+      expect(formatLastHelpful({ helpfulEvents, feedbackEvents } as any)).toBe("just now");
+    }
   });
 });
 
