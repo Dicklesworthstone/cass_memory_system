@@ -18,6 +18,7 @@ import { withLock } from "../src/lock.js";
 import type { LLMIO } from "../src/llm.js";
 import { orchestrateReflection, type ReflectionOptions } from "../src/orchestrator.js";
 import { prepareOutcome } from "../src/outcome.js";
+import { repairPlaybookEmbeddings } from "../src/playbook.js";
 import { reflectionCommitPendingPath } from "../src/reflection-commit.js";
 import { slugifyProjectDir, tagCmSubprocessPrompt } from "../src/subprocess-tag.js";
 import { getProcessedLogPath, ProcessedLog } from "../src/tracking.js";
@@ -365,6 +366,87 @@ describe("orchestrator merge applicability and retention", () => {
       expect(global.find(b => b.id === sources[2].id)?.deprecated).toBe(false);
       expect(global.some(b => b.content === "Exercise deployment behavior.")).toBe(false);
       expect(global.some(b => b.content === "Validate database migrations.")).toBe(true);
+    });
+  });
+});
+
+describe("orchestrateReflection after legacy playbook repair (#99)", () => {
+  test.each(["global", "repository"])("preserves separate duplicate-ID rules and feedback in the %s playbook", async (layer) => {
+    await withIsolatedHome(async (env) => {
+      const repository = layer === "repository";
+      const workspace = repository ? path.join(env.home, "project") : env.home;
+      const targetPath = repository ? path.join(workspace, ".cass", "playbook.yaml") : env.playbookPath;
+      // A same-ID rule in a different layer is a legitimate repository
+      // override. Repair and subsequent writes must preserve that rule too.
+      const shadowed = createBullet({
+        id: "b-recovered1", content: "A separate global rule shadowed by the project.",
+      });
+      if (repository) {
+        mkdirSync(path.dirname(targetPath), { recursive: true });
+        expect(Bun.spawnSync(["git", "init", "--quiet", workspace]).exitCode).toBe(0);
+        writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([shadowed])));
+        process.chdir(workspace);
+      }
+      const contents = [
+        "Validate database migrations before a production deployment.",
+        "Preserve source evidence when recovering historical memory files.",
+      ];
+      const legacy = createTestPlaybook(contents.map((content, index) => ({
+        ...createBullet({
+          id: "b-recovered1", content, scope: repository ? "workspace" : "global",
+          helpfulCount: index + 1,
+          feedbackEvents: Array.from({ length: index + 1 }, (_, event) =>
+            createTestFeedbackEvent("helpful", {
+              sessionPath: `/sessions/original-${index}-${event}.jsonl`,
+              context: `Original evidence for occurrence ${index}, event ${event}`,
+            })),
+          sourceSessions: [`/sessions/original-${index}.jsonl`],
+          embedding: [index + 0.125, -0.25, 0.5],
+        }),
+        legacyEvidence: { producer: `legacy-${index}`, notes: [`Keep occurrence ${index}`] },
+      })));
+      const original = yaml.stringify(legacy, { aliasDuplicateObjects: false });
+      writeFileSync(targetPath, original);
+      const repair = await repairPlaybookEmbeddings(targetPath);
+      expect(repair.embeddingsRemoved).toBe(2);
+      const retained = readPlaybook(targetPath).bullets;
+      const globalBefore = repository ? readPlaybook(env.playbookPath).bullets : undefined;
+      const config = createTestConfig({
+        playbookPath: env.playbookPath, diaryDir: env.diaryDir,
+        cassPath: "/__missing__/cass", validationEnabled: false,
+        semanticSearchEnabled: false, maxReflectorIterations: 1,
+        projectRuleRouting: repository ? "repo" : "off",
+      });
+      writeFileSync(env.configPath, JSON.stringify(config));
+      const learned = "Use deterministic screenshot fixtures for the rendering pipeline.";
+
+      await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
+        // A no-insight reflection still writes metadata; an unrelated add
+        // additionally runs curation and the scoped-to-stored merge.
+        for (const addRule of [false, true]) {
+          const sessionPath = path.join(env.home, "sessions", `after-repair-${addRule}.jsonl`);
+          writeJsonlSession(sessionPath, [
+            { role: "user", content: "Improve the rendering pipeline and validate its behavior with deterministic fixtures.", cwd: workspace },
+            { role: "assistant", content: "I checked the renderer and documented a useful testing practice for future changes.", cwd: workspace },
+          ]);
+          await withLlmShim({ reflector: { deltas: addRule ? [{
+            type: "add", bullet: { content: learned, category: "testing", scope: repository ? "workspace" : "global" },
+            reason: "A new lesson unrelated to either recovered occurrence",
+          }] : [] } }, async (io) => {
+            const result = await orchestrateReflection(config, { session: sessionPath, io });
+            expect(result.errors).toEqual([]);
+            expect(result.sessionsProcessed).toBe(1);
+            expect(result.deltasGenerated).toBe(addRule ? 1 : 0);
+          });
+          const saved = readPlaybook(targetPath).bullets;
+          expect(saved).toHaveLength(addRule ? 3 : 2);
+          expect(saved.slice(0, 2)).toEqual(retained);
+          expect(saved.every((bullet: PlaybookBullet) => !Object.hasOwn(bullet, "embedding"))).toBe(true);
+          if (addRule) expect(saved[2].content).toBe(learned);
+          if (repository) expect(readPlaybook(env.playbookPath).bullets).toEqual(globalBefore);
+          expect(readFileSync(repair.backupPath!, "utf8")).toBe(original);
+        }
+      });
     });
   });
 });

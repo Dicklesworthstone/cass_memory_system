@@ -212,17 +212,19 @@ function scopedPlaybook(playbook: Playbook, context: ReflectionContext, reposito
 }
 
 function retainOtherScopes(stored: Playbook, scoped: Playbook, context: ReflectionContext, repository: boolean): Playbook {
-  const updated = new Map(scoped.bullets.map(bullet => [bullet.id, bullet]));
-  const originalIds = new Set(stored.bullets.map(bullet => bullet.id));
+  // scopedPlaybook and the curator retain the actual bullet objects. Track
+  // those occurrences rather than IDs: a repaired legacy file may contain
+  // different rules with the same ID, and an unrelated reflection must not
+  // replace all of them with the last occurrence. Identity also survives
+  // curation reordering/removal without pairing different rules by position.
+  const retained = new Set(scoped.bullets);
+  const originals = new Set(stored.bullets);
   return {
     ...scoped,
     bullets: [
-      ...stored.bullets.flatMap(bullet => {
-        if (!appliesInContext(bullet, context.workspace, repository)) return [bullet];
-        const replacement = updated.get(bullet.id);
-        return replacement ? [replacement] : [];
-      }),
-      ...scoped.bullets.filter(bullet => !originalIds.has(bullet.id)),
+      ...stored.bullets.filter(bullet =>
+        !appliesInContext(bullet, context.workspace, repository) || retained.has(bullet)),
+      ...scoped.bullets.filter(bullet => !originals.has(bullet)),
     ],
   };
 }
