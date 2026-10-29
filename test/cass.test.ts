@@ -687,6 +687,127 @@ describe("cass.ts core functions (runner stubbed)", () => {
   });
 });
 
+describe("findUnprocessedSessions fallback admission", () => {
+  function hit(source_path: string, overrides: { agent?: string; workspace?: string } = {}) {
+    return { source_path, line_number: 1, snippet: "Session evidence", agent: "claude", score: 1, ...overrides };
+  }
+
+  function fallbackRunner(results: Record<string, ReturnType<typeof hit>[]>, calls: string[][]) {
+    const runner = createCassRunnerStub({ execStdout: { timeline: JSON.stringify({ groups: [] }) } });
+    const execFile = runner.execFile;
+    runner.execFile = async (file, args, options) => {
+      if (args[0] !== "search") return execFile(file, args, options);
+      calls.push([...args]);
+      return { stdout: JSON.stringify({ hits: results[args.at(-1)!] ?? [] }), stderr: "" };
+    };
+    return runner;
+  }
+
+  for (const mode of ["processed", "classified skip"] as const) {
+    it(`looks past ${mode} hits to discover new sessions`, async () => {
+      const old = Array.from({ length: 15 }, (_, i) => hit(`/archive/processed-${i}.jsonl`));
+      const fresh = hit("/archive/unprocessed.jsonl");
+      const calls: string[][] = [];
+      const classified = new Map<string, number>();
+      const result = await findUnprocessedSessions(
+        mode === "processed" ? new Set(old.map(h => h.source_path)) : new Set(),
+        {
+          maxSessions: 5,
+          ...(mode === "classified skip" ? {
+            classify: (session: { path: string }) => {
+              classified.set(session.path, (classified.get(session.path) ?? 0) + 1);
+              return session.path === fresh.source_path ? "new" as const : "skip" as const;
+            },
+          } : {}),
+        },
+        "cass",
+        fallbackRunner({ the: old, and: [fresh] }, calls),
+      );
+      expect(result.map(s => s.path)).toEqual([fresh.source_path]);
+      expect(calls.map(args => args.at(-1))).toContain("and");
+      if (mode === "classified skip") {
+        expect(classified.size).toBe(16);
+        expect([...classified.values()]).toEqual(Array(16).fill(1));
+      }
+    });
+  }
+
+  for (const filter of ["agent", "workspace", "exclusion", "own subprocess"] as const) {
+    it(`does not let ${filter} exclusions consume the fallback batch`, async () => {
+      const options: Parameters<typeof findUnprocessedSessions>[1] = { maxSessions: 1 };
+      if (filter === "agent") options.agent = "claude";
+      if (filter === "workspace") options.workspace = "/projects/selected";
+      if (filter === "exclusion") options.excludePatterns = ["/excluded/"];
+      if (filter === "own subprocess") {
+        options.cliSubprocessCwd = "/projects/cm-internal";
+        options.includeAll = true;
+      }
+      const hidden = Array.from({ length: 3 }, (_, i) => hit(
+        filter === "own subprocess" ? `/home/u/.claude/projects/-projects-cm-internal/${i}.jsonl`
+          : filter === "exclusion" ? `/archive/excluded/${i}.jsonl` : `/archive/hidden-${i}.jsonl`,
+        { agent: filter === "agent" ? "codex" : "claude", workspace: "/projects/other" },
+      ));
+      const visible = hit("/archive/visible.jsonl", { workspace: "/projects/selected" });
+      const calls: string[][] = [];
+      const result = await findUnprocessedSessions(
+        new Set(), options, "cass", fallbackRunner({ the: hidden, and: [visible] }, calls),
+      );
+      expect(result.map(s => s.path)).toEqual([visible.source_path]);
+      expect(calls.map(args => args.at(-1))).toEqual(["the", "and"]);
+    });
+  }
+
+  for (const eligibility of ["new", "grown"] as const) {
+    it(`keeps searching past retries and prioritizes later ${eligibility} work`, async () => {
+      const retries = Array.from({ length: 6 }, (_, i) => hit(`/archive/retry-${i}.jsonl`));
+      const due = hit("/archive/due.jsonl");
+      const calls: string[][] = [];
+      const classified = new Map<string, number>();
+      const result = await findUnprocessedSessions(new Set(), {
+        maxSessions: 2,
+        classify: session => {
+          classified.set(session.path, (classified.get(session.path) ?? 0) + 1);
+          return session.path === due.source_path ? eligibility : "retry";
+        },
+      }, "cass", fallbackRunner({ the: retries, and: [due], to: [due] }, calls));
+      expect(result.map(s => s.path)).toEqual([due.source_path, retries[0]!.source_path]);
+      expect(calls).toHaveLength(10);
+      expect([...classified.values()]).toEqual(Array(7).fill(1));
+    });
+  }
+
+  it("stops after filling the batch with eligible work and classifies each path once", async () => {
+    const due = [hit("/archive/a.jsonl"), hit("/archive/b.jsonl")];
+    const calls: string[][] = [];
+    const classified: string[] = [];
+    const result = await findUnprocessedSessions(new Set(), {
+      maxSessions: 2,
+      classify: session => { classified.push(session.path); return "new"; },
+    }, "cass", fallbackRunner({ the: [due[0]!, due[0]!, due[1]!] }, calls));
+    expect(result.map(s => s.path)).toEqual(due.map(h => h.source_path));
+    expect(calls.map(args => args.at(-1))).toEqual(["the"]);
+    expect(classified).toEqual(due.map(h => h.source_path));
+  });
+
+  it("exhausts only the fixed query budget when all hits are ineligible", async () => {
+    const old = Array.from({ length: 3 }, (_, i) => hit(`/archive/old-${i}.jsonl`));
+    const calls: string[][] = [];
+    const result = await findUnprocessedSessions(new Set(old.map(h => h.source_path)), {
+      maxSessions: 1,
+    }, "cass", fallbackRunner({ the: old }, calls));
+    expect(result).toEqual([]);
+    expect(calls.map(args => args.at(-1))).toEqual(["the", "and", "to", "is", "a", "for", "that", "in", "on", "with"]);
+    for (const args of calls) expect(args[args.indexOf("--limit") + 1]).toBe("50");
+  });
+
+  it("propagates classification failures instead of treating them as failed searches", async () => {
+    const calls: string[][] = [];
+    await expect(findUnprocessedSessions(new Set(), {
+      classify: () => { throw new Error("processed ledger unavailable"); },
+    }, "cass", fallbackRunner({ the: [hit("/archive/a.jsonl")] }, calls))).rejects.toThrow("processed ledger unavailable");
+  });
+});
+
 describe("findUnprocessedSessions discovery failures (#78)", () => {
   it("throws when the timeline failed and the fallback search found nothing", async () => {
     const originalError = console.error;

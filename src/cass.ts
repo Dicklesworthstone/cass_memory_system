@@ -1385,6 +1385,27 @@ export async function findUnprocessedSessions(
   const excludePatterns = options.excludePatterns ?? [];
   const includeAll = options.includeAll ?? false;
 
+  // Apply the same admission rules while gathering fallback hits and while
+  // selecting the final batch. Raw hits may all be processed, excluded, or
+  // waiting for retry; none of those may hide new work in later queries.
+  // Cache by path so workspace sniffing and the caller's classifier run once.
+  const eligibilityByPath = new Map<string, DiscoveryEligibility>();
+  const eligibilityFor = (session: DiscoveredSession): DiscoveryEligibility => {
+    const cached = eligibilityByPath.get(session.path);
+    if (cached !== undefined) return cached;
+    // #76: cm's own subprocess transcripts stay excluded even when the user
+    // requests includeAll or supplies a custom exclusion list.
+    const excluded = isCmSubprocessTranscriptPath(session.path, options.cliSubprocessCwd) ||
+      (agentSet.size > 0 && !agentSet.has(canonicalAgentName(session.agent))) ||
+      (!!workspaceFilter && !sessionInWorkspace(session, workspaceFilter)) ||
+      (!includeAll && excludePatterns.some(pattern => session.path.toLowerCase().includes(pattern.toLowerCase())));
+    const eligibility = excluded ? "skip"
+      : options.classify ? options.classify({ ...session, agent: session.agent || "unknown" })
+      : processed.has(session.path) ? "skip" : "new";
+    eligibilityByPath.set(session.path, eligibility);
+    return eligibility;
+  };
+
   // Try timeline first
   const timeline = await cassTimeline(days, cassPath, runner, {
     timeoutSeconds: options.timelineTimeoutSeconds,
@@ -1426,24 +1447,30 @@ export async function findUnprocessedSessions(
     // This works around cass timeline returning empty groups
     const broadQueries = ["the", "and", "to", "is", "a", "for", "that", "in", "on", "with"];
     const seenPaths = new Set<string>();
+    let dueCount = 0;
 
     for (const query of broadQueries) {
-      if (seenPaths.size >= maxSessions * 3) break; // Get enough candidates
+      if (dueCount >= maxSessions) break;
 
+      let hits: CassHit[];
       try {
-        const hits = await cassSearch(query, { limit: 50, days }, cassPath, runner);
-        for (const hit of hits) {
-          if (!seenPaths.has(hit.source_path)) {
-            seenPaths.add(hit.source_path);
-            const session: DiscoveredSession = { path: hit.source_path, agent: hit.agent };
-            if (typeof hit.workspace === "string" && hit.workspace.trim()) {
-              session.workspace = hit.workspace.trim();
-            }
-            allSessions.push(session);
-          }
-        }
+        hits = await cassSearch(query, { limit: 50, days }, cassPath, runner);
       } catch {
         // Ignore search errors, try next query
+        continue;
+      }
+      for (const hit of hits) {
+        if (seenPaths.has(hit.source_path)) continue;
+        seenPaths.add(hit.source_path);
+        const session: DiscoveredSession = { path: hit.source_path, agent: hit.agent };
+        if (typeof hit.workspace === "string" && hit.workspace.trim()) {
+          session.workspace = hit.workspace.trim();
+        }
+        allSessions.push(session);
+        // Keep classifier errors outside the search fallback catch: a broken
+        // eligibility check must not look like a successful empty discovery.
+        const eligibility = eligibilityFor(session);
+        if (eligibility === "new" || eligibility === "grown") dueCount++;
       }
     }
     // Discovery that could not look is not the same as an archive with nothing
@@ -1456,41 +1483,14 @@ export async function findUnprocessedSessions(
     }
   }
 
-  // Helper to check if a session path matches any exclusion pattern
-  const matchesExcludePattern = (sessionPath: string): boolean => {
-    if (includeAll || excludePatterns.length === 0) return false;
-    const pathLower = sessionPath.toLowerCase();
-    return excludePatterns.some((pattern) => pathLower.includes(pattern.toLowerCase()));
-  };
-
-  // #76: transcripts of cm's OWN LLM subprocess calls are dropped before any
-  // user-controlled filter runs. This is deliberately not expressed as an entry
-  // in `excludePatterns`: `sessionIncludeAll`, or a config file that pins its
-  // own pattern list, would otherwise re-open the self-grading loop where cm
-  // reflects on its own reflector prompts. The path is derived from the cwd cm
-  // actually spawns those subprocesses in, so it is exact rather than a guess
-  // at what an internal session "looks like".
-  const isOwnSubprocess = (sessionPath: string): boolean =>
-    isCmSubprocessTranscriptPath(sessionPath, options.cliSubprocessCwd);
-
-  const candidates = allSessions
-    .filter((s) => !isOwnSubprocess(s.path))
-    .filter((s) => agentSet.size === 0 || agentSet.has(canonicalAgentName(s.agent)))
-    .filter((s) => !workspaceFilter || sessionInWorkspace(s, workspaceFilter))
-    .filter((s) => !matchesExcludePattern(s.path))
-    .map((s) => ({ ...s, agent: s.agent || "unknown" }));
-
-  if (!options.classify) {
-    return candidates.filter((s) => !processed.has(s.path)).slice(0, maxSessions);
-  }
-
   // Due sessions first (oldest first, as sorted above), then retries of
   // sessions that failed before. A handful of sessions that fail every time
   // must never take the whole batch from sessions that have not been tried.
   const due: DiscoveredSession[] = [];
   const retries: DiscoveredSession[] = [];
-  for (const s of candidates) {
-    const eligibility = options.classify(s);
+  for (const session of allSessions) {
+    const s = { ...session, agent: session.agent || "unknown" };
+    const eligibility = eligibilityFor(s);
     if (eligibility === "new" || eligibility === "grown") due.push(s);
     else if (eligibility === "retry") retries.push(s);
   }
