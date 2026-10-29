@@ -169,10 +169,19 @@ describe("E2E: reflect failure status (#99)", () => {
   }
 
   for (const blockedOutcome of [false, true]) {
-    it(`reports durable commit recovery accurately${blockedOutcome ? " when queued outcome storage fails" : " on success"}`, async () => {
+    it(`reports durable commit recovery accurately${blockedOutcome ? " across workspaces while queued outcome storage fails" : " on success"}`, async () => {
       await withTempCassHome(async env => {
-        await setup(env);
+        await setup(env, await makeCassStub(env.home, { timeline: JSON.stringify({ groups: [] }) }));
         const session = await writeSession(env, "durable-recovery");
+        const sourceWorkspace = blockedOutcome ? path.join(env.home, "source-workspace") : env.home;
+        const recoveryWorkspace = path.join(env.home, "recovery-workspace");
+        const retryWorkspace = path.join(env.home, "retry-workspace");
+        if (blockedOutcome) {
+          await mkdir(sourceWorkspace);
+          await mkdir(recoveryWorkspace);
+          await mkdir(retryWorkspace);
+        }
+        const recoveryArgs = blockedOutcome ? ["--workspace", recoveryWorkspace] : [];
         await writeFile(env.playbookPath, yaml.stringify(createTestPlaybook([createTestBullet({
           id: "b-recovery1", content: "Retain the prepared outcome while recovering a reflection commit.",
         })])));
@@ -183,10 +192,10 @@ describe("E2E: reflect failure status (#99)", () => {
         await writeFile(env.configPath, JSON.stringify({ ...savedConfig, provider: "cli", cliCommand: cliPath }));
         const config = await loadConfig({}, { cwd: env.home });
         const pending = await prepareOutcome({
-          sessionId: session, workspace: env.home, outcome: "success", rulesUsed: ["b-recovery1"],
+          sessionId: session, workspace: sourceWorkspace, outcome: "success", rulesUsed: ["b-recovery1"],
         }, config);
         if (blockedOutcome) await mkdir(pending.path);
-        const logPath = getProcessedLogPath();
+        const logPath = getProcessedLogPath(blockedOutcome ? sourceWorkspace : undefined);
         const tx = await ReflectionCommit.create(env.playbookPath, logPath, [{
           sessionPath: session, processedAt: new Date().toISOString(), deltasGenerated: 1,
           pendingOutcomes: [pending],
@@ -210,7 +219,7 @@ describe("E2E: reflect failure status (#99)", () => {
         const beforePlaybook = await readFile(env.playbookPath, "utf8");
         const beforeJournal = await readFile(pendingPath, "utf8");
         const providerEnv = { CASS_MEMORY_LLM: undefined, CM_REFLECTOR_STUBS: undefined, CASS_CLI_COMMAND: cliPath };
-        const dryRun = runReflect(env, ["--session", session, "--json", "--dry-run"], providerEnv);
+        const dryRun = runReflect(env, ["--session", session, "--json", "--dry-run", ...recoveryArgs], providerEnv);
         expect(dryRun.error).toBeUndefined();
         expect(dryRun.status).not.toBe(0);
         const preview = JSON.parse(dryRun.stdout);
@@ -221,7 +230,7 @@ describe("E2E: reflect failure status (#99)", () => {
         expect(await exists(logPath)).toBe(false);
         expect(await exists(providerCalled)).toBe(false);
 
-        const recovered = runReflect(env, ["--session", session, "--json"], providerEnv);
+        const recovered = runReflect(env, ["--session", session, "--json", ...recoveryArgs], providerEnv);
         expect(recovered.error).toBeUndefined();
         const payload = JSON.parse(recovered.stdout);
         expect(payload.success).toBe(!blockedOutcome);
@@ -239,14 +248,43 @@ describe("E2E: reflect failure status (#99)", () => {
           expect(payload.error.code).toBe("REFLECTION_FAILED");
           expect(payload.data.errors[0]).toContain("Auto-outcome recovery failed");
           expect(log.get(session)?.pendingOutcomes).toHaveLength(1);
+          const queued = log.get(session)?.pendingOutcomes;
+          const beforeRetry = await readFile(env.playbookPath, "utf8");
+          // The journal is gone and this caller uses neither the original
+          // ledger nor the first recovery's ledger. The queue must stay visible.
+          const stillBlocked = runReflect(env, ["--workspace", retryWorkspace, "--json"], providerEnv);
+          expect(stillBlocked.error).toBeUndefined();
+          expect(stillBlocked.status).not.toBe(0);
+          const blocked = JSON.parse(stillBlocked.stdout);
+          expect(blocked.success).toBe(false);
+          expect(blocked.error.code).toBe("REFLECTION_FAILED");
+          expect(blocked.data.sessionsProcessed).toBe(0);
+          expect(blocked.data.errors.some((error: string) => error.includes("Auto-outcome recovery failed"))).toBe(true);
+          expect(blocked.data.recoveredCommits).toBeUndefined();
+          await log.load();
+          expect(log.get(session)?.pendingOutcomes).toEqual(queued);
+          expect(await readFile(env.playbookPath, "utf8")).toBe(beforeRetry);
+          expect(await exists(providerCalled)).toBe(false);
+
           await rename(pending.path, `${pending.path}.blocked-directory`);
-          const retry = runReflect(env, ["--session", session, "--json"], providerEnv);
+          const retry = runReflect(env, ["--workspace", retryWorkspace], providerEnv);
           expect(retry.error).toBeUndefined();
           expect(retry.status).toBe(0);
-          const retried = JSON.parse(retry.stdout);
-          expect(retried.success).toBe(true);
-          expect(retried.data.errors).toEqual([]);
-          expect(retried.data.autoOutcome.feedbackApplied).toBe(1);
+          expect(retry.stdout).toContain("Auto-Outcome Recording:");
+          expect(retry.stdout).toMatch(/Sessions processed\s*:\s*0/);
+          expect(retry.stdout).toMatch(/Outcomes recorded\s*:\s*1/);
+          expect(retry.stdout).toMatch(/Feedback applied\s*:\s*1/);
+          expect(retry.stdout).not.toContain("No new sessions to reflect on.");
+          const afterRecovery = await readFile(env.playbookPath, "utf8");
+          const again = runReflect(env, ["--workspace", recoveryWorkspace, "--json"], providerEnv);
+          expect(again.status).toBe(0);
+          expect(JSON.parse(again.stdout)).toMatchObject({ success: true, data: { sessionsProcessed: 0, errors: [] } });
+          expect(await readFile(env.playbookPath, "utf8")).toBe(afterRecovery);
+          for (const workspace of [recoveryWorkspace, retryWorkspace]) {
+            const otherLog = new ProcessedLog(getProcessedLogPath(workspace));
+            await otherLog.load();
+            expect(otherLog.has(session)).toBe(false);
+          }
         } else {
           expect(recovered.status).toBe(0);
           expect(payload.data.errors).toEqual([]);

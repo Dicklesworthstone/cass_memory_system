@@ -19,14 +19,14 @@ import type { LLMIO } from "../src/llm.js";
 import { orchestrateReflection, type ReflectionOptions } from "../src/orchestrator.js";
 import { prepareOutcome } from "../src/outcome.js";
 import { repairPlaybookEmbeddings } from "../src/playbook.js";
-import { reflectionCommitPendingPath } from "../src/reflection-commit.js";
+import { pendingOutcomeRegistryPath, reflectionCommitPendingPath } from "../src/reflection-commit.js";
 import { slugifyProjectDir, tagCmSubprocessPrompt } from "../src/subprocess-tag.js";
 import { getProcessedLogPath, ProcessedLog } from "../src/tracking.js";
 import type { Config, PlaybookBullet, PlaybookDelta, ProcessedEntry } from "../src/types.js";
 import { expandPath, jaccardSimilarity, now } from "../src/utils.js";
 import { createBullet, createTestConfig, createTestFeedbackEvent, createTestPlaybook } from "./helpers/factories.js";
 import { type LlmShimConfig, withLlmShim } from "./helpers/llm-shim.js";
-import { cleanupEnvironment, createIsolatedEnvironment, type TestEnv } from "./helpers/temp.js";
+import { cleanupEnvironment, createIsolatedEnvironment, makeCassStub, type TestEnv } from "./helpers/temp.js";
 
 async function withEnv<T>(
   overrides: Record<string, string | undefined>,
@@ -2475,6 +2475,88 @@ async function withQueuedAutoOutcome(
 }
 
 describe("orchestrateReflection durable outcome recovery", () => {
+  test("discovers an already-stranded legacy envelope from another workspace and retries it without a journal", async () => {
+    await withIsolatedHome(async (env) => {
+      const original = createTestPlaybook([createBullet({
+        id: "b-legacy1", content: "Keep queued feedback discoverable after its commit journal is gone.",
+        helpfulCount: 0, feedbackEvents: [],
+      })]);
+      original.metadata.totalReflections = 1;
+      original.metadata.totalSessionsProcessed = 1;
+      writeFileSync(env.playbookPath, yaml.stringify(original));
+      const cassPath = await makeCassStub(env.home, { timeline: '{"groups":[]}', search: "[]" });
+      const config = createTestConfig({
+        playbookPath: env.playbookPath, diaryDir: env.diaryDir, cassPath,
+        validationEnabled: false, semanticSearchEnabled: false,
+      });
+      writeFileSync(env.configPath, JSON.stringify(config));
+      const sessionPath = path.join(env.home, "already-committed.jsonl");
+      const prepared = await prepareOutcome({
+        sessionId: sessionPath, workspace: env.home, outcome: "success", rulesUsed: ["b-legacy1"],
+      }, config);
+      // Older commit envelopes establish ownership even though their events
+      // predate per-event provenance and their pending journal is already gone.
+      const { globalPlaybookPath: _owner, ...legacy } = prepared;
+      const logPath = getProcessedLogPath();
+      mkdirSync(path.dirname(logPath), { recursive: true });
+      writeFileSync(logPath, JSON.stringify({
+        reflectionCommit: { owner: env.playbookPath, id: "11111111-1111-4111-8111-111111111111" },
+        entries: [{ sessionPath, processedAt: prepared.recordedAt, deltasGenerated: 0, pendingOutcomes: [legacy] }],
+      }) + "\n");
+      mkdirSync(prepared.path);
+      const beta = path.join(env.home, "beta");
+      const gamma = path.join(env.home, "gamma");
+      mkdirSync(beta);
+      mkdirSync(gamma);
+      const registryPath = pendingOutcomeRegistryPath(env.playbookPath);
+      const beforeLog = readFileSync(logPath, "utf8");
+      const beforePlaybook = readFileSync(env.playbookPath, "utf8");
+      expect(existsSync(reflectionCommitPendingPath(env.playbookPath))).toBe(false);
+      expect(existsSync(registryPath)).toBe(false);
+      let providerCalls = 0;
+      await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
+        await withLlmShim({ reflector: () => { providerCalls++; throw new Error("No session may be regenerated"); } }, async io => {
+          const preview = await orchestrateReflection(config, { workspace: beta, dryRun: true, io });
+          expect(preview.errors).toEqual([]);
+          expect(readFileSync(logPath, "utf8")).toBe(beforeLog);
+          expect(readFileSync(env.playbookPath, "utf8")).toBe(beforePlaybook);
+          expect(existsSync(registryPath)).toBe(false);
+
+          for (const workspace of [beta, gamma]) {
+            const blocked = await orchestrateReflection(config, { workspace, io });
+            expect(blocked.errors.some(message => message.includes("Auto-outcome recovery failed"))).toBe(true);
+            expect(blocked.sessionsProcessed).toBe(0);
+            expect(blocked.recoveredCommits).toBeUndefined();
+            expect(readFileSync(logPath, "utf8")).toBe(beforeLog);
+            expect(JSON.parse(readFileSync(registryPath, "utf8")).logs).toEqual([logPath]);
+          }
+          renameSync(prepared.path, `${prepared.path}.blocked-directory`);
+          const delivered = await orchestrateReflection(config, { workspace: gamma, io });
+          expect(delivered.errors).toEqual([]);
+          expect(delivered.autoOutcome?.outcomesRecorded).toBe(1);
+          expect(delivered.autoOutcome?.feedbackApplied).toBe(1);
+          const log = new ProcessedLog(logPath);
+          await log.load();
+          expect(log.get(sessionPath)?.pendingOutcomes).toEqual([]);
+          expect(JSON.parse(readFileSync(registryPath, "utf8")).logs).toEqual([]);
+          expect(readPlaybook(env.playbookPath).metadata.totalReflections).toBe(1);
+          expect(readPlaybook(env.playbookPath).metadata.totalSessionsProcessed).toBe(1);
+          expect(readPlaybook(env.playbookPath).bullets[0].helpfulCount).toBe(1);
+          const recorded = readFileSync(prepared.path, "utf8");
+          expect(recorded.trim().split("\n")).toHaveLength(1);
+          expect(JSON.parse(recorded)).toMatchObject({ id: prepared.id, recordedAt: prepared.recordedAt });
+          const saved = readFileSync(env.playbookPath, "utf8");
+          const again = await orchestrateReflection(config, { workspace: beta, io });
+          expect(again.errors).toEqual([]);
+          expect(again.autoOutcome).toBeUndefined();
+          expect(readFileSync(env.playbookPath, "utf8")).toBe(saved);
+          expect(readFileSync(prepared.path, "utf8")).toBe(recorded);
+          expect(providerCalls).toBe(0);
+        });
+      });
+    });
+  });
+
   test.each(["same workspace", "recorded project"])("uses the %s policy and current sanitization protections during recovery", async (owner) => {
     await withIsolatedHome(async (env) => {
       writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([createBullet({

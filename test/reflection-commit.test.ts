@@ -6,7 +6,7 @@ import { PLAYBOOK_INPUT_LIMITS } from "../src/input-limits.js";
 import { withLock } from "../src/lock.js";
 import { loadPlaybook, recordReflectionRun, savePlaybook } from "../src/playbook.js";
 import {
-  recoverReflectionCommit, REFLECTION_COMMIT_LIMITS, ReflectionCommit, reflectionCommitPendingPath,
+  pendingOutcomeRegistryPath, recoverReflectionCommit, REFLECTION_COMMIT_LIMITS, ReflectionCommit, reflectionCommitPendingPath,
 } from "../src/reflection-commit.js";
 import { getProcessedLogPath, ProcessedLog } from "../src/tracking.js";
 import type { ProcessedEntry } from "../src/types.js";
@@ -38,6 +38,7 @@ async function withFixture(check: (fixture: Fixture) => Promise<void>): Promise<
       pendingOutcomes: [{
         id: "outcome-frozen-before-commit", sessionId: sessionPath, outcome: "success",
         rulesUsed: ["b-repo222"], recordedAt: "2026-10-28T12:00:00.000Z",
+        globalPlaybookPath: env.playbookPath,
         workspace: path.dirname(path.dirname(repoPath)), path: path.join(path.dirname(repoPath), "outcomes.jsonl"),
         ruleTargets: [{ ruleId: "b-repo222", playbookPath: repoPath }],
       }],
@@ -120,7 +121,11 @@ describe("prepared reflection commits", () => {
         expect(ledger.get(f.entry.sessionPath)?.pendingOutcomes).toEqual(f.entry.pendingOutcomes);
       });
       expect(await recoverReflectionCommit(f.env.playbookPath)).toBeNull();
-      expect(await fs.readdir(path.dirname(reflectionCommitPendingPath(f.env.playbookPath)))).toEqual([]);
+      const registryPath = pendingOutcomeRegistryPath(f.env.playbookPath);
+      expect(await fs.readdir(path.dirname(registryPath))).toEqual([path.basename(registryPath)]);
+      expect(JSON.parse(await fs.readFile(registryPath, "utf8"))).toMatchObject({
+        owner: f.env.playbookPath, logs: [f.logPath],
+      });
     });
   });
 

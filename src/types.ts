@@ -943,6 +943,9 @@ export const OutcomeRecordSchema = OutcomeInputObjectSchema.extend({
   id: z.string().min(1).optional(),
   recordedAt: z.string().min(1),
   path: z.string().min(1),
+  // A workspace ledger can contain work for several configured global books.
+  // Keep each event's preparing owner through compaction and partial retries.
+  globalPlaybookPath: z.string().min(1).max(4096).optional(),
   // Freeze ownership at recording time. Null means the ID was unresolved;
   // a later rule with the same ID must not inherit that session's feedback.
   ruleTargets: z.array(z.object({

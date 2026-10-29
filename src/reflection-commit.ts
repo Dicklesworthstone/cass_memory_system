@@ -11,7 +11,7 @@ import { withLock } from "./lock.js";
 import {
   createEmptyPlaybook, loadPlaybook as loadStoredPlaybook, savePlaybook as saveStoredPlaybook,
 } from "./playbook.js";
-import { ProcessedLog } from "./tracking.js";
+import { ProcessedLog, PROCESSED_LOG_RECOVERY_MAX_BYTES, type ProcessedLogReadBudget } from "./tracking.js";
 import { type Playbook, type ProcessedEntry, ProcessedEntrySchema } from "./types.js";
 import { atomicWrite, canonicalStoragePath, ensureDurableDirectory, expandPath, resolveGlobalDir, syncDirectory } from "./utils.js";
 
@@ -70,8 +70,9 @@ function stageDirectory(owner: string, id: string): string {
 /** Read exact bytes, including a limit check if the opened file grows. */
 async function readBytes(
   file: string,
-  options: { privateFile?: boolean; missingOk?: boolean } = {},
+  options: { privateFile?: boolean; missingOk?: boolean; maxBytes?: number } = {},
 ): Promise<Buffer | null> {
+  const limit = options.maxBytes ?? PLAYBOOK_INPUT_LIMITS.maxBytes;
   const flags = constants.O_RDONLY | constants.O_NONBLOCK
     | (options.privateFile ? (constants.O_NOFOLLOW ?? 0) : 0);
   let handle;
@@ -88,18 +89,18 @@ async function readBytes(
   try {
     const stat = await handle.stat();
     if (!stat.isFile()) throw new InputLimitError(file, "expected a regular file");
-    if (stat.size > PLAYBOOK_INPUT_LIMITS.maxBytes) {
-      throw new InputLimitError(file, `maximum file size is ${PLAYBOOK_INPUT_LIMITS.maxBytes} bytes`);
+    if (stat.size > limit) {
+      throw new InputLimitError(file, `maximum file size is ${limit} bytes`);
     }
     const chunks: Buffer[] = [];
     let total = 0;
-    while (total <= PLAYBOOK_INPUT_LIMITS.maxBytes) {
-      const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, PLAYBOOK_INPUT_LIMITS.maxBytes + 1 - total));
+    while (total <= limit) {
+      const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, limit + 1 - total));
       const { bytesRead } = await handle.read(chunk, 0, chunk.length, null);
       if (bytesRead === 0) break;
       total += bytesRead;
-      if (total > PLAYBOOK_INPUT_LIMITS.maxBytes) {
-        throw new InputLimitError(file, `maximum file size is ${PLAYBOOK_INPUT_LIMITS.maxBytes} bytes`);
+      if (total > limit) {
+        throw new InputLimitError(file, `maximum file size is ${limit} bytes`);
       }
       chunks.push(chunk.subarray(0, bytesRead));
     }
@@ -228,7 +229,9 @@ async function clearCommit(manifest: Manifest): Promise<void> {
   await syncDirectory(path.dirname(pending));
 }
 
-async function syncFileAndParents(file: string, privateFile = false): Promise<void> {
+async function syncFileAndParents(
+  file: string, privateFile = false, maxBytes = PLAYBOOK_INPUT_LIMITS.maxBytes,
+): Promise<void> {
   // A replacement can be visible after its directory flush failed. Reflush
   // both pending intent and already-applied targets before trusting them.
   if (privateFile) {
@@ -239,7 +242,7 @@ async function syncFileAndParents(file: string, privateFile = false): Promise<vo
     | (privateFile ? (constants.O_NOFOLLOW ?? 0) : 0));
   try {
     const stat = await handle.stat();
-    if (!stat.isFile() || stat.size > PLAYBOOK_INPUT_LIMITS.maxBytes) {
+    if (!stat.isFile() || stat.size > maxBytes) {
       throw new InputLimitError(file, "expected a bounded regular playbook");
     }
     await handle.sync();
@@ -252,7 +255,7 @@ async function syncFileAndParents(file: string, privateFile = false): Promise<vo
 /** Caller holds the global lock and, unless already acknowledged, every target lock. */
 async function finishCommit(manifest: Manifest, preflighted = false): Promise<RecoveredReflectionCommit> {
   const log = new ProcessedLog(manifest.logPath);
-  await log.load();
+  await log.load({ budget: { remainingBytes: PROCESSED_LOG_RECOVERY_MAX_BYTES } });
   if (!log.hasCommittedBatch(manifest.owner, manifest.id)) {
     // An earlier publish may have renamed the journal before its directory
     // sync failed. Recovery must make that intent durable before another
@@ -274,6 +277,9 @@ async function finishCommit(manifest: Manifest, preflighted = false): Promise<Re
   // A visible ACK may have survived a failed flush. Duplicate acknowledgement
   // flushes the existing record before the only recovery copy is removed.
   await log.appendCommittedBatch(manifest.owner, manifest.id, manifest.entries);
+  if (log.getPendingOutcomeEntries(manifest.owner).length) {
+    await registerPendingOutcomeLog(manifest.owner, manifest.logPath, { skipGlobalLock: true });
+  }
   await clearCommit(manifest);
   return { id: manifest.id, logPath: manifest.logPath, sessionsProcessed: manifest.sessionsProcessed };
 }
@@ -291,11 +297,180 @@ export async function recoverReflectionCommit(
     const manifest = await readManifest(owner);
     if (!manifest) return null;
     const log = new ProcessedLog(manifest.logPath);
-    await log.load();
+    await log.load({ budget: { remainingBytes: PROCESSED_LOG_RECOVERY_MAX_BYTES } });
     if (log.hasCommittedBatch(owner, manifest.id)) return finishCommit(manifest);
     return withRepositoryLocks(manifest, () => finishCommit(manifest));
   };
   return options.skipGlobalLock ? recover() : withLock(owner, recover);
+}
+
+export const PENDING_OUTCOME_LIMITS = Object.freeze({
+  maxLogs: 256,
+  maxRegistryBytes: 1024 * 1024,
+  maxDiscoveryEntries: 1024,
+  maxReadBytes: PROCESSED_LOG_RECOVERY_MAX_BYTES,
+});
+
+const OutcomeRegistrySchema = z.object({
+  version: z.literal(1),
+  owner: z.string().min(1).max(4096),
+  bootstrapped: z.boolean(),
+  logs: z.array(z.string().min(1).max(4096)).max(PENDING_OUTCOME_LIMITS.maxLogs),
+}).strict();
+type OutcomeRegistry = z.infer<typeof OutcomeRegistrySchema>;
+
+export function pendingOutcomeRegistryPath(globalPath: string): string {
+  return reflectionCommitPendingPath(globalPath).replace(/\.pending\.json$/, ".outcome-queues.json");
+}
+
+function validateOutcomeLogPath(owner: string, logPath: string): string {
+  const canonical = canonicalStoragePath(logPath);
+  const directory = path.dirname(path.dirname(reflectionCommitPendingPath(owner)));
+  if (canonical !== logPath || path.dirname(canonical) !== directory
+    || !/^(global|ws-[a-f0-9]{8})\.processed\.log$/.test(path.basename(canonical))) {
+    throw new Error(`Invalid pending-outcome ledger destination: ${logPath}`);
+  }
+  return canonical;
+}
+
+async function readOutcomeRegistry(owner: string): Promise<OutcomeRegistry | null> {
+  const file = pendingOutcomeRegistryPath(owner);
+  const bytes = await readBytes(file, { privateFile: true, missingOk: true,
+    maxBytes: PENDING_OUTCOME_LIMITS.maxRegistryBytes });
+  if (bytes === null) return null;
+  const raw = parseJsonInput(new TextDecoder("utf-8", { fatal: true }).decode(bytes), PLAYBOOK_INPUT_LIMITS, file);
+  const registry = OutcomeRegistrySchema.parse(raw);
+  if (registry.owner !== owner || canonicalStoragePath(registry.owner) !== owner) {
+    throw new Error("Pending-outcome registry belongs to a different global playbook");
+  }
+  for (const log of registry.logs) validateOutcomeLogPath(owner, log);
+  if (new Set(registry.logs).size !== registry.logs.length) throw new Error("Pending-outcome registry contains duplicate ledgers");
+  return registry;
+}
+
+async function preflightOutcomeRegistry(manifest: Manifest): Promise<void> {
+  const log = new ProcessedLog(manifest.logPath);
+  await log.preflightCommittedBatch(manifest.owner, manifest.id, manifest.entries);
+  // Reject a symlink, oversized ledger, or ambiguous pre-existing queue
+  // before publishing intent or replacing any learned state.
+  await log.load({ budget: { remainingBytes: PENDING_OUTCOME_LIMITS.maxReadBytes } });
+  const existing = log.getPendingOutcomeEntries(manifest.owner).length;
+  const incoming = manifest.entries.some(entry => entry.pendingOutcomes?.some(record =>
+    !record.globalPlaybookPath || canonicalStoragePath(record.globalPlaybookPath) === manifest.owner));
+  if (!existing && !incoming) return;
+  const registry = await readOutcomeRegistry(manifest.owner);
+  if (registry && !registry.logs.includes(manifest.logPath) && registry.logs.length >= PENDING_OUTCOME_LIMITS.maxLogs) {
+    throw new InputLimitError(pendingOutcomeRegistryPath(manifest.owner),
+      "pending-outcome registry capacity is full; retry after existing outcome queues drain");
+  }
+  const candidate = registry ?? { version: 1 as const, owner: manifest.owner, bootstrapped: false, logs: [] };
+  candidate.logs = [...new Set([...candidate.logs, manifest.logPath])].sort();
+  OutcomeRegistrySchema.parse(candidate);
+  assertTextSize(JSON.stringify(candidate), PENDING_OUTCOME_LIMITS.maxRegistryBytes,
+    pendingOutcomeRegistryPath(manifest.owner));
+}
+
+async function writeOutcomeRegistry(registry: OutcomeRegistry): Promise<void> {
+  const file = pendingOutcomeRegistryPath(registry.owner);
+  OutcomeRegistrySchema.parse(registry);
+  const serialized = JSON.stringify(registry);
+  assertTextSize(serialized, PENDING_OUTCOME_LIMITS.maxRegistryBytes, file);
+  await ensureDurableDirectory(path.dirname(file));
+  await fs.chmod(path.dirname(file), 0o700);
+  await atomicWrite(file, serialized);
+}
+
+/** Publish discovery before deleting the commit journal, including ACK replay. */
+export async function registerPendingOutcomeLog(
+  globalPath: string, logPath: string, options: { skipGlobalLock?: boolean } = {},
+): Promise<void> {
+  const owner = canonicalStoragePath(globalPath);
+  const log = validateOutcomeLogPath(owner, canonicalStoragePath(logPath));
+  const register = async () => {
+    const registry = await readOutcomeRegistry(owner)
+      ?? { version: 1 as const, owner, bootstrapped: false, logs: [] };
+    registry.logs = [...new Set([...registry.logs, log])].sort();
+    // Rewriting an existing entry also flushes an uncertain prior publication.
+    await writeOutcomeRegistry(registry);
+  };
+  return options.skipGlobalLock ? register() : withLock(owner, register);
+}
+
+export interface PendingOutcomeDiscovery {
+  logPaths: string[];
+  errors: string[];
+}
+
+/** Bounded bootstrap also finds older queues whose commit journal is already gone. */
+export async function discoverPendingOutcomeLogs(
+  globalPath: string, options: { dryRun?: boolean } = {},
+): Promise<PendingOutcomeDiscovery> {
+  const owner = canonicalStoragePath(globalPath);
+  const discover = async (): Promise<PendingOutcomeDiscovery> => {
+    const registry = await readOutcomeRegistry(owner)
+      ?? { version: 1 as const, owner, bootstrapped: false, logs: [] };
+    if (registry.bootstrapped) return { logPaths: registry.logs, errors: [] };
+    const logs = new Set(registry.logs);
+    const errors: string[] = [];
+    const budget = { remainingBytes: PENDING_OUTCOME_LIMITS.maxReadBytes };
+    const directory = path.dirname(path.dirname(reflectionCommitPendingPath(owner)));
+    let examined = 0;
+    try {
+      for await (const entry of await fs.opendir(directory)) {
+        if (++examined > PENDING_OUTCOME_LIMITS.maxDiscoveryEntries) {
+          throw new InputLimitError(directory, "pending-outcome discovery entry limit exceeded; inspect the reflections directory before retrying");
+        }
+        if (!/^(global|ws-[a-f0-9]{8})\.processed\.log$/.test(entry.name)) continue;
+        const file = path.join(directory, entry.name);
+        try {
+          if (!entry.isFile() || entry.isSymbolicLink()) throw new Error(`Expected a regular pending-outcome ledger: ${file}`);
+          const log = new ProcessedLog(file);
+          await log.load({ budget, requireExists: true });
+          // A legacy file without this owner's provenance is not ours to adopt.
+          if (!log.hasOutcomeOwner(owner) || !log.getPendingOutcomeEntries(owner).length) continue;
+          if (!logs.has(file) && logs.size >= PENDING_OUTCOME_LIMITS.maxLogs) {
+            throw new InputLimitError(directory, "pending-outcome ledger count exceeded; retry after the discovered queues drain");
+          }
+          logs.add(file);
+        } catch (error: any) {
+          errors.push(`Pending-outcome discovery failed for ${file}: ${error?.message || String(error)}`);
+          if (budget.remainingBytes < 0) break;
+        }
+      }
+    } catch (error: any) {
+      if (error?.code !== "ENOENT") errors.push(`Pending-outcome discovery failed: ${error?.message || String(error)}`);
+    }
+    registry.logs = [...logs].sort();
+    registry.bootstrapped = errors.length === 0;
+    if (!options.dryRun) {
+      try { await writeOutcomeRegistry(registry); }
+      catch (error: any) { errors.push(`Pending-outcome registry could not be saved: ${error?.message || String(error)}`); }
+    }
+    return { logPaths: registry.logs, errors };
+  };
+  return options.dryRun ? discover() : withLock(owner, discover);
+}
+
+/** Remove a discovery pointer only after the owner's empty queue is durable. */
+export async function prunePendingOutcomeLog(
+  globalPath: string, logPath: string,
+  budget: ProcessedLogReadBudget = { remainingBytes: PENDING_OUTCOME_LIMITS.maxReadBytes },
+): Promise<void> {
+  const owner = canonicalStoragePath(globalPath);
+  const target = validateOutcomeLogPath(owner, canonicalStoragePath(logPath));
+  await withLock(owner, async () => {
+    const registry = await readOutcomeRegistry(owner);
+    if (!registry?.logs.includes(target)) return;
+    await withLock(target, async () => {
+      const log = new ProcessedLog(target);
+      // A missing registered ledger is lost recovery state, never an empty queue.
+      await log.load({ budget, requireExists: true });
+      if (log.getPendingOutcomeEntries(owner).length) return;
+      await syncFileAndParents(target, true, PENDING_OUTCOME_LIMITS.maxReadBytes);
+      registry.logs = registry.logs.filter(file => file !== target);
+      await writeOutcomeRegistry(registry);
+    });
+  });
 }
 
 interface StagedTarget {
@@ -475,6 +650,7 @@ export class ReflectionCommit {
         }
       }
       await preflight(manifest);
+      await preflightOutcomeRegistry(manifest);
       if (await readManifest(this.owner)) throw new Error("Another reflection commit is pending recovery");
       try {
         await atomicWrite(pending, serialized);

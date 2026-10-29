@@ -14,9 +14,12 @@ import {
   detectSentiment,
   loadOutcomes,
   type OutcomeInput,
+  persistOutcomeRecord,
+  prepareOutcome,
   recordOutcome,
   scoreImplicitFeedback,
 } from "../src/outcome.js";
+import { createEmptyPlaybook } from "../src/playbook.js";
 import { FeedbackEventSchema, OutcomeInputSchema, OutcomeRecordSchema } from "../src/types.js";
 import { createTestConfig } from "./helpers/factories.js";
 import { withTempCassHome } from "./helpers/temp.js";
@@ -623,6 +626,88 @@ describe("recordOutcome", () => {
         process.chdir(originalCwd);
       }
     }, "default-rules-outcome");
+  });
+});
+
+describe("outcome recovery ownership", () => {
+  it("retains the prepared global playbook owner through validation, persistence, and loading", async () => {
+    await withTempCassHome(async (env) => {
+      const config = createTestConfig({ playbookPath: env.playbookPath });
+      const record = await prepareOutcome({
+        sessionId: "owned-outcome", workspace: env.home, outcome: "success",
+      }, config);
+      const owner = path.join(await fs.realpath(path.dirname(env.playbookPath)), path.basename(env.playbookPath));
+      expect(record.globalPlaybookPath).toBe(owner);
+      expect(OutcomeRecordSchema.parse(record).globalPlaybookPath).toBe(owner);
+      await persistOutcomeRecord(record, config);
+      const bytes = await fs.readFile(record.path, "utf8");
+      expect(JSON.parse(bytes).globalPlaybookPath).toBe(owner);
+      expect((await loadOutcomes(config, 100, env.home))[0]?.globalPlaybookPath).toBe(owner);
+      await persistOutcomeRecord(record, config);
+      expect(await fs.readFile(record.path, "utf8")).toBe(bytes);
+    }, "outcome-recovery-owner");
+  });
+
+  it("replays a legacy same-ID event without duplicating it or relaxing its verdict and rule targets", async () => {
+    await withTempCassHome(async (env) => {
+      const config = createTestConfig({ playbookPath: env.playbookPath });
+      const record = await prepareOutcome({
+        sessionId: "legacy-pending-outcome", workspace: env.home,
+        outcome: "success", rulesUsed: ["b-legacy1"],
+      }, config);
+      const { globalPlaybookPath: _owner, ...legacy } = record;
+      const original = JSON.stringify(legacy) + "\n";
+      await fs.writeFile(record.path, original);
+      const replayed = await persistOutcomeRecord(record, config);
+      expect(replayed.id).toBe(record.id);
+      expect(replayed.globalPlaybookPath).toBe(record.globalPlaybookPath);
+      await persistOutcomeRecord(legacy, config);
+      expect(await fs.readFile(record.path, "utf8")).toBe(original);
+      await expect(persistOutcomeRecord({ ...record, outcome: "failure" }, config))
+        .rejects.toThrow(/different event/);
+      await expect(persistOutcomeRecord({
+        ...record, ruleTargets: [{ ruleId: "b-legacy1", playbookPath: env.playbookPath }],
+      }, config)).rejects.toThrow(/different event/);
+      expect(await fs.readFile(record.path, "utf8")).toBe(original);
+    }, "legacy-outcome-recovery-owner");
+  });
+
+  it("does not reuse an outcome ID for a different explicitly bound global playbook", async () => {
+    await withTempCassHome(async (env) => {
+      const config = createTestConfig({ playbookPath: env.playbookPath });
+      const record = await prepareOutcome({
+        sessionId: "same-session-two-configs", workspace: env.home, outcome: "success",
+      }, config);
+      await persistOutcomeRecord(record, config);
+      const original = await fs.readFile(record.path, "utf8");
+      const otherConfig = createTestConfig({ playbookPath: path.join(env.cassMemoryDir, "other-playbook.yaml") });
+      const other = await prepareOutcome({
+        sessionId: record.sessionId, workspace: env.home, outcome: "success",
+      }, otherConfig);
+      await expect(persistOutcomeRecord({
+        ...record, globalPlaybookPath: other.globalPlaybookPath,
+      }, otherConfig)).rejects.toThrow(/different|owner/i);
+      expect(await fs.readFile(record.path, "utf8")).toBe(original);
+    }, "foreign-outcome-recovery-owner");
+  });
+
+  const posixIt = process.platform === "win32" ? it.skip : it;
+  posixIt("canonicalizes the owner directory while retaining a final playbook symlink's address", async () => {
+    await withTempCassHome(async (env) => {
+      const directoryAlias = path.join(env.home, "memory-alias");
+      const playbookLink = path.join(env.cassMemoryDir, "playbook-link.yaml");
+      await fs.symlink(env.cassMemoryDir, directoryAlias, "dir");
+      await fs.writeFile(env.playbookPath, JSON.stringify(createEmptyPlaybook()));
+      await fs.symlink(env.playbookPath, playbookLink);
+      const config = createTestConfig({ playbookPath: path.join(directoryAlias, "playbook-link.yaml") });
+      const record = await prepareOutcome({
+        sessionId: "aliased-playbook-owner", workspace: env.home, outcome: "success",
+      }, config);
+      expect(record.globalPlaybookPath).toBe(path.join(await fs.realpath(env.cassMemoryDir), "playbook-link.yaml"));
+      expect(record.globalPlaybookPath).not.toBe(await fs.realpath(playbookLink));
+      await persistOutcomeRecord(record, config);
+      expect(JSON.parse(await fs.readFile(record.path, "utf8")).globalPlaybookPath).toBe(record.globalPlaybookPath);
+    }, "aliased-outcome-recovery-owner");
   });
 });
 

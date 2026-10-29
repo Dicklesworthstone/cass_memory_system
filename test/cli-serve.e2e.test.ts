@@ -256,10 +256,19 @@ else console.log("[]");
   }
 
   for (const blockedOutcome of [false, true]) {
-    it(`reports durable commit recovery over HTTP${blockedOutcome ? " with incomplete queued outcomes" : " successfully"}`, async () => {
+    it(`reports durable commit recovery over HTTP${blockedOutcome ? " across workspaces with incomplete queued outcomes" : " successfully"}`, async () => {
       await withTempCassHome(async env => {
         await setup(env);
         const session = await writeSession(env);
+        const sourceWorkspace = blockedOutcome ? path.join(env.home, "source-workspace") : env.home;
+        const recoveryWorkspace = path.join(env.home, "recovery-workspace");
+        const retryWorkspace = path.join(env.home, "retry-workspace");
+        if (blockedOutcome) {
+          await mkdir(sourceWorkspace);
+          await mkdir(recoveryWorkspace);
+          await mkdir(retryWorkspace);
+        }
+        const recoveryArgs = blockedOutcome ? { workspace: recoveryWorkspace } : {};
         await writeFile(env.playbookPath, yaml.stringify(createTestPlaybook([createTestBullet({
           id: "b-recovery1", content: "Retain prepared outcomes while resuming interrupted reflection writes.",
         })])));
@@ -270,10 +279,10 @@ else console.log("[]");
         await writeFile(env.configPath, JSON.stringify({ ...savedConfig, provider: "cli", cliCommand: cliPath }));
         const config = await loadConfig({}, { cwd: env.home });
         const pending = await prepareOutcome({
-          sessionId: session, workspace: env.home, outcome: "success", rulesUsed: ["b-recovery1"],
+          sessionId: session, workspace: sourceWorkspace, outcome: "success", rulesUsed: ["b-recovery1"],
         }, config);
         if (blockedOutcome) await mkdir(pending.path);
-        const logPath = getProcessedLogPath();
+        const logPath = getProcessedLogPath(blockedOutcome ? sourceWorkspace : undefined);
         const tx = await ReflectionCommit.create(env.playbookPath, logPath, [{
           sessionPath: session, processedAt: new Date().toISOString(), deltasGenerated: 1,
           pendingOutcomes: [pending],
@@ -303,7 +312,7 @@ else console.log("[]");
           await waitForServer(baseUrl);
           const preview = await postJson(baseUrl, {
             jsonrpc: "2.0", id: 140, method: "tools/call",
-            params: { name: "memory_reflect", arguments: { session, dryRun: true } },
+            params: { name: "memory_reflect", arguments: { session, dryRun: true, ...recoveryArgs } },
           });
           expect(reflectionPayload(preview, true).errors[0]).toMatch(/pending|commit|recovery/i);
           expect(await readFile(env.playbookPath, "utf8")).toBe(beforePlaybook);
@@ -311,7 +320,7 @@ else console.log("[]");
           expect(await Bun.file(logPath).exists()).toBe(false);
           const response = await postJson(baseUrl, {
             jsonrpc: "2.0", id: 141, method: "tools/call",
-            params: { name: "memory_reflect", arguments: { session } },
+            params: { name: "memory_reflect", arguments: { session, ...recoveryArgs } },
           });
           const payload = reflectionPayload(response, blockedOutcome);
           expect(payload.sessionsProcessed).toBe(0);
@@ -330,12 +339,42 @@ else console.log("[]");
           if (blockedOutcome) {
             expect(payload.errors[0]).toContain("Auto-outcome recovery failed");
             expect(log.get(session)?.pendingOutcomes).toHaveLength(1);
+            const queued = log.get(session)?.pendingOutcomes;
+            const beforeRetry = await readFile(env.playbookPath, "utf8");
+            const stillBlocked = await postJson(baseUrl, {
+              jsonrpc: "2.0", id: 142, method: "tools/call",
+              params: { name: "memory_reflect", arguments: { workspace: retryWorkspace } },
+            });
+            const blocked = reflectionPayload(stillBlocked, true);
+            expect(blocked.sessionsProcessed).toBe(0);
+            expect(blocked.errors.some((error: string) => error.includes("Auto-outcome recovery failed"))).toBe(true);
+            expect(blocked.recoveredCommits).toBeUndefined();
+            await log.load();
+            expect(log.get(session)?.pendingOutcomes).toEqual(queued);
+            expect(await readFile(env.playbookPath, "utf8")).toBe(beforeRetry);
+            expect(await Bun.file(providerCalled).exists()).toBe(false);
+
             await rename(pending.path, `${pending.path}.blocked-directory`);
             const retry = await postJson(baseUrl, {
-              jsonrpc: "2.0", id: 142, method: "tools/call",
-              params: { name: "memory_reflect", arguments: { session } },
+              jsonrpc: "2.0", id: 143, method: "tools/call",
+              params: { name: "memory_reflect", arguments: { workspace: retryWorkspace } },
             });
-            expect(reflectionPayload(retry, false).autoOutcome.feedbackApplied).toBe(1);
+            const delivered = reflectionPayload(retry, false);
+            expect(delivered.sessionsProcessed).toBe(0);
+            expect(delivered.autoOutcome.feedbackApplied).toBe(1);
+            expect(delivered.message).toContain("Recorded 1 outcome(s) and applied 1 feedback update(s)");
+            const afterRecovery = await readFile(env.playbookPath, "utf8");
+            const again = await postJson(baseUrl, {
+              jsonrpc: "2.0", id: 144, method: "tools/call",
+              params: { name: "memory_reflect", arguments: { workspace: recoveryWorkspace } },
+            });
+            expect(reflectionPayload(again, false).sessionsProcessed).toBe(0);
+            expect(await readFile(env.playbookPath, "utf8")).toBe(afterRecovery);
+            for (const workspace of [recoveryWorkspace, retryWorkspace]) {
+              const otherLog = new ProcessedLog(getProcessedLogPath(workspace));
+              await otherLog.load();
+              expect(otherLog.has(session)).toBe(false);
+            }
           } else expect(payload.autoOutcome.feedbackApplied).toBe(1);
           await log.load();
           expect(log.get(session)?.pendingOutcomes).toEqual([]);

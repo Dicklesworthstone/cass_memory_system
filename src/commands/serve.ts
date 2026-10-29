@@ -963,6 +963,8 @@ async function handleToolCall(name: string, args: any): Promise<any> {
             ? `Reflection completed with errors. Applied ${applied} changes from ${outcome.sessionsProcessed} sessions`
             : outcome.deltasGenerated > 0
             ? `Applied ${applied} changes from ${outcome.sessionsProcessed} sessions`
+            : outcome.autoOutcome
+            ? `Recorded ${outcome.autoOutcome.outcomesRecorded} outcome(s) and applied ${outcome.autoOutcome.feedbackApplied} feedback update(s).`
             : "No new insights found",
       });
     }

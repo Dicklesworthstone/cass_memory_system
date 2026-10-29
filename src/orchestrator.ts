@@ -32,14 +32,19 @@ import {
   resolveRepoPlaybookPath,
 } from "./playbook.js";
 import { reflectOnSession } from "./reflect.js";
-import { ReflectionCommit, recoverReflectionCommit } from "./reflection-commit.js";
+import {
+  discoverPendingOutcomeLogs, PENDING_OUTCOME_LIMITS, prunePendingOutcomeLog,
+  ReflectionCommit, recoverReflectionCommit, registerPendingOutcomeLog,
+} from "./reflection-commit.js";
 import { compileExtraPatterns, sanitize } from "./sanitize.js";
 import { buildSemanticDedupIndex, type SemanticDedupIndex } from "./semantic.js";
 import { containsCmSubprocessPayload, stripCmSubprocessPayloads } from "./subprocess-tag.js";
 import {
   classifySessionForReflection,
   getProcessedLogPath,
+  pendingOutcomeIdentity,
   ProcessedLog,
+  type ProcessedLogReadBudget,
   type SessionRetryPolicy,
 } from "./tracking.js";
 import {
@@ -377,7 +382,7 @@ export async function orchestrateReflection(
     const recovered = await recoverReflectionCommit(globalPath, { dryRun: options.dryRun });
     if (recovered) rememberRecovery(recovered);
     let processedLog = new ProcessedLog(logPath);
-    await processedLog.load();
+    await processedLog.load({ budget: { remainingBytes: PENDING_OUTCOME_LIMITS.maxReadBytes } });
     const errors: string[] = [];
     const failedSessions: NonNullable<ReflectionOutcome["failedSessions"]> = [];
     let autoOutcome: ReflectionOutcome["autoOutcome"] | undefined;
@@ -390,14 +395,12 @@ export async function orchestrateReflection(
     // A failed recovery is retried on the next invocation, not repeatedly
     // during this run when newly reflected sessions are committed below.
     const attemptedOutcomes = new Set<string>();
-    const drainPendingOutcomes = async (sourceLog: ProcessedLog = processedLog) => {
+    const drainPendingOutcomes = async (sourceLog: ProcessedLog, budget: ProcessedLogReadBudget) => {
       const acknowledgements: Array<{ sessionPath: string; outcomeIds: string[] }> = [];
-      for (const entry of sourceLog.getPendingOutcomeEntries()) {
+      for (const entry of sourceLog.getPendingOutcomeEntries(globalPath)) {
         const completed = new Set<string>();
-        const identity = (record: NonNullable<ProcessedEntry["pendingOutcomes"]>[number]) =>
-          record.id ?? JSON.stringify([record.path, record.sessionId, record.recordedAt]);
         for (const pending of entry.pendingOutcomes ?? []) {
-          const id = identity(pending);
+          const id = pendingOutcomeIdentity(pending);
           if (attemptedOutcomes.has(id)) continue;
           attemptedOutcomes.add(id);
           const summary = outcomeSummary();
@@ -417,7 +420,7 @@ export async function orchestrateReflection(
         acknowledgements.push({ sessionPath: entry.sessionPath, outcomeIds: [...completed] });
       }
       try {
-        await sourceLog.acknowledgeOutcomes(acknowledgements);
+        await sourceLog.acknowledgeOutcomes(acknowledgements, { budget, requireExists: true });
       } catch (err: any) {
         // The persisted queue still contains the exact same outcome IDs.
         // Replaying after an interrupted acknowledgement is idempotent.
@@ -425,17 +428,52 @@ export async function orchestrateReflection(
       }
     };
     const drainRecoveredOutcomes = async () => {
-      for (const recoveredLogPath of recoveredLogs) {
-        if (path.resolve(recoveredLogPath) === path.resolve(logPath)) continue;
+      let registeredPaths: string[] = [];
+      try {
+        const discovered = await discoverPendingOutcomeLogs(globalPath);
+        registeredPaths = discovered.logPaths;
+        errors.push(...discovered.errors);
+      } catch (err: any) {
+        errors.push(`Pending-outcome discovery failed: ${err?.message || String(err)}`);
+      }
+      const currentLogPath = canonicalStoragePath(logPath);
+      const registered = new Set(registeredPaths);
+      const candidates = new Set([...registered, ...recoveredLogs, currentLogPath]);
+      // Bound each pass across all ledgers, including locked ACK reloads and
+      // empty-queue verification. Separate phase budgets let one bounded
+      // ledger complete instead of consuming its own ACK budget while read.
+      const readBudget = { remainingBytes: PENDING_OUTCOME_LIMITS.maxReadBytes };
+      const acknowledgementBudget = { remainingBytes: PENDING_OUTCOME_LIMITS.maxReadBytes };
+      const pruneBudget = { remainingBytes: PENDING_OUTCOME_LIMITS.maxReadBytes };
+      for (const sourcePath of candidates) {
         try {
-          const sourceLog = new ProcessedLog(recoveredLogPath);
-          await sourceLog.load();
-          await drainPendingOutcomes(sourceLog);
+          const sourceLog = new ProcessedLog(sourcePath);
+          await sourceLog.load({
+            budget: readBudget,
+            requireExists: registered.has(sourcePath) || recoveredLogs.has(sourcePath),
+          });
+          if (sourceLog.getPendingOutcomeEntries(globalPath).length && !registered.has(sourcePath)) {
+            // Adopt an older current-ledger queue before attempting delivery,
+            // so a later workspace can still discover an unsuccessful retry.
+            await registerPendingOutcomeLog(globalPath, sourcePath);
+            registered.add(sourcePath);
+          }
+          await drainPendingOutcomes(sourceLog, acknowledgementBudget);
+          if (sourcePath === currentLogPath) processedLog = sourceLog;
         } catch (err: any) {
-          errors.push(`Recovered commit outcomes could not be read from ${recoveredLogPath}: ${err?.message || String(err)}`);
+          errors.push(`Auto-outcome recovery failed for ledger ${sourcePath}: ${err?.message || String(err)}`);
+          continue;
+        }
+        if (registered.has(sourcePath)) {
+          try {
+            // Pruning reloads under global→ledger locks and reflushes the
+            // empty queue before removing its durable discovery pointer.
+            await prunePendingOutcomeLog(globalPath, sourcePath, pruneBudget);
+          } catch (err: any) {
+            errors.push(`Auto-outcome queue acknowledgement failed for ${sourcePath}: ${err?.message || String(err)}`);
+          }
         }
       }
-      await drainPendingOutcomes();
     };
     // Recovery must run even when discovery finds no new sessions. A dry run
     // leaves both the pending queue and its outcome/feedback destinations alone.
@@ -1253,7 +1291,7 @@ export async function orchestrateReflection(
     // The durable commit acknowledged the watermark and outcome queue. Reload
     // the ledger so outcome delivery sees precisely that committed state.
     processedLog = new ProcessedLog(logPath);
-    await processedLog.load();
+    await processedLog.load({ budget: { remainingBytes: PENDING_OUTCOME_LIMITS.maxReadBytes } });
     if (recoveredCommits.length > 0) {
       await drainRecoveredOutcomes();
       return { sessionsProcessed: 0, deltasGenerated: 0, errors, autoOutcome, recoveredCommits };
@@ -1262,7 +1300,7 @@ export async function orchestrateReflection(
     // 6. Persist and apply outcomes from their durable queue. Completion is
     // acknowledged only after both operations succeed; replays use their
     // original IDs, timestamps and rule owners without invoking the LLM.
-    await drainPendingOutcomes();
+    await drainRecoveredOutcomes();
     if (autoOutcome?.outcomesRecorded) {
       log(`Auto-recorded ${autoOutcome.outcomesRecorded} outcome(s): ${autoOutcome.feedbackApplied} feedback event(s) applied`);
     }

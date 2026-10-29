@@ -11,6 +11,7 @@ import { containsCmSubprocessPayload } from "./subprocess-tag.js";
 import { OutcomeInputSchema, OutcomeRecordSchema, type Config, type DiaryEntry, type FeedbackEvent, type TranscriptRuleEvidence } from "./types.js";
 import { normalizeWorkspacePath, resolveProjectRoot } from "./workspace.js";
 import {
+  canonicalStoragePath,
   ensureDir,
   ensureDurableDirectory,
   expandPath,
@@ -101,6 +102,7 @@ export interface OutcomeRecord extends OutcomeInput {
   id?: string;
   recordedAt: string;
   path: string;
+  globalPlaybookPath?: string;
   ruleTargets?: Array<{ ruleId: string; playbookPath: string | null }>;
 }
 
@@ -333,6 +335,7 @@ export async function prepareOutcome(input: OutcomeInput, config: Config): Promi
   const record = enrichOutcomeWithContext({
     ...parsed,
     workspace,
+    globalPlaybookPath: canonicalStoragePath(config.playbookPath),
     id: randomUUID(),
     rulesUsed: [...new Set(parsed.rulesUsed ?? [])],
     recordedAt: new Date().toISOString(),
@@ -349,7 +352,10 @@ export async function prepareOutcome(input: OutcomeInput, config: Config): Promi
 function outcomeIdentity(record: OutcomeRecord): string {
   // Sanitization may become stricter between retries; free text is not the
   // identity of a feedback event. All grading and ownership fields are.
-  return JSON.stringify({ ...OutcomeRecordSchema.parse(record), notes: undefined, task: undefined });
+  // Global owner provenance was added later. Its explicit conflicts are
+  // checked separately so already-persisted legacy events remain replayable.
+  return JSON.stringify({ ...OutcomeRecordSchema.parse(record), notes: undefined,
+    task: undefined, globalPlaybookPath: undefined });
 }
 
 /** Persist the same prepared event at most once, even after an uncertain write. */
@@ -377,6 +383,10 @@ export async function persistOutcomeRecord(record: OutcomeRecord, config: Config
       try { existing = JSON.parse(line); } catch { continue; }
       if (existing && typeof existing === "object" && "id" in existing && existing.id === parsed.id) {
         const prior = OutcomeRecordSchema.parse(existing);
+        if (prior.globalPlaybookPath && cleaned.globalPlaybookPath
+          && canonicalStoragePath(prior.globalPlaybookPath) !== canonicalStoragePath(cleaned.globalPlaybookPath)) {
+          throw new Error("Outcome ID already belongs to a different global playbook owner");
+        }
         if (outcomeIdentity(prior) !== outcomeIdentity(cleaned)) {
           throw new Error("Outcome ID already belongs to a different event");
         }

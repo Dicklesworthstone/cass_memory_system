@@ -421,7 +421,8 @@ export async function reflectCommand(
   }
 
   // CLI Output
-  if (result.sessionsProcessed === 0 && result.errors.length === 0 && !result.recoveredCommits?.length) {
+  if (result.sessionsProcessed === 0 && result.errors.length === 0
+    && !result.recoveredCommits?.length && !result.autoOutcome) {
     console.log(chalk.green("No new sessions to reflect on."));
   } else {
     console.log(failure

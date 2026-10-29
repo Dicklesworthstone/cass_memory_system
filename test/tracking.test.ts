@@ -1,5 +1,6 @@
 import { describe, expect, it, spyOn } from "bun:test";
 import crypto from "node:crypto";
+import { constants } from "node:fs";
 import fs from "node:fs/promises";
 import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -841,7 +842,9 @@ describe("ProcessedLog - committed reflection batches", () => {
       expect(JSON.parse(lines[0]!).entries).toHaveLength(2);
       const loaded = new ProcessedLog(logPath);
       await loaded.load();
-      expect(loaded.get(entry.sessionPath)).toEqual(entry);
+      expect(loaded.get(entry.sessionPath)).toEqual({
+        ...entry, pendingOutcomes: [{ ...outcome, globalPlaybookPath: owner }],
+      });
       expect(loaded.get(second.sessionPath)).toEqual(second);
       expect(loaded.hasCommittedBatch(join(directory, "unused", "..", "playbook.yaml"), "commit-one")).toBe(true);
       expect(loaded.hasCommittedBatch(owner, "different-commit")).toBe(false);
@@ -917,8 +920,12 @@ describe("ProcessedLog - committed reflection batches", () => {
         .toEqual({ alreadyCommitted: false });
       const recovered = new ProcessedLog(logPath);
       await recovered.load();
-      expect(recovered.get(entry.sessionPath)).toEqual(entry);
-      expect(recovered.get(second.sessionPath)).toEqual(second);
+      expect(recovered.get(entry.sessionPath)).toEqual({
+        ...entry, pendingOutcomes: [{ ...outcome, globalPlaybookPath: owner }],
+      });
+      expect(recovered.get(second.sessionPath)).toEqual({
+        ...second, pendingOutcomes: [{ ...outcome, globalPlaybookPath: owner }],
+      });
       expect(recovered.hasCommittedBatch(owner, "commit-one")).toBe(true);
     });
   });
@@ -953,7 +960,7 @@ describe("ProcessedLog - committed reflection batches", () => {
       const loaded = new ProcessedLog(logPath);
       await loaded.load();
       expect(loaded.get(entry.sessionPath)?.recordCount).toBe(6);
-      expect(loaded.get(entry.sessionPath)?.pendingOutcomes).toEqual([outcome, laterOutcome]);
+      expect(loaded.get(entry.sessionPath)?.pendingOutcomes).toEqual([outcome, { ...laterOutcome, globalPlaybookPath: owner }]);
     });
   });
 
@@ -983,7 +990,8 @@ describe("ProcessedLog - committed reflection batches", () => {
         let ledgerOpened = false;
         const openSpy = spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
           const handle = await realOpen(...args);
-          if (String(args[0]) === logPath && args[1] === "a+") ledgerOpened = true;
+          if (String(args[0]) === logPath && typeof args[1] === "number"
+            && (args[1] & constants.O_RDWR) !== 0) ledgerOpened = true;
           if (ledgerOpened && String(args[0]) === (failedFlush === "file" ? logPath : directory)) {
             const sync = handle.sync.bind(handle);
             const syncSpy = spyOn(handle, "sync").mockImplementation(async () => {

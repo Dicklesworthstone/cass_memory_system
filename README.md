@@ -884,6 +884,26 @@ in `recoveredCommits`, separately from newly processed sessions. A recovery run
 then returns; the next invocation can process new sessions. Pending automatic
 outcomes retain their original identities and are delivered after recovery.
 
+If automatic outcome delivery fails after the commit is complete, its queue
+remains discoverable by later reflection runs using the same global playbook,
+including runs launched from a different workspace. Each retry reports unresolved
+storage errors through the normal failure result and retries the original outcome
+IDs and feedback destinations. Once storage is repaired, delivery resumes without
+applying feedback twice. JSON includes completed delivery in `autoOutcome`, even
+when no new sessions were processed. A dry run does not deliver or acknowledge
+queued outcomes.
+If an older compacted ledger no longer identifies which global playbook owns a
+queued outcome, reflection reports that ambiguity and preserves the queue for
+inspection.
+
+Discovery inspects at most 1,024 directory entries and 64 MiB of ledger data per
+scan. Each global playbook's queue index holds up to 256 ledger paths within
+1 MiB. Ledger writers atomically compact obsolete history before an append
+would exceed 64 MiB, retaining current session watermarks, commit receipts,
+owner information, and pending outcomes. New commits check both ledger and
+index capacity before publishing recovery intent or replacing playbooks.
+The ordinary 16 MiB playbook limit is unchanged.
+
 Recovery preserves subsequent feedback on files already committed. If an
 uncommitted destination has changed since preparation, it retains both versions
 and refuses to overwrite the newer data. The error identifies the affected file;

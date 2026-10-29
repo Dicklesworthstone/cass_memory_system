@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { constants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
@@ -459,9 +460,50 @@ function parseReflectionCommit(value: unknown, source: string) {
 }
 
 function serializeProcessedRecord(value: unknown, source: string): string {
+  assertInputLimits(value, PLAYBOOK_INPUT_LIMITS, source);
   const line = JSON.stringify(value);
   assertTextSize(line, PLAYBOOK_INPUT_LIMITS.maxBytes, source);
   return line;
+}
+
+export function pendingOutcomeIdentity(record: NonNullable<ProcessedEntry["pendingOutcomes"]>[number]): string {
+  return record.id ?? JSON.stringify([record.path, record.sessionId, record.recordedAt]);
+}
+
+export interface ProcessedLogReadBudget {
+  remainingBytes: number;
+}
+
+export const PROCESSED_LOG_RECOVERY_MAX_BYTES = 64 * 1024 * 1024;
+
+async function readProcessedLog(file: string, budget?: ProcessedLogReadBudget): Promise<string> {
+  const before = await fs.lstat(file);
+  if (!before.isFile() || before.isSymbolicLink()) throw new InputLimitError(file, "expected a regular processed log for outcome recovery");
+  const handle = await fs.open(file, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile()) throw new InputLimitError(file, "expected a regular processed log for outcome recovery");
+    if (!budget) return await handle.readFile("utf-8");
+    if (stat.size > budget.remainingBytes) {
+      throw new InputLimitError(file, "pending-outcome discovery byte budget exceeded; compact the processed logs before retrying");
+    }
+    const chunks: Buffer[] = [];
+    let total = 0;
+    while (true) {
+      const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, budget.remainingBytes + 1));
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, null);
+      if (!bytesRead) break;
+      budget.remainingBytes -= bytesRead;
+      if (budget.remainingBytes < 0) {
+        throw new InputLimitError(file, "pending-outcome discovery byte budget exceeded; compact the processed logs before retrying");
+      }
+      total += bytesRead;
+      chunks.push(chunk.subarray(0, bytesRead));
+    }
+    return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks, total));
+  } finally {
+    await handle.close();
+  }
 }
 
 function mergePendingOutcomes(
@@ -471,7 +513,7 @@ function mergePendingOutcomes(
   if (existing === undefined && additions === undefined) return undefined;
   const pending = new Map<string, NonNullable<ProcessedEntry["pendingOutcomes"]>[number]>();
   for (const record of [...(existing ?? []), ...(additions ?? [])]) {
-    const key = record.id ?? JSON.stringify([record.path, record.sessionId, record.recordedAt]);
+    const key = pendingOutcomeIdentity(record);
     if (!pending.has(key)) pending.set(key, record);
   }
   return [...pending.values()];
@@ -480,6 +522,7 @@ function mergePendingOutcomes(
 export class ProcessedLog {
   private entries: Map<string, ProcessedEntry> = new Map();
   private committedBatches: Map<string, string> = new Map();
+  private outcomeOwners: Map<string, string | null> = new Map();
   private localUpdates: Map<string, ProcessedEntry> = new Map();
   private logPath: string;
 
@@ -487,12 +530,24 @@ export class ProcessedLog {
     this.logPath = logPath;
   }
 
-  async load(): Promise<void> {
+  async load(options: { budget?: ProcessedLogReadBudget; requireExists?: boolean } = {}): Promise<void> {
     try {
-      const content = await fs.readFile(this.logPath, "utf-8");
+      const content = await readProcessedLog(this.logPath, options.budget);
       const lines = content.split("\n").filter((line) => line.trim() && !line.startsWith("#"));
       const entries = new Map<string, ProcessedEntry>();
       const committedBatches = new Map<string, string>();
+      const outcomeOwners = new Map<string, string | null>();
+      const rememberOwners = (entry: ProcessedEntry, fallback?: string) => {
+        for (const record of entry.pendingOutcomes ?? []) {
+          const key = pendingOutcomeIdentity(record);
+          const explicit = record.globalPlaybookPath ? normalizeCommitOwner(record.globalPlaybookPath) : undefined;
+          const previous = outcomeOwners.get(key);
+          if (explicit && previous && explicit !== previous) {
+            throw new PendingOutcomeRecoveryError(`Pending outcome ${key} has conflicting global playbook owners`);
+          }
+          outcomeOwners.set(key, explicit ?? (previous !== undefined ? previous : fallback ?? null));
+        }
+      };
 
       for (const line of lines) {
         // Try JSONL first (new format)
@@ -502,12 +557,14 @@ export class ProcessedLog {
             // before parsing just like ordinary persisted playbook input.
             assertTextSize(line, PLAYBOOK_INPUT_LIMITS.maxBytes, this.logPath);
             const entry = JSON.parse(line);
+            assertInputLimits(entry, PLAYBOOK_INPUT_LIMITS, this.logPath);
             if (entry && typeof entry === "object" && Object.hasOwn(entry, "reflectionCommit")) {
               // Validate the entire batch before applying any watermark or
               // ACK. A torn JSON line is ignored below and can be replayed.
               const batch = parseReflectionCommit(entry, this.logPath);
               const { owner, id } = batch.reflectionCommit;
               if (committedBatches.get(owner) !== id) {
+                for (const update of batch.entries) rememberOwners(update, owner);
                 for (const update of batch.entries) entries.set(update.sessionPath, update);
                 committedBatches.set(owner, id);
               }
@@ -520,14 +577,16 @@ export class ProcessedLog {
             if (entry.sessionPath) {
               const normalizedSessionPath = normalizeSessionPathForLog(entry.sessionPath);
               if (!normalizedSessionPath) continue;
-              entries.set(normalizedSessionPath, {
+              const update = {
                 ...pickIncrementalFields(entry),
                 sessionPath: normalizedSessionPath,
                 processedAt: entry.processedAt || new Date().toISOString(),
                 diaryId: entry.diaryId || entry.id, // Handle both keys for compatibility
                 deltasGenerated:
                   typeof entry.deltasGenerated === "number" ? entry.deltasGenerated : 0,
-              });
+              };
+              rememberOwners(update);
+              entries.set(normalizedSessionPath, update);
             }
             continue;
           } catch (error) {
@@ -557,11 +616,13 @@ export class ProcessedLog {
       }
       this.entries = entries;
       this.committedBatches = committedBatches;
+      this.outcomeOwners = outcomeOwners;
       this.localUpdates.clear();
     } catch (error) {
-      if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      if (!options.requireExists && error instanceof Error && "code" in error && error.code === "ENOENT") {
         this.entries.clear();
         this.committedBatches.clear();
+        this.outcomeOwners.clear();
         this.localUpdates.clear();
         return;
       }
@@ -574,7 +635,7 @@ export class ProcessedLog {
   async save(): Promise<void> {
     await withLock(this.logPath, async () => {
       const current = new ProcessedLog(this.logPath);
-      await current.load();
+      await current.load({ budget: { remainingBytes: PROCESSED_LOG_RECOVERY_MAX_BYTES } });
       // Compaction must retain newer writers' watermarks as well as the ACKs
       // proving them committed. Only explicit add() calls are local updates.
       const entries = new Map(current.entries);
@@ -585,13 +646,17 @@ export class ProcessedLog {
         });
       }
       const lines = ['# JSONL format: {"sessionPath":..., "processedAt":...}'];
+      for (const [key, entry] of entries) entries.set(key, current.preserveOutcomeOwners(entry));
       for (const entry of entries.values()) lines.push(serializeProcessedRecord(entry, this.logPath));
       for (const [owner, id] of current.committedBatches) {
         lines.push(serializeProcessedRecord({ reflectionCommit: { owner, id }, entries: [] }, this.logPath));
       }
-      await atomicWrite(this.logPath, lines.join("\n") + "\n");
+      const content = lines.join("\n") + "\n";
+      assertTextSize(content, PROCESSED_LOG_RECOVERY_MAX_BYTES, this.logPath);
+      await atomicWrite(this.logPath, content);
       this.entries = entries;
       this.committedBatches = current.committedBatches;
+      this.outcomeOwners = current.outcomeOwners;
       this.localUpdates.clear();
     });
   }
@@ -599,6 +664,62 @@ export class ProcessedLog {
   /** Visible ACK state; appendCommittedBatch also flushes it before cleanup. */
   hasCommittedBatch(owner: string, id: string): boolean {
     return this.committedBatches.get(normalizeCommitOwner(owner)) === id;
+  }
+
+  /** Discovery must not claim an unrelated legacy ledger with no owner evidence. */
+  hasOutcomeOwner(owner: string): boolean {
+    const normalized = normalizeCommitOwner(owner);
+    return this.committedBatches.has(normalized)
+      || [...this.outcomeOwners.values()].some(value => value === normalized)
+      || [...this.entries.values()].some(entry => entry.pendingOutcomes?.some(record =>
+        record.globalPlaybookPath && normalizeCommitOwner(record.globalPlaybookPath) === normalized));
+  }
+
+  private preserveOutcomeOwners(entry: ProcessedEntry, fallback?: string): ProcessedEntry {
+    if (!entry.pendingOutcomes?.length) return entry;
+    return { ...entry, pendingOutcomes: entry.pendingOutcomes.map(record => {
+      const known = this.outcomeOwners.get(pendingOutcomeIdentity(record));
+      const owner = record.globalPlaybookPath ?? (known !== undefined ? known : fallback);
+      return owner ? { ...record, globalPlaybookPath: normalizeCommitOwner(owner) } : record;
+    }) };
+  }
+
+  private stageCommittedEntries(entries: ProcessedEntry[], owner: string): ProcessedEntry[] {
+    return entries.map(entry => {
+      const update = this.preserveOutcomeOwners({
+        ...entry,
+        pendingOutcomes: mergePendingOutcomes(this.get(entry.sessionPath)?.pendingOutcomes, entry.pendingOutcomes),
+      }, owner);
+      this.add(update);
+      return update;
+    });
+  }
+
+  private snapshotContent(maxBytes: number): string {
+    const lines = ['# JSONL format: {"sessionPath":..., "processedAt":...}'];
+    for (const entry of this.entries.values()) {
+      lines.push(serializeProcessedRecord(this.preserveOutcomeOwners(entry), this.logPath));
+    }
+    for (const [owner, id] of this.committedBatches) {
+      lines.push(serializeProcessedRecord({ reflectionCommit: { owner, id }, entries: [] }, this.logPath));
+    }
+    const content = lines.join("\n") + "\n";
+    assertTextSize(content, maxBytes, this.logPath);
+    return content;
+  }
+
+  /** Check the fully merged, compacted state before publishing a playbook commit. */
+  async preflightCommittedBatch(owner: string, id: string, entries: ProcessedEntry[]): Promise<void> {
+    const batch = parseReflectionCommit({ reflectionCommit: { owner, id }, entries }, this.logPath);
+    await withLock(this.logPath, async () => {
+      const current = new ProcessedLog(this.logPath);
+      await current.load({ budget: { remainingBytes: PROCESSED_LOG_RECOVERY_MAX_BYTES } });
+      batch.entries = current.stageCommittedEntries(batch.entries, batch.reflectionCommit.owner);
+      assertInputLimits(batch, PLAYBOOK_INPUT_LIMITS, this.logPath);
+      serializeProcessedRecord(batch, this.logPath);
+      current.committedBatches.set(batch.reflectionCommit.owner, id);
+      current.snapshotContent(PROCESSED_LOG_RECOVERY_MAX_BYTES);
+    });
   }
 
   /**
@@ -617,12 +738,14 @@ export class ProcessedLog {
     await ensureDurableDirectory(path.dirname(this.logPath));
     return withLock(this.logPath, async () => {
       const current = new ProcessedLog(this.logPath);
-      await current.load();
+      await current.load({ budget: { remainingBytes: PROCESSED_LOG_RECOVERY_MAX_BYTES } });
       if (current.hasCommittedBatch(batch.reflectionCommit.owner, id)) {
         // An earlier write may have reached the page cache but failed fsync.
         // Do not let receipt cleanup turn that visible ACK into false success.
-        const handle = await fs.open(this.logPath, "a+", 0o600);
+        const handle = await fs.open(this.logPath,
+          constants.O_RDWR | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0));
         try {
+          if (!(await handle.stat()).isFile()) throw new InputLimitError(this.logPath, "expected a regular processed log");
           await handle.sync();
         } finally {
           await handle.close();
@@ -630,24 +753,20 @@ export class ProcessedLog {
         await syncDirectory(path.dirname(this.logPath));
         this.entries = current.entries;
         this.committedBatches = current.committedBatches;
+        this.outcomeOwners = current.outcomeOwners;
         this.localUpdates.clear();
         return { alreadyCommitted: true };
       }
-      batch.entries = batch.entries.map(entry => {
-        const update = {
-          ...entry,
-          pendingOutcomes: mergePendingOutcomes(current.get(entry.sessionPath)?.pendingOutcomes, entry.pendingOutcomes),
-        };
-        current.add(update);
-        return update;
-      });
+      batch.entries = current.stageCommittedEntries(batch.entries, batch.reflectionCommit.owner);
       // Merging a prior queue can increase the batch: enforce limits again
       // before the first write, not only on the caller's original proposal.
       assertInputLimits(batch, PLAYBOOK_INPUT_LIMITS, this.logPath);
-      await this.writeRecords([serializeProcessedRecord(batch, this.logPath)]);
       current.committedBatches.set(batch.reflectionCommit.owner, id);
+      await this.writeRecords([serializeProcessedRecord(batch, this.logPath)], PROCESSED_LOG_RECOVERY_MAX_BYTES,
+        () => atomicWrite(this.logPath, current.snapshotContent(PROCESSED_LOG_RECOVERY_MAX_BYTES)));
       this.entries = current.entries;
       this.committedBatches = current.committedBatches;
+      this.outcomeOwners = current.outcomeOwners;
       this.localUpdates.clear();
       return { alreadyCommitted: false };
     });
@@ -677,18 +796,20 @@ export class ProcessedLog {
       // A manual marker or stale writer must not erase another invocation's
       // recovery queue. Only acknowledgeOutcomes can remove pending records.
       const current = new ProcessedLog(this.logPath);
-      await current.load();
+      await current.load({ budget: { remainingBytes: PROCESSED_LOG_RECOVERY_MAX_BYTES } });
       const merged = normalizedEntries.map((entry) => {
-        const update = {
+        const update = current.preserveOutcomeOwners({
           ...entry,
           pendingOutcomes: mergePendingOutcomes(current.get(entry.sessionPath)?.pendingOutcomes, entry.pendingOutcomes),
-        };
+        });
         current.add(update);
         return update;
       });
-      await this.writeEntries(merged);
+      await this.writeEntries(merged, PROCESSED_LOG_RECOVERY_MAX_BYTES,
+        () => atomicWrite(this.logPath, current.snapshotContent(PROCESSED_LOG_RECOVERY_MAX_BYTES)));
       this.entries = current.entries;
       this.committedBatches = current.committedBatches;
+      this.outcomeOwners = current.outcomeOwners;
       this.localUpdates.clear();
     };
 
@@ -704,43 +825,51 @@ export class ProcessedLog {
   /** Remove only completed outcome IDs from the latest durable session state. */
   async acknowledgeOutcomes(
     acknowledgements: Array<{ sessionPath: string; outcomeIds: string[] }>,
+    options: { budget?: ProcessedLogReadBudget; requireExists?: boolean } = {},
   ): Promise<void> {
     if (acknowledgements.length === 0) return;
     await withLock(this.logPath, async () => {
       const current = new ProcessedLog(this.logPath);
-      await current.load();
+      await current.load({ ...options,
+        budget: options.budget ?? { remainingBytes: PROCESSED_LOG_RECOVERY_MAX_BYTES } });
       const updates: ProcessedEntry[] = [];
       for (const acknowledgement of acknowledgements) {
         const entry = current.get(acknowledgement.sessionPath);
         if (!entry?.pendingOutcomes?.length) continue;
         const completed = new Set(acknowledgement.outcomeIds);
-        const pendingOutcomes = entry.pendingOutcomes.filter((record) => !record.id || !completed.has(record.id));
+        const pendingOutcomes = entry.pendingOutcomes.filter(record => !completed.has(pendingOutcomeIdentity(record)));
         if (pendingOutcomes.length === entry.pendingOutcomes.length) continue;
-        const update = { ...entry, pendingOutcomes };
+        const update = current.preserveOutcomeOwners({ ...entry, pendingOutcomes });
         updates.push(update);
         current.add(update);
       }
-      await this.writeEntries(updates);
+      await this.writeEntries(updates, PROCESSED_LOG_RECOVERY_MAX_BYTES,
+        () => atomicWrite(this.logPath, current.snapshotContent(PROCESSED_LOG_RECOVERY_MAX_BYTES)));
       this.entries = current.entries;
       this.committedBatches = current.committedBatches;
+      this.outcomeOwners = current.outcomeOwners;
       this.localUpdates.clear();
     });
   }
 
   /** Called only while the processed-log lock is held. */
-  private async writeEntries(entries: ProcessedEntry[]): Promise<void> {
+  private async writeEntries(entries: ProcessedEntry[], maxBytes?: number, compact?: () => Promise<void>): Promise<void> {
     if (entries.length === 0) return;
-    await this.writeRecords(entries.map(entry => serializeProcessedRecord(entry, this.logPath)));
+    await this.writeRecords(entries.map(entry => serializeProcessedRecord(entry, this.logPath)), maxBytes, compact);
     // Failed writes must not acknowledge pending work in memory.
     for (const entry of entries) this.entries.set(entry.sessionPath, entry);
   }
 
   /** The caller holds the processed-log lock and has bounded every record. */
-  private async writeRecords(records: string[]): Promise<void> {
+  private async writeRecords(records: string[], maxBytes?: number, compact?: () => Promise<void>): Promise<void> {
     if (records.length === 0) return;
-    const handle = await fs.open(this.logPath, "a+", 0o600);
+    let needsCompaction = false;
+    const handle = await fs.open(this.logPath,
+      constants.O_RDWR | constants.O_CREAT | constants.O_APPEND | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0), 0o600);
     try {
-      const { size } = await handle.stat();
+      const stat = await handle.stat();
+      if (!stat.isFile()) throw new InputLimitError(this.logPath, "expected a regular processed log");
+      const { size } = stat;
       let prefix = '# JSONL format: {"sessionPath":..., "processedAt":...}\n';
       if (size > 0) {
         const tail = Buffer.alloc(1);
@@ -749,10 +878,21 @@ export class ProcessedLog {
         // complete entry, including its pending outcome recovery records.
         prefix = tail[0] === 10 ? "" : "\n";
       }
-      await handle.writeFile(prefix + records.join("\n") + "\n", "utf-8");
-      await handle.sync();
+      const content = prefix + records.join("\n") + "\n";
+      if (maxBytes !== undefined && size + Buffer.byteLength(content) > maxBytes) {
+        if (!compact) throw new InputLimitError(this.logPath, "processed-log recovery byte limit exceeded");
+        needsCompaction = true;
+      } else {
+        await handle.writeFile(content, "utf-8");
+        await handle.sync();
+      }
     } finally {
       await handle.close();
+    }
+    if (needsCompaction) {
+      // Preserve all current state while reclaiming obsolete append history.
+      await compact!();
+      return;
     }
     // Also flush the directory when the first append created the ledger.
     // Flushing on every append makes recovery from an earlier failed flush
@@ -779,10 +919,23 @@ export class ProcessedLog {
   }
 
   /** Pending outcome work is independent of session discovery and growth. */
-  getPendingOutcomeEntries(): ProcessedEntry[] {
-    return [...this.entries.values()]
-      .filter((entry) => (entry.pendingOutcomes?.length ?? 0) > 0)
-      .map((entry) => ({ ...entry, pendingOutcomes: [...entry.pendingOutcomes!] }));
+  getPendingOutcomeEntries(owner?: string): ProcessedEntry[] {
+    const expected = owner ? normalizeCommitOwner(owner) : undefined;
+    const selected: ProcessedEntry[] = [];
+    for (const entry of this.entries.values()) {
+      const attributed = expected ? this.preserveOutcomeOwners(entry) : entry;
+      const pendingOutcomes = (attributed.pendingOutcomes ?? []).filter(record => {
+        if (!expected) return true;
+        if (!record.globalPlaybookPath) {
+          throw new PendingOutcomeRecoveryError(
+            `Pending outcome ownership is ambiguous in ${this.logPath}; restore globalPlaybookPath for outcome ${pendingOutcomeIdentity(record)} before retrying reflection`,
+          );
+        }
+        return normalizeCommitOwner(record.globalPlaybookPath) === expected;
+      });
+      if (pendingOutcomes.length) selected.push({ ...entry, pendingOutcomes });
+    }
+    return selected;
   }
 
   add(entry: ProcessedEntry): void {
