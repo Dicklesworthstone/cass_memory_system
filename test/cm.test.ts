@@ -57,34 +57,6 @@ function captureConsole<T>(fn: () => T): { result: T; logs: string[]; errors: st
   }
 }
 
-function captureProcessOutput<T>(fn: () => T): { result: T; stdout: string; stderr: string } {
-  let stdout = "";
-  let stderr = "";
-
-  const originalOut = process.stdout.write.bind(process.stdout);
-  const originalErr = process.stderr.write.bind(process.stderr);
-
-  const captureWrite = (sink: "stdout" | "stderr") => (chunk: any, encoding?: any, cb?: any) => {
-    const text = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf-8");
-    if (sink === "stdout") stdout += text;
-    else stderr += text;
-
-    if (typeof encoding === "function") encoding();
-    if (typeof cb === "function") cb();
-    return true;
-  };
-
-  (process.stdout.write as any) = captureWrite("stdout");
-  (process.stderr.write as any) = captureWrite("stderr");
-
-  try {
-    return { result: fn(), stdout: stdout.trimEnd(), stderr: stderr.trimEnd() };
-  } finally {
-    (process.stdout.write as any) = originalOut;
-    (process.stderr.write as any) = originalErr;
-  }
-}
-
 describe("cm.ts CLI router (unit)", () => {
   test("createProgram wires name + version from package.json", () => {
     withEnv({ CASS_MEMORY_CLI_NAME: "cm-test" }, () => {
@@ -171,7 +143,9 @@ describe("cm.ts CLI router (unit)", () => {
 
   test("adds global flags and -j alias to help", () => {
     const program = createProgram(["bun", "src/cm.ts"]);
-    const { stdout } = captureProcessOutput(() => program.outputHelp());
+    let stdout = "";
+    program.configureOutput({ writeOut: (text) => { stdout += text; } });
+    program.outputHelp();
 
     expect(stdout).toContain("Start here (agents):");
     expect(stdout).toContain("Examples:");

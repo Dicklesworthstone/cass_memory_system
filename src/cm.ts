@@ -33,7 +33,14 @@ import { examplesCommand } from "./examples.js";
 import { infoCommand } from "./info.js";
 import { releaseAllLocks } from "./lock.js";
 import { ErrorCode } from "./types.js";
-import { categorizeError, getCliName, getVersion, reportError } from "./utils.js";
+import {
+  categorizeError,
+  getCliName,
+  getVersion,
+  reportError,
+  writeStderrSync,
+  writeStdoutSync,
+} from "./utils.js";
 
 // Global signal handlers for cleanup
 async function gracefulExit(signal: string) {
@@ -48,6 +55,9 @@ export function createProgram(argv: string[] = process.argv): Command {
   applyGlobalEnvFromArgv(argv);
 
   const program = new Command();
+  // Commander exits immediately after help, version, and argument errors.
+  // Flush their output first, and configure this before subcommands inherit it.
+  program.configureOutput({ writeOut: writeStdoutSync, writeErr: writeStderrSync });
   const toInt = (value: string): number => {
     const raw = value.trim();
     if (!raw) return Number.NaN;

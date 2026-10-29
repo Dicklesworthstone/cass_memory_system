@@ -2708,33 +2708,33 @@ export function isJsonOutput(options?: { json?: boolean; format?: string }): boo
   return Boolean(options?.json);
 }
 
-// Backs off without burning CPU when stdout is a non-blocking pipe reporting
+// Backs off without burning CPU when output is a non-blocking pipe reporting
 // EAGAIN. A single shared buffer avoids per-call allocation.
-const stdoutBackoffBuffer = new Int32Array(new SharedArrayBuffer(4));
+const outputBackoffBuffer = new Int32Array(new SharedArrayBuffer(4));
 
 /**
- * Write a string straight to stdout (fd 1) synchronously, looping until every
+ * Write a string straight to an output descriptor synchronously, looping until every
  * byte is flushed to the OS.
  *
- * The runtime's async stdout stream (console.log / process.stdout.write)
- * buffers large payloads, and Bun can exit before that buffer drains —
+ * The runtime's async output streams (console.log / process.stdout.write)
+ * buffer large payloads, and Bun can exit before those buffers drain —
  * truncating output mid-document at a non-deterministic offset (#50). A direct
  * descriptor write completes before this call returns, so no exit timing can
  * cut the payload short. Partial writes are resumed; EPIPE (reader closed, e.g.
  * `cm ... | head`) ends the write quietly.
  */
-function writeStdoutSyncDirect(text: string): void {
+function writeOutputSync(fd: 1 | 2, text: string): void {
   const buffer = Buffer.from(text, "utf8");
   let offset = 0;
   while (offset < buffer.length) {
     try {
-      offset += writeSync(1, buffer, offset, buffer.length - offset);
+      offset += writeSync(fd, buffer, offset, buffer.length - offset);
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code === "EAGAIN") {
         // Non-blocking pipe is full; wait briefly for the reader to drain it
         // instead of spinning or dropping bytes.
-        Atomics.wait(stdoutBackoffBuffer, 0, 0, 1);
+        Atomics.wait(outputBackoffBuffer, 0, 0, 1);
         continue;
       }
       if (code === "EPIPE") {
@@ -2743,6 +2743,10 @@ function writeStdoutSyncDirect(text: string): void {
       throw err;
     }
   }
+}
+
+function writeStdoutSyncDirect(text: string): void {
+  writeOutputSync(1, text);
 }
 
 // The active stdout sink. Defaults to the synchronous descriptor writer; tests
@@ -2760,6 +2764,11 @@ export function __setStdoutSinkForTests(sink: ((text: string) => void) | null): 
 /** Write a complete string to stdout, guaranteeing a full flush (#50). */
 export function writeStdoutSync(text: string): void {
   stdoutSink(text);
+}
+
+/** Write a complete diagnostic to stderr before an immediate process exit. */
+export function writeStderrSync(text: string): void {
+  writeOutputSync(2, text);
 }
 
 export function printJson(value: unknown): void {
