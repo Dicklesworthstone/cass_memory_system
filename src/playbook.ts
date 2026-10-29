@@ -83,6 +83,8 @@ const StoredPlaybookSchema = PlaybookSchema.extend({
     .max(PLAYBOOK_INPUT_LIMITS.maxArrayLength).default([]),
 }).passthrough();
 
+// Only a confirmed syntax/schema failure may offer an empty replacement.
+// Filesystem errors mean the learned state is unavailable, not corrupt.
 class PlaybookValidationError extends Error {}
 
 export function createEmptyPlaybook(name = "playbook"): Playbook {
@@ -104,6 +106,8 @@ export async function loadPlaybook(filePath: string): Promise<Playbook> {
   const expanded = expandPath(filePath);
 
   try {
+    // Read directly: a forgiving existence probe can turn a transient EIO or
+    // permission failure into an empty playbook and erase rules on the next save.
     const content = await readBoundedFile(expanded, PLAYBOOK_INPUT_LIMITS.maxBytes);
     if (!content.trim()) return createEmptyPlaybook();
 
@@ -473,9 +477,9 @@ export async function recoverCorruptPlaybook(
   playbookPath: string,
   error: Error,
 ): Promise<PlaybookRecoveryResult> {
-  // A resource limit is not evidence of corruption. Never replace or copy an
-  // oversized file as part of automatic recovery; the user must reduce it.
-  if (error instanceof InputLimitError) throw error;
+  // Resource limits, I/O failures and unexpected implementation errors are
+  // not evidence of corruption. Never offer an empty replacement for them.
+  if (!(error instanceof YAMLParseError) && !(error instanceof PlaybookValidationError)) throw error;
   const expanded = expandPath(playbookPath);
   let backupPath: string | null = null;
 
@@ -497,17 +501,20 @@ export async function recoverCorruptPlaybook(
     errorType = "truncation";
   }
 
-  // Step 1: Backup the corrupt file (never lose user data)
+  // Step 1: A replacement is safe to offer only after the original is backed
+  // up. Use a unique, exclusive destination so concurrent attempts cannot
+  // overwrite an earlier recovery copy.
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const candidateBackup = `${expanded}.backup.${timestamp}.${crypto.randomUUID()}`;
   try {
-    if (await fileExists(expanded)) {
-      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-      backupPath = `${expanded}.backup.${timestamp}`;
-      await fs.copyFile(expanded, backupPath);
-      log(`Backed up corrupt playbook to: ${backupPath}`, true);
-    }
+    await fs.copyFile(expanded, candidateBackup, constants.COPYFILE_EXCL);
+    backupPath = candidateBackup;
+    log(`Backed up corrupt playbook to: ${backupPath}`, true);
   } catch (backupErr: any) {
-    warn(`Failed to backup corrupt playbook: ${backupErr.message}`);
-    // Continue with recovery even if backup fails
+    throw new Error(
+      `Playbook recovery aborted: could not create backup at ${candidateBackup}: ${backupErr.message}`,
+      { cause: backupErr },
+    );
   }
 
   // Step 2: Log the corruption details
@@ -569,9 +576,6 @@ export async function loadPlaybookWithRecovery(
 
 export async function loadBlockedLog(logPath: string): Promise<ToxicEntry[]> {
   const expanded = expandPath(logPath);
-  if (!(await fileExists(expanded))) {
-    return [];
-  }
 
   try {
     const content = await readBoundedFile(expanded, PLAYBOOK_INPUT_LIMITS.maxBytes);
@@ -594,11 +598,10 @@ export async function loadBlockedLog(logPath: string): Promise<ToxicEntry[]> {
     }
     return entries;
   } catch (err: any) {
-    // Ignoring an oversized repository block list would silently re-enable
-    // rules the project explicitly blocked.
-    if (err instanceof InputLimitError) throw err;
-    warn(`Failed to read blocked log ${expanded}: ${err.message}`);
-    return [];
+    if (err?.code === "ENOENT" && !(await fileExists(expanded))) return [];
+    // Ignoring an unreadable or oversized block list would silently re-enable
+    // rules the user explicitly blocked.
+    throw err;
   }
 }
 
@@ -617,10 +620,6 @@ export async function appendBlockedLog(entry: BlockedEntry, logPath: string): Pr
 export async function removeFromBlockedLog(bulletId: string, logPath: string): Promise<boolean> {
   const expanded = expandPath(logPath);
   return await withLock(expanded, async () => {
-    if (!(await fileExists(expanded))) {
-      return false;
-    }
-
     try {
       const content = await readBoundedFile(expanded, PLAYBOOK_INPUT_LIMITS.maxBytes);
       const lines = content.split("\n");
@@ -652,9 +651,8 @@ export async function removeFromBlockedLog(bulletId: string, logPath: string): P
 
       return found;
     } catch (err: any) {
-      if (err instanceof InputLimitError) throw err;
-      warn(`Failed to remove from blocked log ${expanded}: ${err.message}`);
-      return false;
+      if (err?.code === "ENOENT" && !(await fileExists(expanded))) return false;
+      throw err;
     }
   });
 }

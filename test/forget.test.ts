@@ -10,6 +10,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import fs from "node:fs/promises";
 import { join } from "node:path";
 import yaml from "yaml";
 import { forgetCommand } from "../src/commands/forget.js";
@@ -61,6 +62,52 @@ function createTestPlaybook(bullets: PlaybookBullet[] = []): Playbook {
 }
 
 describe("forget command - Unit Tests", () => {
+  for (const code of ["EIO", "EACCES"]) {
+    test(`aborts on ${code} probing repository rules instead of forgetting a same-ID global rule`, async () => {
+      await withTempCassHome(async (env) => {
+        const repo = join(env.home, "repo");
+        const repoDir = join(repo, ".cass");
+        await fs.mkdir(repoDir, { recursive: true });
+        const initialized = Bun.spawnSync(["git", "init", "--quiet", "--initial-branch=main", repo]);
+        expect(initialized.exitCode).toBe(0);
+        const repoPath = join(repoDir, "playbook.yaml");
+        const id = "b-colliding-rule";
+        const globalOriginal = yaml.stringify(createTestPlaybook([
+          createTestBullet({ id, content: "Preserve the global recovery procedure." }),
+        ]));
+        const repoOriginal = yaml.stringify(createTestPlaybook([
+          createTestBullet({ id, content: "Preserve the repository recovery procedure." }),
+        ]));
+        writeFileSync(env.playbookPath, globalOriginal);
+        writeFileSync(repoPath, repoOriginal);
+        writeFileSync(env.configPath, JSON.stringify({ playbookPath: env.playbookPath, diaryDir: env.diaryDir }));
+        const cwd = process.cwd();
+        const access = fs.access;
+        let faults = 0;
+        try {
+          process.chdir(repo);
+          fs.access = async (...args: Parameters<typeof fs.access>) => {
+            if (String(args[0]) === repoPath) {
+              faults++;
+              throw Object.assign(new Error(`storage probe failed: ${code}`), { code });
+            }
+            return access(...args);
+          };
+          await expect(forgetCommand(id, { reason: "Retire the repository rule", json: true }))
+            .rejects.toThrow(`storage probe failed: ${code}`);
+        } finally {
+          fs.access = access;
+          process.chdir(cwd);
+        }
+        expect(faults).toBeGreaterThan(0);
+        expect(readFileSync(env.playbookPath, "utf8")).toBe(globalOriginal);
+        expect(readFileSync(repoPath, "utf8")).toBe(repoOriginal);
+        expect(existsSync(join(env.cassMemoryDir, "blocked.log"))).toBe(false);
+        expect(existsSync(join(repoDir, "blocked.log"))).toBe(false);
+      });
+    });
+  }
+
   test("requires reason flag", async () => {
     await withTempCassHome(async (env) => {
       const bullet = createTestBullet({ id: "b-forget1" });

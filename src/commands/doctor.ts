@@ -1668,7 +1668,12 @@ function createMissingBlockedLogFix(blockedPath: string): FixableIssue {
     severity: "warn",
     safety: "safe",
     fix: async () => {
-      await atomicWrite(blockedPath, "");
+      await withLock(blockedPath, async () => {
+        // Forgetting a rule may have created this log since diagnosis or
+        // while this fix was waiting for the same writer lock.
+        if (await fileExists(blockedPath)) return;
+        await atomicWrite(blockedPath, "");
+      });
     },
   };
 }

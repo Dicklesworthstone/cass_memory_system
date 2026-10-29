@@ -132,8 +132,11 @@ async function loadConfigFile(filePath: string): Promise<Partial<Config>> {
   const expanded = expandPath(filePath);
   if (!(await fileExists(expanded))) return {};
 
+  // A selected configuration can carry the memory path, privacy policy and
+  // spending limits. A storage failure must not silently replace those with
+  // defaults; only parsing below uses the existing malformed-config fallback.
+  const content = await readBoundedFile(expanded, CONFIG_INPUT_LIMITS.maxBytes);
   try {
-    const content = await readBoundedFile(expanded, CONFIG_INPUT_LIMITS.maxBytes);
     const ext = path.extname(expanded);
 
     if (ext === ".yaml" || ext === ".yml") {

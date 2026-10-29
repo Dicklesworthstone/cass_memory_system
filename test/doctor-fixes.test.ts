@@ -470,21 +470,28 @@ describe("Doctor Fixes", () => {
   });
 });
 
-describe("doctor missing-playbook fixes preserve later writers", () => {
+describe("doctor missing-storage fixes preserve later writers", () => {
   async function withMissingDiagnostic(
     check: (fixture: { directory: string; file: string; issue: FixableIssue }) => Promise<void>,
+    kind: "playbook" | "blocked-log" = "playbook",
   ): Promise<void> {
-    await withTempDir("doctor-stale-playbook", async root => {
-      const directory = path.join(root, "memory");
-      const file = path.join(directory, "playbook.yaml");
-      await fs.mkdir(directory);
+    await withTempDir("doctor-stale-storage", async root => {
+      const memoryDirectory = path.join(root, "memory");
+      await fs.mkdir(memoryDirectory);
+      const directory = kind === "playbook" ? memoryDirectory : path.join(root, ".cass");
+      const file = path.join(directory, kind === "playbook" ? "playbook.yaml" : "blocked.log");
+      if (kind === "blocked-log") {
+        const initialized = Bun.spawnSync(["git", "init", "--quiet", "--initial-branch=main", root]);
+        expect(initialized.exitCode).toBe(0);
+        await fs.mkdir(directory);
+      }
       const previousHome = process.env.CASS_MEMORY_HOME;
       const previousCwd = process.cwd();
-      process.env.CASS_MEMORY_HOME = directory;
+      process.env.CASS_MEMORY_HOME = memoryDirectory;
       process.chdir(root);
       try {
         const issues = await detectFixableIssues();
-        const issue = issues.find(candidate => candidate.id === "missing-playbook" && candidate.description.includes(file));
+        const issue = issues.find(candidate => candidate.id === `missing-${kind}` && candidate.description.includes(file));
         expect(issue).toBeDefined();
         await check({ directory, file, issue: issue! });
       } finally {
@@ -508,6 +515,16 @@ describe("doctor missing-playbook fixes preserve later writers", () => {
     return fs.readFile(file);
   }
 
+  async function writeBlockedState(file: string): Promise<Buffer<ArrayBuffer>> {
+    await fs.writeFile(file, `${JSON.stringify({
+      id: "b-doctor-blocked",
+      content: "Never erase learned blocked rules.",
+      reason: "unsafe",
+      forgottenAt: "2026-10-28T12:00:00Z",
+    })}\n`);
+    return fs.readFile(file);
+  }
+
   test.serial("still initializes a playbook that is genuinely absent when the fix runs", async () => {
     await withMissingDiagnostic(async ({ file, issue }) => {
       await issue.fix();
@@ -525,39 +542,57 @@ describe("doctor missing-playbook fixes preserve later writers", () => {
     });
   });
 
-  test.serial("rechecks absence after acquiring the lock, including a writer that won the lock first", async () => {
+  test.serial("still initializes a blocked log that is genuinely absent when the fix runs", async () => {
     await withMissingDiagnostic(async ({ file, issue }) => {
-      let signalHeld!: () => void;
-      let release!: () => void;
-      const held = new Promise<void>(resolve => { signalHeld = resolve; });
-      const released = new Promise<void>(resolve => { release = resolve; });
-      const writer = withLock(file, async () => {
-        signalHeld();
-        await released;
-      });
-      await held;
-      let signalAttempt!: () => void;
-      const attempted = new Promise<void>(resolve => { signalAttempt = resolve; });
-      const realMkdir = fs.mkdir.bind(fs);
-      const mkdirSpy = spyOn(fs, "mkdir").mockImplementation(((...args: Parameters<typeof fs.mkdir>) => {
-        if (String(args[0]) === `${file}.lock.d`) signalAttempt();
-        return realMkdir(...args);
-      }) as typeof fs.mkdir);
-      const fixing = issue.fix();
-      try {
-        await attempted;
-        const original = await writeLearnedState(file);
-        release();
-        await writer;
-        await fixing;
-        expect(await fs.readFile(file)).toEqual(original);
-      } finally {
-        release();
-        await Promise.allSettled([writer, fixing]);
-        mkdirSpy.mockRestore();
-      }
-    });
+      await issue.fix();
+      expect(await fs.readFile(file, "utf8")).toBe("");
+      expect((await fs.stat(file)).isFile()).toBe(true);
+    }, "blocked-log");
   });
+
+  test.serial("preserves blocked records created after diagnosis byte for byte", async () => {
+    await withMissingDiagnostic(async ({ file, issue }) => {
+      const original = await writeBlockedState(file);
+      await issue.fix();
+      expect(await fs.readFile(file)).toEqual(original);
+    }, "blocked-log");
+  });
+
+  for (const kind of ["playbook", "blocked-log"] as const) {
+    test.serial(`rechecks ${kind} absence after acquiring the lock, including a writer that won the lock first`, async () => {
+      await withMissingDiagnostic(async ({ file, issue }) => {
+        let signalHeld!: () => void;
+        let release!: () => void;
+        const held = new Promise<void>(resolve => { signalHeld = resolve; });
+        const released = new Promise<void>(resolve => { release = resolve; });
+        const writer = withLock(file, async () => {
+          signalHeld();
+          await released;
+        });
+        await held;
+        let signalAttempt!: () => void;
+        const attempted = new Promise<void>(resolve => { signalAttempt = resolve; });
+        const realMkdir = fs.mkdir.bind(fs);
+        const mkdirSpy = spyOn(fs, "mkdir").mockImplementation(((...args: Parameters<typeof fs.mkdir>) => {
+          if (String(args[0]) === `${file}.lock.d`) signalAttempt();
+          return realMkdir(...args);
+        }) as typeof fs.mkdir);
+        const fixing = issue.fix();
+        try {
+          await attempted;
+          const original = await (kind === "playbook" ? writeLearnedState(file) : writeBlockedState(file));
+          release();
+          await writer;
+          await fixing;
+          expect(await fs.readFile(file)).toEqual(original);
+        } finally {
+          release();
+          await Promise.allSettled([writer, fixing]);
+          mkdirSpy.mockRestore();
+        }
+      }, kind);
+    });
+  }
 
   test.serial("preserves an oversized legacy file that arrives after the missing-file diagnostic", async () => {
     await withMissingDiagnostic(async ({ directory, file, issue }) => {

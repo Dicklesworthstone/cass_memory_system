@@ -34,7 +34,14 @@ import {
   loadOrComputeEmbeddingsForBullets,
 } from "../src/semantic.js";
 import { type Playbook, PlaybookBullet, PlaybookSchema } from "../src/types.js";
-import { extractBulletReasoning, hashContent } from "../src/utils.js";
+import {
+  ensureGlobalStructure,
+  ensureRepoStructure,
+  extractBulletReasoning,
+  fileExists,
+  hashContent,
+  resolveConfigFileInDir,
+} from "../src/utils.js";
 import { createTestBullet, createTestConfig } from "./helpers/index.js";
 
 async function writePlaybookFile(file: string, playbook: Playbook) {
@@ -48,6 +55,53 @@ async function withTempDir(run: (dir: string) => Promise<void>) {
     await run(dir);
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
+  }
+}
+
+async function withStorageReadFailure(
+  file: string,
+  code: string,
+  run: (failure: NodeJS.ErrnoException) => Promise<void>,
+  once = true,
+): Promise<void> {
+  const access = fs.access;
+  const open = fs.open;
+  const failure = Object.assign(new Error(`${code}: storage temporarily unavailable`), { code });
+  let injected = false;
+  const check = (target: unknown) => {
+    if (String(target) === file && (!once || !injected)) {
+      injected = true;
+      throw failure;
+    }
+  };
+  // Model an OS failure on the first attempt to access this file, regardless
+  // of whether the caller probes first or opens it directly. Other files and
+  // all subsequent operations use the real filesystem.
+  fs.access = async (...args: Parameters<typeof fs.access>) => {
+    check(args[0]);
+    return access(...args);
+  };
+  fs.open = async (...args: Parameters<typeof fs.open>) => {
+    check(args[0]);
+    return open(...args);
+  };
+  try {
+    await run(failure);
+    expect(injected).toBe(true);
+  } finally {
+    fs.access = access;
+    fs.open = open;
+  }
+}
+
+async function withMemoryHome(home: string, run: () => Promise<void>): Promise<void> {
+  const original = process.env.CASS_MEMORY_HOME;
+  process.env.CASS_MEMORY_HOME = home;
+  try {
+    await run();
+  } finally {
+    if (original === undefined) delete process.env.CASS_MEMORY_HOME;
+    else process.env.CASS_MEMORY_HOME = original;
   }
 }
 
@@ -182,6 +236,118 @@ describe("loadPlaybook", () => {
       expect(loadedBullet.tags).toContain("important");
     });
   });
+});
+
+describe("persisted memory storage failures", () => {
+  for (const code of ["EIO", "EACCES", "ESTALE"]) {
+    for (const recovery of [false, true]) {
+      it.serial(`preserves learned rules after ${code}${recovery ? " through automatic recovery" : " during an ordinary update"}`, async () => {
+        await withTempDir(async (dir) => {
+          const file = path.join(dir, "playbook.yaml");
+          const bullet = {
+            ...createTestBullet({
+              id: "b-preserved",
+              content: "Never replace unavailable learned state with defaults",
+              helpfulCount: 4,
+              feedbackEvents: [{ type: "helpful" as const, timestamp: "2026-10-28", context: "Keep this evidence" }],
+            }),
+            legacyEvidence: { source: "original learning" },
+          };
+          await writePlaybookFile(file, { ...createEmptyPlaybook(), bullets: [bullet] });
+          const before = await fs.readFile(file, "utf8");
+
+          await withStorageReadFailure(file, code, async (failure) => {
+            const update = async () => {
+              const playbook = recovery
+                ? (await loadPlaybookWithRecovery(file)).playbook
+                : await loadPlaybook(file);
+              addBullet(playbook, { content: "A later learned rule", category: "testing" }, "later-session");
+              await savePlaybook(playbook, file);
+            };
+            await expect(update()).rejects.toBe(failure);
+          });
+
+          expect(await fs.readFile(file, "utf8")).toBe(before);
+          expect(await fs.readdir(dir)).toEqual(["playbook.yaml"]);
+          expect((await loadPlaybook(file)).bullets).toEqual([bullet]);
+        });
+      });
+    }
+  }
+
+  it.serial("distinguishes confirmed missing paths from invalid paths", async () => {
+    await withTempDir(async (dir) => {
+      expect(await fileExists(path.join(dir, "missing", "playbook.yaml"))).toBe(false);
+      const file = path.join(dir, "existing-file");
+      await fs.writeFile(file, "existing contents");
+      const invalid = path.join(file, "playbook.yaml");
+      await expect(fileExists(invalid)).rejects.toMatchObject({ code: "ENOTDIR" });
+      await expect(loadPlaybook(invalid)).rejects.toMatchObject({ code: "ENOTDIR" });
+      expect(await fs.readFile(file, "utf8")).toBe("existing contents");
+    });
+  });
+
+  for (const scope of ["global", "repo"] as const) {
+    for (const filename of ["playbook.yaml", "blocked.log"]) {
+      it.serial(`does not reinitialize an unavailable ${scope} ${filename}`, async () => {
+        await withTempDir(async (dir) => {
+          await withMemoryHome(dir, async () => {
+            const initialize = scope === "global"
+              ? () => ensureGlobalStructure()
+              : () => ensureRepoStructure(dir);
+            await initialize();
+            const file = path.join(dir, filename);
+            const original = filename === "playbook.yaml"
+              ? yaml.stringify({ ...createEmptyPlaybook(), bullets: [createTestBullet({ content: "Existing learned rule" })] })
+              : JSON.stringify({ id: "b-blocked", content: "Never suggest this rule", reason: "Harmful", forgottenAt: "2026-10-28" }) + "\n";
+            await fs.writeFile(file, original);
+            await withStorageReadFailure(file, "EIO", async (failure) => {
+              await expect(initialize()).rejects.toBe(failure);
+            });
+            expect(await fs.readFile(file, "utf8")).toBe(original);
+          });
+        });
+      });
+    }
+  }
+
+  it.serial("does not select a different configuration when the active file is unavailable", async () => {
+    await withTempDir(async (dir) => {
+      const file = path.join(dir, "config.json");
+      await fs.writeFile(file, JSON.stringify({ playbookPath: "/original/playbook.yaml" }));
+      await fs.writeFile(path.join(dir, "config.yaml"), "playbookPath: /different/playbook.yaml\n");
+      await withStorageReadFailure(file, "EACCES", async (failure) => {
+        await expect(resolveConfigFileInDir(dir)).rejects.toBe(failure);
+      });
+      expect((await resolveConfigFileInDir(dir)).path).toBe(file);
+    });
+  });
+
+  for (const target of ["repo-playbook", "global-blocklist", "repo-blocklist"] as const) {
+    it.serial(`does not ignore an unavailable ${target} when merging memory`, async () => {
+      await withTempDir(async (dir) => {
+        const home = path.join(dir, "home");
+        const repo = path.join(dir, "repo");
+        await fs.mkdir(repo);
+        execSync("git init", { cwd: repo, stdio: "pipe" });
+        const globalPath = path.join(home, "playbook.yaml");
+        const repoPath = path.join(repo, ".cass", "playbook.yaml");
+        await writePlaybookFile(globalPath, { ...createEmptyPlaybook(), bullets: [createTestBullet({ id: "b-global", content: "Global learned rule" })] });
+        await writePlaybookFile(repoPath, { ...createEmptyPlaybook(), bullets: [createTestBullet({ id: "b-repo", content: "Repository learned rule" })] });
+        const file = target === "repo-playbook" ? repoPath : path.join(target === "global-blocklist" ? home : path.dirname(repoPath), "blocked.log");
+        if (target !== "repo-playbook") {
+          await fs.writeFile(file, JSON.stringify({ id: "b-repo", content: "Repository learned rule", reason: "Blocked by the user", forgottenAt: "2026-10-28" }) + "\n");
+        }
+        const original = await fs.readFile(file, "utf8");
+        await withMemoryHome(home, async () => {
+          await withStorageReadFailure(file, "EACCES", async (failure) => {
+            await expect(loadMergedPlaybook(createTestConfig({ playbookPath: globalPath }), { cwd: repo })).rejects.toBe(failure);
+          }, false);
+        });
+        expect(await fs.readFile(file, "utf8")).toBe(original);
+      });
+    });
+  }
 });
 
 // =============================================================================
@@ -322,6 +488,46 @@ describe("loadPlaybookWithRecovery", () => {
       }
     });
   });
+
+  it("backs up schema-invalid learned state before offering a fresh playbook", async () => {
+    await withTempDir(async (dir) => {
+      const file = path.join(dir, "playbook.yaml");
+      const original = JSON.stringify({ ...createEmptyPlaybook(), bullets: [null] });
+      await fs.writeFile(file, original);
+      const result = await loadPlaybookWithRecovery(file);
+      expect(result.recovered).toBe(true);
+      expect(result.playbook.bullets).toEqual([]);
+      expect(await fs.readFile(result.recovery!.backupPath!, "utf8")).toBe(original);
+      expect(await fs.readFile(file, "utf8")).toBe(original);
+    });
+  });
+
+  for (const partial of [false, true]) {
+    it.serial(`refuses to offer a replacement if the corruption backup fails${partial ? " after a partial copy" : ""}`, async () => {
+      await withTempDir(async (dir) => {
+        const file = path.join(dir, "playbook.yaml");
+        const original = "::: not valid yaml :::";
+        await fs.writeFile(file, original);
+        const copy = fs.copyFile;
+        fs.copyFile = async (...args: Parameters<typeof fs.copyFile>) => {
+          if (String(args[0]) === file) {
+            if (partial) await fs.writeFile(args[1], "partial backup", { flag: "wx" });
+            throw Object.assign(new Error("backup device is full"), { code: "ENOSPC" });
+          }
+          return copy(...args);
+        };
+        try {
+          await expect(loadPlaybookWithRecovery(file)).rejects.toThrow("could not create backup");
+        } finally {
+          fs.copyFile = copy;
+        }
+        expect(await fs.readFile(file, "utf8")).toBe(original);
+        const backups = (await fs.readdir(dir)).filter(name => name.includes(".backup."));
+        expect(backups).toHaveLength(partial ? 1 : 0);
+        if (partial) expect(await fs.readFile(path.join(dir, backups[0]), "utf8")).toBe("partial backup");
+      });
+    });
+  }
 });
 
 // =============================================================================

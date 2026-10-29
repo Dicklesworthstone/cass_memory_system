@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { execSync } from "node:child_process";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import fs, { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   bakeBudgetIntoConfig,
@@ -56,6 +56,55 @@ describe("requested workspace configuration", () => {
       });
     });
   });
+
+  for (const scope of ["global", "repo"] as const) {
+    for (const code of ["EIO", "EACCES", "ESTALE"]) {
+      test.serial(`does not drop selected ${scope} settings after a ${code} read failure`, async () => {
+        await withTempCassHome(async (env) => {
+          const memoryPath = join(env.home, "retained-custom-memory.yaml");
+          await writeFile(env.configPath, JSON.stringify({
+            playbookPath: memoryPath,
+            budget: { dailyLimit: 0.25, monthlyLimit: 2.5 },
+            sanitization: { extraPatterns: ["GLOBAL_PRIVATE"] },
+          }));
+          await withTempDir("config-storage-failure", async (repoDir) => {
+            execSync("git init --quiet", { cwd: repoDir, stdio: "pipe" });
+            await mkdir(join(repoDir, ".cass"));
+            const repoConfigPath = join(repoDir, ".cass", "config.json");
+            await writeFile(repoConfigPath, JSON.stringify({
+              maxBulletsInContext: 7,
+              sanitization: { extraPatterns: ["REPO_PRIVATE"] },
+            }));
+            const target = scope === "global" ? env.configPath : repoConfigPath;
+            const before = await readFile(target, "utf8");
+            const originalOpen = fs.open;
+            const failure = Object.assign(new Error(`${code}: selected config is unreadable`), { code });
+            let injected = false;
+            fs.open = async (...args: Parameters<typeof fs.open>) => {
+              if (!injected && String(args[0]) === target) {
+                injected = true;
+                throw failure;
+              }
+              return originalOpen(...args);
+            };
+            try {
+              await expect(loadConfig({}, { cwd: repoDir })).rejects.toBe(failure);
+              expect(injected).toBe(true);
+            } finally {
+              fs.open = originalOpen;
+            }
+            expect(await readFile(target, "utf8")).toBe(before);
+            const restored = await loadConfig({}, { cwd: repoDir });
+            expect(restored.playbookPath).toBe(memoryPath);
+            expect(restored.budget.dailyLimit).toBe(0.25);
+            expect(restored.budget.monthlyLimit).toBe(2.5);
+            expect(restored.maxBulletsInContext).toBe(7);
+            expect(restored.sanitization.extraPatterns).toEqual(expect.arrayContaining(["GLOBAL_PRIVATE", "REPO_PRIVATE"]));
+          });
+        });
+      });
+    }
+  }
 });
 
 describe("getDefaultConfig()", () => {
