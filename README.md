@@ -893,6 +893,13 @@ failures the same way while retaining proposed deltas. Ordinary diagnostic
 warnings do not make an otherwise successful run fail. Scheduled jobs can check
 the process exit status; failed sessions remain eligible for a later retry.
 
+Reflection checks destructive proposals against the rules the model actually
+read. If a rule was corrected, removed, repinned, or moved to another scope while
+the model was running, that session fails without applying its proposals or
+advancing its processing watermark. Other sessions can still commit. Retry the
+affected session against the current rules; concurrent feedback and confidence
+updates are retained and do not by themselves invalidate a proposal.
+
 Reflection also recovers interrupted storage commits. Before replacing any
 playbook, it persists the exact prepared changes and their session watermarks.
 If the process stops between playbook writes or before the processing ledger is

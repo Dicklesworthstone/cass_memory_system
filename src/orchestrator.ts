@@ -238,6 +238,16 @@ function isActiveBullet(bullet: PlaybookBullet): boolean {
   return !bullet.deprecated && bullet.maturity !== "deprecated" && bullet.state !== "retired";
 }
 
+/** Feedback may advance while the model runs; destructive edits require the same rule definition. */
+function destructiveRuleDefinition(bullet: PlaybookBullet): string {
+  return JSON.stringify([
+    bullet.content, bullet.category, bullet.kind, bullet.type, bullet.isNegative,
+    bullet.scope, bullet.scopeKey, bullet.workspace, bullet.source, bullet.createdAt,
+    bullet.state, bullet.deprecated, bullet.maturity === "deprecated",
+    bullet.replacedBy, bullet.deprecationReason, bullet.pinned, bullet.pinnedReason,
+  ]);
+}
+
 function findFirstHashMatch(
   playbook: Playbook,
   content: string,
@@ -603,17 +613,41 @@ export async function orchestrateReflection(
     options.onProgress?.({ phase: "discovery", totalSessions: unprocessed.length });
 
     // 4. Reflection Phase (LLM) - Done WITHOUT holding playbook locks
-    const allDeltas: PlaybookDelta[] = [];
-    const pendingProcessedEntries: ProcessedEntry[] = [];
+    let allDeltas: PlaybookDelta[] = [];
+    let pendingProcessedEntries: ProcessedEntry[] = [];
     // Log updates that do not count as a reflected session: growth that added
     // no new records (refreshes the growth signals so discovery stops picking
     // the session), and failed attempts (bounded retry, #85).
     const pendingRefreshEntries: ProcessedEntry[] = [];
     const pendingFailureEntries: ProcessedEntry[] = [];
     const deltaProvenance = new Map<PlaybookDelta, { sessionPath: string; context: ReflectionContext }>();
+    const completedProposals = new Map<string, PlaybookDelta[]>();
+    const sessionInlineFeedbackCounts = new Map<string, number>();
     const pendingOutcomes = new Map<string, Array<{ input: OutcomeInput; context: ReflectionContext }>>();
     let sessionsProcessed = 0;
     let inlineFeedbackDeltaCount = 0;
+
+    const recordSessionFailure = (sessionPath: string, message: string, proposedDeltas?: PlaybookDelta[]) => {
+      errors.push(`Failed to process ${sessionPath}: ${message}`);
+      if (proposedDeltas !== undefined) failedSessions.push({ sessionPath, error: message, proposedDeltas });
+      const prior = processedSession(sessionPath);
+      // Preserve the last successful boundary. A forced legacy session with
+      // no watermark must retain its processed marker to prevent double grading.
+      if (!prior || prior.status === "failed" || prior.recordCount !== undefined) pendingFailureEntries.push({
+        ...(prior ?? {}),
+        sessionPath,
+        processedAt: prior?.processedAt ?? now(),
+        deltasGenerated: prior?.deltasGenerated ?? 0,
+        status: "failed",
+        failures: (prior?.status === "failed" ? (prior.failures ?? 1) : 0) + 1,
+        lastFailureAt: now(),
+        lastError: message.slice(0, 500),
+      });
+      options.onProgress?.({
+        phase: "session_error", index: unprocessed.indexOf(sessionPath) + 1,
+        totalSessions: unprocessed.length, sessionPath, error: message,
+      });
+    };
 
     for (let i = 0; i < unprocessed.length; i++) {
       const sessionPath = unprocessed[i]!;
@@ -932,6 +966,8 @@ export async function orchestrateReflection(
         // Publish the completed session as one batch. No fallible processing
         // or caller callback follows publication inside this session's try.
         for (const delta of sessionDeltas) deltaProvenance.set(delta, { sessionPath, context });
+        completedProposals.set(sessionPath, proposedDeltas);
+        sessionInlineFeedbackCounts.set(sessionPath, sessionInlineFeedbackCount);
         allDeltas.push(...sessionDeltas);
         inlineFeedbackDeltaCount += sessionInlineFeedbackCount;
         if (sessionOutcomes.length > 0) pendingOutcomes.set(sessionPath, sessionOutcomes);
@@ -939,30 +975,7 @@ export async function orchestrateReflection(
         sessionsProcessed++;
       } catch (err: any) {
         const message = err?.message || String(err);
-        errors.push(`Failed to process ${sessionPath}: ${message}`);
-        if (proposedDeltas !== undefined) failedSessions.push({ sessionPath, error: message, proposedDeltas });
-        // Bounded retry (#85): remember the failure, keeping any watermark from
-        // an earlier successful pass, so discovery can back off. A processed
-        // session without a watermark (only reachable via --force) keeps its
-        // processed entry: marking it failed would let discovery reflect the
-        // whole transcript again and re-count its feedback.
-        if (!priorDone || watermark !== undefined) pendingFailureEntries.push({
-          ...(prior ?? {}),
-          sessionPath,
-          processedAt: prior?.processedAt ?? now(),
-          deltasGenerated: prior?.deltasGenerated ?? 0,
-          status: "failed",
-          failures: (prior?.status === "failed" ? (prior.failures ?? 1) : 0) + 1,
-          lastFailureAt: now(),
-          lastError: message.slice(0, 500),
-        });
-        options.onProgress?.({
-          phase: "session_error",
-          index: i + 1,
-          totalSessions: unprocessed.length,
-          sessionPath,
-          error: message,
-        });
+        recordSessionFailure(sessionPath, message, proposedDeltas);
       }
     }
 
@@ -1022,7 +1035,7 @@ export async function orchestrateReflection(
     // when no deltas were generated (empty sessions, no insights) we still
     // mark them processed to avoid infinite loops, and the global playbook's
     // reflection counters advance by exactly this many (#72).
-    const committedSessionCount = pendingProcessedEntries.length;
+    let committedSessionCount = pendingProcessedEntries.length;
 
     // 5. Merge Phase: Lock Playbooks, Reload, Curate, Save
     // We lock Global first, then Repo (if exists) to prevent deadlocks.
@@ -1048,6 +1061,39 @@ export async function orchestrateReflection(
       if (incoming.length > 0) semanticIndexes.set(context,
         await buildSemanticDedupIndex(context.snapshot.bullets, incoming, context.config));
     }
+
+    const findDestructiveConflicts = async (): Promise<Map<string, string>> => {
+      const conflicts = new Map<string, string>();
+      const captured = new Map<string, Playbook>();
+      for (const [context, deltas] of batches) {
+        for (const delta of deltas) {
+          const ids = delta.type === "merge" ? delta.bulletIds
+            : delta.type === "replace" || delta.type === "deprecate" ? [delta.bulletId] : [];
+          if (ids.length === 0) continue;
+          const sessionPath = deltaProvenance.get(delta)!.sessionPath;
+          if (conflicts.has(sessionPath)) continue;
+          for (const id of ids) {
+            const owner = context.ruleOwners.get(id);
+            const original = context.snapshot.bullets.find(bullet => bullet.id === id);
+            // Unknown model IDs keep their ordinary curation rejection; only
+            // rules actually shown to the reflector can have become stale.
+            if (!owner || !original) continue;
+            let currentPlaybook = captured.get(owner);
+            if (!currentPlaybook) {
+              currentPlaybook = await transaction.loadPlaybook(owner);
+              captured.set(owner, currentPlaybook);
+            }
+            const current = findBullet(currentPlaybook, id);
+            if (!current || destructiveRuleDefinition(current) !== destructiveRuleDefinition(original)) {
+              conflicts.set(sessionPath,
+                `Rule ${id} ${current ? "changed" : "was removed"} in ${owner} while reflection was running; retry the session against the current rules before applying ${delta.type}`);
+              break;
+            }
+          }
+        }
+      }
+      return conflicts;
+    };
 
     const performMerge = async (context: ReflectionContext, deltas: PlaybookDelta[]) => {
       const config = context.config;
@@ -1301,31 +1347,65 @@ export async function orchestrateReflection(
         rememberRecovery(pending);
         return;
       }
-      transaction = await ReflectionCommit.create(globalPath, logPath, [
-        ...pendingProcessedEntries,
-        ...pendingRefreshEntries,
-        ...pendingFailureEntries,
-      ], { sessionsProcessed: committedSessionCount });
-      try {
-        for (const [context, deltas] of batches) {
-          if (context.repoPath && (context.repoExists || acceptsRepositoryAdds(context))) {
-            if (samePlaybookPath(context.repoPath, globalPath)) {
-              throw new Error("Global and repository playbook paths must differ for reflection");
+      // The model ran without storage locks. Compare destructive proposals
+      // with the exact originals captured for this draft, before any curation.
+      // Each rejected draft removes every conflicted session, so rebuilding is
+      // bounded by the selected sessions and never retries a stale proposal.
+      while (true) {
+        transaction = await ReflectionCommit.create(globalPath, logPath, [
+          ...pendingProcessedEntries,
+          ...pendingRefreshEntries,
+          ...pendingFailureEntries,
+        ], { sessionsProcessed: committedSessionCount });
+        try {
+          const conflicts = await findDestructiveConflicts();
+          if (conflicts.size > 0) {
+            await transaction.abort();
+            const retained = pendingProcessedEntries.filter(entry => !conflicts.has(entry.sessionPath));
+            if (pendingProcessedEntries.length - retained.length !== conflicts.size) {
+              throw new Error("Conflicting reflection sessions could not be removed safely; no commit was published");
             }
+            pendingProcessedEntries = retained;
+            allDeltas = allDeltas.filter(delta => !conflicts.has(deltaProvenance.get(delta)!.sessionPath));
+            for (const [context, deltas] of batches) {
+              const retainedDeltas = deltas.filter(delta => !conflicts.has(deltaProvenance.get(delta)!.sessionPath));
+              if (retainedDeltas.length) batches.set(context, retainedDeltas);
+              else batches.delete(context);
+            }
+            sessionsProcessed -= conflicts.size;
+            committedSessionCount = pendingProcessedEntries.length;
+            for (const [sessionPath, message] of conflicts) {
+              inlineFeedbackDeltaCount -= sessionInlineFeedbackCounts.get(sessionPath) ?? 0;
+              recordSessionFailure(sessionPath, message, completedProposals.get(sessionPath));
+            }
+            if (autoOutcome) autoOutcome.inlineFeedbackDeltas = inlineFeedbackDeltaCount;
+            if (pendingProcessedEntries.length === 0) {
+              await processedLog.appendBatch([...pendingRefreshEntries, ...pendingFailureEntries]);
+              return;
+            }
+            continue;
           }
-          await performMerge(context, deltas);
+          for (const [context, deltas] of batches) {
+            if (context.repoPath && (context.repoExists || acceptsRepositoryAdds(context))) {
+              if (samePlaybookPath(context.repoPath, globalPath)) {
+                throw new Error("Global and repository playbook paths must differ for reflection");
+              }
+            }
+            await performMerge(context, deltas);
+          }
+          // Counters and ledger entries are part of the same frozen commit.
+          const globalToSave = await transaction.loadPlaybook(globalPath);
+          recordReflectionRun(globalToSave, committedSessionCount);
+          await transaction.savePlaybook(globalToSave, globalPath, { updateLastReflection: true });
+          await transaction.commit();
+          if (globalResult) globalResult.playbook = globalToSave;
+          break;
+        } catch (error) {
+          // Prepared-only staging is disposable. Once the manifest is durable,
+          // abort leaves it intact so a later run can finish the exact commit.
+          await transaction.abort();
+          throw error;
         }
-        // Counters and ledger entries are part of the same frozen commit.
-        const globalToSave = await transaction.loadPlaybook(globalPath);
-        recordReflectionRun(globalToSave, committedSessionCount);
-        await transaction.savePlaybook(globalToSave, globalPath, { updateLastReflection: true });
-        await transaction.commit();
-        if (globalResult) globalResult.playbook = globalToSave;
-      } catch (error) {
-        // Prepared-only staging is disposable. Once the manifest is durable,
-        // abort leaves it intact so a later run can finish the exact commit.
-        await transaction.abort();
-        throw error;
       }
     });
 

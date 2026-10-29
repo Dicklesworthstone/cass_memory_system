@@ -2434,6 +2434,177 @@ describe("orchestrateReflection session workspace ownership", () => {
     });
   });
 
+  test.each(["replace", "deprecate", "merge"] as const)("a concurrent rule correction rejects stale %s proposals and retains the retry watermark", async operation => {
+    await withWorkspaceReflection(async f => {
+      const session = f.session("stale-replacement", f.beta,
+        "The earlier integration guidance needed a more precise command for the release process.");
+      const first = await f.run({ deltas: [] }, { session });
+      expect(first.errors).toEqual([]);
+      const ledger = new ProcessedLog(expandPath(getProcessedLogPath()));
+      await ledger.load();
+      const prior = ledger.get(session)!;
+      expect(prior.recordCount).toBe(2);
+      appendJsonl(session, [
+        { role: "user", content: "Review the new release packaging requirements before changing the deployment rules.", cwd: f.beta },
+        { role: "assistant", content: "// [cass: harmful b-bbb222] - the earlier approval process missed the new requirements", cwd: f.beta },
+      ]);
+      f.discover([{ path: session }]);
+      const originalGlobal = readFileSync(f.env.playbookPath, "utf8");
+      let correctedPlaybook = "";
+      const proposal: PlaybookDelta = operation === "merge" ? {
+        type: "merge", bulletIds: ["b-aaa111", "b-bbb222"],
+        mergedContent: "BETA_ONLY: run the project's integration checks and require deployment review before release.",
+      } : operation === "deprecate" ? {
+        type: "deprecate", bulletId: "b-aaa111", reason: "The earlier integration rule is obsolete",
+      } : {
+        type: "replace", bulletId: "b-aaa111", newContent: "BETA_ONLY: run make legacy-test before release.",
+      };
+      const result = await f.run(prompt => {
+        expect(prompt).toContain("BETA_ONLY: run the project's integration checks.");
+        const current = readPlaybook(f.betaPath);
+        current.bullets[0].content = "BETA_ONLY: run make verify-release with signature checks before deployment.";
+        correctedPlaybook = yaml.stringify(current);
+        writeFileSync(f.betaPath, correctedPlaybook);
+        return { deltas: [proposal] };
+      });
+      expect(readFileSync(f.betaPath, "utf8")).toBe(correctedPlaybook);
+      expect(readFileSync(f.env.playbookPath, "utf8")).toBe(originalGlobal);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]).toContain("changed");
+      expect(result.sessionsProcessed).toBe(0);
+      expect(result.deltasGenerated).toBe(0);
+      expect(result.failedSessions).toEqual([{
+        sessionPath: session, error: expect.stringContaining("changed"),
+        proposedDeltas: [expect.objectContaining(proposal)],
+      }]);
+      await ledger.load();
+      expect(ledger.has(session)).toBe(false);
+      expect(ledger.get(session)).toMatchObject({
+        status: "failed", failures: 1, recordCount: prior.recordCount, lastRecordHash: prior.lastRecordHash,
+      });
+      expect(ledger.getPendingOutcomeEntries()).toEqual([]);
+
+      const freshContent = "BETA_ONLY: run make verify-release with signature checks and integration fixtures before deployment.";
+      const retried = await f.run(prompt => {
+        expect(prompt).toContain("run make verify-release with signature checks before deployment");
+        return { deltas: [{ type: "replace", bulletId: "b-aaa111", newContent: freshContent }] };
+      }, { session });
+      expect(retried.errors).toEqual([]);
+      expect(retried.sessionsProcessed).toBe(1);
+      const saved = readPlaybook(f.betaPath);
+      expect(saved.bullets[0].content).toBe(freshContent);
+      expect(saved.bullets[1].harmfulCount).toBe(1);
+      await ledger.load();
+      expect(ledger.get(session)?.recordCount).toBe(4);
+      expect(ledger.get(session)?.status).toBeUndefined();
+    });
+  });
+
+  test.each(["scope", "pinning", "retirement", "removal"] as const)("a concurrent %s change prevents stale destructive reflection", async change => {
+    await withWorkspaceReflection(async f => {
+      const session = f.session(`stale-${change}`, f.beta, "Review the integration guidance against the latest release requirements.");
+      f.discover([{ path: session }]);
+      let preserved = "";
+      const result = await f.run(() => {
+        const current = readPlaybook(f.betaPath);
+        const bullet = current.bullets[0];
+        if (change === "scope") {
+          bullet.scope = "language";
+          bullet.scopeKey = "python";
+        } else if (change === "pinning") {
+          bullet.pinned = true;
+          bullet.pinnedReason = "A reviewed release requirement";
+        } else if (change === "retirement") {
+          bullet.deprecated = true;
+          bullet.state = "retired";
+          bullet.maturity = "deprecated";
+          bullet.deprecationReason = "Human review found a dangerous assumption";
+        } else current.bullets.shift();
+        preserved = yaml.stringify(current);
+        writeFileSync(f.betaPath, preserved);
+        return { deltas: [{ type: "replace", bulletId: "b-aaa111", newContent: "BETA_ONLY: use the older integration command." }] };
+      });
+      expect(result.errors).toHaveLength(1);
+      expect(result.sessionsProcessed).toBe(0);
+      expect(result.deltasGenerated).toBe(0);
+      expect(result.failedSessions?.[0]?.proposedDeltas).toHaveLength(1);
+      expect(readFileSync(f.betaPath, "utf8")).toBe(preserved);
+      const ledger = new ProcessedLog(expandPath(getProcessedLogPath()));
+      await ledger.load();
+      expect(ledger.get(session)).toMatchObject({ status: "failed", failures: 1 });
+      expect(ledger.get(session)?.recordCount).toBeUndefined();
+    });
+  });
+
+  test("concurrent feedback does not block a valid reflector replacement or lose its evidence", async () => {
+    await withWorkspaceReflection(async f => {
+      const session = f.session("concurrent-feedback", f.beta, "Make the integration command explicit for future release work.");
+      f.discover([{ path: session }]);
+      const event = createTestFeedbackEvent("helpful", { sessionPath: "/sessions/independent-review.jsonl" });
+      const newContent = "BETA_ONLY: run make verify-release before deployment.";
+      const result = await f.run(() => {
+        const current = readPlaybook(f.betaPath);
+        current.bullets[0].helpfulCount++;
+        current.bullets[0].feedbackEvents.push(event);
+        current.bullets[0].updatedAt = now();
+        current.bullets[0].maturity = "established";
+        writeFileSync(f.betaPath, yaml.stringify(current));
+        return { deltas: [{ type: "replace", bulletId: "b-aaa111", newContent }] };
+      });
+      expect(result.errors).toEqual([]);
+      expect(result.sessionsProcessed).toBe(1);
+      const bullet = readPlaybook(f.betaPath).bullets[0];
+      expect(bullet.content).toBe(newContent);
+      expect(bullet.helpfulCount).toBe(1);
+      expect(bullet.feedbackEvents).toEqual([event]);
+    });
+  });
+
+  test("a destructive conflict drops the whole failed session while committing healthy sessions", async () => {
+    await withWorkspaceReflection(async f => {
+      const failed = f.session("stale-alpha", f.alpha,
+        "All tests passed. // [cass: helpful b-aaa111] - alpha checks passed\nUsed b-bbb222 to review the release successfully.");
+      const healthy = f.session("healthy-beta", f.beta, "// [cass: helpful b-aaa111] - beta checks passed");
+      f.discover([{ path: failed }, { path: healthy }]);
+      let correctedAlpha = "";
+      const lostProposal = "Inspect the alpha migration journal before retrying schema changes.";
+      const healthyProposal = "Verify beta archive signatures before promoting a release artifact.";
+      const result = await f.run(prompt => {
+        if (prompt.includes("ALPHA_ONLY")) {
+          const current = readPlaybook(f.alphaPath);
+          current.bullets[0].content = "ALPHA_ONLY: run the newly reviewed security integration checks.";
+          correctedAlpha = yaml.stringify(current);
+          writeFileSync(f.alphaPath, correctedAlpha);
+          return { deltas: [
+            { type: "replace", bulletId: "b-aaa111", newContent: "ALPHA_ONLY: run the former integration command." },
+            { type: "add", bullet: { content: lostProposal, category: "testing", scope: "workspace" } },
+          ] };
+        }
+        return { deltas: [{ type: "add", bullet: { content: healthyProposal, category: "testing", scope: "workspace" } }] };
+      });
+      expect(result.errors).toHaveLength(1);
+      expect(result.sessionsProcessed).toBe(1);
+      expect(result.deltasGenerated).toBe(2); // Healthy rule and its inline feedback only.
+      expect(result.failedSessions?.[0]?.sessionPath).toBe(failed);
+      expect(result.failedSessions?.[0]?.proposedDeltas).toHaveLength(2);
+      expect(result.autoOutcome?.inlineFeedbackDeltas).toBe(1);
+      expect(result.autoOutcome?.outcomesRecorded).toBe(0);
+      expect(readFileSync(f.alphaPath, "utf8")).toBe(correctedAlpha);
+      const beta = readPlaybook(f.betaPath);
+      expect(beta.bullets[0].helpfulCount).toBe(1);
+      expect(beta.bullets.some((bullet: PlaybookBullet) => bullet.content === healthyProposal)).toBe(true);
+      const global = readPlaybook(f.env.playbookPath);
+      expect(global.metadata.totalSessionsProcessed).toBe(1);
+      expect(global.metadata.totalReflections).toBe(1);
+      const ledger = new ProcessedLog(expandPath(getProcessedLogPath()));
+      await ledger.load();
+      expect(ledger.get(failed)).toMatchObject({ status: "failed", failures: 1 });
+      expect(ledger.get(failed)?.recordCount).toBeUndefined();
+      expect(ledger.get(healthy)?.recordCount).toBe(2);
+      expect(ledger.getPendingOutcomeEntries()).toEqual([]);
+    });
+  });
+
   test("automatic sessions with no workspace cannot borrow the launch repository", async () => {
     await withWorkspaceReflection(async f => {
       const before = readFileSync(f.alphaPath, "utf-8");
@@ -2671,7 +2842,19 @@ describe("orchestrateReflection interrupted commit recovery", () => {
         fault.mockRestore();
       }
       expect(existsSync(fixture.pendingPath)).toBe(true);
-      await recordFeedback("b-aaa111", { helpful: true, session: "newer-manual-mark", workspace: f.beta });
+      const beforeMark = fixture.snapshot();
+      await expect(recordFeedback("b-aaa111", { helpful: true, session: "newer-manual-mark", workspace: f.beta }))
+        .rejects.toThrow("pending reflection commit");
+      expect(fixture.snapshot()).toEqual(beforeMark);
+
+      // A noncooperating editor can still change the file directly. Recovery
+      // must retain that external edit even though normal writers now refuse it.
+      const edited = readPlaybook(f.betaPath);
+      const event = createTestFeedbackEvent("helpful", { sessionPath: "newer-manual-mark" });
+      edited.bullets[0].helpfulCount++;
+      edited.bullets[0].feedbackEvents.push(event);
+      edited.bullets[0].updatedAt = event.timestamp;
+      writeFileSync(f.betaPath, yaml.stringify(edited));
       const beforeRecovery = fixture.snapshot();
       let unexpectedCalls = 0;
       await expect(f.run(() => {
