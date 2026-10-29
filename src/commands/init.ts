@@ -10,6 +10,7 @@ import { hookCommand } from "./hook.js";
 import { withLock } from "../lock.js";
 import { formatKv, icon, iconPrefix } from "../output.js";
 import { createEmptyPlaybook, loadPlaybook, savePlaybook } from "../playbook.js";
+import { assertPlaybookWriteAllowed } from "../reflection-commit.js";
 import { applyStarter, loadStarter } from "../starters.js";
 import { saveTrauma, scanForTraumas } from "../trauma.js";
 import { type Config, ErrorCode, type TraumaEntry } from "../types.js";
@@ -172,15 +173,6 @@ export async function initCommand(options: InitOptions) {
       return;
     }
 
-    const ts = Date.now();
-    const toBackup = [configPath, playbookPath];
-    for (const file of toBackup) {
-      if (await fileExists(file)) {
-        const backupPath = `${file}.backup.${ts}`;
-        await fs.copyFile(file, backupPath);
-        backups.push({ file, backup: backupPath });
-      }
-    }
   }
 
   // Privacy-first: cross-agent enrichment requires explicit consent.
@@ -223,15 +215,27 @@ export async function initCommand(options: InitOptions) {
   const result = await ensureGlobalStructure(defaultConfigStr, defaultPlaybookStr);
 
   if (needsForceConfirmation) {
-    // Reset the ACTIVE config file in its own format, so a YAML config is not
-    // left behind shadowed by a freshly written config.json.
-    await atomicWrite(
-      configPath,
-      configFile.format === "yaml" ? yaml.stringify(config) : defaultConfigStr,
-    );
-    overwritten.push(path.basename(configPath));
-    await atomicWrite(playbookPath, defaultPlaybookStr);
-    overwritten.push("playbook.yaml");
+    await withLock(playbookPath, async () => {
+      // An explicit reset must not invalidate a published reflection commit,
+      // including by dropping the receipt from an already-applied target.
+      await assertPlaybookWriteAllowed(playbookPath, playbook);
+      const ts = Date.now();
+      for (const file of [configPath, playbookPath]) {
+        if (await fileExists(file)) {
+          const backupPath = `${file}.backup.${ts}`;
+          await fs.copyFile(file, backupPath);
+          backups.push({ file, backup: backupPath });
+        }
+      }
+      // Reset the active config in its own format, preserving YAML precedence.
+      await atomicWrite(
+        configPath,
+        configFile.format === "yaml" ? yaml.stringify(config) : defaultConfigStr,
+      );
+      overwritten.push(path.basename(configPath));
+      await savePlaybook(playbook, playbookPath);
+      overwritten.push("playbook.yaml");
+    });
   }
 
   let starterOutcome: { added: number; skipped: number; name: string } | null = null;
@@ -489,15 +493,6 @@ async function initRepoCommand(options: InitOptions) {
       return;
     }
 
-    const ts = Date.now();
-    const toBackup = [playbookPath, blockedPath];
-    for (const file of toBackup) {
-      if (await fileExists(file)) {
-        const backupPath = `${file}.backup.${ts}`;
-        await fs.copyFile(file, backupPath);
-        backups.push({ file, backup: backupPath });
-      }
-    }
   }
 
   // Create the structure
@@ -506,10 +501,21 @@ async function initRepoCommand(options: InitOptions) {
   if (needsForceConfirmation) {
     const repoPlaybook = createEmptyPlaybook("repo-playbook");
     repoPlaybook.description = "Project-specific rules for this repository";
-    await atomicWrite(playbookPath, yaml.stringify(repoPlaybook));
-    overwritten.push("playbook.yaml");
-    await atomicWrite(blockedPath, "");
-    overwritten.push("blocked.log");
+    await withLock(playbookPath, () => withLock(blockedPath, async () => {
+      await assertPlaybookWriteAllowed(playbookPath, repoPlaybook);
+      const ts = Date.now();
+      for (const file of [playbookPath, blockedPath]) {
+        if (await fileExists(file)) {
+          const backupPath = `${file}.backup.${ts}`;
+          await fs.copyFile(file, backupPath);
+          backups.push({ file, backup: backupPath });
+        }
+      }
+      await savePlaybook(repoPlaybook, playbookPath);
+      overwritten.push("playbook.yaml");
+      await atomicWrite(blockedPath, "");
+      overwritten.push("blocked.log");
+    }));
   }
 
   let starterOutcome: { added: number; skipped: number; name: string } | null = null;

@@ -922,11 +922,18 @@ owner information, and pending outcomes. New commits check both ledger and
 index capacity before publishing recovery intent or replacing playbooks.
 The ordinary 16 MiB playbook limit is unchanged.
 
-Recovery preserves subsequent feedback on files already committed. If an
-uncommitted destination has changed since preparation, it retains both versions
-and refuses to overwrite the newer data. The error identifies the affected file;
-resolve that conflict before retrying. Keep the pending manifest and its stage
-directory under `~/.cass-memory/reflections/commits/` until recovery succeeds.
+Recovery preserves subsequent feedback on files already committed. Normal
+playbook writes, embedding repair, and initialization refuse to change a target
+whose prepared replacement is still pending. Run reflection with the original
+global playbook to recover that transaction, then retry the requested operation.
+Edits to already-applied targets retain the receipt needed for recovery; resets
+that would discard it wait until the processing ledger has acknowledged the
+commit. Forget and undo check before changing their separate blocklists.
+
+If an external editor changes an uncommitted destination, recovery retains both
+versions and refuses to overwrite the newer data. The error identifies the
+affected file; resolve that conflict before retrying. Keep the pending manifest
+and its stage directory under `~/.cass-memory/reflections/commits/` until recovery succeeds.
 `--dry-run` reports a pending commit and leaves it untouched. Each staged
 playbook keeps the ordinary 16 MiB limit; a commit is bounded to 64 target files,
 256 MiB of staged data, and a 16 MiB manifest.

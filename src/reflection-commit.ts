@@ -13,12 +13,13 @@ import {
 } from "./playbook.js";
 import { ProcessedLog, PROCESSED_LOG_RECOVERY_MAX_BYTES, type ProcessedLogReadBudget } from "./tracking.js";
 import { type Playbook, type ProcessedEntry, ProcessedEntrySchema } from "./types.js";
-import { atomicWrite, canonicalStoragePath, ensureDurableDirectory, expandPath, resolveGlobalDir, syncDirectory } from "./utils.js";
+import { atomicWrite, canonicalStoragePath, ensureDurableDirectory, expandPath, fileExists, resolveGlobalDir, syncDirectory } from "./utils.js";
 
 /** Journal limits do not relax the limits on any individual playbook. */
 export const REFLECTION_COMMIT_LIMITS = Object.freeze({
   maxTargets: 64,
   maxManifestBytes: PLAYBOOK_INPUT_LIMITS.maxBytes,
+  maxPendingManifestBytes: 64 * 1024 * 1024,
   maxStagedBytes: 256 * 1024 * 1024,
   maxCleanupEntries: 1024,
 });
@@ -83,7 +84,7 @@ async function readBytes(
     }
     handle = await fs.open(file, flags);
   } catch (error: any) {
-    if (options.missingOk && error?.code === "ENOENT") return null;
+    if (options.missingOk && error?.code === "ENOENT" && !(await fileExists(file))) return null;
     throw error;
   }
   try {
@@ -153,8 +154,10 @@ async function readManifest(owner: string): Promise<Manifest | null> {
   return validateManifest(parseJsonInput(text, PLAYBOOK_INPUT_LIMITS, pending), owner);
 }
 
-function receiptMatches(playbook: Playbook, expected: Receipt): boolean {
-  const receipt = (playbook.metadata as unknown as Record<string, unknown>).reflectionCommit;
+function receiptMatches(playbook: unknown, expected: Receipt): boolean {
+  if (!playbook || typeof playbook !== "object" || !("metadata" in playbook)
+    || !playbook.metadata || typeof playbook.metadata !== "object") return false;
+  const receipt = (playbook.metadata as Record<string, unknown>).reflectionCommit;
   return !!receipt && typeof receipt === "object"
     && (receipt as Receipt).owner === expected.owner && (receipt as Receipt).id === expected.id;
 }
@@ -252,6 +255,93 @@ async function syncFileAndParents(
   await ensureDurableDirectory(path.dirname(file));
 }
 
+interface PlaybookWrite {
+  path: string;
+  replacement: unknown;
+}
+
+/**
+ * Callers hold every destination lock. The shared journal directory finds
+ * repository targets even when another global playbook prepared their commit.
+ * Private staging files cannot be live targets (validateManifest enforces it).
+ */
+async function assertPlaybookWritesAllowed(writes: PlaybookWrite[], recovering?: Receipt): Promise<void> {
+  if (!writes.length) return;
+  const directory = path.dirname(reflectionCommitPendingPath(writes[0]!.path));
+  const destinations = new Map(writes.map(write => [canonicalStoragePath(write.path), write.replacement]));
+  for (const target of destinations.keys()) {
+    const relative = path.relative(directory, target);
+    if (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative)) {
+      destinations.delete(target);
+    }
+  }
+  if (!destinations.size) return;
+
+  let entries;
+  try {
+    entries = await fs.opendir(directory);
+  } catch (error: any) {
+    if (error?.code === "ENOENT" && !(await fileExists(directory))) return;
+    throw error;
+  }
+  let examined = 0;
+  let remainingManifestBytes = REFLECTION_COMMIT_LIMITS.maxPendingManifestBytes;
+  const ledgerBudget = { remainingBytes: PROCESSED_LOG_RECOVERY_MAX_BYTES };
+  for await (const entry of entries) {
+    if (++examined > REFLECTION_COMMIT_LIMITS.maxCleanupEntries) {
+      throw new InputLimitError(directory, "pending reflection write check exceeds the journal directory entry limit");
+    }
+    if (!/^[a-f0-9]{64}\.pending\.json$/.test(entry.name)) continue;
+    const pending = path.join(directory, entry.name);
+    if (!entry.isFile() || entry.isSymbolicLink()) {
+      throw new Error(`Expected a regular reflection recovery file: ${pending}`);
+    }
+    if (remainingManifestBytes <= 0) {
+      throw new InputLimitError(directory, "pending reflection write check exceeds the manifest byte limit");
+    }
+    const bytes = await readBytes(pending, { privateFile: true, missingOk: true,
+      maxBytes: Math.min(REFLECTION_COMMIT_LIMITS.maxManifestBytes, remainingManifestBytes) });
+    if (bytes === null) continue; // An acknowledged commit may have finished cleanup.
+    remainingManifestBytes -= bytes.length;
+    const raw = parseJsonInput(new TextDecoder("utf-8", { fatal: true }).decode(bytes), PLAYBOOK_INPUT_LIMITS, pending);
+    if (!raw || typeof raw !== "object" || !("owner" in raw) || typeof raw.owner !== "string") {
+      throw new Error(`Invalid reflection commit owner: ${pending}`);
+    }
+    const manifest = validateManifest(raw, raw.owner);
+    if (reflectionCommitPendingPath(manifest.owner) !== pending) {
+      throw new Error(`Reflection commit filename does not match its owner: ${pending}`);
+    }
+    if (recovering?.owner === manifest.owner && recovering.id === manifest.id) continue;
+    const affected = manifest.targets.filter(target => destinations.has(target.path));
+    if (!affected.length) continue;
+
+    // A visible ACK can follow a failed flush. Confirm and flush it under its
+    // own lock before permitting a replacement that drops the target receipt.
+    const acknowledged = await withLock(manifest.logPath, async () => {
+      const log = new ProcessedLog(manifest.logPath);
+      await log.load({ budget: ledgerBudget });
+      if (!log.hasCommittedBatch(manifest.owner, manifest.id)) return false;
+      await syncFileAndParents(manifest.logPath, true, PROCESSED_LOG_RECOVERY_MAX_BYTES);
+      return true;
+    });
+    if (acknowledged) continue;
+    for (const target of affected) {
+      if (await targetState(manifest, target) === "applied"
+        && receiptMatches(destinations.get(target.path), manifest)) continue;
+      throw new Error(
+        `Cannot modify ${target.path}: a pending reflection commit requires recovery. `
+        + `Run cm reflect with global playbook ${manifest.owner}, then retry this operation. `
+        + `Current data and the pending commit were preserved: ${pending}`,
+      );
+    }
+  }
+}
+
+/** Check a proposed full playbook replacement while holding its destination lock. */
+export async function assertPlaybookWriteAllowed(filePath: string, replacement: unknown): Promise<void> {
+  await assertPlaybookWritesAllowed([{ path: filePath, replacement }]);
+}
+
 /** Caller holds the global lock and, unless already acknowledged, every target lock. */
 async function finishCommit(manifest: Manifest, preflighted = false): Promise<RecoveredReflectionCommit> {
   const log = new ProcessedLog(manifest.logPath);
@@ -261,7 +351,12 @@ async function finishCommit(manifest: Manifest, preflighted = false): Promise<Re
     // sync failed. Recovery must make that intent durable before another
     // crash can leave live replacements without their recovery record.
     await syncFileAndParents(reflectionCommitPendingPath(manifest.owner), true);
-    if (!preflighted) await preflight(manifest);
+    if (!preflighted) {
+      await preflight(manifest);
+      await assertPlaybookWritesAllowed(manifest.targets.map(target => ({
+        path: target.path, replacement: { metadata: { reflectionCommit: { owner: manifest.owner, id: manifest.id } } },
+      })), manifest);
+    }
     // Replacements precede repository retirements, including cross-layer merges.
     const targets = [...manifest.targets].sort((a, b) =>
       a.path === manifest.owner ? -1 : b.path === manifest.owner ? 1 : a.path.localeCompare(b.path));
@@ -651,6 +746,9 @@ export class ReflectionCommit {
       }
       await preflight(manifest);
       await preflightOutcomeRegistry(manifest);
+      await assertPlaybookWritesAllowed(manifest.targets.map(target => ({
+        path: target.path, replacement: { metadata: { reflectionCommit: { owner: this.owner, id: this.id } } },
+      })));
       if (await readManifest(this.owner)) throw new Error("Another reflection commit is pending recovery");
       try {
         await atomicWrite(pending, serialized);

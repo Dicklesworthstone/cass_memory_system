@@ -154,6 +154,8 @@ export async function savePlaybook(
   // could make our own saved file exceed the reader's alias-expansion limit.
   const yamlStr = yaml.stringify(persisted, { aliasDuplicateObjects: false });
   assertTextSize(yamlStr, PLAYBOOK_INPUT_LIMITS.maxBytes, filePath);
+  const { assertPlaybookWriteAllowed } = await import("./reflection-commit.js");
+  await assertPlaybookWriteAllowed(filePath, persisted);
   await atomicWrite(filePath, yamlStr);
 }
 
@@ -390,6 +392,8 @@ export async function repairPlaybookEmbeddings(
       preservationVerified: true,
     };
     if (dryRun || embeddingsRemoved === 0) return result;
+    const { assertPlaybookWriteAllowed } = await import("./reflection-commit.js");
+    await assertPlaybookWriteAllowed(target, repaired);
 
     const assertUnchanged = async () => {
       const current = await readRepairFile(target);
@@ -481,6 +485,9 @@ export async function recoverCorruptPlaybook(
   // not evidence of corruption. Never offer an empty replacement for them.
   if (!(error instanceof YAMLParseError) && !(error instanceof PlaybookValidationError)) throw error;
   const expanded = expandPath(playbookPath);
+  const newPlaybook = createEmptyPlaybook(path.basename(expanded, path.extname(expanded)));
+  const { assertPlaybookWriteAllowed } = await import("./reflection-commit.js");
+  await assertPlaybookWriteAllowed(expanded, newPlaybook);
   let backupPath: string | null = null;
 
   // Determine error type for better diagnostics
@@ -527,10 +534,7 @@ export async function recoverCorruptPlaybook(
     log(`You can attempt manual recovery by examining the backup file.`, true);
   }
 
-  // Step 3: Create fresh empty playbook
-  const newPlaybook = createEmptyPlaybook(path.basename(expanded, path.extname(expanded)));
-
-  // Step 4: Log recovery instructions
+  // Step 3: Log recovery instructions for the replacement prepared above.
   log(`Created new empty playbook. Previous rules need manual recovery from backup.`, true);
   log(`To recover manually:`, true);
   log(`  1. Open ${backupPath || "the backup file"}`, true);

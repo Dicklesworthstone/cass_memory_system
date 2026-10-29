@@ -7,7 +7,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { promisify } from "node:util";
 import chalk from "chalk";
-import { InputLimitError } from "./input-limits.js";
+import { InputLimitError, parseYamlInput, PLAYBOOK_INPUT_LIMITS } from "./input-limits.js";
 import { iconPrefix } from "./output.js";
 import { type ContextResult, ErrorCode, type PlaybookDelta } from "./types.js";
 
@@ -1127,6 +1127,23 @@ export async function resolveGlobalConfigFile(): Promise<ResolvedConfigFile> {
   return resolveConfigFileInDir(resolveGlobalDir());
 }
 
+/** Initialize under the same lock used by writers, rechecking after admission. */
+async function createStorageFileIfMissing(
+  filePath: string,
+  content: string,
+  options: { playbook?: boolean } = {},
+): Promise<boolean> {
+  return withLock(filePath, async () => {
+    if (await fileExists(filePath)) return false;
+    if (options.playbook) {
+      const { assertPlaybookWriteAllowed } = await import("./reflection-commit.js");
+      await assertPlaybookWriteAllowed(filePath, parseYamlInput(content, PLAYBOOK_INPUT_LIMITS, filePath));
+    }
+    await atomicWrite(filePath, content);
+    return true;
+  });
+}
+
 export async function ensureGlobalStructure(
   defaultConfigStr?: string,
   defaultPlaybookStr?: string,
@@ -1171,8 +1188,8 @@ metadata:
 deprecatedPatterns: []
 bullets: []
 `;
-    await atomicWrite(playbookPath, content);
-    created.push("playbook.yaml");
+    const initialized = await createStorageFileIfMissing(playbookPath, content, { playbook: true });
+    (initialized ? created : existed).push("playbook.yaml");
   }
 
   // blocked.log - global blocklist
@@ -1180,8 +1197,8 @@ bullets: []
   if (await fileExists(blockedPath)) {
     existed.push("blocked.log");
   } else {
-    await atomicWrite(blockedPath, "");
-    created.push("blocked.log");
+    const initialized = await createStorageFileIfMissing(blockedPath, "");
+    (initialized ? created : existed).push("blocked.log");
   }
 
   // usage.jsonl
@@ -1189,8 +1206,8 @@ bullets: []
   if (await fileExists(usagePath)) {
     existed.push("usage.jsonl");
   } else {
-    await atomicWrite(usagePath, "");
-    created.push("usage.jsonl");
+    const initialized = await createStorageFileIfMissing(usagePath, "");
+    (initialized ? created : existed).push("usage.jsonl");
   }
 
   return { created, existed };
@@ -1245,8 +1262,8 @@ metadata:
 deprecatedPatterns: []
 bullets: []
 `;
-    await atomicWrite(playbookPath, emptyPlaybook);
-    created.push("playbook.yaml");
+    const initialized = await createStorageFileIfMissing(playbookPath, emptyPlaybook, { playbook: true });
+    (initialized ? created : existed).push("playbook.yaml");
   }
 
   // 2. blocked.log - Project-specific blocked patterns (JSONL format)
@@ -1255,8 +1272,8 @@ bullets: []
     existed.push("blocked.log");
   } else {
     // Create empty file (JSONL format - one JSON object per line)
-    await atomicWrite(blockedPath, "");
-    created.push("blocked.log");
+    const initialized = await createStorageFileIfMissing(blockedPath, "");
+    (initialized ? created : existed).push("blocked.log");
   }
 
   // Note: config.yaml is NOT created by default

@@ -1,10 +1,15 @@
 import { describe, expect, spyOn, test } from "bun:test";
+import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import yaml from "yaml";
 import { PLAYBOOK_INPUT_LIMITS } from "../src/input-limits.js";
+import { forgetCommand } from "../src/commands/forget.js";
+import { recordFeedback } from "../src/commands/mark.js";
+import { undoCommand } from "../src/commands/undo.js";
 import { withLock } from "../src/lock.js";
-import { loadPlaybook, recordReflectionRun, savePlaybook } from "../src/playbook.js";
+import { createEmptyPlaybook, loadPlaybook, loadPlaybookWithRecovery, recordReflectionRun, repairPlaybookEmbeddings, savePlaybook } from "../src/playbook.js";
 import {
   pendingOutcomeRegistryPath, recoverReflectionCommit, REFLECTION_COMMIT_LIMITS, ReflectionCommit, reflectionCommitPendingPath,
 } from "../src/reflection-commit.js";
@@ -73,6 +78,22 @@ async function publishBeforeFirstWrite(fixture: Fixture, transaction: Reflection
     interruption.mockRestore();
   }
   expect(await fs.stat(reflectionCommitPendingPath(fixture.env.playbookPath))).toBeDefined();
+}
+
+async function publishBeforeRepositoryWrite(fixture: Fixture): Promise<void> {
+  const rename = fs.rename;
+  const interrupted = spyOn(fs, "rename").mockImplementation(async (source, destination) => {
+    if (String(destination) === fixture.repoPath) throw new Error("injected repository replacement failure");
+    await rename(source, destination);
+  });
+  try {
+    await withLock(fixture.env.playbookPath, async () => {
+      const transaction = await fixture.prepare();
+      await expect(transaction.commit()).rejects.toThrow("repository replacement failure");
+    });
+  } finally {
+    interrupted.mockRestore();
+  }
 }
 
 async function pendingData(globalPath: string) {
@@ -418,6 +439,244 @@ console.log(JSON.stringify(await recoverReflectionCommit(process.argv[1])));
       expect(saved.metadata.totalReflections).toBe(1);
       expect(saved.metadata.totalSessionsProcessed).toBe(1);
       expect((await loadPlaybook(f.repoPath)).bullets[0]!.helpfulCount).toBe(1);
+    });
+  });
+
+  test("ordinary feedback cannot make an unapplied pending target impossible to recover", async () => {
+    await withFixture(async f => {
+      const workspace = path.dirname(path.dirname(f.repoPath));
+      execFileSync("git", ["init", "--quiet"], { cwd: workspace });
+      await publishBeforeRepositoryWrite(f);
+
+      let markError: Error | undefined;
+      try {
+        await recordFeedback("b-repo222", { helpful: true, workspace });
+      } catch (error) {
+        markError = error as Error;
+      }
+      let recoveryError: Error | undefined;
+      try {
+        await recoverReflectionCommit(f.env.playbookPath);
+      } catch (error) {
+        recoveryError = error as Error;
+      }
+      expect({ markError: markError?.message, recoveryError: recoveryError?.message }).toEqual({
+        markError: expect.stringContaining("pending reflection commit"), recoveryError: undefined,
+      });
+      expect((await loadPlaybook(f.repoPath)).bullets[0]!.helpfulCount).toBe(1);
+      await recordFeedback("b-repo222", { helpful: true, workspace });
+      expect((await loadPlaybook(f.repoPath)).bullets[0]!.helpfulCount).toBe(2);
+    });
+  });
+
+  test("already-applied targets accept later feedback but cannot drop their pending receipt", async () => {
+    await withFixture(async f => {
+      await publishBeforeRepositoryWrite(f);
+      await recordFeedback("b-global111", { helpful: true, workspace: f.env.home });
+      const applied = await fs.readFile(f.env.playbookPath, "utf8");
+      expect((await loadPlaybook(f.env.playbookPath)).bullets[0]!.helpfulCount).toBe(1);
+      await withLock(f.env.playbookPath, async () => {
+        await expect(savePlaybook(createEmptyPlaybook(), f.env.playbookPath)).rejects.toThrow("pending reflection commit");
+      });
+      expect(await fs.readFile(f.env.playbookPath, "utf8")).toBe(applied);
+      await recoverReflectionCommit(f.env.playbookPath);
+      expect(await fs.readFile(f.env.playbookPath, "utf8")).toBe(applied);
+      expect((await loadPlaybook(f.repoPath)).bullets[0]!.helpfulCount).toBe(1);
+    });
+  });
+
+  for (const command of ["forget", "undo"] as const) {
+    test(`${command} leaves blocked state intact when its target needs reflection recovery`, async () => {
+      await withFixture(async f => {
+        const workspace = path.dirname(path.dirname(f.repoPath));
+        execFileSync("git", ["init", "--quiet"], { cwd: workspace });
+        const blockedPath = path.join(path.dirname(f.repoPath), "blocked.log");
+        const blocked = JSON.stringify({ id: "b-repo222", content: "Retain this blocked instruction.",
+          reason: "Earlier explicit decision", forgottenAt: f.entry.processedAt }) + "\n";
+        await fs.writeFile(blockedPath, blocked);
+        if (command === "undo") {
+          const repo = await loadPlaybook(f.repoPath);
+          repo.bullets[0]!.deprecated = true;
+          repo.bullets[0]!.state = "retired";
+          await savePlaybook(repo, f.repoPath);
+        }
+        await publishBeforeRepositoryWrite(f);
+        const original = await fs.readFile(f.repoPath, "utf8");
+        const cwd = process.cwd();
+        const exitCode = process.exitCode;
+        const output: string[] = [];
+        const capture = spyOn(console, "log").mockImplementation((...args) => { output.push(args.join(" ")); });
+        try {
+          process.chdir(workspace);
+          process.exitCode = 0;
+          if (command === "forget") await forgetCommand("b-repo222", { reason: "New decision", json: true });
+          else await undoCommand("b-repo222", { json: true });
+          expect(process.exitCode).not.toBe(0);
+          const result = JSON.parse(output.find(line => line.startsWith("{"))!);
+          expect(result.success).toBe(false);
+          expect(result.error.message).toContain("pending reflection commit");
+        } finally {
+          capture.mockRestore();
+          process.chdir(cwd);
+          process.exitCode = exitCode;
+        }
+        expect(await fs.readFile(f.repoPath, "utf8")).toBe(original);
+        expect(await fs.readFile(blockedPath, "utf8")).toBe(blocked);
+        await recoverReflectionCommit(f.env.playbookPath);
+        expect((await loadPlaybook(f.repoPath)).bullets[0]!.helpfulCount).toBe(1);
+      });
+    });
+  }
+
+  test("embedding repair previews a pending target but does not rewrite it or create a backup", async () => {
+    await withFixture(async f => {
+      const legacy = await loadPlaybook(f.repoPath);
+      legacy.bullets[0]!.embedding = [0.1, 0.2, 0.3];
+      await fs.writeFile(f.repoPath, yaml.stringify(legacy));
+      await publishBeforeRepositoryWrite(f);
+      const original = await fs.readFile(f.repoPath, "utf8");
+      const files = (await fs.readdir(path.dirname(f.repoPath))).sort();
+      expect((await repairPlaybookEmbeddings(f.repoPath, { dryRun: true })).wouldChange).toBe(true);
+      await expect(repairPlaybookEmbeddings(f.repoPath)).rejects.toThrow("pending reflection commit");
+      expect(await fs.readFile(f.repoPath, "utf8")).toBe(original);
+      expect((await fs.readdir(path.dirname(f.repoPath))).sort()).toEqual(files);
+      await recoverReflectionCommit(f.env.playbookPath);
+      expect((await loadPlaybook(f.repoPath)).bullets[0]!.embedding).toBeUndefined();
+      expect((await loadPlaybook(f.repoPath)).bullets[0]!.helpfulCount).toBe(1);
+    });
+  });
+
+  test("automatic corruption recovery does not offer replacement state for a pending target", async () => {
+    await withFixture(async f => {
+      await publishBeforeRepositoryWrite(f);
+      const corrupt = "bullets: [\n";
+      await fs.writeFile(f.repoPath, corrupt);
+      const files = (await fs.readdir(path.dirname(f.repoPath))).sort();
+      await expect(loadPlaybookWithRecovery(f.repoPath)).rejects.toThrow();
+      expect(await fs.readFile(f.repoPath, "utf8")).toBe(corrupt);
+      expect((await fs.readdir(path.dirname(f.repoPath))).sort()).toEqual(files);
+      expect(await Bun.file(reflectionCommitPendingPath(f.env.playbookPath)).exists()).toBe(true);
+    });
+  });
+
+  test("another global owner cannot publish over a pending repository target", async () => {
+    await withFixture(async f => {
+      const otherOwner = path.join(f.env.home, "another-global.yaml");
+      await savePlaybook(createEmptyPlaybook(), otherOwner);
+      await publishBeforeRepositoryWrite(f);
+      const original = await fs.readFile(f.repoPath, "utf8");
+      await withLock(otherOwner, async () => {
+        const transaction = await ReflectionCommit.create(otherOwner, f.logPath, []);
+        const global = await transaction.loadPlaybook(otherOwner);
+        await transaction.savePlaybook(global, otherOwner);
+        const repo = await transaction.loadPlaybook(f.repoPath);
+        repo.bullets[0]!.content = "A second global owner must wait for the first commit.";
+        await transaction.savePlaybook(repo, f.repoPath);
+        await expect(transaction.commit()).rejects.toThrow("pending reflection commit");
+        expect(await Bun.file(reflectionCommitPendingPath(otherOwner)).exists()).toBe(false);
+        await transaction.abort();
+      });
+      expect(await fs.readFile(f.repoPath, "utf8")).toBe(original);
+      await recoverReflectionCommit(f.env.playbookPath);
+      expect((await loadPlaybook(f.repoPath)).bullets[0]!.helpfulCount).toBe(1);
+    });
+  });
+
+  test("recovery preserves legacy overlapping journals before replacing any shared target", async () => {
+    await withFixture(async f => {
+      const otherOwner = path.join(f.env.home, "legacy-global.yaml");
+      await savePlaybook(createEmptyPlaybook(), otherOwner);
+      await withLock(f.env.playbookPath, async () => publishBeforeFirstWrite(f, await f.prepare()));
+      const original = await fs.readFile(f.env.playbookPath, "utf8");
+      const repo = await fs.readFile(f.repoPath, "utf8");
+      const first = await pendingData(f.env.playbookPath);
+      const firstJournal = await fs.readFile(first.pending, "utf8");
+      const otherPending = reflectionCommitPendingPath(otherOwner);
+      await withLock(otherOwner, async () => {
+        const transaction = await ReflectionCommit.create(otherOwner, f.logPath, []);
+        const global = await transaction.loadPlaybook(otherOwner);
+        await transaction.savePlaybook(global, otherOwner);
+        const shared = await transaction.loadPlaybook(f.repoPath);
+        shared.bullets[0]!.content = "Preserve this separately prepared legacy transaction for inspection.";
+        await transaction.savePlaybook(shared, f.repoPath);
+        const directory = path.join(path.dirname(otherPending),
+          `${path.basename(otherPending, ".pending.json")}.${transaction.id}.stage`);
+        const hash = (bytes: Buffer) => crypto.createHash("sha256").update(bytes).digest("hex");
+        const targets = [];
+        for (const [index, target] of [otherOwner, f.repoPath].entries()) {
+          const file = `target-${index}.yaml`;
+          targets.push({ path: target, file,
+            beforeSha256: hash(await fs.readFile(target)),
+            afterSha256: hash(await fs.readFile(path.join(directory, file))),
+          });
+        }
+        // Simulate a journal published by an older writer before publication
+        // checked for another owner's pending target.
+        await fs.writeFile(otherPending, JSON.stringify({
+          version: 1, id: transaction.id, owner: otherOwner, logPath: f.logPath,
+          sessionsProcessed: 0, entries: [], targets,
+        }));
+      });
+      const otherJournal = await fs.readFile(otherPending, "utf8");
+      await expect(recoverReflectionCommit(f.env.playbookPath)).rejects.toThrow("pending reflection commit");
+      expect(await fs.readFile(f.env.playbookPath, "utf8")).toBe(original);
+      expect(await fs.readFile(f.repoPath, "utf8")).toBe(repo);
+      expect(await fs.readFile(first.pending, "utf8")).toBe(firstJournal);
+      expect(await fs.readFile(otherPending, "utf8")).toBe(otherJournal);
+      expect(await Bun.file(f.logPath).exists()).toBe(false);
+    });
+  });
+
+  test("an acknowledged target can drop its receipt only after the ledger is flushed", async () => {
+    await withFixture(async f => {
+      const pending = reflectionCommitPendingPath(f.env.playbookPath);
+      const unlink = fs.unlink;
+      const interrupted = spyOn(fs, "unlink").mockImplementation(async file => {
+        if (String(file) === pending) throw new Error("injected journal cleanup failure");
+        await unlink(file);
+      });
+      try {
+        await withLock(f.env.playbookPath, async () => {
+          await expect((await f.prepare()).commit()).rejects.toThrow("journal cleanup failure");
+        });
+      } finally {
+        interrupted.mockRestore();
+      }
+      const original = await fs.readFile(f.env.playbookPath, "utf8");
+      const open = fs.open;
+      const failedFlush = spyOn(fs, "open").mockImplementation(async (file, ...options) => {
+        const handle = await open(file, ...options);
+        if (String(file) === f.logPath) handle.sync = async () => { throw new Error("injected ACK flush failure"); };
+        return handle;
+      });
+      try {
+        await withLock(f.env.playbookPath, async () => {
+          await expect(savePlaybook(createEmptyPlaybook(), f.env.playbookPath)).rejects.toThrow("ACK flush failure");
+        });
+      } finally {
+        failedFlush.mockRestore();
+      }
+      expect(await fs.readFile(f.env.playbookPath, "utf8")).toBe(original);
+      await withLock(f.env.playbookPath, async () => {
+        await savePlaybook(createEmptyPlaybook(), f.env.playbookPath);
+      });
+      await recoverReflectionCommit(f.env.playbookPath);
+      expect((await loadPlaybook(f.env.playbookPath)).bullets).toEqual([]);
+    });
+  });
+
+  test("ordinary writes fail closed when the bounded pending-journal inspection cannot finish", async () => {
+    await withFixture(async f => {
+      const directory = path.dirname(reflectionCommitPendingPath(f.env.playbookPath));
+      await fs.mkdir(directory, { recursive: true });
+      for (let index = 0; index <= REFLECTION_COMMIT_LIMITS.maxCleanupEntries; index++) {
+        await fs.writeFile(path.join(directory, `unrelated-${index}`), "");
+      }
+      const original = await fs.readFile(f.env.playbookPath, "utf8");
+      await withLock(f.env.playbookPath, async () => {
+        await expect(savePlaybook(createEmptyPlaybook(), f.env.playbookPath)).rejects.toThrow("journal directory entry limit");
+      });
+      expect(await fs.readFile(f.env.playbookPath, "utf8")).toBe(original);
     });
   });
 

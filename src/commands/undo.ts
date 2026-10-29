@@ -13,6 +13,7 @@ import { loadConfig } from "../config.js";
 import { withLock } from "../lock.js";
 import { icon } from "../output.js";
 import { findBullet, loadPlaybook, removeFromBlockedLog, savePlaybook } from "../playbook.js";
+import { assertPlaybookWriteAllowed } from "../reflection-commit.js";
 import { calculateMaturityState, getEffectiveScore } from "../scoring.js";
 import { type Config, ErrorCode, type FeedbackEvent, type PlaybookBullet } from "../types.js";
 import {
@@ -412,6 +413,8 @@ export async function undoCommand(bulletId: string, flags: UndoFlags = {}): Prom
 
         const before = undeprecateBullet(bullet);
 
+        // Keep blocked state intact if the playbook still needs commit recovery.
+        await assertPlaybookWriteAllowed(playbookPath, currentPlaybook);
         // Also remove from blocklist(s) so it doesn't get re-blocked on next load
         await removeFromBlockedLog(bulletId, path.join(resolveGlobalDir(), "blocked.log"));
         if (repoDir) {

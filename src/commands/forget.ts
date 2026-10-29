@@ -3,6 +3,7 @@ import chalk from "chalk";
 import { loadConfig } from "../config.js";
 import { withLock } from "../lock.js";
 import { icon } from "../output.js";
+import { assertPlaybookWriteAllowed } from "../reflection-commit.js";
 import {
   addBullet,
   appendBlockedLog,
@@ -77,6 +78,9 @@ export async function forgetCommand(
         // Throwing error allows lock to be released
         throw new Error(`Bullet ${bulletId} not found`);
       }
+
+      // Reject a pending replacement before changing the separate blocklist.
+      await assertPlaybookWriteAllowed(savePath, playbook);
 
       // 1. Add to blocked log
       const blockedLogPath =

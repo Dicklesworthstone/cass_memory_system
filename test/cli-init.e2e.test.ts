@@ -4,14 +4,21 @@
  * Tests the `cm init` command for both global and repo-level initialization.
  * Uses isolated temp directories to avoid affecting the real system.
  */
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import fs from "node:fs/promises";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
 import { initCommand } from "../src/commands/init.js";
+import { withLock } from "../src/lock.js";
+import { createEmptyPlaybook, loadPlaybook, savePlaybook } from "../src/playbook.js";
+import { recoverReflectionCommit, ReflectionCommit } from "../src/reflection-commit.js";
+import { getProcessedLogPath } from "../src/tracking.js";
+import { ensureGlobalStructure, ensureRepoStructure } from "../src/utils.js";
 import { createE2ELogger } from "./helpers/e2e-logger.js";
 import { cleanupTempGitRepo, createTempGitRepo, withTempGitRepo } from "./helpers/git.js";
 import { createTestLogger } from "./helpers/logger.js";
+import { createBullet } from "./helpers/factories.js";
 import {
   cleanupEnvironment,
   createIsolatedEnvironment,
@@ -52,6 +59,131 @@ function captureConsole() {
     },
   };
 }
+
+describe("initialization preserves pending and concurrent memory updates", () => {
+  for (const scope of ["global", "repo"] as const) {
+    const filenames = scope === "global"
+      ? ["playbook.yaml", "blocked.log", "usage.jsonl"]
+      : ["playbook.yaml", "blocked.log"];
+    for (const filename of filenames) {
+      it.serial(`preserves ${scope} ${filename} created after the absence check`, async () => {
+        await withTempCassHome(async env => {
+          const directory = scope === "global" ? env.cassMemoryDir : path.join(env.home, "project", ".cass");
+          await mkdir(directory, { recursive: true });
+          const target = path.join(directory, filename);
+          const original = filename === "playbook.yaml"
+            ? yaml.stringify({ ...createEmptyPlaybook(), bullets: [createBullet({ content: "Keep the concurrent learned rule." })] })
+            : JSON.stringify({ id: "preserved-record", content: "Keep the concurrent memory record." }) + "\n";
+          const lstat = fs.lstat;
+          let injected = false;
+          const probe = spyOn(fs, "lstat").mockImplementation((async (...args: Parameters<typeof fs.lstat>) => {
+            if (String(args[0]) !== target || injected) return lstat(...args);
+            try {
+              return await lstat(...args);
+            } catch (error: any) {
+              if (error?.code !== "ENOENT") throw error;
+              // A writer commits after the probe observed absence, before
+              // initialization can act on that now-stale observation.
+              injected = true;
+              await withLock(target, () => writeFile(target, original));
+              throw error;
+            }
+          }) as typeof fs.lstat);
+          try {
+            const result = scope === "global"
+              ? await ensureGlobalStructure()
+              : await ensureRepoStructure(directory);
+            expect(injected).toBe(true);
+            expect(result.created).not.toContain(filename);
+            expect(result.existed).toContain(filename);
+            expect(await readFile(target, "utf8")).toBe(original);
+          } finally {
+            probe.mockRestore();
+          }
+        });
+      });
+    }
+
+    it.serial(`does not initialize a missing ${scope} target owned by a pending reflection`, async () => {
+      await withTempCassHome(async env => {
+        const target = scope === "global" ? env.playbookPath : path.join(env.home, "project", ".cass", "playbook.yaml");
+        if (scope === "repo") await savePlaybook(createEmptyPlaybook(), env.playbookPath);
+        await withLock(env.playbookPath, async () => {
+          const transaction = await ReflectionCommit.create(env.playbookPath, getProcessedLogPath(), []);
+          const global = await transaction.loadPlaybook(env.playbookPath);
+          await transaction.savePlaybook(global, env.playbookPath);
+          const pending = await transaction.loadPlaybook(target);
+          pending.bullets.push(createBullet({ id: "b-pending", content: "Preserve the pending learned rule." }));
+          await transaction.savePlaybook(pending, target);
+          const rename = fs.rename;
+          const interrupted = spyOn(fs, "rename").mockImplementation(async (source, destination) => {
+            if (String(destination) === env.playbookPath) throw new Error("injected initialization interruption");
+            return rename(source, destination);
+          });
+          try {
+            await expect(transaction.commit()).rejects.toThrow("injected initialization interruption");
+          } finally {
+            interrupted.mockRestore();
+          }
+        });
+        const initialize = scope === "global"
+          ? ensureGlobalStructure()
+          : ensureRepoStructure(path.dirname(target));
+        await expect(initialize).rejects.toThrow("pending reflection commit requires recovery");
+        expect(await exists(target)).toBe(false);
+        await recoverReflectionCommit(env.playbookPath);
+        expect((await loadPlaybook(target)).bullets[0]?.id).toBe("b-pending");
+      });
+    });
+
+    it.serial(`refuses forced ${scope} reset before an interrupted reflection is recovered`, async () => {
+      await withTempCassHome(async env => {
+        await withTempGitRepo(async repo => {
+          const cwd = process.cwd();
+          process.chdir(repo);
+          const capture = captureConsole();
+          try {
+            await initCommand({ json: true });
+            await initCommand({ repo: true, json: true });
+            const repoPath = path.join(repo, ".cass", "playbook.yaml");
+            const blockedPath = path.join(repo, ".cass", "blocked.log");
+            await writeFile(blockedPath, JSON.stringify({ id: "blocked-rule", content: "Keep this block." }) + "\n");
+            await withLock(env.playbookPath, async () => {
+              const transaction = await ReflectionCommit.create(env.playbookPath, getProcessedLogPath(), []);
+              for (const target of [env.playbookPath, repoPath]) {
+                const playbook = await transaction.loadPlaybook(target);
+                playbook.bullets.push(createBullet({ content: "Keep the interrupted learned rule." }));
+                await transaction.savePlaybook(playbook, target);
+              }
+              const rename = fs.rename;
+              const interrupted = spyOn(fs, "rename").mockImplementation(async (source, destination) => {
+                if (String(destination) === repoPath) throw new Error("injected repository interruption");
+                return rename(source, destination);
+              });
+              try {
+                await expect(transaction.commit()).rejects.toThrow("injected repository interruption");
+              } finally {
+                interrupted.mockRestore();
+              }
+            });
+            const files = [env.playbookPath, env.configPath, repoPath, blockedPath];
+            const before = await Promise.all(files.map(file => readFile(file, "utf8")));
+            await expect(initCommand({ repo: scope === "repo", force: true, yes: true, json: true }))
+              .rejects.toThrow("pending reflection commit requires recovery");
+            expect(await Promise.all(files.map(file => readFile(file, "utf8")))).toEqual(before);
+            await recoverReflectionCommit(env.playbookPath);
+            expect((await loadPlaybook(repoPath)).bullets).toHaveLength(1);
+            await initCommand({ repo: scope === "repo", force: true, yes: true, json: true });
+            expect((await loadPlaybook(scope === "repo" ? repoPath : env.playbookPath)).bullets).toEqual([]);
+          } finally {
+            capture.restore();
+            process.chdir(cwd);
+          }
+        });
+      });
+    });
+  }
+});
 
 describe("E2E: CLI init command", () => {
   describe("Global Init (~/.cass-memory)", () => {
