@@ -14,7 +14,11 @@ import {
 import { icon } from "../output.js";
 import { type Config, ErrorCode } from "../types.js";
 import {
+  buildJsonErrorPayload,
+  canonicalStoragePath,
   getCliName,
+  printHumanErrorPayload,
+  printJson,
   printJsonResult,
   reportError,
   validateNonEmptyString,
@@ -293,6 +297,7 @@ export async function applyOutcomeLogCommand(flags: {
   session?: string;
   limit?: number;
   workspace?: string;
+  playbook?: string;
   json?: boolean;
 }) {
   const startedAtMs = Date.now();
@@ -336,56 +341,119 @@ export async function applyOutcomeLogCommand(flags: {
     });
     return;
   }
+  const playbookCheck = validateNonEmptyString(flags.playbook, "playbook", { allowUndefined: true });
+  if (!playbookCheck.ok) {
+    reportError(playbookCheck.message, {
+      code: ErrorCode.INVALID_INPUT,
+      details: playbookCheck.details,
+      json: flags.json,
+      command,
+      startedAtMs,
+    });
+    return;
+  }
   const workspace = normalizeWorkspacePath(workspaceCheck.value ?? process.cwd());
-  const config = await loadConfig({}, { cwd: workspace });
+  // Only user configuration or this explicit CLI choice grants global write
+  // authority. A repository's outcome log cannot choose arbitrary files.
+  const config = await loadConfig(
+    playbookCheck.value === undefined ? {} : { playbookPath: playbookCheck.value },
+    { cwd: workspace },
+  );
+  config.playbookPath = canonicalStoragePath(config.playbookPath);
   const outcomes = await loadOutcomes(config, limitCheck.value ?? 50, workspace);
+  const candidates = sessionCheck.value === undefined
+    ? outcomes
+    : outcomes.filter(outcome => outcome.sessionId === sessionCheck.value);
 
-  if (sessionCheck.value !== undefined) {
-    const filtered = outcomes.filter((o) => o.sessionId === sessionCheck.value);
-    if (filtered.length === 0) {
-      if (flags.json) {
-        printJsonResult(
-          command,
-          { session: sessionCheck.value, outcomesFound: 0, applied: 0, missing: [] },
-          {
-            effect: false,
-            reason: `No outcomes found for session ${sessionCheck.value}`,
-            startedAtMs,
-          },
-        );
-        return;
-      }
-      console.error(chalk.yellow(`No outcomes found for session ${sessionCheck.value}`));
-      return;
-    }
-    const result = await applyWorkspaceOutcomes(filtered, config, workspace);
+  if (sessionCheck.value !== undefined && candidates.length === 0) {
     if (flags.json) {
-      printJsonResult(command, { ...result, session: sessionCheck.value }, { startedAtMs });
-      return;
-    }
-    console.log(
-      chalk.green(
-        `Applied outcome feedback for session ${sessionCheck.value}: ${result.applied} updates`,
-      ),
-    );
-    if (result.missing.length > 0) {
-      console.log(chalk.yellow(`Missing rules: ${result.missing.join(", ")}`));
+      printJsonResult(
+        command,
+        { session: sessionCheck.value, outcomesFound: 0, applied: 0, missing: [] },
+        {
+          effect: false,
+          reason: `No outcomes found for session ${sessionCheck.value}`,
+          startedAtMs,
+        },
+      );
+    } else {
+      console.error(chalk.yellow(`No outcomes found for session ${sessionCheck.value}`));
     }
     return;
   }
 
-  // No session filter: apply latest (limit) outcomes.
-  const result = await applyWorkspaceOutcomes(outcomes, config, workspace);
+  const selected: OutcomeRecord[] = [];
+  const skipped = new Map<string, {
+    playbookPath: string; outcomes: number; outcomeIds: string[]; sessions: string[];
+  }>();
+  for (const outcome of candidates) {
+    if (!outcome.globalPlaybookPath
+      || canonicalStoragePath(outcome.globalPlaybookPath) === config.playbookPath) {
+      // Legacy records retain the existing target validation and workspace
+      // fallback. Explicit provenance can only narrow the selected authority.
+      selected.push(outcome);
+      continue;
+    }
+    let group = skipped.get(outcome.globalPlaybookPath);
+    if (!group) {
+      group = { playbookPath: outcome.globalPlaybookPath, outcomes: 0, outcomeIds: [], sessions: [] };
+      skipped.set(outcome.globalPlaybookPath, group);
+    }
+    group.outcomes++;
+    if (outcome.id) group.outcomeIds.push(outcome.id);
+    if (!group.sessions.includes(outcome.sessionId)) group.sessions.push(outcome.sessionId);
+  }
+
+  const result = await applyWorkspaceOutcomes(selected, config, workspace);
+  const skippedOwners = [...skipped.values()];
+  const outcomesSkipped = candidates.length - selected.length;
+  const data = {
+    ...result,
+    ...(sessionCheck.value === undefined ? { totalOutcomes: candidates.length } : { session: sessionCheck.value }),
+    playbookPath: config.playbookPath,
+    outcomesSelected: selected.length,
+    outcomesSkipped,
+    skippedOwners,
+  };
+  const warnings = skippedOwners.map(group =>
+    `Skipped ${group.outcomes} outcome(s) recorded for global playbook ${group.playbookPath}`);
+  // An explicit selection deliberately leaves other owners for a separate
+  // replay. Default replay must not silently claim that all work succeeded.
+  const failure = outcomesSkipped > 0 && (selected.length === 0 || playbookCheck.value === undefined)
+    ? buildJsonErrorPayload(
+        selected.length === 0
+          ? "No recorded outcomes belong to the selected global playbook."
+          : "Outcome replay left records for other global playbooks unapplied.",
+        {
+          code: ErrorCode.VALIDATION_FAILED,
+          command,
+          startedAtMs,
+          details: { playbookPath: config.playbookPath, skippedOwners },
+          recovery: [
+            "Review the recorded global playbooks listed in skippedOwners.",
+            `Select a known original playbook explicitly: ${cli} outcome-apply --workspace <project> --playbook <path>`,
+            "Previously applied events can be replayed without counting their feedback twice.",
+          ],
+        },
+      )
+    : undefined;
+  if (failure) process.exitCode = failure.error.exitCode;
   if (flags.json) {
-    printJsonResult(command, { ...result, totalOutcomes: outcomes.length }, { startedAtMs });
+    if (failure) printJson({ ...failure, data, warnings });
+    else printJsonResult(command, data, { startedAtMs, warnings });
     return;
   }
+  const description = sessionCheck.value === undefined
+    ? `${selected.length} outcomes`
+    : `session ${sessionCheck.value}`;
   console.log(
     chalk.green(
-      `Applied outcome feedback for ${outcomes.length} outcomes: ${result.applied} updates`,
+      `Applied outcome feedback for ${description}: ${result.applied} updates`,
     ),
   );
   if (result.missing.length > 0) {
     console.log(chalk.yellow(`Missing rules: ${result.missing.join(", ")}`));
   }
+  for (const warning of warnings) console.error(chalk.yellow(warning));
+  if (failure) printHumanErrorPayload(failure);
 }

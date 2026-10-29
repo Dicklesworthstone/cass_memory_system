@@ -926,6 +926,7 @@ export function createProgram(argv: string[] = process.argv): Command {
     .description("Apply recorded outcomes to playbook feedback (implicit marks)")
     .option("--session <id>", "Apply only outcomes for this session id")
     .option("--workspace <path>", "Workspace whose outcome log to apply (defaults to cwd)")
+    .option("--playbook <path>", "Select the original global playbook for replay (defaults to configured playbook)")
     .option("--limit <n>", "Max outcomes to load (default 50)", toInt)
     .option("-j, --json", "Output JSON")
     .addHelpText("after", () =>
@@ -933,6 +934,7 @@ export function createProgram(argv: string[] = process.argv): Command {
         "outcome-apply --json",
         "outcome-apply --limit 100 --json",
         "outcome-apply --session my-session-id --json",
+        "outcome-apply --workspace ~/code/api --playbook ~/memory/original-playbook.yaml --json",
       ]),
     )
     .action(async (opts: any) => await applyOutcomeLogCommand(opts));

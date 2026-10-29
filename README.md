@@ -366,6 +366,24 @@ replaying the log from another directory cannot redirect feedback. Replaying an
 event applies it at most once per rule. An ID that was unknown when recorded does
 not later credit an unrelated rule created with that ID.
 
+If the configured global playbook changes before a recorded outcome is applied,
+select its original playbook explicitly:
+
+```bash
+cm outcome-apply --workspace ~/code/api --playbook ~/memory/original-playbook.yaml --json
+```
+
+The selected path comes from your command or user configuration. Paths recorded
+inside repository outcome logs do not grant permission to write other global
+playbooks. Default replay applies records for the configured owner and reports
+other owners as a partial failure, including the applied count and
+`skippedOwners`. Explicit `--playbook` replay selects that owner, reports other
+groups as skipped, and fails if no loaded records match. Legacy records without
+global ownership continue to use the selected playbook and recorded workspace.
+An unavailable or corrupt original playbook remains an error; feedback does not
+fall back to a different rule with the same ID. Replaying completed events is
+safe because their original event IDs are retained.
+
 Automatic reflection saves prepared outcomes with the session's processed marker.
 If outcome logging or feedback fails, the next non-dry reflection using that
 processed log retries the pending work, even when there are no new sessions. The
@@ -1468,6 +1486,7 @@ interface OutcomeRecord {
   recordedAt: string;            // ISO 8601
   outcome: "success" | "failure" | "mixed" | "partial";
   workspace?: string;            // Absolute source workspace
+  globalPlaybookPath?: string;   // Preparing owner; cannot authorize other files
   path: string;                  // Outcome log destination
   rulesUsed?: string[];
   ruleTargets?: Array<{
@@ -1969,7 +1988,8 @@ have the same exact-match behavior as the CLI flags.
 
 `cm_outcome` records the event without applying feedback immediately. Apply these
 records with `cm outcome-apply --workspace <project>`; each record uses its stored
-owner and that workspace's scoring policy.
+owner and that workspace's scoring policy. If the user-configured global playbook
+has changed, select the original one with `--playbook <path>` when replaying.
 
 ### Resources Exposed
 

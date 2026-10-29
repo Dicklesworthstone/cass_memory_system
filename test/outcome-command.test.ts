@@ -469,6 +469,27 @@ describe("outcomeCommand additional validation", () => {
 });
 
 describe("applyOutcomeLogCommand input validation", () => {
+  for (const playbook of ["", "   ", null, 42]) {
+    test(`rejects invalid explicit playbook ${JSON.stringify(playbook)}`, async () => {
+      await withTempCassHome(async () => {
+        const exitCode = process.exitCode;
+        const capture = captureConsole();
+        try {
+          process.exitCode = 0;
+          await applyOutcomeLogCommand({ playbook: playbook as any, json: true });
+          const payload = JSON.parse(capture.getOutput());
+          expect(payload.success).toBe(false);
+          expect(payload.error.code).toBe("INVALID_INPUT");
+          expect(payload.error.message).toContain("playbook");
+          expect(process.exitCode).not.toBe(0);
+        } finally {
+          capture.restore();
+          process.exitCode = exitCode;
+        }
+      });
+    });
+  }
+
   test("rejects invalid limit (negative)", async () => {
     await withTempCassHome(async () => {
       await withTempGitRepo(async (repoDir) => {

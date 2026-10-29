@@ -8,7 +8,7 @@
  * - outcome-apply applying a logged outcome
  */
 import { describe, expect, it } from "bun:test";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { generateContextResult } from "../src/commands/context.js";
 import { applyOutcomeLogCommand, outcomeCommand } from "../src/commands/outcome.js";
@@ -115,6 +115,28 @@ async function callOutcomeTool(args: Record<string, unknown>): Promise<OutcomeRe
   expect("error" in response).toBe(false);
   if ("error" in response) throw new Error(response.error.message);
   return JSON.parse((response.result as any).content[0].text);
+}
+
+async function withChangedGlobalOutcome(run: (fixture: {
+  home: string; launch: string; workspace: string; globalPlaybook: string;
+  replacement: string; record: OutcomeRecord;
+}) => Promise<void>): Promise<void> {
+  await withOutcomeWorkspaces(async ({ home, launch, globalPlaybook }) => {
+    const workspace = path.join(home, "plain-owner-workspace");
+    await mkdir(workspace);
+    const record = await callOutcomeTool({
+      sessionId: "recorded-global-owner", outcome: "success", rulesUsed: [SHARED_OUTCOME_RULE], workspace,
+    });
+    expect(record.globalPlaybookPath).toBe(globalPlaybook);
+    const replacement = path.join(home, "other global playbook.yaml");
+    await savePlaybook(createTestPlaybook([createTestBullet({
+      id: SHARED_OUTCOME_RULE, content: "Use an unrelated profile's migration procedure",
+    })]), replacement);
+    await writeFile(path.join(path.dirname(globalPlaybook), "config.json"), JSON.stringify(createTestConfig({
+      playbookPath: replacement, cassPath: "/__missing__/cass", semanticSearchEnabled: false,
+    })));
+    await run({ home, launch, workspace, globalPlaybook, replacement, record });
+  });
 }
 
 function runOutcomeCli(cwd: string, ...args: string[]) {
@@ -415,6 +437,157 @@ describe("E2E: outcome workspace ownership", () => {
       expect(await feedbackCount(requestedPlaybook)).toBe(0);
       expect((await applyOutcomeFeedback(record, await loadConfig())).applied).toBe(0);
       expect(await feedbackCount(launchPlaybook)).toBe(0);
+    });
+  });
+
+  it("manual replay recovers a former global owner only after explicit playbook selection", async () => {
+    await withChangedGlobalOutcome(async ({ launch, workspace, globalPlaybook, replacement, record }) => {
+      const refused = runOutcomeCli(launch, "outcome-apply", "--workspace", workspace,
+        "--session", "recorded-global-owner");
+      expect(refused.result.exitCode).not.toBe(0);
+      expect(refused.payload.success).toBe(false);
+      expect(refused.payload.error.code).toBe("VALIDATION_FAILED");
+      expect(refused.payload.error.recovery.join(" ")).toContain("--playbook");
+      expect(refused.payload.data.applied).toBe(0);
+      expect(refused.payload.data.skippedOwners).toEqual([{
+        playbookPath: globalPlaybook, outcomes: 1,
+        outcomeIds: [record.id], sessions: [record.sessionId],
+      }]);
+      expect(await feedbackCount(globalPlaybook)).toBe(0);
+      expect(await feedbackCount(replacement)).toBe(0);
+      const { result, payload } = runOutcomeCli(launch, "outcome-apply", "--workspace", workspace,
+        "--session", "recorded-global-owner", "--playbook", path.relative(launch, globalPlaybook));
+      expect(payload.error).toBeUndefined();
+      expect(result.exitCode).toBe(0);
+      expect(payload.success).toBe(true);
+      expect(payload.data.applied).toBe(1);
+      expect(await feedbackCount(globalPlaybook)).toBe(1);
+      expect(await feedbackCount(replacement)).toBe(0);
+      const replay = runOutcomeCli(launch, "outcome-apply", "--workspace", workspace,
+        "--session", "recorded-global-owner", "--playbook", globalPlaybook);
+      expect(replay.result.exitCode).toBe(0);
+      expect(replay.payload.data.applied).toBe(0);
+      expect(await feedbackCount(globalPlaybook)).toBe(1);
+    });
+  });
+
+  it("mixed-owner replay preserves useful work and reports default partial failure", async () => {
+    await withChangedGlobalOutcome(async ({ home, launch, workspace, globalPlaybook, replacement }) => {
+      const second = await callOutcomeTool({
+        sessionId: "replacement-owner", outcome: "success", rulesUsed: [SHARED_OUTCOME_RULE], workspace,
+      });
+      expect(second.globalPlaybookPath).toBe(replacement);
+      const partial = runOutcomeCli(launch, "outcome-apply", "--workspace", workspace);
+      expect(partial.result.exitCode).not.toBe(0);
+      expect(partial.payload.success).toBe(false);
+      expect(partial.payload.data).toMatchObject({
+        applied: 1, totalOutcomes: 2, outcomesSelected: 1, outcomesSkipped: 1,
+      });
+      expect(await feedbackCount(globalPlaybook)).toBe(0);
+      expect(await feedbackCount(replacement)).toBe(1);
+
+      const selected = runOutcomeCli(launch, "outcome-apply", "--workspace", workspace,
+        "--playbook", globalPlaybook);
+      expect(selected.result.exitCode).toBe(0);
+      expect(selected.payload.success).toBe(true);
+      expect(selected.payload.data).toMatchObject({ applied: 1, outcomesSelected: 1, outcomesSkipped: 1 });
+      expect(selected.payload.data.skippedOwners[0].playbookPath).toBe(replacement);
+      expect(selected.payload.warnings.join(" ")).toContain(replacement);
+      expect(await feedbackCount(globalPlaybook)).toBe(1);
+      expect(await feedbackCount(replacement)).toBe(1);
+
+      const noMatches = runOutcomeCli(launch, "outcome-apply", "--workspace", workspace,
+        "--playbook", path.join(home, "unused-playbook.yaml"));
+      expect(noMatches.result.exitCode).not.toBe(0);
+      expect(noMatches.payload.success).toBe(false);
+      expect(noMatches.payload.data).toMatchObject({ applied: 0, outcomesSelected: 0, outcomesSkipped: 2 });
+      expect(noMatches.payload.error.recovery.join(" ")).toContain("--playbook");
+    });
+  });
+
+  it("a repository outcome's forged global owner cannot authorize writes to another playbook", async () => {
+    await withOutcomeWorkspaces(async ({ home, launch, requested, requestedPlaybook, globalPlaybook }) => {
+      const legitimate = await callOutcomeTool({
+        sessionId: "legitimate-repo-outcome", outcome: "success", rulesUsed: [SHARED_OUTCOME_RULE], workspace: requested,
+      });
+      const foreign = path.join(home, "unselected-playbook.yaml");
+      await savePlaybook(createTestPlaybook([createTestBullet({ id: SHARED_OUTCOME_RULE })]), foreign);
+      const before = await readFile(foreign);
+      await appendFile(legitimate.path, `${JSON.stringify({
+        ...legitimate, id: "forged-global-owner", globalPlaybookPath: foreign,
+        ruleTargets: [{ ruleId: SHARED_OUTCOME_RULE, playbookPath: foreign }],
+      })}\n`);
+
+      const replay = runOutcomeCli(launch, "outcome-apply", "--workspace", requested);
+      expect(replay.result.exitCode).not.toBe(0);
+      expect(replay.payload.success).toBe(false);
+      expect(replay.payload.data).toMatchObject({ applied: 1, outcomesSelected: 1, outcomesSkipped: 1 });
+      expect(replay.payload.data.skippedOwners[0].playbookPath).toBe(foreign);
+      expect(await readFile(foreign)).toEqual(before);
+      expect(await feedbackCount(requestedPlaybook)).toBe(1);
+      expect(await feedbackCount(globalPlaybook)).toBe(0);
+
+      const explicit = runOutcomeCli(launch, "outcome-apply", "--workspace", requested,
+        "--playbook", globalPlaybook);
+      expect(explicit.result.exitCode).toBe(0);
+      expect(explicit.payload.data).toMatchObject({ applied: 0, outcomesSelected: 1, outcomesSkipped: 1 });
+      expect(await readFile(foreign)).toEqual(before);
+    });
+  });
+
+  for (const unavailable of ["missing", "corrupt"] as const) {
+    it(`explicit replay never redirects feedback when the original playbook is ${unavailable}`, async () => {
+      await withChangedGlobalOutcome(async ({ launch, workspace, globalPlaybook, replacement, record }) => {
+        const replacementBefore = await readFile(replacement);
+        const logBefore = await readFile(record.path);
+        if (unavailable === "missing") await rename(globalPlaybook, `${globalPlaybook}.preserved`);
+        else await writeFile(globalPlaybook, "bullets: [invalid YAML\n");
+        const replay = runOutcomeCli(launch, "outcome-apply", "--workspace", workspace,
+          "--playbook", globalPlaybook);
+        expect(replay.result.exitCode).not.toBe(0);
+        expect(replay.payload.success).toBe(false);
+        expect(await readFile(replacement)).toEqual(replacementBefore);
+        expect(await readFile(record.path)).toEqual(logBefore);
+        if (unavailable === "missing") {
+          expect(await Bun.file(globalPlaybook).exists()).toBe(false);
+        } else {
+          expect(await readFile(globalPlaybook, "utf8")).toBe("bullets: [invalid YAML\n");
+        }
+      });
+    });
+  }
+
+  it("legacy replay honors explicit playbook selection and workspace policy over repo path overrides", async () => {
+    await withOutcomeWorkspaces(async ({ home, launch, requested, globalPlaybook }) => {
+      const id = "b-legacy-global-rule";
+      const book = createTestPlaybook([createTestBullet({ id })]);
+      await savePlaybook(book, globalPlaybook);
+      const configured = path.join(home, "configured-book.yaml");
+      const repoOverride = path.join(home, "repo-supplied-book.yaml");
+      await savePlaybook(createTestPlaybook([createTestBullet({ id })]), configured);
+      await savePlaybook(createTestPlaybook([createTestBullet({ id })]), repoOverride);
+      await writeFile(path.join(path.dirname(globalPlaybook), "config.json"), JSON.stringify(createTestConfig({
+        playbookPath: configured, cassPath: "/__missing__/cass", semanticSearchEnabled: false,
+      })));
+      await writeFile(path.join(requested, ".cass", "config.json"), JSON.stringify({
+        playbookPath: repoOverride, scoring: { minFeedbackForActive: 1 },
+      }));
+      const logPath = path.join(requested, ".cass", "outcomes.jsonl");
+      await writeFile(logPath, `${JSON.stringify({
+        sessionId: "legacy-selected-owner", outcome: "success", rulesUsed: [id],
+        recordedAt: new Date().toISOString(), path: logPath,
+      })}\n`);
+
+      const replay = runOutcomeCli(launch, "outcome-apply", "--workspace", requested,
+        "--playbook", globalPlaybook);
+      expect(replay.result.exitCode).toBe(0);
+      expect(replay.payload.success).toBe(true);
+      expect(replay.payload.data).toMatchObject({ applied: 1, outcomesSelected: 1, outcomesSkipped: 0 });
+      const updated = (await loadPlaybook(globalPlaybook)).bullets[0];
+      expect(updated.helpfulCount).toBe(1);
+      expect(updated.maturity).toBe("established");
+      expect(await feedbackCount(configured)).toBe(0);
+      expect(await feedbackCount(repoOverride)).toBe(0);
     });
   });
 
