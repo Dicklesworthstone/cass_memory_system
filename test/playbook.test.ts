@@ -1,10 +1,11 @@
-import { afterEach, describe, expect, it } from "bun:test";
-import { execSync } from "node:child_process";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import { execFileSync, execSync } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import yaml from "yaml";
 import { recordFeedback } from "../src/commands/mark.js";
+import { playbookCommand } from "../src/commands/playbook.js";
 import { assertInputLimits, InputLimitError, PLAYBOOK_INPUT_LIMITS } from "../src/input-limits.js";
 
 import {
@@ -1653,5 +1654,175 @@ describe("recordReflectionRun (#72)", () => {
     recordReflectionRun(pb, 2);
     expect(pb.metadata.totalReflections).toBe(1);
     expect(pb.metadata.totalSessionsProcessed).toBe(2);
+  });
+});
+
+describe("playbook storage failures are not absence", () => {
+  interface OwnedPlaybooks {
+    directory: string;
+    workspace: string;
+    globalPath: string;
+    repoPath: string;
+    globalBytes: Buffer<ArrayBuffer>;
+    repoBytes: Buffer<ArrayBuffer>;
+  }
+
+  async function withOwnedPlaybooks(check: (fixture: OwnedPlaybooks) => Promise<void>): Promise<void> {
+    await withTempDir(async directory => {
+      const globalDirectory = path.join(directory, "memory");
+      const workspace = path.join(directory, "repo");
+      const globalPath = path.join(globalDirectory, "playbook.yaml");
+      const repoPath = path.join(workspace, ".cass", "playbook.yaml");
+      await fs.mkdir(workspace, { recursive: true });
+      execFileSync("git", ["init", "-q", "--initial-branch=main", workspace]);
+      const previousHome = process.env.CASS_MEMORY_HOME;
+      const previousCwd = process.cwd();
+      process.env.CASS_MEMORY_HOME = globalDirectory;
+      process.chdir(workspace);
+      try {
+        const global = createEmptyPlaybook("global-learned-state");
+        global.bullets = [createTestBullet({
+          id: "b-storage-owned", content: "Preserve learned feedback when storage is temporarily unavailable.",
+          sourceSessions: ["global-source-session"],
+        })];
+        const repo = createEmptyPlaybook("repository-learned-state");
+        repo.bullets = [createTestBullet({
+          id: "b-storage-owned", content: "Run repository-specific database checks before applying migrations.",
+          scope: "workspace", sourceSessions: ["repo-source-session"],
+        })];
+        await savePlaybook(global, globalPath);
+        await savePlaybook(repo, repoPath);
+        await fs.writeFile(path.join(globalDirectory, "config.json"), JSON.stringify({
+          playbookPath: globalPath, embeddingModel: "none", semanticSearchEnabled: false,
+        }));
+        await check({
+          directory, workspace, globalPath, repoPath,
+          globalBytes: await fs.readFile(globalPath), repoBytes: await fs.readFile(repoPath),
+        });
+      } finally {
+        process.chdir(previousCwd);
+        if (previousHome === undefined) delete process.env.CASS_MEMORY_HOME;
+        else process.env.CASS_MEMORY_HOME = previousHome;
+      }
+    });
+  }
+
+  it.serial("a failed existence probe cannot make the actual add command replace existing learned state", async () => {
+    await withOwnedPlaybooks(async ({ globalPath, repoPath, repoBytes }) => {
+      const failure = Object.assign(new Error("injected EIO existence probe"), { code: "EIO" });
+      const realAccess = fs.access.bind(fs);
+      const accessSpy = spyOn(fs, "access").mockImplementation(async (...args: Parameters<typeof fs.access>) => {
+        if (String(args[0]) === globalPath) throw failure;
+        return realAccess(...args);
+      });
+      const output: string[] = [];
+      const logSpy = spyOn(console, "log").mockImplementation((...args: unknown[]) => { output.push(args.join(" ")); });
+      try {
+        await playbookCommand("add", ["Record deployment package checksums before publishing artifacts."], { json: true });
+      } finally {
+        logSpy.mockRestore();
+        accessSpy.mockRestore();
+      }
+      expect(JSON.parse(output.find(line => line.startsWith("{"))!).success).toBe(true);
+      const stored = await loadPlaybook(globalPath);
+      expect(stored.bullets).toHaveLength(2);
+      expect(stored.bullets.find(bullet => bullet.id === "b-storage-owned")?.sourceSessions).toEqual(["global-source-session"]);
+      expect(stored.bullets.some(bullet => bullet.content === "Record deployment package checksums before publishing artifacts.")).toBe(true);
+      expect(await fs.readFile(repoPath)).toEqual(repoBytes);
+    });
+  });
+
+  for (const code of ["EIO", "EACCES"]) {
+    it.serial(`propagates ${code} from real reads and prevents recovery or add from overwriting the playbook`, async () => {
+      await withOwnedPlaybooks(async ({ globalPath, globalBytes, repoPath, repoBytes }) => {
+        const directory = path.dirname(globalPath);
+        const beforeFiles = (await fs.readdir(directory)).sort();
+        const failure = Object.assign(new Error(`injected ${code} playbook read`), { code });
+        const realOpen = fs.open.bind(fs);
+        const openSpy = spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+          if (String(args[0]) === globalPath) throw failure;
+          return realOpen(...args);
+        });
+        try {
+          await expect(loadPlaybook(globalPath)).rejects.toBe(failure);
+          await expect(loadPlaybookWithRecovery(globalPath)).rejects.toBe(failure);
+          await expect(playbookCommand("add", ["Keep this failed addition from replacing learned state."], { json: true })).rejects.toBe(failure);
+        } finally {
+          openSpy.mockRestore();
+        }
+        expect(await fs.readFile(globalPath)).toEqual(globalBytes);
+        expect(await fs.readFile(repoPath)).toEqual(repoBytes);
+        expect((await fs.readdir(directory)).sort()).toEqual(beforeFiles);
+      });
+    });
+
+    it.serial(`propagates ${code} from repository ownership checks instead of marking the global duplicate`, async () => {
+      await withOwnedPlaybooks(async ({ workspace, globalPath, globalBytes, repoPath, repoBytes }) => {
+        const failure = Object.assign(new Error(`injected ${code} repository probe`), { code });
+        const realAccess = fs.access.bind(fs);
+        const accessSpy = spyOn(fs, "access").mockImplementation(async (...args: Parameters<typeof fs.access>) => {
+          if (String(args[0]) === repoPath) throw failure;
+          return realAccess(...args);
+        });
+        try {
+          await expect(recordFeedback("b-storage-owned", { helpful: true, workspace })).rejects.toBe(failure);
+          await expect(loadMergedPlaybook(createTestConfig({ playbookPath: globalPath }), { cwd: workspace })).rejects.toBe(failure);
+        } finally {
+          accessSpy.mockRestore();
+        }
+        expect(await fs.readFile(globalPath)).toEqual(globalBytes);
+        expect(await fs.readFile(repoPath)).toEqual(repoBytes);
+        await recordFeedback("b-storage-owned", { helpful: true, workspace });
+        expect((await loadPlaybook(repoPath)).bullets[0]?.helpfulCount).toBe(1);
+        expect(await fs.readFile(globalPath)).toEqual(globalBytes);
+      });
+    });
+  }
+
+  it.serial("still marks the global owner when the repository playbook is genuinely missing", async () => {
+    await withOwnedPlaybooks(async ({ workspace, globalPath, repoPath, repoBytes }) => {
+      const preserved = `${repoPath}.preserved`;
+      await fs.rename(repoPath, preserved);
+      await recordFeedback("b-storage-owned", { helpful: true, workspace });
+      expect((await loadPlaybook(globalPath)).bullets[0]?.helpfulCount).toBe(1);
+      expect(await fs.readFile(preserved)).toEqual(repoBytes);
+      await expect(fs.lstat(repoPath)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+  });
+
+  it("rejects directories without creating recovery artifacts", async () => {
+    await withTempDir(async directory => {
+      const file = path.join(directory, "playbook.yaml");
+      await fs.mkdir(file);
+      await expect(loadPlaybook(file)).rejects.toBeInstanceOf(InputLimitError);
+      await expect(loadPlaybookWithRecovery(file)).rejects.toBeInstanceOf(InputLimitError);
+      expect(await fs.readdir(directory)).toEqual(["playbook.yaml"]);
+      expect((await fs.lstat(file)).isDirectory()).toBe(true);
+    });
+  });
+
+  it.skipIf(process.platform === "win32")("rejects FIFOs without blocking or creating recovery artifacts", async () => {
+    await withTempDir(async directory => {
+      const file = path.join(directory, "playbook.yaml");
+      execFileSync("mkfifo", [file]);
+      await expect(loadPlaybook(file)).rejects.toBeInstanceOf(InputLimitError);
+      await expect(loadPlaybookWithRecovery(file)).rejects.toBeInstanceOf(InputLimitError);
+      expect(await fs.readdir(directory)).toEqual(["playbook.yaml"]);
+      expect((await fs.lstat(file)).isFIFO()).toBe(true);
+    });
+  });
+
+  it.skipIf(process.platform === "win32")("a dangling repository symlink cannot become empty state or redirect feedback globally", async () => {
+    await withOwnedPlaybooks(async ({ workspace, globalPath, globalBytes, repoPath, repoBytes }) => {
+      const preserved = `${repoPath}.preserved`;
+      await fs.rename(repoPath, preserved);
+      await fs.symlink(path.join(path.dirname(repoPath), "missing-playbook.yaml"), repoPath);
+      await expect(loadPlaybook(repoPath)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(loadPlaybookWithRecovery(repoPath)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(recordFeedback("b-storage-owned", { helpful: true, workspace })).rejects.toMatchObject({ code: "ENOENT" });
+      expect((await fs.lstat(repoPath)).isSymbolicLink()).toBe(true);
+      expect(await fs.readFile(globalPath)).toEqual(globalBytes);
+      expect(await fs.readFile(preserved)).toEqual(repoBytes);
+    });
   });
 });

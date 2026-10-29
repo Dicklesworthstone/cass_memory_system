@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -9,6 +9,11 @@ import {
   type FixableIssue,
   type FixResult,
 } from "../src/commands/doctor.js";
+import { PLAYBOOK_INPUT_LIMITS } from "../src/input-limits.js";
+import { withLock } from "../src/lock.js";
+import { createEmptyPlaybook, loadPlaybook, savePlaybook } from "../src/playbook.js";
+import { createTestBullet } from "./helpers/factories.js";
+import { withTempDir } from "./helpers/temp.js";
 
 describe("Doctor Fixes", () => {
   let tmpDir: string;
@@ -463,4 +468,141 @@ describe("Doctor Fixes", () => {
       expect(applied).toContain("cautious");
     });
   });
+});
+
+describe("doctor missing-playbook fixes preserve later writers", () => {
+  async function withMissingDiagnostic(
+    check: (fixture: { directory: string; file: string; issue: FixableIssue }) => Promise<void>,
+  ): Promise<void> {
+    await withTempDir("doctor-stale-playbook", async root => {
+      const directory = path.join(root, "memory");
+      const file = path.join(directory, "playbook.yaml");
+      await fs.mkdir(directory);
+      const previousHome = process.env.CASS_MEMORY_HOME;
+      const previousCwd = process.cwd();
+      process.env.CASS_MEMORY_HOME = directory;
+      process.chdir(root);
+      try {
+        const issues = await detectFixableIssues();
+        const issue = issues.find(candidate => candidate.id === "missing-playbook" && candidate.description.includes(file));
+        expect(issue).toBeDefined();
+        await check({ directory, file, issue: issue! });
+      } finally {
+        process.chdir(previousCwd);
+        if (previousHome === undefined) delete process.env.CASS_MEMORY_HOME;
+        else process.env.CASS_MEMORY_HOME = previousHome;
+      }
+    });
+  }
+
+  async function writeLearnedState(file: string): Promise<Buffer<ArrayBuffer>> {
+    const playbook = createEmptyPlaybook("created-after-diagnosis");
+    playbook.metadata.totalReflections = 3;
+    playbook.metadata.totalSessionsProcessed = 7;
+    playbook.bullets = [createTestBullet({
+      id: "b-doctor-preserved", content: "Preserve feedback learned while a doctor diagnosis is awaiting repair.",
+      helpfulCount: 1, sourceSessions: ["preserved-source-session"],
+      feedbackEvents: [{ type: "helpful", timestamp: "2026-10-28T12:00:00Z", sessionPath: "preserved-source-session" }],
+    })];
+    await savePlaybook(playbook, file);
+    return fs.readFile(file);
+  }
+
+  test.serial("still initializes a playbook that is genuinely absent when the fix runs", async () => {
+    await withMissingDiagnostic(async ({ file, issue }) => {
+      await issue.fix();
+      expect((await loadPlaybook(file)).bullets).toEqual([]);
+      expect((await fs.stat(file)).isFile()).toBe(true);
+    });
+  });
+
+  test.serial("preserves a valid playbook created after diagnosis byte for byte", async () => {
+    await withMissingDiagnostic(async ({ file, issue }) => {
+      const original = await writeLearnedState(file);
+      await issue.fix();
+      expect(await fs.readFile(file)).toEqual(original);
+      expect((await loadPlaybook(file)).bullets[0]?.id).toBe("b-doctor-preserved");
+    });
+  });
+
+  test.serial("rechecks absence after acquiring the lock, including a writer that won the lock first", async () => {
+    await withMissingDiagnostic(async ({ file, issue }) => {
+      let signalHeld!: () => void;
+      let release!: () => void;
+      const held = new Promise<void>(resolve => { signalHeld = resolve; });
+      const released = new Promise<void>(resolve => { release = resolve; });
+      const writer = withLock(file, async () => {
+        signalHeld();
+        await released;
+      });
+      await held;
+      let signalAttempt!: () => void;
+      const attempted = new Promise<void>(resolve => { signalAttempt = resolve; });
+      const realMkdir = fs.mkdir.bind(fs);
+      const mkdirSpy = spyOn(fs, "mkdir").mockImplementation(((...args: Parameters<typeof fs.mkdir>) => {
+        if (String(args[0]) === `${file}.lock.d`) signalAttempt();
+        return realMkdir(...args);
+      }) as typeof fs.mkdir);
+      const fixing = issue.fix();
+      try {
+        await attempted;
+        const original = await writeLearnedState(file);
+        release();
+        await writer;
+        await fixing;
+        expect(await fs.readFile(file)).toEqual(original);
+      } finally {
+        release();
+        await Promise.allSettled([writer, fixing]);
+        mkdirSpy.mockRestore();
+      }
+    });
+  });
+
+  test.serial("preserves an oversized legacy file that arrives after the missing-file diagnostic", async () => {
+    await withMissingDiagnostic(async ({ directory, file, issue }) => {
+      const handle = await fs.open(file, "wx");
+      try {
+        await handle.writeFile("Legacy learned state must be preserved\n");
+        await handle.truncate(PLAYBOOK_INPUT_LIMITS.maxBytes + 1);
+      } finally {
+        await handle.close();
+      }
+      const before = await fs.stat(file);
+      await issue.fix();
+      const after = await fs.stat(file);
+      expect(after.size).toBe(PLAYBOOK_INPUT_LIMITS.maxBytes + 1);
+      expect(after.ino).toBe(before.ino);
+      expect(after.mtimeMs).toBe(before.mtimeMs);
+      expect(await fs.readdir(directory)).toEqual(["playbook.yaml"]);
+    });
+  });
+
+  for (const code of ["EIO", "EACCES"]) {
+    test.serial(`reports ${code} during the under-lock recheck without overwriting learned state`, async () => {
+      await withMissingDiagnostic(async ({ file, issue }) => {
+        const original = await writeLearnedState(file);
+        const realAccess = fs.access.bind(fs);
+        const failure = Object.assign(new Error(`injected ${code} under-lock probe`), { code });
+        const accessSpy = spyOn(fs, "access").mockImplementation(async (...args: Parameters<typeof fs.access>) => {
+          if (String(args[0]) === file) throw failure;
+          return realAccess(...args);
+        });
+        try {
+          if (code === "EACCES") {
+            await expect(applyFixes([issue], { quiet: true })).rejects.toMatchObject({
+              errorCode: "EACCES", path: file,
+            });
+          } else {
+            const results = await applyFixes([issue], { quiet: true });
+            expect(results[0]?.success).toBe(false);
+            expect(results[0]?.message).toContain(`injected ${code}`);
+          }
+        } finally {
+          accessSpy.mockRestore();
+        }
+        expect(await fs.readFile(file)).toEqual(original);
+      });
+    });
+  }
 });

@@ -3,7 +3,7 @@ import { constants, type Stats } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import yaml, { isMap, isScalar, isSeq, Lexer } from "yaml";
+import yaml, { isMap, isScalar, isSeq, Lexer, YAMLParseError } from "yaml";
 import { z } from "zod";
 import {
   assertInputLimits,
@@ -83,6 +83,8 @@ const StoredPlaybookSchema = PlaybookSchema.extend({
     .max(PLAYBOOK_INPUT_LIMITS.maxArrayLength).default([]),
 }).passthrough();
 
+class PlaybookValidationError extends Error {}
+
 export function createEmptyPlaybook(name = "playbook"): Playbook {
   return {
     schema_version: 2,
@@ -101,11 +103,6 @@ export function createEmptyPlaybook(name = "playbook"): Playbook {
 export async function loadPlaybook(filePath: string): Promise<Playbook> {
   const expanded = expandPath(filePath);
 
-  if (!(await fileExists(expanded))) {
-    log(`Playbook not found at ${expanded}, creating empty one.`, true);
-    return createEmptyPlaybook();
-  }
-
   try {
     const content = await readBoundedFile(expanded, PLAYBOOK_INPUT_LIMITS.maxBytes);
     if (!content.trim()) return createEmptyPlaybook();
@@ -115,17 +112,18 @@ export async function loadPlaybook(filePath: string): Promise<Playbook> {
 
     if (!result.success) {
       logError(`Playbook validation failed for ${expanded}: ${formatValidationIssues(result.error)}`);
-      throw new Error(
+      throw new PlaybookValidationError(
         `Playbook at ${expanded} is invalid. Please fix it manually or remove it to reset.`,
       );
     }
 
     return result.data;
   } catch (err: any) {
-    if (err.code === "ENOENT") {
+    // Read first; a failed existence probe must never turn a valid file into
+    // an empty playbook. Confirm ENOENT is not a dangling or replaced entry.
+    if (err.code === "ENOENT" && !(await fileExists(expanded))) {
       return createEmptyPlaybook();
     }
-    // Propagate validation errors so the process stops rather than overwriting data
     throw err;
   }
 }
@@ -553,8 +551,8 @@ export async function loadPlaybookWithRecovery(
     const playbook = await loadPlaybook(filePath);
     return { playbook, recovered: false };
   } catch (err: any) {
-    // Don't recover from ENOENT - that's handled by loadPlaybook
-    if (err.code === "ENOENT" || err instanceof InputLimitError) {
+    // Filesystem failures are not evidence that learned state is corrupt.
+    if (!(err instanceof YAMLParseError) && !(err instanceof PlaybookValidationError)) {
       throw err;
     }
 

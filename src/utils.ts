@@ -999,14 +999,25 @@ export async function ensureDir(dir: string): Promise<void> {
 
 /**
  * Async existence check that respects ~ expansion.
- * Returns false on any access error (ENOENT, EACCES, etc.).
+ * Only a confirmed missing entry is absent. Permission and I/O failures must
+ * not let callers initialize over learned state or route to another owner.
  */
 export async function fileExists(filePath: string): Promise<boolean> {
+  const expanded = expandPath(filePath);
   try {
-    await fs.access(expandPath(filePath));
+    await fs.access(expanded);
     return true;
-  } catch {
-    return false;
+  } catch (error: any) {
+    if (error?.code !== "ENOENT") throw error;
+    // access follows symlinks. A dangling link or a newly arrived entry is
+    // not a missing file that a writer may safely replace with empty state.
+    try {
+      await fs.lstat(expanded);
+    } catch (missing: any) {
+      if (missing?.code === "ENOENT") return false;
+      throw missing;
+    }
+    throw error;
   }
 }
 

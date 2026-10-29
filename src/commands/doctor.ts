@@ -1501,6 +1501,9 @@ function createMissingPlaybookFix(playbookPath: string): FixableIssue {
     safety: "safe",
     fix: async () => {
       await withLock(playbookPath, async () => {
+        // A diagnostic can become stale while waiting for approval or this
+        // lock. Never replace state another writer has created meanwhile.
+        if (await fileExists(playbookPath)) return;
         const emptyPlaybook: Playbook = createEmptyPlaybook();
         await savePlaybook(emptyPlaybook, playbookPath);
       });

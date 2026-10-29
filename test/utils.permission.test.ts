@@ -1,13 +1,15 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
+  fileExists,
   handlePermissionError,
   handlePermissionErrorSync,
   isPermissionError,
   PermissionError,
 } from "../src/utils.js";
+import { withTempDir } from "./helpers/temp.js";
 
 describe("Permission Error Handling", () => {
   describe("isPermissionError", () => {
@@ -305,5 +307,60 @@ describe("Permission Error Handling", () => {
         }
       });
     }
+  });
+});
+
+describe("fileExists requires confirmed absence", () => {
+  test("recognizes existing files and directories and genuinely missing entries", async () => {
+    await withTempDir("file-exists", async directory => {
+      const file = path.join(directory, "learned-state.yaml");
+      await fs.writeFile(file, "preserved learned state\n");
+      expect(await fileExists(file)).toBe(true);
+      expect(await fileExists(directory)).toBe(true);
+      expect(await fileExists(path.join(directory, "missing.yaml"))).toBe(false);
+      expect(await fileExists(path.join(directory, "missing-parent", "state.yaml"))).toBe(false);
+    });
+  });
+
+  for (const code of ["EIO", "EACCES", "EPERM", "ENOTDIR", "ELOOP", undefined]) {
+    test.serial(`propagates ${code ?? "unexpected"} access failures instead of reporting absence`, async () => {
+      await withTempDir("file-exists-error", async directory => {
+        const file = path.join(directory, "learned-state.yaml");
+        const contents = "preserved learned state\n";
+        await fs.writeFile(file, contents);
+        const failure = Object.assign(new Error(`injected ${code ?? "unexpected"} probe failure`), { code });
+        const realAccess = fs.access.bind(fs);
+        const accessSpy = spyOn(fs, "access").mockImplementation(async (...args: Parameters<typeof fs.access>) => {
+          if (String(args[0]) === file) throw failure;
+          return realAccess(...args);
+        });
+        try {
+          await expect(fileExists(file)).rejects.toBe(failure);
+        } finally {
+          accessSpy.mockRestore();
+        }
+        expect(await fs.readFile(file, "utf8")).toBe(contents);
+      });
+    });
+  }
+
+  test.serial("a stale ENOENT probe cannot authorize replacing an existing entry", async () => {
+    await withTempDir("file-exists-stale", async directory => {
+      const file = path.join(directory, "learned-state.yaml");
+      const contents = "state created after the original missing-file probe\n";
+      await fs.writeFile(file, contents);
+      const failure = Object.assign(new Error("injected stale missing-file result"), { code: "ENOENT" });
+      const realAccess = fs.access.bind(fs);
+      const accessSpy = spyOn(fs, "access").mockImplementation(async (...args: Parameters<typeof fs.access>) => {
+        if (String(args[0]) === file) throw failure;
+        return realAccess(...args);
+      });
+      try {
+        await expect(fileExists(file)).rejects.toBe(failure);
+      } finally {
+        accessSpy.mockRestore();
+      }
+      expect(await fs.readFile(file, "utf8")).toBe(contents);
+    });
   });
 });

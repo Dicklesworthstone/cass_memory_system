@@ -83,13 +83,15 @@ async function setupTestEnvironment(
   };
   await writeFile(path.join(cassMemoryDir, "config.json"), JSON.stringify(config));
 
-  // Create cost tracking data using the actual TotalCostData schema from cost.ts
-  const today = new Date().toISOString().slice(0, 10);
-  const month = new Date().toISOString().slice(0, 7);
+  // Cost totals use local calendar periods, matching the writer and reader.
+  // One snapshot also keeps the fixture consistent across a day/month boundary.
+  const date = new Date();
+  const today = date.toLocaleDateString("en-CA");
+  const month = today.slice(0, 7);
 
   const totalData = {
     allTime: options.allTimeCost ?? 0,
-    lastUpdated: new Date().toISOString(),
+    lastUpdated: date.toISOString(),
     currentDay: {
       day: today,
       cost: options.dailyCost ?? 0,
