@@ -3205,22 +3205,41 @@ describe("orchestrateReflection durable outcome recovery", () => {
     });
   });
 
-  test("recovers feedback after one playbook saved and a second playbook was temporarily locked", async () => {
+  test("keeps both playbooks unchanged until a locked outcome destination can be retried", async () => {
     await withQueuedAutoOutcome(async ({ env, config, io, sessionPath, outcomePath, repoPath, entry, reflectorCalls }) => {
+      const originalPending = (await entry()).pendingOutcomes!;
+      const beforeGlobal = readFileSync(env.playbookPath, "utf8");
+      const beforeRepo = readFileSync(repoPath!, "utf8");
       renameSync(outcomePath, `${outcomePath}.blocked-directory`);
       const interrupted = await withLock(repoPath!, () => orchestrateReflection(config, { session: sessionPath, io }));
       expect(interrupted.errors.some(message => message.includes("Auto-outcome recovery failed"))).toBe(true);
-      expect(readPlaybook(env.playbookPath).bullets[0].helpfulCount).toBe(1);
+      // Destination locks are acquired before batch preflight or any feedback
+      // write. Contention must preserve both images and the exact queued event.
+      expect(interrupted.autoOutcome?.feedbackApplied).toBe(0);
+      expect(readFileSync(env.playbookPath, "utf8")).toBe(beforeGlobal);
+      expect(readFileSync(repoPath!, "utf8")).toBe(beforeRepo);
+      expect(readPlaybook(env.playbookPath).bullets[0].helpfulCount).toBe(0);
       expect(readPlaybook(repoPath!).bullets[0].helpfulCount).toBe(0);
-      expect((await entry()).pendingOutcomes).toHaveLength(1);
+      expect((await entry()).pendingOutcomes).toEqual(originalPending);
 
       const recovered = await orchestrateReflection(config, { session: sessionPath, io });
       expect(recovered.errors).toEqual([]);
-      expect(recovered.autoOutcome?.feedbackApplied).toBe(1);
+      expect(recovered.autoOutcome?.feedbackApplied).toBe(2);
       expect(readPlaybook(env.playbookPath).bullets[0].helpfulCount).toBe(1);
       expect(readPlaybook(repoPath!).bullets[0].helpfulCount).toBe(1);
+      for (const target of [env.playbookPath, repoPath!]) {
+        const bullet = readPlaybook(target).bullets[0] as PlaybookBullet;
+        expect(bullet.feedbackEvents.filter(event => event.outcomeId === originalPending[0]!.id)).toHaveLength(1);
+      }
       expect((await entry()).pendingOutcomes).toEqual([]);
       expect(readFileSync(outcomePath, "utf8").trim().split("\n")).toHaveLength(1);
+      expect(reflectorCalls()).toBe(1);
+
+      const again = await orchestrateReflection(config, { session: sessionPath, io });
+      expect(again.errors).toEqual([]);
+      expect(again.autoOutcome).toBeUndefined();
+      expect(readPlaybook(env.playbookPath).bullets[0].helpfulCount).toBe(1);
+      expect(readPlaybook(repoPath!).bullets[0].helpfulCount).toBe(1);
       expect(reflectorCalls()).toBe(1);
     }, { repoRule: true });
   });
