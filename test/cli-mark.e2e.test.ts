@@ -820,3 +820,81 @@ describe("feedback follows the workspace used for retrieval", () => {
     }
   });
 });
+
+describe("feedback preserves ambiguous legacy rules", () => {
+  for (const owner of ["global", "repository"] as const) {
+    it(`rejects a duplicate ID in the ${owner} playbook without changing either rule or falling back`, async () => {
+      await withFeedbackWorkspace(async ({ repo, repoCassDir, cassMemoryDir }) => {
+        const globalPath = path.join(cassMemoryDir, "playbook.yaml");
+        const repoPath = path.join(repoCassDir, "playbook.yaml");
+        const target = owner === "global" ? globalPath : repoPath;
+        const duplicateId = "b-ambiguous-legacy";
+        const playbook = createEmptyPlaybook();
+        playbook.bullets = [
+          createTestBullet({
+            id: duplicateId, content: "Preserve the first distinct learned instruction.",
+            helpfulCount: 1, sourceSessions: ["earlier-session"],
+            feedbackEvents: [{ type: "helpful", timestamp: "2026-10-28T12:00:00Z", sessionPath: "earlier-session" }],
+          }),
+          createTestBullet({ id: duplicateId, content: "Preserve the second distinct learned instruction." }),
+        ];
+        await savePlaybook(playbook, target);
+        if (owner === "repository") await writeRule(globalPath, "Do not redirect repository feedback here.", duplicateId);
+        else await savePlaybook(createEmptyPlaybook(), repoPath);
+        const blockedPath = path.join(path.dirname(target), "blocked.log");
+        const blocked = JSON.stringify({ id: "b-blocked", content: "Retain blocked state.", reason: "unsafe", forgottenAt: "2026-10-28T12:00:00Z" }) + "\n";
+        await writeFile(blockedPath, blocked);
+        const before = await Promise.all([globalPath, repoPath, blockedPath].map(file => readFile(file)));
+
+        await expect(recordFeedback(duplicateId, { helpful: true, workspace: repo }))
+          .rejects.toThrow(/ambiguous.*id/i);
+        const result = Bun.spawnSync([
+          process.execPath, path.join(import.meta.dir, "..", "src", "cm.ts"),
+          "mark", duplicateId, "--harmful", "--workspace", repo, "--json",
+        ], { cwd: repo, stdout: "pipe", stderr: "pipe" });
+        expect(result.exitCode).not.toBe(0);
+        const payload = JSON.parse(result.stdout.toString());
+        expect(payload.success).toBe(false);
+        expect(payload.error.message).toMatch(/ambiguous.*id/i);
+        expect(payload.error.message).toContain(target);
+        expect(await Promise.all([globalPath, repoPath, blockedPath].map(file => readFile(file)))).toEqual(before);
+      });
+    });
+  }
+
+  it("a unique repository override remains writable when the shadowed global ID is duplicated", async () => {
+    await withFeedbackWorkspace(async ({ repo, repoCassDir, cassMemoryDir }) => {
+      const globalPath = path.join(cassMemoryDir, "playbook.yaml");
+      const repoPath = path.join(repoCassDir, "playbook.yaml");
+      const global = createEmptyPlaybook();
+      global.bullets = [
+        createTestBullet({ id: "b-shadowed", content: "First preserved global instruction." }),
+        createTestBullet({ id: "b-shadowed", content: "Second preserved global instruction." }),
+      ];
+      await savePlaybook(global, globalPath);
+      await writeRule(repoPath, "Use this repository's explicit override.", "b-shadowed");
+      const originalGlobal = await readFile(globalPath);
+      await recordFeedback("b-shadowed", { helpful: true, workspace: repo });
+      expect((await loadPlaybook(repoPath)).bullets[0].helpfulCount).toBe(1);
+      expect(await readFile(globalPath)).toEqual(originalGlobal);
+    });
+  });
+
+  it("unrelated duplicate IDs do not prevent feedback on a unique learned rule", async () => {
+    await withFeedbackWorkspace(async ({ repo, repoCassDir }) => {
+      const repoPath = path.join(repoCassDir, "playbook.yaml");
+      const playbook = createEmptyPlaybook();
+      playbook.bullets = [
+        createTestBullet({ id: "b-duplicate", content: "First unrelated preserved instruction." }),
+        createTestBullet({ id: "b-duplicate", content: "Second unrelated preserved instruction." }),
+        createTestBullet({ id: "b-unique", content: "This uniquely addressed rule received feedback." }),
+      ];
+      await savePlaybook(playbook, repoPath);
+      const original = await loadPlaybook(repoPath);
+      await recordFeedback("b-unique", { helpful: true, workspace: repo });
+      const updated = await loadPlaybook(repoPath);
+      expect(updated.bullets.slice(0, 2)).toEqual(original.bullets.slice(0, 2));
+      expect(updated.bullets[2].helpfulCount).toBe(1);
+    });
+  });
+});

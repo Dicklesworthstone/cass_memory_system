@@ -2,7 +2,7 @@ import chalk from "chalk";
 import { loadConfig } from "../config.js";
 import { withLock } from "../lock.js";
 import { icon } from "../output.js";
-import { findBullet, loadPlaybook, resolveRepoPlaybookPath, savePlaybook } from "../playbook.js";
+import { loadPlaybook, resolveRepoPlaybookPath, savePlaybook } from "../playbook.js";
 import { calculateMaturityState, getEffectiveScore } from "../scoring.js";
 import { ErrorCode, type FeedbackEvent, type HarmfulReason, HarmfulReasonEnum } from "../types.js";
 import {
@@ -55,7 +55,14 @@ export async function recordFeedback(
     return await withLock(saveTarget, async () => {
       const targetPlaybook = await loadPlaybook(saveTarget);
 
-      const targetBullet = findBullet(targetPlaybook, bulletId);
+      const matches = targetPlaybook.bullets.filter(bullet => bullet.id === bulletId);
+      if (matches.length > 1) {
+        throw new Error(
+          `Ambiguous bullet ID ${bulletId}: ${matches.length} rules in ${saveTarget}. `
+          + "Resolve duplicate IDs before recording feedback.",
+        );
+      }
+      const targetBullet = matches[0];
       if (!targetBullet) return { found: false };
 
       let reason: HarmfulReason | undefined;

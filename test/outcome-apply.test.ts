@@ -413,6 +413,165 @@ describe("durable outcome identity and ownership", () => {
   });
 });
 
+describe("ambiguous outcome rule IDs", () => {
+  for (const owner of ["global", "repository"] as const) {
+    test(`preflights an ambiguous ${owner} rule before changing any requested playbook`, async () => {
+      await withTempCassHome(async env => {
+        const workspace = path.join(env.home, "project");
+        const initialized = Bun.spawnSync(["git", "init", "--quiet", "--initial-branch=main", workspace]);
+        expect(initialized.exitCode).toBe(0);
+        const globalPath = env.playbookPath;
+        const repoPath = path.join(workspace, ".cass", "playbook.yaml");
+        const ambiguousPath = owner === "global" ? globalPath : repoPath;
+        const otherPath = owner === "global" ? repoPath : globalPath;
+        const config = createTestConfig({ playbookPath: globalPath });
+        const ambiguous = createTestPlaybook([
+          createTestBullet({
+            id: "b-ambiguous", content: "Preserve the first distinct legacy instruction.",
+            helpfulCount: 1, sourceSessions: ["earlier-session"],
+            feedbackEvents: [{ type: "helpful", timestamp: "2026-10-28T12:00:00Z", sessionPath: "earlier-session" }],
+          }),
+          createTestBullet({ id: "b-ambiguous", content: "Preserve the second distinct legacy instruction." }),
+          createTestBullet({ id: "b-neighbor", content: "This unique rule shares the ambiguous playbook." }),
+        ]);
+        await savePlaybook(ambiguous, ambiguousPath);
+        await savePlaybook(createTestPlaybook([createTestBullet({ id: "b-independent" })]), otherPath);
+        const record = await prepareOutcome({
+          sessionId: "ambiguous-outcome", outcome: "success", workspace,
+          // The other destination appears first, so per-file validation alone
+          // would apply it before discovering the later ambiguous ID.
+          rulesUsed: ["b-independent", "b-neighbor", "b-ambiguous"],
+        }, config);
+        await persistOutcomeRecord(record, config);
+        const blockedPath = path.join(path.dirname(ambiguousPath), "blocked.log");
+        await fs.writeFile(blockedPath, JSON.stringify({
+          id: "b-blocked", content: "Retain blocked state.", reason: "unsafe", forgottenAt: "2026-10-28T12:00:00Z",
+        }) + "\n");
+        const paths = [globalPath, repoPath, blockedPath, record.path];
+        const before = await Promise.all(paths.map(file => fs.readFile(file)));
+
+        await expect(applyOutcomeFeedback(record, config)).rejects.toThrow(/ambiguous.*id/i);
+        expect(await Promise.all(paths.map(file => fs.readFile(file)))).toEqual(before);
+
+        // A deliberate ID correction makes the same persisted event retryable;
+        // no rule or its existing feedback was dropped to resolve the ambiguity.
+        const corrected = await loadPlaybook(ambiguousPath);
+        corrected.bullets[1].id = "b-resolved-second-rule";
+        await savePlaybook(corrected, ambiguousPath);
+        expect(await applyOutcomeFeedback(record, config)).toEqual({ applied: 3, missing: [] });
+        expect(await applyOutcomeFeedback(record, config)).toEqual({ applied: 0, missing: [] });
+        const updated = await loadPlaybook(ambiguousPath);
+        expect(updated.bullets.map(bullet => bullet.helpfulCount)).toEqual([2, 0, 1]);
+        expect(updated.bullets[0].feedbackEvents[0]).toEqual(ambiguous.bullets[0].feedbackEvents[0]);
+        expect(updated.bullets[1]).toEqual(corrected.bullets[1]);
+        expect((await loadPlaybook(otherPath)).bullets[0].helpfulCount).toBe(1);
+        expect(await fs.readFile(blockedPath)).toEqual(before[2]);
+        expect(await fs.readFile(record.path)).toEqual(before[3]);
+      });
+    });
+  }
+
+  test("a unique repository override ignores shadowed global duplicates and preserves unrelated duplicates", async () => {
+    await withTempCassHome(async env => {
+      const workspace = path.join(env.home, "project");
+      const initialized = Bun.spawnSync(["git", "init", "--quiet", "--initial-branch=main", workspace]);
+      expect(initialized.exitCode).toBe(0);
+      const config = createTestConfig({ playbookPath: env.playbookPath });
+      await savePlaybook(createTestPlaybook([
+        createTestBullet({ id: "b-shadowed", content: "First preserved global instruction." }),
+        createTestBullet({ id: "b-shadowed", content: "Second preserved global instruction." }),
+      ]), config.playbookPath);
+      const repoPath = path.join(workspace, ".cass", "playbook.yaml");
+      await savePlaybook(createTestPlaybook([
+        createTestBullet({ id: "b-shadowed", content: "The unique repository override receives this feedback." }),
+        createTestBullet({ id: "b-unrelated", content: "First unrelated repository instruction." }),
+        createTestBullet({ id: "b-unrelated", content: "Second unrelated repository instruction." }),
+      ]), repoPath);
+      const globalBefore = await fs.readFile(config.playbookPath);
+      const repoBefore = await loadPlaybook(repoPath);
+      const record = await prepareOutcome({
+        sessionId: "repository-override", outcome: "success", rulesUsed: ["b-shadowed"], workspace,
+      }, config);
+      expect(record.ruleTargets).toEqual([{ ruleId: "b-shadowed", playbookPath: repoPath }]);
+      expect(await applyOutcomeFeedback(record, config)).toEqual({ applied: 1, missing: [] });
+      const updated = await loadPlaybook(repoPath);
+      expect(updated.bullets[0].helpfulCount).toBe(1);
+      expect(updated.bullets.slice(1)).toEqual(repoBefore.bullets.slice(1));
+      expect(await fs.readFile(config.playbookPath)).toEqual(globalBefore);
+    });
+  });
+
+  test("repository-only batches acquire locks in the same code-unit order as reflection", async () => {
+    await withTempCassHome(async env => {
+      const config = createTestConfig({ playbookPath: env.playbookPath });
+      await savePlaybook(createTestPlaybook([]), config.playbookPath);
+      const records: OutcomeRecord[] = [];
+      const targets: string[] = [];
+      for (const name of ["alpha", "Zulu"]) {
+        const workspace = path.join(env.home, name);
+        const initialized = Bun.spawnSync(["git", "init", "--quiet", "--initial-branch=main", workspace]);
+        expect(initialized.exitCode).toBe(0);
+        const target = path.join(workspace, ".cass", "playbook.yaml");
+        targets.push(target);
+        await savePlaybook(createTestPlaybook([createTestBullet({ id: "b-lock-order" })]), target);
+        records.push(await prepareOutcome({
+          sessionId: name, outcome: "success", rulesUsed: ["b-lock-order"], workspace,
+        }, config));
+      }
+      const acquired: string[] = [];
+      const targetLocks = new Set(targets.map(target => `${target}.lock.d`));
+      const realMkdir = fs.mkdir.bind(fs);
+      const mkdirSpy = spyOn(fs, "mkdir").mockImplementation(((...args: Parameters<typeof fs.mkdir>) => {
+        if (targetLocks.has(String(args[0]))) acquired.push(String(args[0]));
+        return realMkdir(...args);
+      }) as typeof fs.mkdir);
+      try {
+        expect(await applyOutcomeFeedback(records, config)).toEqual({ applied: 2, missing: [] });
+      } finally {
+        mkdirSpy.mockRestore();
+      }
+      expect(acquired).toEqual(targets.sort().map(target => `${target}.lock.d`));
+    });
+  });
+
+  test("an oversized destination batch fails before acquiring locks or changing any file", async () => {
+    await withTempCassHome(async env => {
+      const config = createTestConfig({ playbookPath: env.playbookPath });
+      await savePlaybook(createTestPlaybook([createTestBullet({ id: "b-bounded" })]), config.playbookPath);
+      const original = await fs.readFile(config.playbookPath);
+      const prepared = await prepareOutcome({
+        sessionId: "bounded", outcome: "success", rulesUsed: ["b-bounded"], workspace: env.home,
+      }, config);
+      const records: OutcomeRecord[] = [];
+      const targets: string[] = [];
+      for (let index = 0; index < 65; index++) {
+        // Final symlinks are distinct atomic replacement destinations even
+        // though their current content belongs to the same allowed owner.
+        const target = path.join(env.home, `linked-book-${index}.yaml`);
+        await fs.symlink(config.playbookPath, target);
+        targets.push(target);
+        records.push({ ...prepared, id: `${prepared.id}-${index}`,
+          ruleTargets: [{ ruleId: "b-bounded", playbookPath: target }] });
+      }
+      let lockAttempts = 0;
+      const realMkdir = fs.mkdir.bind(fs);
+      const mkdirSpy = spyOn(fs, "mkdir").mockImplementation(((...args: Parameters<typeof fs.mkdir>) => {
+        if (String(args[0]).endsWith(".lock.d")) lockAttempts++;
+        return realMkdir(...args);
+      }) as typeof fs.mkdir);
+      try {
+        await expect(applyOutcomeFeedback(records, config)).rejects.toThrow(/64.*destinations.*[Rr]educe/);
+      } finally {
+        mkdirSpy.mockRestore();
+      }
+      expect(lockAttempts).toBe(0);
+      expect(await fs.readFile(config.playbookPath)).toEqual(original);
+      expect(await Promise.all(targets.map(async target => (await fs.lstat(target)).isSymbolicLink())))
+        .toEqual(targets.map(() => true));
+    });
+  });
+});
+
 describe("automatic transcript evidence consumption", () => {
   const key = (digit: string) => `te1:${digit.repeat(64)}`;
   const evidence = (ruleId: string, ...digits: string[]): TranscriptRuleEvidence => ({

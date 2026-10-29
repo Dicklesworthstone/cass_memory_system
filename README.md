@@ -366,6 +366,13 @@ replaying the log from another directory cannot redirect feedback. Replaying an
 event applies it at most once per rule. An ID that was unknown when recorded does
 not later credit an unrelated rule created with that ID.
 
+Recovered legacy files may contain distinct rules sharing an ID. `mark` and
+outcome application reject feedback for an ambiguous ID within its owning
+playbook. Outcome batches check every requested destination before changing any
+feedback. Assign distinct IDs deliberately, then retry the recorded outcome;
+the original rules and feedback remain intact. A unique repository rule can
+still override the same ID in the global playbook.
+
 If the configured global playbook changes before a recorded outcome is applied,
 select its original playbook explicitly:
 

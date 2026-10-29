@@ -8,7 +8,7 @@ import { loadPlaybook, resolveRepoPlaybookPath, savePlaybook } from "./playbook.
 import { sanitize } from "./sanitize.js";
 import { calculateMaturityState } from "./scoring.js";
 import { containsCmSubprocessPayload } from "./subprocess-tag.js";
-import { OutcomeInputSchema, OutcomeRecordSchema, type Config, type DiaryEntry, type FeedbackEvent, type TranscriptRuleEvidence } from "./types.js";
+import { OutcomeInputSchema, OutcomeRecordSchema, type Config, type DiaryEntry, type FeedbackEvent, type Playbook, type PlaybookBullet, type TranscriptRuleEvidence } from "./types.js";
 import { normalizeWorkspacePath, resolveProjectRoot } from "./workspace.js";
 import {
   canonicalStoragePath,
@@ -120,6 +120,8 @@ export interface ContextLogEntry {
 
 const FAST_THRESHOLD_SECONDS = 600; // 10 minutes
 const SLOW_THRESHOLD_SECONDS = 3600; // 1 hour
+// Match reflection's maximum simultaneous playbook destinations.
+const MAX_OUTCOME_FEEDBACK_TARGETS = 64;
 
 /**
  * #56 — Harm-attribution guards.
@@ -567,20 +569,57 @@ export async function applyOutcomeFeedback(
         },
       };
 
-      const bucket = updates.get(targetPath);
+      // Directory aliases share a lock and replacement destination. Preserve
+      // the final component: atomic saves replace a final symlink itself.
+      const destination = canonicalStoragePath(targetPath);
+      const bucket = updates.get(destination);
       if (bucket) bucket.push(updateItem);
-      else updates.set(targetPath, [updateItem]);
+      else updates.set(destination, [updateItem]);
     }
   }
 
-  // Apply updates with locking, per playbook file
-  for (const [targetPath, items] of updates.entries()) {
-    await withLock(targetPath, async () => {
+  if (updates.size === 0) return { applied, missing };
+  if (updates.size > MAX_OUTCOME_FEEDBACK_TARGETS) {
+    throw new Error(
+      `Outcome feedback exceeds ${MAX_OUTCOME_FEEDBACK_TARGETS} playbook destinations. `
+      + "Reduce the outcome batch or outcome-apply --limit and retry; no feedback was changed.",
+    );
+  }
+
+  // Match reflection's global-first, then sorted repository lock order. Hold
+  // every requested destination through preflight and application so a later
+  // ambiguous ID cannot leave earlier feedback applied or race another writer.
+  // No caller holds a playbook lock while entering outcome delivery.
+  const globalPath = canonicalStoragePath(config.playbookPath);
+  const destinations = [...updates.keys()].filter(target => target !== globalPath).sort();
+  if (updates.has(globalPath)) destinations.unshift(globalPath);
+  const applyLocked = async (index: number): Promise<void> => {
+    if (index < destinations.length) {
+      return withLock(destinations[index], () => applyLocked(index + 1));
+    }
+    const snapshots = new Map<string, { playbook: Playbook; bullets: Map<string, PlaybookBullet> }>();
+    for (const targetPath of destinations) {
       if (!(await fileExists(targetPath))) {
         throw new Error(`Outcome playbook is unavailable: ${targetPath}`);
       }
       const playbook = await loadPlaybook(targetPath);
-      const bullets = new Map(playbook.bullets.map(bullet => [bullet.id, bullet]));
+      const requested = new Set(updates.get(targetPath)!.map(item => item.bulletId));
+      const bullets = new Map<string, PlaybookBullet>();
+      for (const bullet of playbook.bullets) {
+        if (!requested.has(bullet.id)) continue;
+        if (bullets.has(bullet.id)) {
+          throw new Error(
+            `Ambiguous bullet ID ${bullet.id}: multiple rules in ${targetPath}. `
+            + "Resolve duplicate IDs before applying outcome feedback.",
+          );
+        }
+        bullets.set(bullet.id, bullet);
+      }
+      snapshots.set(targetPath, { playbook, bullets });
+    }
+
+    for (const [targetPath, items] of updates.entries()) {
+      const { playbook, bullets } = snapshots.get(targetPath)!;
       const consumedEvidence = new Map<string, Set<string>>();
       let modified = false;
       let reusedFeedback = false;
@@ -654,8 +693,9 @@ export async function applyOutcomeFeedback(
         }
         await ensureDurableDirectory(path.dirname(targetPath));
       }
-    });
-  }
+    }
+  };
+  await applyLocked(0);
 
   return { applied, missing };
 }
