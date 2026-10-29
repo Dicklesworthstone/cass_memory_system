@@ -62,6 +62,159 @@ function createTestPlaybook(bullets: PlaybookBullet[] = []): Playbook {
 }
 
 describe("forget command - Unit Tests", () => {
+  for (const owner of ["global", "repo"] as const) {
+    for (const invert of [false, true]) {
+      test(`rejects duplicate IDs in the ${owner} playbook without changing rules or blocklists (invert=${invert})`, async () => {
+        await withTempCassHome(async (env) => {
+          const repo = join(env.home, "repo");
+          const repoDir = join(repo, ".cass");
+          await fs.mkdir(repoDir, { recursive: true });
+          expect(Bun.spawnSync(["git", "init", "--quiet", "--initial-branch=main", repo]).exitCode).toBe(0);
+          const repoPath = join(repoDir, "playbook.yaml");
+          const id = "b-legacy-duplicate";
+          const learned = {
+            ...createTestBullet({
+              id,
+              content: "Keep the recovery snapshot until verification finishes.",
+              helpfulCount: 1,
+              feedbackEvents: [{ type: "helpful" as const, timestamp: "2025-01-02T00:00:00Z" }],
+            }),
+            legacyEvidence: { sessions: ["session-a"], confidence: 0.9 },
+          };
+          const duplicates = createTestPlaybook([
+            learned,
+            createTestBullet({ id, content: "Verify every restored account before accepting writes." }),
+          ]);
+          const globalOriginal = yaml.stringify(owner === "global" ? duplicates : createTestPlaybook([
+            createTestBullet({ id, content: "Do not fall back to the global rule." }),
+          ]));
+          const repoOriginal = yaml.stringify(owner === "repo" ? duplicates : createTestPlaybook());
+          writeFileSync(env.playbookPath, globalOriginal);
+          writeFileSync(repoPath, repoOriginal);
+          writeFileSync(env.configPath, JSON.stringify({ playbookPath: env.playbookPath, diaryDir: env.diaryDir }));
+          const blocked = `${JSON.stringify({ id: "b-already-blocked", content: "Never discard an unverified backup.", reason: "Keep existing decisions", forgottenAt: "2025-01-01T00:00:00Z" })}\n`;
+          const globalBlocked = join(env.cassMemoryDir, "blocked.log");
+          const repoBlocked = join(repoDir, "blocked.log");
+          writeFileSync(globalBlocked, blocked);
+          writeFileSync(repoBlocked, blocked);
+          const cwd = process.cwd();
+          const log = console.log;
+          const exitCode = process.exitCode;
+          const output: string[] = [];
+          try {
+            process.chdir(repo);
+            process.exitCode = 0;
+            console.log = (...args) => { output.push(args.join(" ")); };
+            await forgetCommand(id, { reason: "Retire one rule", invert, json: true });
+            expect(process.exitCode).not.toBe(0);
+            const response = JSON.parse(output.join(""));
+            expect(response.success).toBe(false);
+            expect(JSON.stringify(response)).toContain("Ambiguous bullet ID");
+            expect(JSON.stringify(response)).toContain(owner === "global" ? env.playbookPath : repoPath);
+          } finally {
+            console.log = log;
+            process.exitCode = exitCode;
+            process.chdir(cwd);
+          }
+          expect(readFileSync(env.playbookPath, "utf8")).toBe(globalOriginal);
+          expect(readFileSync(repoPath, "utf8")).toBe(repoOriginal);
+          expect(readFileSync(globalBlocked, "utf8")).toBe(blocked);
+          expect(readFileSync(repoBlocked, "utf8")).toBe(blocked);
+        });
+      });
+    }
+  }
+
+  test("a unique repository override remains forgettable when the global ID is duplicated", async () => {
+    await withTempCassHome(async (env) => {
+      const repo = join(env.home, "repo");
+      const repoDir = join(repo, ".cass");
+      await fs.mkdir(repoDir, { recursive: true });
+      expect(Bun.spawnSync(["git", "init", "--quiet", "--initial-branch=main", repo]).exitCode).toBe(0);
+      const id = "b-scoped-override";
+      const globalOriginal = yaml.stringify(createTestPlaybook([
+        createTestBullet({ id, content: "Keep global rule one." }),
+        createTestBullet({ id, content: "Keep global rule two." }),
+      ]));
+      const repoPath = join(repoDir, "playbook.yaml");
+      writeFileSync(env.playbookPath, globalOriginal);
+      writeFileSync(repoPath, yaml.stringify(createTestPlaybook([
+        createTestBullet({ id, content: "Retire only this repository override." }),
+      ])));
+      writeFileSync(env.configPath, JSON.stringify({ playbookPath: env.playbookPath, diaryDir: env.diaryDir }));
+      const cwd = process.cwd();
+      const exitCode = process.exitCode;
+      try {
+        process.chdir(repo);
+        process.exitCode = 0;
+        await forgetCommand(id, { reason: "Repository policy changed", json: true });
+        expect(process.exitCode).toBe(0);
+      } finally {
+        process.exitCode = exitCode;
+        process.chdir(cwd);
+      }
+      expect(readFileSync(env.playbookPath, "utf8")).toBe(globalOriginal);
+      expect(yaml.parse(readFileSync(repoPath, "utf8")).bullets[0].deprecated).toBe(true);
+      expect(JSON.parse(readFileSync(join(repoDir, "blocked.log"), "utf8")).content)
+        .toBe("Retire only this repository override.");
+      expect(existsSync(join(env.cassMemoryDir, "blocked.log"))).toBe(false);
+    });
+  });
+
+  for (const localPlaybook of [false, true]) {
+    test(`forgets the retrieved worktree owner without changing a same-ID global rule (local=${localPlaybook})`, async () => {
+      await withTempCassHome(async (env) => {
+        const repo = join(env.home, "repo");
+        const repoDir = join(repo, ".cass");
+        const worktree = join(env.home, "linked");
+        const worktreeDir = join(worktree, ".cass");
+        await fs.mkdir(repoDir, { recursive: true });
+        expect(Bun.spawnSync(["git", "init", "--quiet", "--initial-branch=main", repo]).exitCode).toBe(0);
+        expect(Bun.spawnSync(["git", "-C", repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--quiet", "--allow-empty", "-m", "Initialize worktree fixture"]).exitCode).toBe(0);
+        expect(Bun.spawnSync(["git", "-C", repo, "worktree", "add", "--quiet", "--detach", worktree]).exitCode).toBe(0);
+        const id = "b-worktree-owner";
+        const repoPath = join(repoDir, "playbook.yaml");
+        const worktreePath = join(worktreeDir, "playbook.yaml");
+        const globalOriginal = yaml.stringify(createTestPlaybook([
+          createTestBullet({ id, content: "Keep the global policy." }),
+        ]));
+        const repoOriginal = yaml.stringify(createTestPlaybook([
+          createTestBullet({ id, content: "The main worktree owns this policy." }),
+        ]));
+        writeFileSync(env.playbookPath, globalOriginal);
+        writeFileSync(repoPath, repoOriginal);
+        if (localPlaybook) {
+          await fs.mkdir(worktreeDir, { recursive: true });
+          writeFileSync(worktreePath, yaml.stringify(createTestPlaybook([
+            createTestBullet({ id, content: "The linked worktree overrides this policy." }),
+          ])));
+        }
+        writeFileSync(env.configPath, JSON.stringify({ playbookPath: env.playbookPath, diaryDir: env.diaryDir }));
+        const cwd = process.cwd();
+        const exitCode = process.exitCode;
+        try {
+          process.chdir(worktree);
+          process.exitCode = 0;
+          await forgetCommand(id, { reason: "Retire the retrieved rule", json: true });
+          expect(process.exitCode).toBe(0);
+        } finally {
+          process.exitCode = exitCode;
+          process.chdir(cwd);
+        }
+        const target = localPlaybook ? worktreePath : repoPath;
+        const blockedPath = join(localPlaybook ? worktreeDir : repoDir, "blocked.log");
+        const updated = yaml.parse(readFileSync(target, "utf8")) as Playbook;
+        expect(updated.bullets[0].deprecated).toBe(true);
+        expect(JSON.parse(readFileSync(blockedPath, "utf8")).content).toBe(updated.bullets[0].content);
+        expect(readFileSync(env.playbookPath, "utf8")).toBe(globalOriginal);
+        expect(existsSync(join(env.cassMemoryDir, "blocked.log"))).toBe(false);
+        expect(existsSync(join(localPlaybook ? repoDir : worktreeDir, "blocked.log"))).toBe(false);
+        if (localPlaybook) expect(readFileSync(repoPath, "utf8")).toBe(repoOriginal);
+        else expect(existsSync(worktreePath)).toBe(false);
+      });
+    });
+  }
+
   for (const code of ["EIO", "EACCES"]) {
     test(`aborts on ${code} probing repository rules instead of forgetting a same-ID global rule`, async () => {
       await withTempCassHome(async (env) => {

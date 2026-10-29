@@ -8,8 +8,8 @@ import {
   addBullet,
   appendBlockedLog,
   deprecateBullet,
-  findBullet,
   loadPlaybook,
+  resolveRepoPlaybookPath,
   savePlaybook,
 } from "../playbook.js";
 import { ErrorCode } from "../types.js";
@@ -20,7 +20,6 @@ import {
   printJsonResult,
   reportError,
   resolveGlobalDir,
-  resolveRepoDir,
 } from "../utils.js";
 
 export async function forgetCommand(
@@ -44,8 +43,8 @@ export async function forgetCommand(
 
   // Resolve save path safely
   const globalPath = expandPath(config.playbookPath);
-  const repoDir = await resolveRepoDir();
-  const repoPath = repoDir ? path.join(repoDir, "playbook.yaml") : null;
+  // Use the same owner as retrieval, including the main-worktree fallback.
+  const repoPath = await resolveRepoPlaybookPath();
 
   let savePath = globalPath;
 
@@ -53,7 +52,7 @@ export async function forgetCommand(
   if (repoPath && (await fileExists(repoPath))) {
     try {
       const repoPlaybook = await loadPlaybook(repoPath);
-      if (findBullet(repoPlaybook, bulletId)) {
+      if (repoPlaybook.bullets.some((bullet) => bullet.id === bulletId)) {
         savePath = repoPath;
       }
     } catch (err: any) {
@@ -72,7 +71,17 @@ export async function forgetCommand(
   try {
     await withLock(savePath, async () => {
       const playbook = await loadPlaybook(savePath);
-      const bullet = findBullet(playbook, bulletId);
+      // Repair preserves distinct legacy rules sharing an ID. An ID alone
+      // cannot authorize choosing one of them, especially before blocklisting
+      // its content. Recheck under the write lock, not just during discovery.
+      const matches = playbook.bullets.filter((bullet) => bullet.id === bulletId);
+      if (matches.length > 1) {
+        throw new Error(
+          `Ambiguous bullet ID ${bulletId}: ${matches.length} rules in ${savePath}. `
+          + "Resolve duplicate IDs before forgetting a rule.",
+        );
+      }
+      const bullet = matches[0];
 
       if (!bullet) {
         // Throwing error allows lock to be released
