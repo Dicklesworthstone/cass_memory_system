@@ -14,6 +14,7 @@ import path from "node:path";
 import yaml from "yaml";
 
 import { recordFeedback } from "../src/commands/mark.js";
+import * as diaryModule from "../src/diary.js";
 import { withLock } from "../src/lock.js";
 import type { LLMIO } from "../src/llm.js";
 import { orchestrateReflection, type ReflectionOptions } from "../src/orchestrator.js";
@@ -1417,6 +1418,237 @@ function feedbackDeltas(deltas: any[] | undefined): string[] {
 }
 
 describe("orchestrateReflection incremental sessions (#85)", () => {
+  for (const recordCount of [undefined, 2]) {
+    const kind = recordCount === undefined ? "marker" : "watermark";
+    test.skipIf(process.platform === "win32")(`session identity retains a legacy alias ${kind} without rewriting historical feedback`, async () => {
+      await withIsolatedHome(async env => {
+        const sessionPath = path.join(env.home, "sessions", "legacy-alias.jsonl");
+        writeJsonlSession(sessionPath, [
+          { role: "user", content: "A previously reflected exporter session with important historical evidence." },
+          { role: "assistant", content: "// [cass: helpful b-alias123] - the fixture checks helped" },
+        ]);
+        const alias = path.join(env.home, "legacy-session-link.jsonl");
+        symlinkSync(sessionPath, alias);
+        const historical = createTestFeedbackEvent("helpful", { sessionPath: alias });
+        writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([
+          createBullet({ id: "b-alias123", content: "Verify the exporter with fixtures.",
+            helpfulCount: 1, feedbackEvents: [historical] }),
+        ])));
+        const logPath = expandPath(getProcessedLogPath());
+        await new ProcessedLog(logPath).append({
+          sessionPath: alias, processedAt: historical.timestamp, deltasGenerated: 1,
+          recordCount,
+        });
+        const originalLog = readFileSync(logPath, "utf8");
+        const originalPlaybook = readFileSync(env.playbookPath, "utf8");
+        const config = createTestConfig({
+          playbookPath: env.playbookPath, diaryDir: env.diaryDir, cassPath: "/__missing__/cass",
+          validationEnabled: false, semanticSearchEnabled: false,
+        });
+        await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
+          await withLlmShim({ reflector: () => { throw new Error("A recorded legacy alias must not be reflected again."); } }, async io => {
+            for (const address of [alias, realpathSync(sessionPath)]) {
+              const unchanged = await orchestrateReflection(config, { session: address, io });
+              expect(unchanged.errors).toEqual([]);
+              expect(unchanged.sessionsProcessed).toBe(0);
+              expect(readFileSync(logPath, "utf8")).toBe(originalLog);
+              expect(readFileSync(env.playbookPath, "utf8")).toBe(originalPlaybook);
+            }
+          });
+        });
+      });
+    });
+  }
+
+  test.skipIf(process.platform === "win32")("session identity refuses conflicting historical aliases before processing", async () => {
+    await withIsolatedHome(async env => {
+      const sessionPath = path.join(env.home, "sessions", "ambiguous-alias.jsonl");
+      writeJsonlSession(sessionPath, [
+        { role: "user", content: "Review the exporter after the requirements changed during this session." },
+        { role: "assistant", content: "The fixtures and their expected results have both changed." },
+      ]);
+      writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([
+        createBullet({ id: "b-alias123", content: "Preserve historical feedback until its source can be determined." }),
+      ])));
+      const logPath = expandPath(getProcessedLogPath());
+      const ledger = new ProcessedLog(logPath);
+      for (const recordCount of [1, 2]) {
+        const alias = path.join(env.home, `ambiguous-link-${recordCount}.jsonl`);
+        symlinkSync(sessionPath, alias);
+        await ledger.append({ sessionPath: alias, processedAt: now(), deltasGenerated: 0, recordCount });
+      }
+      const originalLog = readFileSync(logPath, "utf8");
+      const originalPlaybook = readFileSync(env.playbookPath, "utf8");
+      const config = createTestConfig({
+        playbookPath: env.playbookPath, diaryDir: env.diaryDir, cassPath: "/__missing__/cass",
+        validationEnabled: false, semanticSearchEnabled: false,
+      });
+      let providerCalls = 0;
+      await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
+        await withLlmShim({ reflector: () => { providerCalls++; return { deltas: [] }; } }, async io => {
+          await expect(orchestrateReflection(config, { session: realpathSync(sessionPath), io }))
+            .rejects.toThrow("Multiple historical session aliases");
+        });
+      });
+      expect(providerCalls).toBe(0);
+      expect(readFileSync(logPath, "utf8")).toBe(originalLog);
+      expect(readFileSync(env.playbookPath, "utf8")).toBe(originalPlaybook);
+    });
+  });
+
+  for (const alias of ["relative path", "symbolic link"] as const) {
+    test.skipIf(alias === "symbolic link" && process.platform === "win32")(
+      `session identity preserves feedback across global/workspace replay through a ${alias}`,
+      async () => {
+        await withIsolatedHome(async env => {
+          const historical = createTestFeedbackEvent("helpful", {
+            sessionPath: "historical/session.jsonl", context: "Retain the original provenance.",
+          });
+          writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([
+            createBullet({ id: "b-alias123", content: "Validate the exporter using deterministic fixtures.",
+              helpfulCount: 1, harmfulCount: 0, feedbackEvents: [historical] }),
+            createBullet({ id: "b-model123", content: "Review parser assumptions before changing the implementation.",
+              helpfulCount: 0, harmfulCount: 0, feedbackEvents: [] }),
+          ])));
+          const sessionPath = path.join(env.home, "sessions", "one.jsonl");
+          const transcript = [
+            { role: "user", content: "Refactor the exporter and check its behavior with deterministic fixtures." },
+            { role: "assistant", content: "The exporter checks passed.\n// [cass: helpful b-alias123] - the fixtures helped" },
+          ];
+          writeJsonlSession(sessionPath, transcript);
+          const canonical = realpathSync(sessionPath);
+          const linked = path.join(env.home, "linked-session.jsonl");
+          if (alias === "symbolic link") symlinkSync(sessionPath, linked);
+          const address = alias === "relative path" ? path.relative(env.home, sessionPath) : linked;
+          const config = createTestConfig({
+            playbookPath: env.playbookPath, diaryDir: env.diaryDir, cassPath: "/__missing__/cass",
+            validationEnabled: false, semanticSearchEnabled: false,
+          });
+          const saved = () => readPlaybook(env.playbookPath).bullets as PlaybookBullet[];
+
+          await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
+            await withLlmShim({ reflector: { deltas: [{ type: "helpful", bulletId: "b-model123" }] } }, async io => {
+              const first = await orchestrateReflection(config, { session: address, io });
+              expect(first.errors).toEqual([]);
+              expect(first.sessionsProcessed).toBe(1);
+
+              // A different processed-log namespace still sees the exact same
+              // transcript: changing the address must not create new evidence.
+              const replay = await orchestrateReflection(config, { session: canonical, workspace: env.home, io });
+              expect(replay.errors).toEqual([]);
+              expect(replay.sessionsProcessed).toBe(1);
+              expect(saved().map(bullet => bullet.helpfulCount)).toEqual([2, 1]);
+              expect(saved()[0]!.feedbackEvents[0]).toEqual(historical);
+              expect(saved()[0]!.feedbackEvents.slice(1).map(event => event.sessionPath)).toEqual([canonical]);
+              expect(saved()[1]!.feedbackEvents.map(event => event.sessionPath)).toEqual([canonical]);
+              for (const workspace of [undefined, env.home]) {
+                const ledger = new ProcessedLog(expandPath(getProcessedLogPath(workspace)));
+                await ledger.load();
+                expect(ledger.get(canonical)?.recordCount).toBe(2);
+              }
+
+              const again = await orchestrateReflection(config, { session: address, io });
+              expect(again.errors).toEqual([]);
+              expect(again.sessionsProcessed).toBe(0);
+              const forced = await orchestrateReflection(config, { session: address, force: true, io });
+              expect(forced.errors).toEqual([]);
+              expect(forced.sessionsProcessed).toBe(1);
+              expect(saved().map(bullet => bullet.helpfulCount)).toEqual([2, 1]);
+
+              appendJsonl(sessionPath, [
+                { role: "user", content: "Check the changed exporter requirements in this new continuation." },
+                { role: "assistant", content: "The old fixture rule was misleading here.\n// [cass: harmful b-alias123] - changed requirements" },
+              ]);
+              const grown = await orchestrateReflection(config, { session: address, io });
+              expect(grown.errors).toEqual([]);
+              expect(grown.sessionsProcessed).toBe(1);
+              expect(saved()[0]!.harmfulCount).toBe(1);
+              const ledger = new ProcessedLog(expandPath(getProcessedLogPath()));
+              await ledger.load();
+              expect(ledger.get(canonical)?.recordCount).toBe(4);
+
+              // Equal text in a genuinely different transcript is independent
+              // evidence, and historical provenance stays untouched.
+              const distinct = path.join(env.home, "sessions", "two.jsonl");
+              writeJsonlSession(distinct, transcript);
+              const independent = await orchestrateReflection(config, { session: distinct, io });
+              expect(independent.errors).toEqual([]);
+              expect(independent.sessionsProcessed).toBe(1);
+              expect(saved().map(bullet => bullet.helpfulCount)).toEqual([3, 2]);
+              expect(saved()[0]!.feedbackEvents[0]).toEqual(historical);
+            });
+          });
+        });
+      },
+    );
+  }
+
+  test.skipIf(process.platform === "win32")("session identity resumes a failed legacy alias from its watermark when given only the real path", async () => {
+    await withIsolatedHome(async env => {
+      const sessionPath = path.join(env.home, "sessions", "failed-alias.jsonl");
+      writeJsonlSession(sessionPath, [
+        { role: "user", content: "OLD_ALIAS: the exporter was checked in an earlier successful pass." },
+        { role: "assistant", content: "The old fixture guidance worked for that version." },
+        { role: "user", content: "NEW_ALIAS: review the revised exporter requirements carefully." },
+        { role: "assistant", content: "// [cass: harmful b-alias123] - the requirements have changed" },
+      ]);
+      const alias = path.join(env.home, "failed-session-link.jsonl");
+      symlinkSync(sessionPath, alias);
+      const historical = createTestFeedbackEvent("helpful", { sessionPath: alias });
+      writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([
+        createBullet({ id: "b-alias123", content: "Check exporter requirements against the fixtures.",
+          helpfulCount: 1, harmfulCount: 0, feedbackEvents: [historical] }),
+      ])));
+      const logPath = expandPath(getProcessedLogPath());
+      await new ProcessedLog(logPath).append({
+        sessionPath: alias, processedAt: historical.timestamp, deltasGenerated: 1,
+        recordCount: 2, status: "failed", failures: 3, lastFailureAt: now(),
+      });
+      const config = createTestConfig({
+        playbookPath: env.playbookPath, diaryDir: env.diaryDir, cassPath: "/__missing__/cass",
+        validationEnabled: false, semanticSearchEnabled: false,
+      });
+      let calls = 0;
+      const diarySpy = spyOn(diaryModule, "generateDiaryFromContent");
+      try {
+        await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
+          await withLlmShim({ reflector: () => {
+            calls++;
+            return { deltas: [] };
+          } }, async io => {
+            const canonical = realpathSync(sessionPath);
+            const retried = await orchestrateReflection(config, { session: canonical, io });
+            expect(retried.errors).toEqual([]);
+            expect(retried.sessionsProcessed).toBe(1);
+            expect(calls).toBe(1);
+            expect(diarySpy).toHaveBeenCalledTimes(1);
+            const diaryInput = diarySpy.mock.calls[0]![1];
+            expect(diaryInput).not.toContain("OLD_ALIAS");
+            expect(diaryInput).toContain("NEW_ALIAS");
+            const ledger = new ProcessedLog(logPath);
+            await ledger.load();
+            expect(ledger.get(canonical)?.recordCount).toBe(4);
+            expect(ledger.get(canonical)?.status).toBeUndefined();
+            expect(ledger.get(alias)).toMatchObject({ status: "failed", failures: 3, recordCount: 2 });
+            const bullet = readPlaybook(env.playbookPath).bullets[0];
+            expect(bullet.helpfulCount).toBe(1);
+            expect(bullet.harmfulCount).toBe(1);
+            expect(bullet.feedbackEvents[0]).toEqual(historical);
+
+            // The newer canonical record wins over the untouched historical
+            // failed alias; the next invocation must not retry it again.
+            const again = await orchestrateReflection(config, { session: canonical, io });
+            expect(again.errors).toEqual([]);
+            expect(again.sessionsProcessed).toBe(0);
+            expect(calls).toBe(1);
+          });
+        });
+      } finally {
+        diarySpy.mockRestore();
+      }
+    });
+  });
+
   test("a grown session reflects only the new turns; earlier feedback is not counted again", async () => {
     await withIsolatedHome(async (env) => {
       writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([])), "utf-8");
@@ -1887,6 +2119,65 @@ else process.exit(1);
 }
 
 describe("orchestrateReflection session workspace ownership", () => {
+  for (const status of ["processed", "failed"] as const) {
+    test.skipIf(process.platform === "win32")(`canonical-first discovery honors a ${status} historical alias record`, async () => {
+      await withWorkspaceReflection(async f => {
+        const sessionPath = f.session("old-discovery-alias", f.alpha,
+          "The project checks passed.\n// [cass: helpful b-aaa111] - the integration checks helped");
+        const canonical = realpathSync(sessionPath);
+        const alias = path.join(f.env.home, "old-discovery-link.jsonl");
+        symlinkSync(sessionPath, alias);
+        const logPath = expandPath(getProcessedLogPath());
+        await new ProcessedLog(logPath).append({
+          sessionPath: alias, processedAt: now(), deltasGenerated: 1, recordCount: 2,
+          status, ...(status === "failed" ? { failures: 3, lastFailureAt: now() } : {}),
+        });
+        const originalLog = readFileSync(logPath, "utf8");
+        const originalPlaybook = readFileSync(f.alphaPath, "utf8");
+        f.discover([
+          { path: canonical, workspace: f.alpha },
+          { path: alias, workspace: f.alpha },
+        ]);
+        let calls = 0;
+        const result = await f.run(() => { calls++; return { deltas: [] }; });
+        expect(result.errors).toEqual([]);
+        expect(result.sessionsProcessed).toBe(0);
+        expect(calls).toBe(0);
+        expect(readFileSync(logPath, "utf8")).toBe(originalLog);
+        expect(readFileSync(f.alphaPath, "utf8")).toBe(originalPlaybook);
+      });
+    });
+  }
+
+  test("automatic discovery processes aliases once and checks their shared watermark", async () => {
+    await withWorkspaceReflection(async f => {
+      const sessionPath = f.session("discovery-alias", f.alpha,
+        "The project checks passed.\n// [cass: helpful b-aaa111] - the integration checks helped");
+      const canonical = realpathSync(sessionPath);
+      f.discover([
+        { path: path.relative(process.cwd(), sessionPath), workspace: f.alpha },
+        { path: canonical, workspace: f.alpha },
+      ]);
+      let calls = 0;
+      const reflector = () => { calls++; return { deltas: [] }; };
+      const first = await f.run(reflector);
+      expect(first.errors).toEqual([]);
+      expect(first.sessionsProcessed).toBe(1);
+      expect(calls).toBe(1);
+      const bullet = readPlaybook(f.alphaPath).bullets.find((b: PlaybookBullet) => b.id === "b-aaa111");
+      expect(bullet.helpfulCount).toBe(1);
+      expect(bullet.feedbackEvents.map((event: { sessionPath?: string }) => event.sessionPath)).toEqual([canonical]);
+      const ledger = new ProcessedLog(expandPath(getProcessedLogPath()));
+      await ledger.load();
+      expect(ledger.get(canonical)?.recordCount).toBe(2);
+
+      const unchanged = await f.run(reflector);
+      expect(unchanged.errors).toEqual([]);
+      expect(unchanged.sessionsProcessed).toBe(0);
+      expect(calls).toBe(1);
+    });
+  });
+
   test("automatic discovery uses B's snapshot and inline feedback owners while launched in A", async () => {
     await withWorkspaceReflection(async f => {
       const beta = readPlaybook(f.betaPath);

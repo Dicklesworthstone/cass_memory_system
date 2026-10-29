@@ -918,6 +918,11 @@ export class ProcessedLog {
     return this.entries.get(normalized);
   }
 
+  /** All loaded session addresses, including failed attempts and their watermarks. */
+  getSessionPaths(): IterableIterator<string> {
+    return this.entries.keys();
+  }
+
   /** Pending outcome work is independent of session discovery and growth. */
   getPendingOutcomeEntries(owner?: string): ProcessedEntry[] {
     const expected = owner ? normalizeCommitOwner(owner) : undefined;

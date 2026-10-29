@@ -292,6 +292,13 @@ export async function orchestrateReflection(
   options: ReflectionOptions,
 ): Promise<ReflectionOutcome> {
   const runWorkspace = normalizeWorkspacePath(process.cwd());
+  // Session addresses are provenance, not distinct evidence. Use the same
+  // real-file identity as automatic outcome grading before exporting, looking
+  // up watermarks, or creating diary/delta/inline-feedback provenance. Freeze
+  // cwd here so relative addresses cannot change meaning during callbacks.
+  // Historical provenance is retained as written; its original cwd may be unknown.
+  const sessionPathFor = (address: string): string =>
+    normalizeWorkspacePath(path.resolve(runWorkspace, expandPath(address.trim())));
   const configWorkspace = normalizeWorkspacePath(options.workspace ?? runWorkspace);
   const logPath = expandPath(getProcessedLogPath(options.workspace));
   // Freeze the storage owner once. Directory aliases must share the same
@@ -383,6 +390,35 @@ export async function orchestrateReflection(
     if (recovered) rememberRecovery(recovered);
     let processedLog = new ProcessedLog(logPath);
     await processedLog.load({ budget: { remainingBytes: PENDING_OUTCOME_LIMITS.maxReadBytes } });
+    let indexedLog: ProcessedLog | undefined;
+    const recordedAliases = new Map<string, string[]>();
+    const processedSession = (sessionPath: string): ProcessedEntry | undefined => {
+      const canonical = processedLog.get(sessionPath);
+      if (canonical) return canonical;
+      // Older ledgers retain absolute addresses that may be symlinks. Index
+      // those existing records, not just aliases supplied by this invocation:
+      // discovery may report only the real path, or encounter it first. The
+      // loaded ledger is byte-bounded; this read-only scan happens at most
+      // once for each loaded log and leaves historical fields untouched.
+      if (indexedLog !== processedLog) {
+        recordedAliases.clear();
+        for (const recordedPath of processedLog.getSessionPaths()) {
+          const identity = normalizeWorkspacePath(recordedPath);
+          if (identity === recordedPath) continue;
+          const aliases = recordedAliases.get(identity) ?? [];
+          aliases.push(recordedPath);
+          recordedAliases.set(identity, aliases);
+        }
+        indexedLog = processedLog;
+      }
+      const aliases = recordedAliases.get(sessionPath) ?? [];
+      if (aliases.length > 1) {
+        // Different historical watermarks or retry records cannot be ordered
+        // safely by path spelling. Do not choose one and replay/skip evidence.
+        throw new Error(`Multiple historical session aliases refer to ${sessionPath}; reconcile their processed-log records before reflecting`);
+      }
+      return aliases.length ? processedLog.get(aliases[0]!) : undefined;
+    };
     const errors: string[] = [];
     const failedSessions: NonNullable<ReflectionOutcome["failedSessions"]> = [];
     let autoOutcome: ReflectionOutcome["autoOutcome"] | undefined;
@@ -500,7 +536,7 @@ export async function orchestrateReflection(
     };
 
     if (options.session) {
-      sessions = [options.session];
+      sessions = [sessionPathFor(options.session)];
     } else {
       const nowMs = Date.now();
       try {
@@ -518,7 +554,8 @@ export async function orchestrateReflection(
             // #85: a processed session that has grown since, or a failed one
             // whose retry is due, is selected again.
             classify: (s) => {
-              const entry = processedLog.get(s.path);
+              const sessionPath = sessionPathFor(s.path);
+              const entry = processedSession(sessionPath);
               const canResume =
                 entry !== undefined && entry.status !== "failed" && entry.recordCount !== undefined;
               return classifySessionForReflection(
@@ -526,7 +563,7 @@ export async function orchestrateReflection(
                 {
                   messageCount: s.messageCount,
                   endedAt: s.endedAt,
-                  sizeBytes: canResume ? statSizeSync(s.path) : undefined,
+                  sizeBytes: canResume ? statSizeSync(sessionPath) : undefined,
                 },
                 retryPolicy,
                 nowMs,
@@ -535,10 +572,14 @@ export async function orchestrateReflection(
           },
           config.cassPath,
         );
-        sessions = discovered.map((s) => s.path);
         for (const s of discovered) {
-          if (s.agent) agentHints.set(s.path, s.agent);
-          discoveryInfo.set(s.path, s);
+          const sessionPath = sessionPathFor(s.path);
+          // Discovery can expose the same file through more than one alias.
+          // Keep its first metadata record and process the transcript once.
+          if (discoveryInfo.has(sessionPath)) continue;
+          sessions.push(sessionPath);
+          if (s.agent) agentHints.set(sessionPath, s.agent);
+          discoveryInfo.set(sessionPath, s);
         }
       } catch (err: any) {
         errors.push(`Session discovery failed: ${err.message}`);
@@ -551,7 +592,7 @@ export async function orchestrateReflection(
     // --force. A failed one is retried regardless of any cooldown.
     const unprocessed = sessions.filter((s) => {
       if (!options.session) return true;
-      const entry = processedLog.get(s);
+      const entry = processedSession(s);
       if (!entry || entry.status === "failed" || options.force) return true;
       return entry.recordCount !== undefined;
     });
@@ -583,7 +624,7 @@ export async function orchestrateReflection(
         sessionPath,
       });
 
-      const prior = processedLog.get(sessionPath);
+      const prior = processedSession(sessionPath);
       const priorDone = prior !== undefined && prior.status !== "failed";
       const watermark = prior?.recordCount;
       // Turns before the watermark (or, without one, a processed session's
