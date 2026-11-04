@@ -386,6 +386,85 @@ async function syncRepairDirectory(directory: string): Promise<void> {
 }
 
 /**
+ * Keep a verified, durable original before replacing a playbook. Both explicit
+ * vector repair and retired-rule archival use this publication protocol.
+ * Callers hold the writer lock and validate the exact replacement beforehand.
+ */
+async function replacePlaybookWithSnapshot(
+  target: string,
+  original: { bytes: Buffer; stat: Stats },
+  replacement: Buffer,
+  options: {
+    operation: "repair" | "archive";
+    snapshotPath: string;
+    temporaryPath: string;
+    assertAuthority?: () => Promise<void>;
+  },
+): Promise<void> {
+  const directory = path.dirname(target);
+  const { snapshotPath, temporaryPath } = options;
+  const archiving = options.operation === "archive";
+  const assertUnchanged = async (): Promise<void> => {
+    await options.assertAuthority?.();
+    const current = await readRepairFile(target);
+    if (!sameRepairFile(original.stat, current.stat) || !current.bytes.equals(original.bytes)) {
+      throw new Error(`Playbook changed during ${archiving ? "archival" : "repair"}; stop other writers and retry`);
+    }
+  };
+  let snapshotCreated = false;
+  let temporaryCreated = false;
+  let replaced = false;
+  let snapshotVerified = false;
+  try {
+    await assertUnchanged();
+    const snapshot = await fs.open(snapshotPath, "wx", 0o600);
+    snapshotCreated = true;
+    try {
+      await snapshot.writeFile(original.bytes);
+      await snapshot.sync();
+    } finally {
+      await snapshot.close();
+    }
+    const verified = await readRepairFile(snapshotPath);
+    if (!verified.bytes.equals(original.bytes)) {
+      throw new Error(archiving ? "Archive verification failed" : "Backup verification failed");
+    }
+    // The original's directory entry must be durable before any replacement.
+    await syncRepairDirectory(directory);
+    snapshotVerified = true;
+
+    const temporary = await fs.open(temporaryPath, "wx", 0o600);
+    temporaryCreated = true;
+    try {
+      await temporary.writeFile(replacement);
+      await temporary.sync();
+    } finally {
+      await temporary.close();
+    }
+    const staged = await readRepairFile(temporaryPath);
+    if (!staged.bytes.equals(replacement)) {
+      throw new Error(archiving ? "Active playbook verification failed" : "Repaired file verification failed");
+    }
+    await assertUnchanged();
+    await fs.rename(temporaryPath, target);
+    replaced = true;
+    temporaryCreated = false;
+    await syncRepairDirectory(directory);
+  } catch (err) {
+    const state = replaced
+      ? archiving ? "Archived playbook installed, but final directory flush failed" : "Repaired file installed, but final directory flush failed"
+      : archiving ? "Archive aborted" : "Repair aborted";
+    const noun = archiving ? "archive" : "backup";
+    const snapshot = snapshotCreated
+      ? `; ${snapshotVerified ? `verified original ${noun}` : `${noun} file (may be incomplete)`}: ${snapshotPath}` : "";
+    throw new Error(`${state}${snapshot}: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    // Originals and partial originals are never automatically pruned.
+    if (temporaryCreated) await fs.unlink(temporaryPath).catch(() => {});
+  }
+}
+
+/**
  * Explicit recovery for a TRUSTED local legacy playbook. Ordinary readers and
  * imports never call this. Only bullets[*].embedding is removed; no schema
  * defaults, migrations, filtering or rescoring are applied to learned state.
@@ -454,66 +533,156 @@ export async function repairPlaybookEmbeddings(
     const { assertPlaybookWriteAllowed } = await import("./reflection-commit.js");
     await assertPlaybookWriteAllowed(target, repaired);
 
-    const assertUnchanged = async () => {
-      const current = await readRepairFile(target);
-      if (!sameRepairFile(original.stat, current.stat) || !current.bytes.equals(original.bytes)) {
-        throw new Error("Playbook changed during repair; stop other writers and retry");
-      }
-    };
     const suffix = `${new Date().toISOString().replace(/[:.]/g, "-")}.${crypto.randomUUID()}`;
     const backupPath = `${target}.backup.strip-embeddings.${suffix}`;
     const temporaryPath = `${target}.repair.${suffix}.tmp`;
-    let temporaryCreated = false;
-    let replaced = false;
-    let backupVerified = false;
-    try {
-      await assertUnchanged();
-      const backup = await fs.open(backupPath, "wx", 0o600);
-      result.backupPath = backupPath;
-      try {
-        await backup.writeFile(original.bytes);
-        await backup.sync();
-      } finally {
-        await backup.close();
-      }
-      const verifiedBackup = await readRepairFile(backupPath);
-      if (!verifiedBackup.bytes.equals(original.bytes)) throw new Error("Backup verification failed");
-      // Make the backup directory entry durable before replacing the source.
-      await syncRepairDirectory(directory);
-      backupVerified = true;
-
-      const temporary = await fs.open(temporaryPath, "wx", 0o600);
-      temporaryCreated = true;
-      try {
-        await temporary.writeFile(replacement);
-        await temporary.sync();
-      } finally {
-        await temporary.close();
-      }
-      const staged = await readRepairFile(temporaryPath);
-      if (!staged.bytes.equals(replacement)) throw new Error("Repaired file verification failed");
-      // Cooperative writers share withLock; also detect non-cooperating edits
-      // or replacements since the snapshot. Stop external editors for repair.
-      await assertUnchanged();
-      await fs.rename(temporaryPath, target);
-      replaced = true;
-      temporaryCreated = false;
-      await syncRepairDirectory(directory);
-      result.changed = true;
-      return result;
-    } catch (err) {
-      const state = replaced ? "Repaired file installed, but final directory flush failed" : "Repair aborted";
-      const backup = result.backupPath
-        ? `; ${backupVerified ? "verified original backup" : "backup file (may be incomplete)"}: ${result.backupPath}`
-        : "";
-      throw new Error(`${state}${backup}: ${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      // Keep every backup, including incomplete ones after an I/O failure.
-      if (temporaryCreated) await fs.unlink(temporaryPath).catch(() => {});
-    }
+    await replacePlaybookWithSnapshot(target, original, replacement, {
+      operation: "repair", snapshotPath: backupPath, temporaryPath,
+    });
+    result.backupPath = backupPath;
+    result.changed = true;
+    return result;
   };
   // A preview must not create a lock, backup, temporary file or directory.
   return dryRun ? repair() : withLock(target, repair);
+}
+
+function isRetiredForArchive(bullet: Pick<PlaybookBullet, "state" | "maturity" | "deprecated">): boolean {
+  return bullet.state === "retired" || bullet.maturity === "deprecated" || bullet.deprecated === true;
+}
+
+/** Counts only explicit retirement/deprecation; absent feedback is not evidence. */
+export function getRetiredPlaybookArchiveCounts(playbook: {
+  bullets: ReadonlyArray<Pick<PlaybookBullet, "state" | "maturity" | "deprecated" | "pinned">>;
+}): {
+  eligibleBulletCount: number;
+  protectedBulletCount: number;
+} {
+  let eligibleBulletCount = 0;
+  let protectedBulletCount = 0;
+  for (const bullet of playbook.bullets) {
+    if (!isRetiredForArchive(bullet)) continue;
+    if (bullet.pinned) protectedBulletCount++;
+    else eligibleBulletCount++;
+  }
+  return { eligibleBulletCount, protectedBulletCount };
+}
+
+export interface PlaybookRetiredArchiveResult {
+  path: string;
+  dryRun: boolean;
+  changed: boolean;
+  wouldChange: boolean;
+  originalBytes: number;
+  activeBytes: number;
+  bytesSaved: number;
+  bulletCount: number;
+  archivedBulletCount: number;
+  retainedBulletCount: number;
+  protectedRetiredBulletCount: number;
+  archivedBulletIds: string[];
+  archivePath: string | null;
+  sha256Before: string;
+  sha256After: string;
+  preservationVerified: true;
+}
+
+/**
+ * Operator-authorized archival of already-retired, unpinned rules. The archive
+ * is the complete original file, including all learned history and metadata.
+ * Active state changes only by removing the selected bullets from its array.
+ */
+export async function archiveRetiredPlaybook(
+  filePath: string,
+  options: { dryRun?: boolean } = {},
+): Promise<PlaybookRetiredArchiveResult> {
+  const { resolveTrustedPlaybookPolicy } = await import("./config.js");
+  if (expandPath(filePath).split(/[\\/]/).includes("..")) {
+    throw new Error("Archival requires an unambiguous trusted global playbook path without '..' components");
+  }
+  const requested = path.resolve(expandPath(filePath));
+  const selected = await resolveTrustedPlaybookPolicy();
+  if (!selected.trusted || requested !== selected.path ||
+      requested === path.resolve(selected.configFile.path)) {
+    throw new Error("Retired-rule archival requires the independently configured trusted global playbook; repository, imported, linked, and arbitrary files are not eligible");
+  }
+  const dryRun = options.dryRun === true;
+  const archive = async (): Promise<PlaybookRetiredArchiveResult> => {
+    const policy = await resolveTrustedPlaybookPolicy();
+    if (!policy.trusted || policy.path !== selected.path ||
+        policy.configFile.path !== selected.configFile.path) {
+      throw new Error("Trusted configuration changed while starting archival; retry with the current global playbook");
+    }
+    const original = await readRepairFile(requested);
+    const content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(original.bytes);
+    const raw = parseRepairPlaybook(content, requested);
+    assertRepairStateIsLossless(raw);
+    const validated = validateStoredPlaybook(raw, PLAYBOOK_REPAIR_INPUT_LIMITS, requested);
+    const counts = getRetiredPlaybookArchiveCounts(validated);
+    const rawBullets = raw.bullets as PlaybookBullet[];
+    const archived = rawBullets.filter(bullet => isRetiredForArchive(bullet) && !bullet.pinned);
+    const surviving = rawBullets.filter(bullet => !isRetiredForArchive(bullet) || bullet.pinned);
+    const active = { ...raw, bullets: surviving };
+    const candidate = archived.length ? yaml.stringify(active, { aliasDuplicateObjects: false }) : content;
+    try {
+      const reparsed = parseYamlInput(candidate, policy.limits, requested);
+      validateStoredPlaybook(reparsed, policy.limits, requested);
+      if (!isDeepStrictEqual(active, reparsed)) {
+        throw new Error("Archive preservation check failed; no learned state was replaced");
+      }
+    } catch (error) {
+      if (error instanceof InputLimitError) {
+        throw new InputLimitError(requested,
+          `remaining playbook after archiving ${archived.length} retired rules still exceeds its selected limits; preview cm playbook repair --recover-limits --dry-run first (${error.message})`);
+      }
+      throw error;
+    }
+    const replacement = archived.length ? Buffer.from(candidate, "utf8") : original.bytes;
+    const sha256 = (bytes: Buffer) => crypto.createHash("sha256").update(bytes).digest("hex");
+    const result: PlaybookRetiredArchiveResult = {
+      path: requested, dryRun, changed: false, wouldChange: archived.length > 0,
+      originalBytes: original.bytes.length, activeBytes: replacement.length,
+      bytesSaved: original.bytes.length - replacement.length,
+      bulletCount: rawBullets.length, archivedBulletCount: archived.length,
+      retainedBulletCount: surviving.length, protectedRetiredBulletCount: counts.protectedBulletCount,
+      archivedBulletIds: archived.map(bullet => bullet.id), archivePath: null,
+      sha256Before: sha256(original.bytes), sha256After: sha256(replacement), preservationVerified: true,
+    };
+    const { assertPlaybookArchiveAllowed } = await import("./reflection-commit.js");
+    const assertAuthority = async (): Promise<void> => {
+      const currentPolicy = await resolveTrustedPlaybookPolicy();
+      if (!currentPolicy.trusted || currentPolicy.path !== policy.path ||
+          currentPolicy.configFile.path !== policy.configFile.path ||
+          !isDeepStrictEqual(currentPolicy.limits, policy.limits)) {
+        throw new Error("Trusted playbook authority or limits changed during archival; no active state was replaced");
+      }
+      // Removing an ID before queued feedback drains would make that feedback
+      // undeliverable. A retained commit receipt alone cannot protect it.
+      await assertPlaybookArchiveAllowed(requested);
+    };
+    await assertAuthority();
+    if (dryRun || !archived.length) {
+      const current = await readRepairFile(requested);
+      if (!sameRepairFile(original.stat, current.stat) || !current.bytes.equals(original.bytes)) {
+        throw new Error("Playbook changed during archival preview; stop other writers and retry");
+      }
+      return result;
+    }
+    const suffix = `${new Date().toISOString().replace(/[:.]/g, "-")}.${crypto.randomUUID()}`;
+    const archivePath = `${requested}.archive.retired.${suffix}.yaml`;
+    await replacePlaybookWithSnapshot(requested, original, replacement, {
+      operation: "archive", snapshotPath: archivePath,
+      temporaryPath: `${requested}.archive.${suffix}.tmp`, assertAuthority,
+    });
+    result.archivePath = archivePath;
+    result.changed = true;
+    return result;
+  };
+  // Inspection creates neither locks nor files. Application locks the owner
+  // and its policy in the same order as trusted-limit recovery.
+  if (dryRun) return archive();
+  const locks = [selected.configFile.path, requested].sort();
+  return withLock(locks[0], () => withLock(locks[1], archive));
 }
 
 type RecoverablePlaybookLimits = {
@@ -554,6 +723,9 @@ export async function recoverTrustedPlaybookLimits(
 ): Promise<PlaybookLimitRecoveryResult> {
   const { resolveTrustedPlaybookPolicy, readGlobalConfigRaw } = await import("./config.js");
   const { CONFIG_INPUT_LIMITS, measureInputUsage, parseJsonInput } = await import("./input-limits.js");
+  if (expandPath(filePath).split(/[\\/]/).includes("..")) {
+    throw new Error("Limit recovery requires an unambiguous trusted global playbook path without '..' components");
+  }
   const requested = path.resolve(expandPath(filePath));
   const selected = await resolveTrustedPlaybookPolicy();
   if (!selected.trusted || requested !== path.resolve(selected.path)) {

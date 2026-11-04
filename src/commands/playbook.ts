@@ -29,6 +29,7 @@ import {
 } from "../output.js";
 import {
   addBullet,
+  archiveRetiredPlaybook,
   deprecateBullet,
   findBullet,
   getActiveBullets,
@@ -432,7 +433,7 @@ async function handleBatchAdd(
 }
 
 export async function playbookCommand(
-  action: "list" | "add" | "remove" | "get" | "export" | "import" | "scrub" | "conflicts" | "repair",
+  action: "list" | "add" | "remove" | "get" | "export" | "import" | "scrub" | "conflicts" | "repair" | "archive",
   args: string[],
   flags: {
     category?: string;
@@ -455,6 +456,7 @@ export async function playbookCommand(
     deprecateOrphans?: boolean;
     stripEmbeddings?: boolean;
     recoverLimits?: boolean;
+    retired?: boolean;
   },
 ) {
   const startedAtMs = Date.now();
@@ -462,6 +464,10 @@ export async function playbookCommand(
   // Explicit file repair must also work when unrelated configuration is broken.
   if (action === "repair") {
     await handleRepair(flags, command, startedAtMs);
+    return;
+  }
+  if (action === "archive") {
+    await handleArchive(flags, command, startedAtMs);
     return;
   }
   const config = await loadConfig();
@@ -1543,6 +1549,71 @@ async function handleScrub(
   if (flags.dryRun && summary.bulletsTouched > 0) {
     console.log();
     console.log(chalk.gray("Re-run without --dry-run to apply (playbooks are backed up first)."));
+  }
+}
+
+async function handleArchive(
+  flags: { retired?: boolean; file?: string; repo?: boolean; dryRun?: boolean; json?: boolean },
+  command: string,
+  startedAtMs: number,
+): Promise<void> {
+  const errorOptions = { json: flags.json, command, startedAtMs };
+  if (!flags.retired) {
+    reportError("Choose archival explicitly with --retired", {
+      ...errorOptions, code: ErrorCode.MISSING_REQUIRED,
+      hint: `${getCliName()} playbook archive --retired --dry-run --json`,
+    });
+    return;
+  }
+  if (flags.repo) {
+    reportError("Retired-rule archival is available only for the independently trusted global playbook", {
+      ...errorOptions, code: ErrorCode.INVALID_INPUT,
+    });
+    return;
+  }
+  if (flags.file !== undefined &&
+      (!flags.file.trim() || flags.file === "-" || /^(?:[a-z][a-z\d+.-]*:\/\/|file:)/i.test(flags.file))) {
+    reportError("--file must name the configured trusted local playbook, not stdin or a URL", {
+      ...errorOptions, code: ErrorCode.INVALID_INPUT,
+    });
+    return;
+  }
+  try {
+    const targetPath = flags.file ?? (await resolveTrustedPlaybookPolicy()).path;
+    const result = await archiveRetiredPlaybook(targetPath, { dryRun: flags.dryRun });
+    if (isJsonOutput(flags) || isToonOutput(flags)) {
+      printStructuredResult(command, result, flags, {
+        startedAtMs,
+        effect: result.changed,
+        reason: result.dryRun ? "Dry run: no files changed"
+          : result.changed ? undefined : "No unpinned retired rules found",
+      });
+      return;
+    }
+    console.log(chalk.bold(result.dryRun ? "RETIRED RULE ARCHIVE (dry run - no files changed)" : "RETIRED RULE ARCHIVE"));
+    console.log(`Playbook: ${result.path}`);
+    console.log(`${result.archivedBulletCount} retired rules ${result.dryRun ? "would leave" : "removed from"} active state; ${result.retainedBulletCount} rules retained, including ${result.protectedRetiredBulletCount} pinned retired rules.`);
+    console.log(`Size: ${result.originalBytes} -> ${result.activeBytes} bytes.`);
+    if (result.wouldChange) {
+      console.log(result.dryRun
+        ? "A complete original snapshot would preserve all rules, feedback and metadata before replacement. Archives are never automatically deleted."
+        : "The verified archive preserves the complete original playbook, including all rules, feedback and metadata. Archives are never automatically deleted.");
+    }
+    if (result.archivePath) console.log(`Verified original archive: ${result.archivePath}`);
+    if (result.dryRun && result.wouldChange) {
+      console.log("Re-run without --dry-run to create the verified original archive and atomically replace active state.");
+    } else if (!result.wouldChange) {
+      console.log("No unpinned retired rules found; no files changed.");
+    }
+  } catch (error) {
+    reportError(error, {
+      ...errorOptions,
+      recovery: [
+        "Keep the original playbook and every reported archive; errors distinguish verified originals from incomplete copies.",
+        `Run ${getCliName()} reflect to finish pending transactions and deliver queued feedback before archiving.`,
+        `Use --dry-run to preview. If remaining active state exceeds its limits, preview ${getCliName()} playbook repair --recover-limits --dry-run.`,
+      ],
+    });
   }
 }
 

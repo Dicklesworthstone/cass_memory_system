@@ -14,8 +14,10 @@ import {
 import {
   CONFIG_INPUT_LIMITS,
   InputLimitError,
+  measureInputUsage,
   parseJsonInput,
   parseYamlInput,
+  PLAYBOOK_INPUT_LIMITS,
   readBoundedFile,
 } from "../input-limits.js";
 import {
@@ -28,7 +30,7 @@ import {
 import { withLock } from "../lock.js";
 import { formatCheckStatusBadge, formatSafetyBadge, icon, iconPrefix } from "../output.js";
 import { findBulletConflicts } from "../curate.js";
-import { createEmptyPlaybook, loadMergedPlaybook, loadPlaybook, savePlaybook } from "../playbook.js";
+import { createEmptyPlaybook, getRetiredPlaybookArchiveCounts, loadMergedPlaybook, loadPlaybook, savePlaybook } from "../playbook.js";
 import { isCmSubprocessTranscriptPath } from "../subprocess-tag.js";
 import { GUARD_SCRIPT_NAME, type GuardScope, inspectGuardHooks, resolveUserClaudeDir } from "./guard.js";
 import { getAutoReflectStatus, HOOK_AGENTS, type HookAgent } from "./hook.js";
@@ -198,10 +200,11 @@ async function validateGuardParseable(
 
 async function getPlaybookSchemaVersion(
   playbookPath: string,
-): Promise<{ version: number | null; error?: string; limitExceeded?: boolean }> {
+  options: { untrusted?: boolean } = {},
+): Promise<{ version: number | null; playbook?: Playbook; error?: string; limitExceeded?: boolean }> {
   try {
-    const playbook = await loadPlaybook(playbookPath);
-    return { version: playbook.schema_version };
+    const playbook = await loadPlaybook(playbookPath, options);
+    return { version: playbook.schema_version, playbook };
   } catch (err: any) {
     return { version: null, error: err?.message || String(err), limitExceeded: err instanceof InputLimitError };
   }
@@ -260,6 +263,62 @@ async function checkPlaybookSize(filePath: string): Promise<HealthCheck | null> 
     // Missing/inaccessible files are reported by the existing storage/load checks.
     return null;
   }
+}
+
+/** Reuse the successful schema load; capacity diagnostics must not reparse YAML. */
+async function checkPlaybookCapacity(
+  filePath: string,
+  playbook: Playbook,
+  options: { untrusted?: boolean } = {},
+): Promise<HealthCheck | null> {
+  const limits = await resolvePlaybookInputLimits(filePath, options);
+  const usage = measureInputUsage(playbook, limits, filePath);
+  const pressures: Array<{ resource: "maxNodes" | "maxArrayLength" | "maxBytes"; used: number; limit: number }> = [];
+  if (usage.nodes >= limits.maxNodes * 0.9) {
+    pressures.push({ resource: "maxNodes", used: usage.nodes, limit: limits.maxNodes });
+  }
+  if (usage.maxArrayLength >= limits.maxArrayLength * 0.9) {
+    pressures.push({ resource: "maxArrayLength", used: usage.maxArrayLength, limit: limits.maxArrayLength });
+  }
+  if (usage.expandedTextBytes >= limits.maxBytes * 0.9) {
+    pressures.push({ resource: "maxBytes", used: usage.expandedTextBytes, limit: limits.maxBytes });
+  }
+  if (pressures.length === 0) return null;
+
+  const trustedLocal = !options.untrusted && limits !== PLAYBOOK_INPUT_LIMITS;
+  const { eligibleBulletCount: retiredArchivableBulletCount } = getRetiredPlaybookArchiveCounts(playbook);
+  const limitRecoveryPreviewCommand = trustedLocal
+    ? await playbookLimitRecoveryPreviewCommand(filePath) : undefined;
+  const quotedPath = `'${filePath.replace(/'/g, "'\\''")}'`;
+  const archivePreviewCommand = trustedLocal && retiredArchivableBulletCount > 0
+    ? `${getCliName()} playbook archive --retired --file ${quotedPath} --dry-run` : undefined;
+  const summary = pressures.map(pressure => {
+    const label = pressure.resource === "maxNodes" ? "expanded values"
+      : pressure.resource === "maxArrayLength" ? "largest array length" : "expanded text bytes";
+    return `${label}: ${pressure.used}/${pressure.limit} (${Math.round(pressure.used / pressure.limit * 100)}%)`;
+  }).join("; ");
+  return {
+    category: "Playbook",
+    item: "Playbook capacity",
+    status: "warn",
+    message: `Playbook is near its selected resource limits (${summary}). `
+      + (trustedLocal
+        ? "Review local playbookLimits before further reflection. "
+          + (archivePreviewCommand ? `Preview archiving ${retiredArchivableBulletCount} unpinned retired rule(s): ${archivePreviewCommand}. ` : "")
+          + "Doctor does not archive rules or change limits automatically."
+        : "Review this repository playbook before adding more state; repository parsing limits remain fixed."),
+    details: {
+      path: filePath,
+      trustedLocal,
+      usage,
+      limits,
+      warningThreshold: 0.9,
+      pressures,
+      ...(trustedLocal ? { retiredArchivableBulletCount } : {}),
+      ...(limitRecoveryPreviewCommand ? { limitRecoveryPreviewCommand } : {}),
+      ...(archivePreviewCommand ? { archivePreviewCommand } : {}),
+    },
+  };
 }
 
 function computeOverallStatus(checks: HealthCheck[]): OverallStatus {
@@ -351,12 +410,24 @@ function buildRecommendedActions(params: {
   const actions: RecommendedAction[] = [];
 
   for (const check of params.checks) {
-    const details = check.details as { repairPreviewCommand?: string; limitRecoveryPreviewCommand?: string } | undefined;
+    const details = check.details as {
+      repairPreviewCommand?: string;
+      limitRecoveryPreviewCommand?: string;
+      archivePreviewCommand?: string;
+    } | undefined;
+    if (details?.archivePreviewCommand) {
+      actions.push({
+        label: "Preview a lossless archive of unpinned retired rules",
+        command: details.archivePreviewCommand,
+        reason: "An explicit archive preserves a verified complete original snapshot before moving unpinned retired/deprecated rules out of active storage. Candidate rules, pinned rules, and feedback history are preserved. Doctor never performs this operation automatically.",
+        urgency: check.status === "fail" ? "high" : "medium",
+      });
+    }
     if (details?.limitRecoveryPreviewCommand) {
       actions.push({
         label: "Preview bounded trusted-local playbook limit recovery",
         command: details.limitRecoveryPreviewCommand,
-        reason: "Validates the entire trusted global playbook under fixed recovery ceilings and proposes local configuration limits. Applying it leaves every playbook byte unchanged. Doctor never raises parsing limits automatically.",
+        reason: "Validates the entire trusted global playbook under fixed recovery ceilings and proposes local configuration limits when needed for loading. Applying it leaves every playbook byte unchanged. Doctor never raises parsing limits automatically.",
         urgency: check.status === "fail" ? "high" : "medium",
       });
     }
@@ -655,6 +726,10 @@ async function computeDoctorChecks(
         details: { path: globalPlaybookPath, schemaVersion: schema.version },
       });
     }
+    if (schema.playbook) {
+      const capacity = await checkPlaybookCapacity(globalPlaybookPath, schema.playbook);
+      if (capacity) checks.push(capacity);
+    }
   }
 
   // 3) LLM config (optional - system works without it via graceful degradation)
@@ -796,7 +871,7 @@ async function computeDoctorChecks(
 
     if (repoPlaybookExists) {
       const repoPlaybookPath = path.join(cassDir, "playbook.yaml");
-      const schema = await getPlaybookSchemaVersion(repoPlaybookPath);
+      const schema = await getPlaybookSchemaVersion(repoPlaybookPath, { untrusted: true });
       if (typeof schema.error === "string") {
         checks.push({
           category: "Playbook",
@@ -826,6 +901,10 @@ async function computeDoctorChecks(
           message: `Schema version ${schema.version}`,
           details: { path: repoPlaybookPath, schemaVersion: schema.version },
         });
+      }
+      if (schema.playbook) {
+        const capacity = await checkPlaybookCapacity(repoPlaybookPath, schema.playbook, { untrusted: true });
+        if (capacity) checks.push(capacity);
       }
     }
   } else {
@@ -1812,7 +1891,7 @@ export async function detectFixableIssues(
       if (!repoPlaybookExists) {
         issues.push(createMissingPlaybookFix(repoPlaybookPath));
       } else {
-        const schema = await getPlaybookSchemaVersion(repoPlaybookPath);
+        const schema = await getPlaybookSchemaVersion(repoPlaybookPath, { untrusted: true });
         if ((schema.version ?? 2) < 2) {
           issues.push(createPlaybookSchemaMigrationFix(repoPlaybookPath, "repo"));
         }

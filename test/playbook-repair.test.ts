@@ -5,14 +5,23 @@ import fs, { type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
 import { InputLimitError, measureInputUsage, PLAYBOOK_INPUT_LIMITS } from "../src/input-limits.js";
+import { withLock } from "../src/lock.js";
+import { applyOutcomeFeedback } from "../src/outcome.js";
 import {
+  archiveRetiredPlaybook,
   createEmptyPlaybook,
+  getRetiredPlaybookArchiveCounts,
   loadPlaybook,
   PLAYBOOK_REPAIR_INPUT_LIMITS,
   recoverTrustedPlaybookLimits,
   repairPlaybookEmbeddings,
+  savePlaybook,
+  validateStoredPlaybook,
 } from "../src/playbook.js";
-import { createTestBullet } from "./helpers/factories.js";
+import { recoverReflectionCommit, ReflectionCommit, reflectionCommitPendingPath } from "../src/reflection-commit.js";
+import { getProcessedLogPath, ProcessedLog } from "../src/tracking.js";
+import type { ProcessedEntry } from "../src/types.js";
+import { createTestBullet, createTestConfig } from "./helpers/factories.js";
 import { type TestEnv, withTempCassHome, withTempDir } from "./helpers/temp.js";
 
 const timestamp = "2026-10-28T12:00:00.000Z";
@@ -125,6 +134,37 @@ function legacyState() {
 
 function legacyYaml(): string {
   return yaml.stringify(legacyState(), { aliasDuplicateObjects: false });
+}
+
+function retiredArchiveState() {
+  const legacy = legacyState();
+  return {
+    ...legacy,
+    bullets: [
+      { ...legacy.bullets[0], id: "b-retired", state: "retired" as const, maturity: "candidate" as const, pinned: false },
+      { ...legacy.bullets[0], id: "b-pinned-retired", state: "retired" as const, pinned: true },
+      { ...legacy.bullets[1], id: "b-deprecated", state: "active" as const, deprecated: true },
+      { ...legacy.bullets[2], id: "b-maturity-deprecated", state: "active" as const, maturity: "deprecated" as const },
+      createTestBullet({ id: "b-unused-candidate", state: "active", maturity: "candidate", feedbackEvents: [],
+        content: "An untested candidate remains learned state; do not discard it." }),
+      createTestBullet({ id: "b-proven", state: "active", maturity: "proven", helpfulCount: 12,
+        feedbackEvents: [{ type: "helpful", timestamp, context: "Preserve useful history" }],
+        content: "Keep the proven rule and its feedback." }),
+    ],
+  };
+}
+
+async function withArchiveFixture(
+  fn: (env: TestEnv, original: string, state: ReturnType<typeof retiredArchiveState>) => Promise<void>,
+): Promise<void> {
+  await withTempCassHome(async (env) => {
+    const state = retiredArchiveState();
+    const original = "\ufeff# Preserve this complete original, including comments.\n" +
+      yaml.stringify(state, { aliasDuplicateObjects: false });
+    await fs.writeFile(env.playbookPath, original);
+    await fs.writeFile(env.configPath, JSON.stringify({ embeddingModel: "none" }));
+    await fn(env, original, state);
+  }, "retired-playbook-archive");
 }
 
 type Fixture = { directory: string; file: string; original: Buffer<ArrayBuffer> };
@@ -694,6 +734,257 @@ describe("trusted local playbook limit recovery (#101)", () => {
         expect(await fs.readFile(path.join(env.cassMemoryDir, backups[0]), "utf8")).toBe(originalConfig);
       });
     }
+  });
+});
+
+describe("explicit trusted retired-rule archival (#101)", () => {
+  it.serial("previews only unpinned explicit retirement and creates no files or locks", async () => {
+    await withArchiveFixture(async (env, original, state) => {
+      const before = (await fs.readdir(env.cassMemoryDir)).sort();
+      expect(getRetiredPlaybookArchiveCounts(state)).toEqual({ eligibleBulletCount: 3, protectedBulletCount: 1 });
+      const preview = await archiveRetiredPlaybook(env.playbookPath, { dryRun: true });
+      expect(preview).toMatchObject({ dryRun: true, changed: false, wouldChange: true,
+        archivedBulletCount: 3, retainedBulletCount: 3, protectedRetiredBulletCount: 1,
+        archivePath: null, preservationVerified: true });
+      expect(preview.archivedBulletIds).toEqual(["b-retired", "b-deprecated", "b-maturity-deprecated"]);
+      expect(await fs.readFile(env.playbookPath, "utf8")).toBe(original);
+      expect((await fs.readdir(env.cassMemoryDir)).sort()).toEqual(before);
+    });
+  });
+
+  it.serial("archives the complete exact original and changes only the selected bullet positions", async () => {
+    await withArchiveFixture(async (env, original, state) => {
+      const originalConfig = await fs.readFile(env.configPath, "utf8");
+      const archived = await archiveRetiredPlaybook(env.playbookPath);
+      expect(archived.changed).toBe(true);
+      expect(archived.archivePath).toContain(".archive.retired.");
+      expect(await fs.readFile(archived.archivePath!, "utf8")).toBe(original);
+      expect(archived.sha256Before).toBe(createHash("sha256").update(original).digest("hex"));
+      const active = await fs.readFile(env.playbookPath, "utf8");
+      expect(archived.sha256After).toBe(createHash("sha256").update(active).digest("hex"));
+      expect(yaml.parse(active)).toEqual({ ...state, bullets: [state.bullets[1], state.bullets[4], state.bullets[5]] });
+      expect(await fs.readFile(env.configPath, "utf8")).toBe(originalConfig);
+      expect((await loadPlaybook(env.playbookPath)).bullets.map(bullet => bullet.id))
+        .toEqual(["b-pinned-retired", "b-unused-candidate", "b-proven"]);
+      const files = (await fs.readdir(env.cassMemoryDir)).sort();
+      const repeated = await archiveRetiredPlaybook(env.playbookPath);
+      expect(repeated).toMatchObject({ changed: false, wouldChange: false, archivedBulletCount: 0,
+        protectedRetiredBulletCount: 1, archivePath: null });
+      expect(await fs.readFile(env.playbookPath, "utf8")).toBe(active);
+      expect((await fs.readdir(env.cassMemoryDir)).sort()).toEqual(files);
+      expect(await fs.readFile(archived.archivePath!, "utf8")).toBe(original);
+    });
+  });
+
+  it.serial("keeps a same-ID active record when a distinct legacy retired record is archived", async () => {
+    await withArchiveFixture(async (env, _original, state) => {
+      state.bullets[4].id = state.bullets[0].id;
+      const original = yaml.stringify(state, { aliasDuplicateObjects: false });
+      await fs.writeFile(env.playbookPath, original);
+      const archived = await archiveRetiredPlaybook(env.playbookPath);
+      expect(await fs.readFile(archived.archivePath!, "utf8")).toBe(original);
+      const surviving = yaml.parse(await fs.readFile(env.playbookPath, "utf8")).bullets;
+      expect(surviving.filter((bullet: any) => bullet.id === "b-retired")).toEqual([state.bullets[4]]);
+    });
+  });
+
+  it.serial("recovers an over-budget source only when the complete surviving learned state fits", async () => {
+    await withArchiveFixture(async (env, original, state) => {
+      const active = { ...state, bullets: [state.bullets[1], state.bullets[4], state.bullets[5]] };
+      const normalized = validateStoredPlaybook(active, PLAYBOOK_REPAIR_INPUT_LIMITS, "archive fixture");
+      const maxNodes = measureInputUsage(normalized, PLAYBOOK_REPAIR_INPUT_LIMITS, "archive fixture").nodes + 10;
+      const configuration = JSON.stringify({ embeddingModel: "none", playbookLimits: { maxNodes } });
+      await fs.writeFile(env.configPath, configuration);
+      await expect(loadPlaybook(env.playbookPath)).rejects.toBeInstanceOf(InputLimitError);
+      const result = await archiveRetiredPlaybook(env.playbookPath);
+      expect(result.changed).toBe(true);
+      expect(await fs.readFile(result.archivePath!, "utf8")).toBe(original);
+      expect((await loadPlaybook(env.playbookPath)).bullets).toHaveLength(3);
+      expect(await fs.readFile(env.configPath, "utf8")).toBe(configuration);
+    });
+    await withArchiveFixture(async (env, original) => {
+      await fs.writeFile(env.configPath, JSON.stringify({ playbookLimits: { maxNodes: 10 } }));
+      const before = (await fs.readdir(env.cassMemoryDir)).sort();
+      for (const dryRun of [true, false]) {
+        await expect(archiveRetiredPlaybook(env.playbookPath, { dryRun })).rejects.toThrow("remaining playbook");
+      }
+      expect(await fs.readFile(env.playbookPath, "utf8")).toBe(original);
+      expect((await fs.readdir(env.cassMemoryDir)).sort()).toEqual(before);
+    });
+  });
+
+  it.serial("rejects untrusted paths, traversal selectors and unsafe learned values without side effects", async () => {
+    await withArchiveFixture(async (env, original) => {
+      const foreign = path.join(env.home, "imported.yaml");
+      await fs.writeFile(foreign, original);
+      await expect(archiveRetiredPlaybook(foreign)).rejects.toThrow("trusted global playbook");
+      const traversal = path.join(env.cassMemoryDir, "unused") + "/../playbook.yaml";
+      await expect(archiveRetiredPlaybook(traversal)).rejects.toThrow("without '..'");
+      await expect(recoverTrustedPlaybookLimits(traversal)).rejects.toThrow("without '..'");
+      const repo = path.join(env.home, "checkout", ".cass");
+      await fs.mkdir(repo, { recursive: true });
+      const repoPlaybook = path.join(repo, "playbook.yaml");
+      await fs.writeFile(repoPlaybook, original);
+      await fs.writeFile(env.configPath, JSON.stringify({ playbookPath: repoPlaybook, playbookLimits: { maxNodes: 1_000_000 } }));
+      await expect(archiveRetiredPlaybook(repoPlaybook)).rejects.toThrow("trusted global playbook");
+      expect(await fs.readFile(repoPlaybook, "utf8")).toBe(original);
+      await fs.writeFile(env.configPath, "{}");
+      const before = (await fs.readdir(env.cassMemoryDir)).sort();
+      for (const bad of [original + "unsafe: 9007199254740993\n", original + "cycle: &cycle [*cycle]\n",
+        original + "coercive: { 12: value }\n", original + "ambiguous: { key: one, key: two }\n"]) {
+        await fs.writeFile(env.playbookPath, bad);
+        await expect(archiveRetiredPlaybook(env.playbookPath)).rejects.toThrow();
+        expect(await fs.readFile(env.playbookPath, "utf8")).toBe(bad);
+        expect((await fs.readdir(env.cassMemoryDir)).sort()).toEqual(before);
+      }
+    });
+  });
+
+  it.serial("requires a complete durable archive before replacement and retains interrupted copies", async () => {
+    for (const failure of ["archive-write", "archive-flush", "stage-write", "rename"] as const) {
+      await withArchiveFixture(async (env, original) => {
+        let injected = false;
+        const interruptOpen = rememberSpy(spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+          const handle = await realOpen(...args);
+          const target = String(args[0]);
+          if (args[1] === "wx" && (
+            (failure === "archive-write" && target.includes(".archive.retired.")) ||
+            (failure === "stage-write" && target.includes(".archive.") && target.endsWith(".tmp")))) {
+            const writeFile = handle.writeFile.bind(handle);
+            rememberSpy(spyOn(handle, "writeFile").mockImplementation(async () => {
+              injected = true;
+              await writeFile(Buffer.from("partial interrupted write"));
+              throw new Error(`injected ${failure}`);
+            }));
+          } else if (failure === "archive-flush" && target === env.cassMemoryDir) {
+            rememberSpy(spyOn(handle, "sync").mockImplementation(async () => {
+              injected = true;
+              throw new Error("injected archive-flush");
+            }));
+          }
+          return handle;
+        }));
+        const interruptRename = rememberSpy(spyOn(fs, "rename").mockImplementation(async (...args: Parameters<typeof fs.rename>) => {
+          if (failure === "rename" && String(args[1]) === env.playbookPath) {
+            injected = true;
+            throw new Error("injected rename");
+          }
+          return realRename(...args);
+        }));
+        await expect(archiveRetiredPlaybook(env.playbookPath)).rejects.toThrow(`injected ${failure}`);
+        interruptOpen.mockRestore();
+        interruptRename.mockRestore();
+        expect(injected).toBe(true);
+        expect(await fs.readFile(env.playbookPath, "utf8")).toBe(original);
+        const files = await fs.readdir(env.cassMemoryDir);
+        const archives = files.filter(entry => entry.includes(".archive.retired."));
+        expect(archives).toHaveLength(1);
+        expect(files.filter(entry => entry.endsWith(".tmp"))).toHaveLength(0);
+        const snapshot = await fs.readFile(path.join(env.cassMemoryDir, archives[0]), "utf8");
+        expect(snapshot).toBe(failure === "archive-write" ? "partial interrupted write" : original);
+      });
+    }
+  });
+
+  it.serial("detects a changed source or policy after creating the archive and preserves the external edit", async () => {
+    for (const edit of ["playbook", "limits"] as const) {
+      await withArchiveFixture(async (env, original) => {
+        const configuration = JSON.stringify({ playbookLimits: { maxNodes: 1000 }, externalEdit: true });
+        let writes = 0;
+        const interference = rememberSpy(spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+          if (args[1] === "wx" && String(args[0]).includes(".archive.") && String(args[0]).endsWith(".tmp")) {
+            writes++;
+            await realWriteFile(edit === "playbook" ? env.playbookPath : env.configPath,
+              edit === "playbook" ? original + "\n# concurrent edit\n" : configuration);
+          }
+          return realOpen(...args);
+        }));
+        await expect(archiveRetiredPlaybook(env.playbookPath)).rejects.toThrow("changed during archival");
+        interference.mockRestore();
+        expect(writes).toBe(1);
+        expect(await fs.readFile(env.playbookPath, "utf8")).toBe(edit === "playbook" ? original + "\n# concurrent edit\n" : original);
+        if (edit === "limits") expect(await fs.readFile(env.configPath, "utf8")).toBe(configuration);
+        const archive = (await fs.readdir(env.cassMemoryDir)).find(entry => entry.includes(".archive.retired."))!;
+        expect(await fs.readFile(path.join(env.cassMemoryDir, archive), "utf8")).toBe(original);
+      });
+    }
+  });
+
+  it.serial("reports a final directory flush failure without hiding the installed active state or its original archive", async () => {
+    await withArchiveFixture(async (env, original, state) => {
+      let flushes = 0;
+      const failure = rememberSpy(spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+        const handle = await realOpen(...args);
+        if (String(args[0]) === env.cassMemoryDir) {
+          const sync = handle.sync.bind(handle);
+          rememberSpy(spyOn(handle, "sync").mockImplementation(async () => {
+            if (++flushes === 2) throw new Error("injected final archive directory flush");
+            await sync();
+          }));
+        }
+        return handle;
+      }));
+      await expect(archiveRetiredPlaybook(env.playbookPath)).rejects.toThrow("Archived playbook installed, but final directory flush failed; verified original archive");
+      failure.mockRestore();
+      expect(flushes).toBe(2);
+      const archive = (await fs.readdir(env.cassMemoryDir)).find(entry => entry.includes(".archive.retired."))!;
+      expect(await fs.readFile(path.join(env.cassMemoryDir, archive), "utf8")).toBe(original);
+      expect(yaml.parse(await fs.readFile(env.playbookPath, "utf8")))
+        .toEqual({ ...state, bullets: [state.bullets[1], state.bullets[4], state.bullets[5]] });
+      expect((await loadPlaybook(env.playbookPath)).bullets).toHaveLength(3);
+      const retry = await archiveRetiredPlaybook(env.playbookPath);
+      expect(retry.changed).toBe(false);
+      expect((await fs.readdir(env.cassMemoryDir)).filter(entry => entry.includes(".archive.retired."))).toHaveLength(1);
+    });
+  });
+
+  it.serial("refuses archival until an applied pending reflection and its queued feedback finish", async () => {
+    await withArchiveFixture(async (env) => {
+      const repoPath = path.join(env.home, "project", ".cass", "playbook.yaml");
+      await savePlaybook(createEmptyPlaybook(), repoPath);
+      const logPath = getProcessedLogPath();
+      const sessionPath = path.join(env.home, "pending-session.jsonl");
+      const pending: NonNullable<ProcessedEntry["pendingOutcomes"]>[number] = {
+        id: "outcome-before-archival", sessionId: sessionPath, outcome: "success",
+        rulesUsed: ["b-retired"], recordedAt: timestamp, workspace: env.home,
+        globalPlaybookPath: env.playbookPath, path: path.join(env.cassMemoryDir, "outcomes.jsonl"),
+        ruleTargets: [{ ruleId: "b-retired", playbookPath: env.playbookPath }],
+      };
+      const entry: ProcessedEntry = { sessionPath, processedAt: timestamp, deltasGenerated: 1, pendingOutcomes: [pending] };
+      const interruption = rememberSpy(spyOn(fs, "rename").mockImplementation(async (...args: Parameters<typeof fs.rename>) => {
+        if (String(args[1]) === repoPath) throw new Error("injected pending repository replacement");
+        return realRename(...args);
+      }));
+      await withLock(env.playbookPath, async () => {
+        const transaction = await ReflectionCommit.create(env.playbookPath, logPath, [entry], { sessionsProcessed: 1 });
+        await transaction.savePlaybook(await transaction.loadPlaybook(env.playbookPath), env.playbookPath);
+        await transaction.savePlaybook(await transaction.loadPlaybook(repoPath), repoPath);
+        await expect(transaction.commit()).rejects.toThrow("pending repository replacement");
+      });
+      interruption.mockRestore();
+      const committedGlobal = await fs.readFile(env.playbookPath, "utf8");
+      const journalPath = reflectionCommitPendingPath(env.playbookPath);
+      const journal = await fs.readFile(journalPath, "utf8");
+      for (const dryRun of [true, false]) {
+        await expect(archiveRetiredPlaybook(env.playbookPath, { dryRun })).rejects.toThrow(/pending|queued/i);
+      }
+      expect(await fs.readFile(env.playbookPath, "utf8")).toBe(committedGlobal);
+      expect(await fs.readFile(journalPath, "utf8")).toBe(journal);
+      expect((await fs.readdir(env.cassMemoryDir)).some(entry => entry.includes(".archive."))).toBe(false);
+
+      await recoverReflectionCommit(env.playbookPath);
+      await expect(archiveRetiredPlaybook(env.playbookPath)).rejects.toThrow(/pending|queued/i);
+      const feedback = await applyOutcomeFeedback(pending, createTestConfig({ playbookPath: env.playbookPath }), env.home);
+      expect(feedback).toEqual({ applied: 1, missing: [] });
+      const log = new ProcessedLog(logPath);
+      await log.acknowledgeOutcomes([{ sessionPath, outcomeIds: [pending.id!] }], { requireExists: true });
+      const beforeArchive = await fs.readFile(env.playbookPath, "utf8");
+      const archived = await archiveRetiredPlaybook(env.playbookPath);
+      expect(archived.changed).toBe(true);
+      expect(await fs.readFile(archived.archivePath!, "utf8")).toBe(beforeArchive);
+      const history = yaml.parse(beforeArchive).bullets.find((bullet: any) => bullet.id === "b-retired");
+      expect(history.feedbackEvents.some((event: any) => event.outcomeId === pending.id)).toBe(true);
+    });
   });
 });
 

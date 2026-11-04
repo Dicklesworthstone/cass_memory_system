@@ -8,10 +8,11 @@ import { assertInputLimits, PLAYBOOK_INPUT_LIMITS } from "../src/input-limits.js
 import { forgetCommand } from "../src/commands/forget.js";
 import { recordFeedback } from "../src/commands/mark.js";
 import { undoCommand } from "../src/commands/undo.js";
-import { withLock } from "../src/lock.js";
-import { createEmptyPlaybook, loadPlaybook, loadPlaybookWithRecovery, recordReflectionRun, repairPlaybookEmbeddings, savePlaybook } from "../src/playbook.js";
+import { getActiveLocks, withLock } from "../src/lock.js";
+import { archiveRetiredPlaybook, createEmptyPlaybook, loadPlaybook, loadPlaybookWithRecovery, recordReflectionRun, repairPlaybookEmbeddings, savePlaybook } from "../src/playbook.js";
 import {
-  pendingOutcomeRegistryPath, recoverReflectionCommit, REFLECTION_COMMIT_LIMITS, ReflectionCommit, reflectionCommitPendingPath,
+  assertPlaybookArchiveAllowed, PendingOutcomeTargetError, pendingOutcomeRegistryPath, PENDING_OUTCOME_LIMITS,
+  recoverReflectionCommit, REFLECTION_COMMIT_LIMITS, ReflectionCommit, reflectionCommitPendingPath,
 } from "../src/reflection-commit.js";
 import { getProcessedLogPath, ProcessedLog } from "../src/tracking.js";
 import type { ProcessedEntry } from "../src/types.js";
@@ -102,6 +103,396 @@ async function pendingData(globalPath: string) {
   const directory = path.join(path.dirname(pending), `${path.basename(pending, ".pending.json")}.${manifest.id}.stage`);
   return { pending, manifest, directory };
 }
+
+async function snapshotRecoveryFiles(env: TestEnv): Promise<Array<[string, string]>> {
+  const snapshot: Array<[string, string]> = [];
+  for (const relative of (await fs.readdir(env.cassMemoryDir, { recursive: true })).sort()) {
+    const file = path.join(env.cassMemoryDir, relative);
+    const stat = await fs.lstat(file);
+    snapshot.push([relative, stat.isFile() ? await fs.readFile(file, "utf8") : "<directory>"]);
+  }
+  return snapshot;
+}
+
+async function writeOutcomeLedger(f: Fixture, entry = f.entry): Promise<void> {
+  await fs.mkdir(path.dirname(f.logPath), { recursive: true });
+  await fs.writeFile(f.logPath, JSON.stringify(entry) + "\n");
+}
+
+async function writeOutcomeRegistry(f: Fixture, logs: string[], owner = f.env.playbookPath): Promise<void> {
+  const registry = pendingOutcomeRegistryPath(owner);
+  await fs.mkdir(path.dirname(registry), { recursive: true });
+  await fs.writeFile(registry, JSON.stringify({ version: 1, owner, bootstrapped: true, logs }));
+}
+
+describe("archive recovery guard", () => {
+  test("a fresh playbook needs no recovery directories or writes to permit archival", async () => {
+    await withFixture(async f => {
+      const before = await snapshotRecoveryFiles(f.env);
+      await assertPlaybookArchiveAllowed(f.env.playbookPath);
+      expect(await snapshotRecoveryFiles(f.env)).toEqual(before);
+      expect(await Bun.file(pendingOutcomeRegistryPath(f.env.playbookPath)).exists()).toBe(false);
+    });
+  });
+
+  test.each(["unapplied", "applied with a retained receipt"])("blocks a %s pending reflection without changing recovery state", async phase => {
+    await withFixture(async f => {
+      if (phase === "unapplied") {
+        await withLock(f.env.playbookPath, async () => publishBeforeFirstWrite(f, await f.prepare()));
+      } else {
+        await publishBeforeRepositoryWrite(f);
+        expect((await loadPlaybook(f.env.playbookPath)).metadata).toHaveProperty("reflectionCommit");
+      }
+      const before = await snapshotRecoveryFiles(f.env);
+      await expect(assertPlaybookArchiveAllowed(f.env.playbookPath)).rejects.toThrow("pending reflection commit");
+      // A foreign global commit targeting another playbook must protect that
+      // destination as well as its own owner.
+      await expect(assertPlaybookArchiveAllowed(f.repoPath)).rejects.toThrow("pending reflection commit");
+      expect(await snapshotRecoveryFiles(f.env)).toEqual(before);
+    });
+  });
+
+  test("an acknowledged journal still requires cleanup before a read-only archive preview", async () => {
+    await withFixture(async f => {
+      const pending = reflectionCommitPendingPath(f.env.playbookPath);
+      const unlink = fs.unlink;
+      const interrupted = spyOn(fs, "unlink").mockImplementation(async file => {
+        if (String(file) === pending) throw new Error("injected archive journal cleanup failure");
+        return unlink(file);
+      });
+      try {
+        await withLock(f.env.playbookPath, async () => {
+          await expect((await f.prepare()).commit()).rejects.toThrow("archive journal cleanup failure");
+        });
+      } finally {
+        interrupted.mockRestore();
+      }
+      const before = await snapshotRecoveryFiles(f.env);
+      await expect(assertPlaybookArchiveAllowed(f.env.playbookPath)).rejects.toThrow("recovery or cleanup");
+      expect(await snapshotRecoveryFiles(f.env)).toEqual(before);
+    });
+  });
+
+  test.each(["registered", "unregistered after bootstrap"])("blocks %s pending outcomes without changing the registry or ledger", async registration => {
+    await withFixture(async f => {
+      await writeOutcomeLedger(f);
+      await writeOutcomeRegistry(f, registration === "registered" ? [f.logPath] : []);
+      const before = await snapshotRecoveryFiles(f.env);
+      await expect(assertPlaybookArchiveAllowed(f.env.playbookPath)).rejects.toThrow("pending outcome feedback");
+      expect(await snapshotRecoveryFiles(f.env)).toEqual(before);
+    });
+  });
+
+  test("ambiguous legacy pending outcomes fail closed even without a registry", async () => {
+    await withFixture(async f => {
+      const record = { ...f.entry.pendingOutcomes![0]! };
+      delete record.globalPlaybookPath;
+      await writeOutcomeLedger(f, { ...f.entry, pendingOutcomes: [record] });
+      const before = await snapshotRecoveryFiles(f.env);
+      await expect(assertPlaybookArchiveAllowed(f.env.playbookPath)).rejects.toThrow("ownership is ambiguous");
+      expect(await snapshotRecoveryFiles(f.env)).toEqual(before);
+    });
+  });
+
+  test("commit-attributed legacy pending outcomes remain protected", async () => {
+    await withFixture(async f => {
+      const record = { ...f.entry.pendingOutcomes![0]! };
+      delete record.globalPlaybookPath;
+      await fs.mkdir(path.dirname(f.logPath), { recursive: true });
+      await fs.writeFile(f.logPath, JSON.stringify({
+        reflectionCommit: { owner: f.env.playbookPath, id: "legacy-owner-receipt" },
+        entries: [{ ...f.entry, pendingOutcomes: [record] }],
+      }) + "\n");
+      await expect(assertPlaybookArchiveAllowed(f.env.playbookPath)).rejects.toThrow("pending outcome feedback");
+    });
+  });
+
+  test("a foreign owner cannot hide feedback targeting the selected playbook", async () => {
+    await withFixture(async f => {
+      const alias = path.join(f.env.home, "memory-alias");
+      await fs.symlink(f.env.cassMemoryDir, alias, "dir");
+      await writeOutcomeLedger(f, {
+        ...f.entry, pendingOutcomes: [{ ...f.entry.pendingOutcomes![0]!,
+          globalPlaybookPath: path.join(f.env.home, "foreign.yaml"),
+          ruleTargets: [{ ruleId: "b-global111", playbookPath: path.join(alias, "playbook.yaml") }],
+        }],
+      });
+      const before = await snapshotRecoveryFiles(f.env);
+      await expect(assertPlaybookArchiveAllowed(f.env.playbookPath)).rejects.toThrow("pending outcome feedback");
+      expect(await snapshotRecoveryFiles(f.env)).toEqual(before);
+    });
+  });
+
+  test("explicit foreign outcomes with unrelated targets do not block an archive", async () => {
+    await withFixture(async f => {
+      const foreign = path.join(f.env.home, "foreign.yaml");
+      await writeOutcomeLedger(f, {
+        ...f.entry, pendingOutcomes: [{ ...f.entry.pendingOutcomes![0]!, globalPlaybookPath: foreign }],
+      });
+      await writeOutcomeRegistry(f, [f.logPath], foreign);
+      const before = await snapshotRecoveryFiles(f.env);
+      await assertPlaybookArchiveAllowed(f.env.playbookPath);
+      expect(await snapshotRecoveryFiles(f.env)).toEqual(before);
+    });
+  });
+
+  test.each(["selected", "foreign"])("a missing ledger registered by a %s owner is not an empty queue", async selected => {
+    await withFixture(async f => {
+      await writeOutcomeRegistry(f, [f.logPath], selected === "selected"
+        ? f.env.playbookPath : path.join(f.env.home, "foreign.yaml"));
+      const before = await snapshotRecoveryFiles(f.env);
+      await expect(assertPlaybookArchiveAllowed(f.env.playbookPath)).rejects.toThrow("ENOENT");
+      expect(await snapshotRecoveryFiles(f.env)).toEqual(before);
+    });
+  });
+
+  test("drained queues and historical receipts permit archival without registry cleanup", async () => {
+    await withFixture(async f => {
+      await withLock(f.env.playbookPath, async () => (await f.prepare()).commit());
+      const log = new ProcessedLog(f.logPath);
+      await log.acknowledgeOutcomes([{ sessionPath: f.entry.sessionPath,
+        outcomeIds: [f.entry.pendingOutcomes![0]!.id!] }]);
+      const before = await snapshotRecoveryFiles(f.env);
+      await assertPlaybookArchiveAllowed(f.env.playbookPath);
+      expect(await snapshotRecoveryFiles(f.env)).toEqual(before);
+    });
+  });
+
+  test.each([
+    '{"sessionPath":"/sessions/torn.jsonl","pendingOutcomes":[',
+    '{"unknownRecord":"possibly incomplete recovery state"}',
+    'unrecognized legacy recovery line',
+  ])("malformed ledger records fail closed for archive but retain ordinary recovery behavior: %s", async line => {
+    await withFixture(async f => {
+      await fs.mkdir(path.dirname(f.logPath), { recursive: true });
+      await fs.writeFile(f.logPath, line + "\n");
+      const ordinary = new ProcessedLog(f.logPath);
+      await ordinary.load();
+      const before = await snapshotRecoveryFiles(f.env);
+      await expect(assertPlaybookArchiveAllowed(f.env.playbookPath)).rejects.toThrow("malformed recovery record");
+      expect(await snapshotRecoveryFiles(f.env)).toEqual(before);
+    });
+  });
+
+  test("valid legacy TSV without pending work remains archivable", async () => {
+    await withFixture(async f => {
+      await fs.mkdir(path.dirname(f.logPath), { recursive: true });
+      await fs.writeFile(f.logPath, `legacy-id\t${f.entry.sessionPath}\t${f.entry.processedAt}\t2\n`);
+      await assertPlaybookArchiveAllowed(f.env.playbookPath);
+    });
+  });
+
+  test("the ledger discovery entry bound cannot be bypassed by a bootstrapped registry", async () => {
+    await withFixture(async f => {
+      await writeOutcomeRegistry(f, []);
+      const directory = path.dirname(f.logPath);
+      for (let index = 0; index < PENDING_OUTCOME_LIMITS.maxDiscoveryEntries; index++) {
+        await fs.writeFile(path.join(directory, `unrelated-${index}`), "");
+      }
+      const before = await snapshotRecoveryFiles(f.env);
+      await expect(assertPlaybookArchiveAllowed(f.env.playbookPath)).rejects.toThrow("discovery entry limit");
+      expect(await snapshotRecoveryFiles(f.env)).toEqual(before);
+    });
+  });
+
+  test("an outcome prepared before archival cannot acknowledge its removed rule afterward", async () => {
+    await withFixture(async f => {
+      const retired = await loadPlaybook(f.env.playbookPath);
+      retired.bullets[0]!.state = "retired";
+      retired.bullets[0]!.pinned = false;
+      await savePlaybook(retired, f.env.playbookPath);
+      const prepared: ProcessedEntry = { ...f.entry, pendingOutcomes: [{
+        ...f.entry.pendingOutcomes![0]!, rulesUsed: ["b-global111"],
+        ruleTargets: [{ ruleId: "b-global111", playbookPath: f.env.playbookPath }],
+      }] };
+      const archived = await archiveRetiredPlaybook(f.env.playbookPath);
+      expect(archived.archivedBulletIds).toEqual(["b-global111"]);
+      const before = await fs.readFile(f.env.playbookPath, "utf8");
+      await withLock(f.env.playbookPath, async () => {
+        const transaction = await ReflectionCommit.create(f.env.playbookPath, f.logPath, [prepared], { sessionsProcessed: 1 });
+        const draft = await transaction.loadPlaybook(f.env.playbookPath);
+        recordReflectionRun(draft, 1);
+        await transaction.savePlaybook(draft, f.env.playbookPath);
+        await expect(transaction.commit()).rejects.toThrow(PendingOutcomeTargetError);
+        expect(await transaction.abort()).toBe(true);
+      });
+      expect(await fs.readFile(f.env.playbookPath, "utf8")).toBe(before);
+      expect(await Bun.file(f.logPath).exists()).toBe(false);
+      expect(await Bun.file(reflectionCommitPendingPath(f.env.playbookPath)).exists()).toBe(false);
+      expect((await loadPlaybook(f.env.playbookPath)).metadata.totalSessionsProcessed).toBe(0);
+      expect((await loadPlaybook(archived.archivePath!)).bullets[0]!.id).toBe("b-global111");
+    });
+  });
+
+  test("foreign outcome-only commits lock their feedback target and protect it while a journal remains", async () => {
+    await withFixture(async f => {
+      const foreign = path.join(f.env.home, "foreign.yaml");
+      await savePlaybook(createTestPlaybook([]), foreign);
+      const entry: ProcessedEntry = { ...f.entry, pendingOutcomes: [{
+        ...f.entry.pendingOutcomes![0]!, globalPlaybookPath: foreign, rulesUsed: ["b-global111"],
+        ruleTargets: [{ ruleId: "b-global111", playbookPath: f.env.playbookPath }],
+      }] };
+      const pending = reflectionCommitPendingPath(foreign);
+      const rename = fs.rename;
+      let publicationLocks: string[] = [];
+      const interrupted = spyOn(fs, "rename").mockImplementation(async (source, destination) => {
+        if (String(destination) === pending) publicationLocks = getActiveLocks();
+        if (String(destination) === foreign) throw new Error("injected foreign publication failure");
+        return rename(source, destination);
+      });
+      try {
+        await withLock(foreign, async () => {
+          const transaction = await ReflectionCommit.create(foreign, f.logPath, [entry], { sessionsProcessed: 1 });
+          const draft = await transaction.loadPlaybook(foreign);
+          recordReflectionRun(draft, 1);
+          await transaction.savePlaybook(draft, foreign);
+          await expect(transaction.commit()).rejects.toThrow("foreign publication failure");
+        });
+      } finally {
+        interrupted.mockRestore();
+      }
+      expect(publicationLocks).toContain(`${f.env.playbookPath}.lock.d`);
+      const manifest = JSON.parse(await fs.readFile(pending, "utf8"));
+      expect(manifest.targets.map((target: { path: string }) => target.path)).toEqual([foreign]);
+      const before = await snapshotRecoveryFiles(f.env);
+      await expect(assertPlaybookArchiveAllowed(f.env.playbookPath)).rejects.toThrow("pending reflection commit");
+      expect(await snapshotRecoveryFiles(f.env)).toEqual(before);
+    });
+  });
+
+  test("a changed feedback read dependency remains retryable before publication", async () => {
+    await withFixture(async f => {
+      const originalGlobal = await fs.readFile(f.env.playbookPath, "utf8");
+      await withLock(f.env.playbookPath, async () => {
+        const transaction = await ReflectionCommit.create(f.env.playbookPath, f.logPath, [f.entry]);
+        const draft = await transaction.loadPlaybook(f.env.playbookPath);
+        await transaction.savePlaybook(draft, f.env.playbookPath);
+        await transaction.loadPlaybook(f.repoPath);
+        await withLock(f.repoPath, async () => savePlaybook(createEmptyPlaybook(), f.repoPath));
+        await expect(transaction.commit()).rejects.toThrow(PendingOutcomeTargetError);
+        expect(await transaction.abort()).toBe(true);
+      });
+      expect(await fs.readFile(f.env.playbookPath, "utf8")).toBe(originalGlobal);
+      expect((await loadPlaybook(f.repoPath)).bullets).toEqual([]);
+      expect(await Bun.file(f.logPath).exists()).toBe(false);
+      expect(await Bun.file(reflectionCommitPendingPath(f.env.playbookPath)).exists()).toBe(false);
+    });
+  });
+
+  test("feedback read dependencies share the existing staged-target count bound", async () => {
+    await withFixture(async f => {
+      const entry: ProcessedEntry = { ...f.entry, pendingOutcomes: [{
+        ...f.entry.pendingOutcomes![0]!, ruleTargets: Array.from({ length: REFLECTION_COMMIT_LIMITS.maxTargets }, (_, index) => ({
+          ruleId: `b-target-${index}`, playbookPath: path.join(f.env.home, `target-${index}.yaml`),
+        })),
+      }] };
+      const before = await fs.readFile(f.env.playbookPath, "utf8");
+      await withLock(f.env.playbookPath, async () => {
+        const transaction = await ReflectionCommit.create(f.env.playbookPath, f.logPath, [entry]);
+        await transaction.savePlaybook(await transaction.loadPlaybook(f.env.playbookPath), f.env.playbookPath);
+        await expect(transaction.commit()).rejects.toThrow("maximum target count");
+        expect(await transaction.abort()).toBe(true);
+      });
+      expect(await fs.readFile(f.env.playbookPath, "utf8")).toBe(before);
+      expect(await Bun.file(f.logPath).exists()).toBe(false);
+    });
+  });
+
+  test("queued feedback through a final-component symlink blocks archival of its read source", async () => {
+    await withFixture(async f => {
+      const alias = path.join(f.env.home, "queued-alias.yaml");
+      await fs.symlink(f.env.playbookPath, alias);
+      await writeOutcomeLedger(f, { ...f.entry, pendingOutcomes: [{
+        ...f.entry.pendingOutcomes![0]!, globalPlaybookPath: path.join(f.env.home, "foreign.yaml"),
+        rulesUsed: ["b-global111"], ruleTargets: [{ ruleId: "b-global111", playbookPath: alias }],
+      }] });
+      await writeOutcomeRegistry(f, []);
+      const before = await snapshotRecoveryFiles(f.env);
+      await expect(assertPlaybookArchiveAllowed(f.env.playbookPath)).rejects.toThrow("pending outcome feedback");
+      expect(await snapshotRecoveryFiles(f.env)).toEqual(before);
+      expect((await fs.lstat(alias)).isSymbolicLink()).toBe(true);
+    });
+  });
+
+  test("legacy outcome ownership inferred from a final-symlink owner still protects its read source", async () => {
+    await withFixture(async f => {
+      const alias = path.join(f.env.home, "legacy-owner.yaml");
+      await fs.symlink(f.env.playbookPath, alias);
+      const record = { ...f.entry.pendingOutcomes![0]! };
+      delete record.globalPlaybookPath;
+      delete record.ruleTargets;
+      await fs.mkdir(path.dirname(f.logPath), { recursive: true });
+      await fs.writeFile(f.logPath, JSON.stringify({
+        reflectionCommit: { owner: alias, id: "legacy-alias-owner" },
+        entries: [{ ...f.entry, pendingOutcomes: [record] }],
+      }) + "\n");
+      await expect(assertPlaybookArchiveAllowed(f.env.playbookPath)).rejects.toThrow("pending outcome feedback");
+    });
+  });
+
+  test.each(["read-only", "saved in the same commit"])("a final-symlink outcome target is safe only when materialized: %s", async disposition => {
+    await withFixture(async f => {
+      const original = await loadPlaybook(f.env.playbookPath);
+      original.bullets[0]!.state = "retired";
+      original.bullets[0]!.pinned = false;
+      await savePlaybook(original, f.env.playbookPath);
+      const alias = path.join(f.env.home, "outcome-alias.yaml");
+      await fs.symlink(f.env.playbookPath, alias);
+      const foreign = path.join(f.env.home, "foreign.yaml");
+      await savePlaybook(createTestPlaybook([]), foreign);
+      const entry: ProcessedEntry = { ...f.entry, pendingOutcomes: [{
+        ...f.entry.pendingOutcomes![0]!, globalPlaybookPath: foreign, rulesUsed: ["b-global111"],
+        ruleTargets: [{ ruleId: "b-global111", playbookPath: alias }],
+      }] };
+      const before = await fs.readFile(foreign, "utf8");
+      await withLock(foreign, async () => {
+        const transaction = await ReflectionCommit.create(foreign, f.logPath, [entry], { sessionsProcessed: 1 });
+        const draft = await transaction.loadPlaybook(foreign);
+        recordReflectionRun(draft, 1);
+        await transaction.savePlaybook(draft, foreign);
+        if (disposition === "saved in the same commit") {
+          await transaction.savePlaybook(await transaction.loadPlaybook(alias), alias);
+          await transaction.commit();
+        } else {
+          await expect(transaction.commit()).rejects.toThrow("unresolved final-component symlink");
+          expect(await transaction.abort()).toBe(true);
+        }
+      });
+      if (disposition === "saved in the same commit") {
+        expect((await fs.lstat(alias)).isSymbolicLink()).toBe(false);
+        expect((await archiveRetiredPlaybook(f.env.playbookPath)).archivedBulletIds).toEqual(["b-global111"]);
+        expect((await loadPlaybook(alias)).bullets[0]!.id).toBe("b-global111");
+        const ledger = new ProcessedLog(f.logPath);
+        await ledger.load();
+        expect(ledger.getPendingOutcomeEntries(foreign)[0]!.pendingOutcomes).toEqual(entry.pendingOutcomes);
+      } else {
+        expect((await fs.lstat(alias)).isSymbolicLink()).toBe(true);
+        expect(await fs.readFile(foreign, "utf8")).toBe(before);
+        expect(await Bun.file(f.logPath).exists()).toBe(false);
+        expect(await Bun.file(reflectionCommitPendingPath(foreign)).exists()).toBe(false);
+      }
+    });
+  });
+
+  test("unexpected target-resolution IO failures cannot be interpreted as an unrelated queue", async () => {
+    await withFixture(async f => {
+      const foreign = path.join(f.env.home, "foreign.yaml");
+      await writeOutcomeLedger(f, { ...f.entry, pendingOutcomes: [{
+        ...f.entry.pendingOutcomes![0]!, globalPlaybookPath: foreign,
+      }] });
+      const realpath = fs.realpath;
+      const failure = spyOn(fs, "realpath").mockImplementation((async (...args: Parameters<typeof fs.realpath>) => {
+        if (String(args[0]) === foreign) throw Object.assign(new Error("injected archive lookup failure"), { code: "EACCES" });
+        return realpath(...args);
+      }) as typeof fs.realpath);
+      try {
+        await expect(assertPlaybookArchiveAllowed(f.env.playbookPath)).rejects.toThrow("archive lookup failure");
+      } finally {
+        failure.mockRestore();
+      }
+    });
+  });
+});
 
 describe("prepared reflection commits", () => {
   test("stages and recovers a trusted playbook beyond the ordinary node ceiling without changing history", async () => {

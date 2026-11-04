@@ -34,7 +34,7 @@ import {
 } from "./playbook.js";
 import { reflectOnSession } from "./reflect.js";
 import {
-  discoverPendingOutcomeLogs, PENDING_OUTCOME_LIMITS, prunePendingOutcomeLog,
+  discoverPendingOutcomeLogs, PENDING_OUTCOME_LIMITS, PendingOutcomeTargetError, prunePendingOutcomeLog,
   ReflectionCommit, recoverReflectionCommit, registerPendingOutcomeLog,
 } from "./reflection-commit.js";
 import { compileExtraPatterns, sanitize } from "./sanitize.js";
@@ -1044,7 +1044,7 @@ export async function orchestrateReflection(
     let repoResult: CurationResult | undefined;
     const projectResults: Array<{ playbookPath: string; result: CurationResult }> = [];
     let transaction: ReflectionCommit;
-    let capacityRejected = false;
+    let draftRejected = false;
 
     const batches = new Map<ReflectionContext, PlaybookDelta[]>();
     for (const delta of allDeltas) {
@@ -1406,17 +1406,23 @@ export async function orchestrateReflection(
           // Prepared-only staging is disposable. Once the manifest is durable,
           // abort leaves it intact so a later run can finish the exact commit.
           const abandoned = await transaction.abort();
-          if (!(error instanceof InputLimitError) || !abandoned) throw error;
+          if (!(error instanceof InputLimitError || error instanceof PendingOutcomeTargetError) || !abandoned) throw error;
 
-          // Capacity is an admission failure for this entire draft. Reporting
+          // Capacity or stale outcome ownership rejects this entire draft. Reporting
           // partially curated rules or advancing any successful watermark here
           // would discard unapplied learning. Keep proposals in the failure
           // response and preserve each session's last durable boundary so it
-          // can be retried after an operator reviews the archive/limit policy.
-          const message = `Reflection growth could not fit the selected storage limits: ${error.message} `
-            + "No playbook changes or successful session watermarks were committed. "
-            + "Run cm doctor --json, review the documented storage recovery, or adjust playbookLimits "
-            + "for the explicitly trusted local playbook, then retry the affected sessions.";
+          // can be retried against the current state after operator review.
+          const message = error instanceof PendingOutcomeTargetError
+            ? `Reflection feedback targets changed before commit: ${error.message} `
+              + "No playbook changes or successful session watermarks were committed. "
+              + "Review the affected rule and any archive, then retry these sessions against the current playbook; "
+              + "their unapplied proposals are retained in this failure response."
+            : `Reflection growth could not fit the selected storage limits: ${error.message} `
+              + "No playbook changes or successful session watermarks were committed. "
+              + "Run cm doctor --json. For the explicitly trusted global playbook, preview "
+              + "cm playbook archive --retired --dry-run or review local playbookLimits; "
+              + "then retry the affected sessions.";
           for (const entry of pendingProcessedEntries) {
             recordSessionFailure(entry.sessionPath, message, completedProposals.get(entry.sessionPath) ?? []);
           }
@@ -1428,7 +1434,7 @@ export async function orchestrateReflection(
             // so no successful boundary or learned state needs rolling back.
             errors.push(`Could not persist reflection retry state: ${retryError instanceof Error ? retryError.message : String(retryError)}`);
           }
-          capacityRejected = true;
+          draftRejected = true;
           sessionsProcessed = 0;
           committedSessionCount = 0;
           allDeltas = [];
@@ -1441,7 +1447,7 @@ export async function orchestrateReflection(
       }
     });
 
-    if (capacityRejected) {
+    if (draftRejected) {
       return {
         sessionsProcessed: 0, deltasGenerated: 0, errors, autoOutcome,
         ...(failedSessions.length > 0 ? { failedSessions } : {}),

@@ -346,6 +346,22 @@ export function createProgram(argv: string[] = process.argv): Command {
     .action(async (opts: any) => await playbookCommand("repair", [], opts));
 
   playbook
+    .command("archive")
+    .description("Archive unpinned retired rules from the trusted global playbook, preserving a complete original snapshot")
+    .option("--retired", "Select only rules already marked retired or deprecated; pinned rules remain in the playbook")
+    .option("--file <path>", "Configured trusted global playbook (must match its independently resolved owner)")
+    .option("--dry-run", "Preview eligible rules and validate remaining state without creating files")
+    .option("-j, --json", "Output JSON result")
+    .addHelpText("after", () =>
+      formatCommandExamples([
+        "playbook archive --retired --dry-run --json",
+        "playbook archive --retired --json",
+        "playbook archive --retired --file /trusted/path/playbook.yaml --dry-run",
+      ]),
+    )
+    .action(async (opts: any) => await playbookCommand("archive", [], opts));
+
+  playbook
     .command("conflicts")
     .description("List pairs of active rules that appear to contradict each other")
     .option("--category <cat>", "Only check one category")

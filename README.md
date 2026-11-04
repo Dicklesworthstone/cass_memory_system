@@ -936,6 +936,18 @@ owner information, and pending outcomes. New commits check both ledger and
 index capacity before publishing recovery intent or replacing playbooks.
 Repository playbooks retain the fixed 16 MiB ceiling. The global playbook uses
 its independently authorized [trusted local limits](#trusted-local-playbook-limits).
+Reflection checks each prospective playbook before publishing replacements. A
+capacity failure leaves the last readable state in place, preserves retry work,
+and reports failure. It does not silently remove candidates or feedback to make
+room. `cm doctor` warns when expanded values, the largest array, or expanded
+text/key bytes reach 90% of the selected limit. Review the explicit
+[retired-rule archive](#retired-rule-archival) or trusted-limit recovery options.
+
+Before publishing a reflection commit, cm also rechecks the destinations of
+queued feedback under their writer locks. If archival or another writer changed
+or removed a feedback target while the proposal was being prepared, publication
+fails and the session remains retryable. It does not acknowledge feedback for a
+rule that disappeared during the model call.
 
 Recovery preserves subsequent feedback on files already committed. Normal
 playbook writes, embedding repair, and initialization refuse to change a target
@@ -1104,6 +1116,10 @@ cm playbook repair --recover-limits --json
 # Remove only derived inline embeddings from a trusted legacy playbook
 cm playbook repair --strip-embeddings --dry-run --json
 cm playbook repair --strip-embeddings --json
+
+# Move reviewed, unpinned retired rules out of active state, keeping a complete snapshot
+cm playbook archive --retired --dry-run --json
+cm playbook archive --retired --json
 
 # Review directly opposing instructions and their matched clause evidence
 cm playbook conflicts --json
@@ -1765,7 +1781,8 @@ YAML equivalent) to select a finite budget for your trusted local playbook:
 Values must be positive integers within the maximum. `maxBytes` bounds both
 file size and expanded text/key bytes; `maxNodes` counts every expanded value,
 including repeated YAML aliases. Depth (32), object keys (10,000), alias expansion
-(100), cycles, and lexical allocation checks remain fixed. Larger budgets use
+(100), and cycle protections stay fixed; YAML token work is bounded by four
+times the selected node budget. Larger budgets use
 more memory and parsing time; choose a budget that fits the host.
 
 Authority comes only from the bounded global configuration and the environment.
@@ -3167,6 +3184,66 @@ hydration, so subsequent reflection and feedback writes can continue safely.
 Ordinary loads and saves also retain legacy evidence such as `derivedFrom` and
 `helpfulEvents`, including nested fields unknown to the current schema. Known
 fields remain validated, and retained fields still count toward resource limits.
+
+#### Retired rule archival
+
+`cm playbook archive --retired` provides an explicit way to make room in the
+trusted global playbook. A rule is eligible only if it is already marked
+`state: retired`, `maturity: deprecated`, or `deprecated: true`, and is **not
+pinned**. Active candidates with no feedback remain untouched. The operation
+does not deduplicate feedback or decide which learned rules are worth keeping.
+
+```bash
+# Inspect the exact eligible IDs and the resulting size before changing active state
+cm playbook archive --retired --dry-run --json
+
+# Preserve the complete original, then remove only the reviewed retired records
+cm playbook archive --retired --json
+
+# An explicit selector must match the independently configured trusted global owner
+cm playbook archive --retired --file /trusted/path/playbook.yaml --dry-run
+```
+
+The archive is a **complete byte-exact snapshot of the original playbook**, saved
+next to it as `playbook.yaml.archive.retired.<timestamp>.<uuid>.yaml`. It retains
+every rule, identifier, feedback event, metadata field, comment and original
+formatting. The active document's learned data changes only by removing the selected records from
+its `bullets` array; surviving records keep their order and all their fields.
+Active YAML formatting and comments may change; the archive keeps the exact original.
+Metadata and pinned records are preserved even when they reference retired rules.
+Legacy duplicate IDs are handled by record position, so archiving one retired
+record does not erase an active record with the same ID.
+
+A dry run creates no archive, temporary file or lock. It reports selected IDs,
+archived/retained/pinned counts, bytes and hashes. Application verifies and flushes
+the original snapshot before atomically replacing active state under the writer
+lock. The result includes the archive path. A failed archive or staging write
+leaves the original active file intact; errors after the replacement explicitly
+report that the new active file was installed. Keep any reported archive, including
+an incomplete copy left by an interrupted write. A later retry creates a new
+exclusive snapshot instead of overwriting previous evidence.
+
+Archival refuses to proceed until outstanding reflection and feedback obligations finish.
+If a pending transaction or queued outcome still needs the playbook, run
+`cm reflect` to complete recovery and feedback delivery, then preview archival
+again. Unreadable or ambiguous recovery ledgers also block archival; they are
+not treated as empty queues. This prevents a retired rule from disappearing
+before its final queued feedback reaches the snapshot.
+
+The source is read under the fixed trusted recovery ceilings, and the remaining
+active playbook must fit its selected ordinary/trusted limits. If too much
+learned state remains, the command fails without replacing the source; preview
+`cm playbook repair --recover-limits --dry-run` first. Repository files, imports,
+symlinks and arbitrary `--file` targets cannot use this operation. Reflection
+never invokes archival automatically.
+
+**Retention policy:** archives are retained indefinitely and are never loaded
+into ordinary context automatically or deleted by cm. Keep them for inspection
+and deliberate restoration, together with the active playbook containing later
+learning. Repeating archival without newly eligible records makes no changes
+and creates no additional snapshot. Review and explicitly retire individual
+rules only when you intend to remove them from active use; lack of feedback
+alone does not authorize that decision.
 
 **Corrupted playbook:**
 ```bash

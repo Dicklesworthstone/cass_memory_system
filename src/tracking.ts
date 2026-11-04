@@ -530,10 +530,18 @@ export class ProcessedLog {
     this.logPath = logPath;
   }
 
-  async load(options: { budget?: ProcessedLogReadBudget; requireExists?: boolean } = {}): Promise<void> {
+  async load(options: {
+    budget?: ProcessedLogReadBudget;
+    requireExists?: boolean;
+    /** Archival cannot interpret an ignored or torn recovery record as a drained queue. */
+    strictRecovery?: boolean;
+  } = {}): Promise<void> {
     try {
       const content = await readProcessedLog(this.logPath, options.budget);
       const lines = content.split("\n").filter((line) => line.trim() && !line.startsWith("#"));
+      const malformedRecovery = () => new PendingOutcomeRecoveryError(
+        `Processed log contains a malformed recovery record in ${this.logPath}; reconcile the ledger before archiving`,
+      );
       const entries = new Map<string, ProcessedEntry>();
       const committedBatches = new Map<string, string>();
       const outcomeOwners = new Map<string, string | null>();
@@ -576,7 +584,10 @@ export class ProcessedLog {
             }
             if (entry.sessionPath) {
               const normalizedSessionPath = normalizeSessionPathForLog(entry.sessionPath);
-              if (!normalizedSessionPath) continue;
+              if (!normalizedSessionPath) {
+                if (options.strictRecovery) throw malformedRecovery();
+                continue;
+              }
               const update = {
                 ...pickIncrementalFields(entry),
                 sessionPath: normalizedSessionPath,
@@ -587,11 +598,14 @@ export class ProcessedLog {
               };
               rememberOwners(update);
               entries.set(normalizedSessionPath, update);
+            } else if (options.strictRecovery) {
+              throw malformedRecovery();
             }
             continue;
           } catch (error) {
             if (error instanceof PendingOutcomeRecoveryError || error instanceof ReflectionCommitRecoveryError ||
                 error instanceof InputLimitError) throw error;
+            if (options.strictRecovery) throw malformedRecovery();
             // Fall through to TSV if JSON parse fails (hybrid file?)
           }
         }
@@ -599,20 +613,30 @@ export class ProcessedLog {
         // TSV fallback (legacy format)
         try {
           const parts = line.split("\t");
-          if (parts.length < 2) continue;
+          if (parts.length < 2) {
+            if (options.strictRecovery) throw malformedRecovery();
+            continue;
+          }
 
           const [id, sessionPath, processedAt, deltasProposed] = parts;
           if (sessionPath) {
             const normalizedSessionPath = normalizeSessionPathForLog(sessionPath);
-            if (!normalizedSessionPath) continue;
+            if (!normalizedSessionPath) {
+              if (options.strictRecovery) throw malformedRecovery();
+              continue;
+            }
             entries.set(normalizedSessionPath, {
               sessionPath: normalizedSessionPath,
               processedAt: processedAt || new Date().toISOString(),
               diaryId: id === "-" ? undefined : id,
               deltasGenerated: parseInt(deltasProposed || "0", 10),
             });
+          } else if (options.strictRecovery) {
+            throw malformedRecovery();
           }
-        } catch {}
+        } catch (error) {
+          if (options.strictRecovery) throw error;
+        }
       }
       this.entries = entries;
       this.committedBatches = committedBatches;
@@ -924,11 +948,11 @@ export class ProcessedLog {
   }
 
   /** Pending outcome work is independent of session discovery and growth. */
-  getPendingOutcomeEntries(owner?: string): ProcessedEntry[] {
+  getPendingOutcomeEntries(owner?: string, options: { attributeOwners?: boolean } = {}): ProcessedEntry[] {
     const expected = owner ? normalizeCommitOwner(owner) : undefined;
     const selected: ProcessedEntry[] = [];
     for (const entry of this.entries.values()) {
-      const attributed = expected ? this.preserveOutcomeOwners(entry) : entry;
+      const attributed = expected || options.attributeOwners ? this.preserveOutcomeOwners(entry) : entry;
       const pendingOutcomes = (attributed.pendingOutcomes ?? []).filter(record => {
         if (!expected) return true;
         if (!record.globalPlaybookPath) {

@@ -221,6 +221,42 @@ describe("E2E: cm playbook repair", () => {
     });
   });
 
+  it("archives explicitly selected retired rules through the CLI while retaining a complete original snapshot", async () => {
+    await withTempCassHome(async (env) => {
+      const source = repairFixture().bullets[0];
+      const playbook = createTestPlaybook([
+        { ...source, id: "b-archive-retired", state: "retired", pinned: false },
+        { ...source, id: "b-archive-pinned", state: "retired", pinned: true },
+        { ...source, id: "b-archive-candidate", maturity: "candidate", feedbackEvents: [], helpfulCount: 0 },
+      ]);
+      const original = "# Exact original for archival\n" + yaml.stringify(playbook, { aliasDuplicateObjects: false });
+      await writeFile(env.configPath, JSON.stringify({ embeddingModel: "none" }));
+      await writeFile(env.playbookPath, original);
+      const missingSelection = await runCli(env, ["playbook", "archive", "--json"]);
+      expect(missingSelection.exitCode).not.toBe(0);
+      expect(JSON.parse(missingSelection.stdout).success).toBe(false);
+      const preview = await runCli(env, ["playbook", "archive", "--retired", "--file", env.playbookPath, "--dry-run", "--json"]);
+      expect(preview.exitCode).toBe(0);
+      expect(JSON.parse(preview.stdout)).toMatchObject({ success: true, effect: false,
+        data: { changed: false, wouldChange: true, archivedBulletCount: 1, retainedBulletCount: 2,
+          protectedRetiredBulletCount: 1, archivePath: null, preservationVerified: true } });
+      expect(await readFile(env.playbookPath, "utf8")).toBe(original);
+      expect((await readdir(env.cassMemoryDir)).some(entry => entry.includes(".archive."))).toBe(false);
+      const applied = await runCli(env, ["playbook", "archive", "--retired", "--json"]);
+      expect(applied.exitCode).toBe(0);
+      const data = JSON.parse(applied.stdout).data;
+      expect(data.changed).toBe(true);
+      expect(data.archivedBulletIds).toEqual(["b-archive-retired"]);
+      expect(await readFile(data.archivePath, "utf8")).toBe(original);
+      expect(yaml.parse(await readFile(env.playbookPath, "utf8")))
+        .toEqual({ ...playbook, bullets: [playbook.bullets[1], playbook.bullets[2]] });
+      const repeated = await runCli(env, ["playbook", "archive", "--retired"]);
+      expect(repeated.exitCode).toBe(0);
+      expect(repeated.stdout).toContain("No unpinned retired rules found; no files changed.");
+      expect((await readdir(env.cassMemoryDir)).filter(entry => entry.includes(".archive.retired."))).toHaveLength(1);
+    });
+  });
+
   it("repairs only the selected repository playbook", async () => {
     await withTempCassHome(async (env) => {
       const initialized = Bun.spawnSync(["git", "init", "--initial-branch=main", env.home], { stdout: "ignore", stderr: "pipe" });

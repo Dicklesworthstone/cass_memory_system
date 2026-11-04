@@ -7,7 +7,8 @@ import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
 import { detectFixableIssues, doctorCommand } from "../src/commands/doctor.js";
-import { CONFIG_INPUT_LIMITS, InputLimitError, PLAYBOOK_INPUT_LIMITS } from "../src/input-limits.js";
+import { CONFIG_INPUT_LIMITS, InputLimitError, measureInputUsage, PLAYBOOK_INPUT_LIMITS } from "../src/input-limits.js";
+import { loadPlaybook } from "../src/playbook.js";
 import { createTestConfig } from "./helpers/factories.js";
 import { makeCassStub, type TestEnv, withTempCassHome } from "./helpers/temp.js";
 
@@ -368,11 +369,172 @@ describe("doctorCommand", () => {
             await writeFile(env.playbookPath, normal);
             const small = JSON.parse((await captureConsoleLog(() => doctorCommand({ json: true }))).output).data;
             expect(small.checks.some((check: any) => check.item === "Playbook size")).toBe(false);
+            expect(small.checks.some((check: any) => check.item === "Playbook capacity")).toBe(false);
           } finally {
             process.exitCode = previousExitCode;
           }
         });
       });
+    });
+
+    test("warns near selected node capacity using schema defaults without changing the playbook or limits", async () => {
+      await withTempCassHome(async (env) => {
+        await withCwd(env.home, async () => {
+          const original = createValidPlaybookYaml(4);
+          await writeFile(env.playbookPath, original);
+          await writeFile(env.configPath, JSON.stringify({ embeddingModel: "none" }));
+          const expectedUsage = measureInputUsage(await loadPlaybook(env.playbookPath), PLAYBOOK_INPUT_LIMITS, env.playbookPath);
+          const rawUsage = measureInputUsage(yaml.parse(original), PLAYBOOK_INPUT_LIMITS, env.playbookPath);
+          const maxNodes = Math.floor(expectedUsage.nodes / 0.9);
+          // These legacy bullets omit source; loaded schema defaults also use capacity.
+          expect(rawUsage.nodes).toBeLessThan(maxNodes * 0.9);
+          const config = JSON.stringify({ embeddingModel: "none", playbookLimits: { maxNodes } });
+          await writeFile(env.configPath, config);
+
+          const data = JSON.parse((await captureConsoleLog(() => doctorCommand({ json: true, fix: true, dryRun: true }))).output).data;
+          expect(data.checks.find((check: any) => check.item === "Global playbook.yaml").status).toBe("pass");
+          const warning = data.checks.find((check: any) => check.item === "Playbook capacity");
+          expect(warning).toMatchObject({
+            status: "warn",
+            details: {
+              path: env.playbookPath,
+              trustedLocal: true,
+              usage: expectedUsage,
+              limits: { ...PLAYBOOK_INPUT_LIMITS, maxNodes },
+              warningThreshold: 0.9,
+              pressures: [{ resource: "maxNodes", used: expectedUsage.nodes, limit: maxNodes }],
+              retiredArchivableBulletCount: 0,
+            },
+          });
+          expect(warning.message).toContain("expanded values");
+          expect(warning.details.limitRecoveryPreviewCommand).toContain("playbook repair --recover-limits");
+          expect(warning.details.archivePreviewCommand).toBeUndefined();
+          expect(data.fixPlan.wouldApply.some((id: string) => /archive|recover/.test(id))).toBe(false);
+          expect(await readFile(env.playbookPath, "utf8")).toBe(original);
+          expect(await readFile(env.configPath, "utf8")).toBe(config);
+
+          await writeFile(env.configPath, JSON.stringify({ embeddingModel: "none", playbookLimits: { maxNodes: expectedUsage.nodes * 2 } }));
+          const roomy = JSON.parse((await captureConsoleLog(() => doctorCommand({ json: true }))).output).data;
+          expect(roomy.checks.some((check: any) => check.item === "Playbook capacity")).toBe(false);
+          expect(await readFile(env.playbookPath, "utf8")).toBe(original);
+        });
+      }, "doctor-node-capacity");
+    });
+
+    test("warns about the largest feedback array and previews only unpinned retired archival", async () => {
+      await withTempCassHome(async (env) => {
+        await withCwd(env.home, async () => {
+          const playbook = yaml.parse(createValidPlaybookYaml(3));
+          playbook.bullets[0].state = "retired";
+          playbook.bullets[0].feedbackEvents = Array.from({ length: 9 }, (_, index) => ({
+            type: "helpful", timestamp: "2026-11-04T00:00:00.000Z", sessionPath: `session-${index}`,
+          }));
+          playbook.bullets[1].state = "retired";
+          playbook.bullets[1].pinned = true;
+          const original = yaml.stringify(playbook);
+          const config = JSON.stringify({ embeddingModel: "none", playbookLimits: { maxArrayLength: 10 } });
+          await writeFile(env.playbookPath, original);
+          await writeFile(env.configPath, config);
+
+          const data = JSON.parse((await captureConsoleLog(() => doctorCommand({ json: true, fix: true, dryRun: true }))).output).data;
+          const warning = data.checks.find((check: any) => check.item === "Playbook capacity");
+          const archiveCommand = `cm playbook archive --retired --file '${env.playbookPath}' --dry-run`;
+          expect(warning).toMatchObject({
+            status: "warn",
+            details: {
+              trustedLocal: true,
+              usage: { maxArrayLength: 9 },
+              limits: { maxArrayLength: 10 },
+              pressures: [{ resource: "maxArrayLength", used: 9, limit: 10 }],
+              retiredArchivableBulletCount: 1,
+              archivePreviewCommand: archiveCommand,
+            },
+          });
+          expect(warning.message).toContain("largest array length: 9/10 (90%)");
+          expect(data.recommendedActions).toContainEqual(expect.objectContaining({ command: archiveCommand, urgency: "medium" }));
+          expect(data.fixPlan.wouldApply.some((id: string) => /archive|recover/.test(id))).toBe(false);
+          expect(await readFile(env.playbookPath, "utf8")).toBe(original);
+          expect(await readFile(env.configPath, "utf8")).toBe(config);
+          expect((await readdir(env.cassMemoryDir)).some((name) => /archive|backup/.test(name))).toBe(false);
+        });
+      }, "doctor-array-capacity");
+    });
+
+    test("warns about expanded text from aliases even when the YAML file is small", async () => {
+      await withTempCassHome(async (env) => {
+        await withCwd(env.home, async () => {
+          const original = createValidPlaybookYaml().replace("description: Test playbook", `description: &evidence ${"x".repeat(1000)}`)
+            + `legacyEvidence: [${Array(9).fill("*evidence").join(", ")}]\n`;
+          await writeFile(env.playbookPath, original);
+          await writeFile(env.configPath, JSON.stringify({ embeddingModel: "none" }));
+          const expectedUsage = measureInputUsage(await loadPlaybook(env.playbookPath), PLAYBOOK_INPUT_LIMITS, env.playbookPath);
+          const maxBytes = Math.floor(expectedUsage.expandedTextBytes / 0.9);
+          expect(Buffer.byteLength(original)).toBeLessThan(maxBytes * 0.9);
+          expect(expectedUsage.expandedTextBytes).toBeGreaterThanOrEqual(10_000);
+          await writeFile(env.configPath, JSON.stringify({ embeddingModel: "none", playbookLimits: { maxBytes } }));
+
+          const data = JSON.parse((await captureConsoleLog(() => doctorCommand({ json: true }))).output).data;
+          const warning = data.checks.find((check: any) => check.item === "Playbook capacity");
+          expect(warning).toMatchObject({
+            status: "warn",
+            details: {
+              trustedLocal: true,
+              usage: expectedUsage,
+              limits: { maxBytes },
+              pressures: [{ resource: "maxBytes", used: expectedUsage.expandedTextBytes, limit: maxBytes }],
+            },
+          });
+          expect(warning.message).toContain("expanded text bytes");
+          expect(data.checks.some((check: any) => check.item === "Playbook size")).toBe(false);
+          expect(await readFile(env.playbookPath, "utf8")).toBe(original);
+        });
+      }, "doctor-text-capacity");
+    });
+
+    test("repository capacity uses fixed limits and cannot acquire trusted recovery advice from repository config", async () => {
+      await withTempCassHome(async (env) => {
+        const repo = path.join(env.home, "repo");
+        await mkdir(path.join(repo, ".cass"), { recursive: true });
+        expect(Bun.spawnSync(["git", "init", "--quiet", repo]).exitCode).toBe(0);
+        const repoPlaybookPath = path.join(repo, ".cass", "playbook.yaml");
+        const repoConfigPath = path.join(repo, ".cass", "config.json");
+        await writeFile(env.configPath, JSON.stringify({ embeddingModel: "none", playbookLimits: { maxNodes: 1_000_000, maxArrayLength: 100_000 } }));
+        await writeFile(env.playbookPath, createValidPlaybookYaml());
+        await writeFile(repoConfigPath, JSON.stringify({ playbookLimits: { maxNodes: 2_000_000, maxArrayLength: 100_000 } }));
+        const playbook = yaml.parse(createValidPlaybookYaml(1));
+        playbook.bullets[0].state = "retired";
+        playbook.metadata.legacyCounts = Array(9_000).fill(0);
+        const original = yaml.stringify(playbook);
+        await writeFile(repoPlaybookPath, original);
+        await withCwd(repo, async () => {
+          const data = JSON.parse((await captureConsoleLog(() => doctorCommand({ json: true }))).output).data;
+          const warning = data.checks.find((check: any) => check.item === "Playbook capacity" && check.details.path === repoPlaybookPath);
+          expect(warning).toMatchObject({
+            status: "warn",
+            details: {
+              path: repoPlaybookPath,
+              trustedLocal: false,
+              usage: { maxArrayLength: 9_000 },
+              limits: PLAYBOOK_INPUT_LIMITS,
+              pressures: [{ resource: "maxArrayLength", used: 9_000, limit: 10_000 }],
+            },
+          });
+          expect(warning.details.limitRecoveryPreviewCommand).toBeUndefined();
+          expect(warning.details.archivePreviewCommand).toBeUndefined();
+          expect(warning.message).toContain("repository parsing limits remain fixed");
+          expect(data.recommendedActions.some((action: any) => /archive --retired|repair --recover-limits/.test(action.command ?? ""))).toBe(false);
+          expect(await readFile(repoPlaybookPath, "utf8")).toBe(original);
+
+          playbook.metadata.legacyCounts.push(...Array(1_001).fill(0));
+          const excessive = yaml.stringify(playbook);
+          await writeFile(repoPlaybookPath, excessive);
+          const rejected = JSON.parse((await captureConsoleLog(() => doctorCommand({ json: true }))).output).data;
+          expect(rejected.checks.find((check: any) => check.item === "Repo .cass/playbook.yaml").status).toBe("fail");
+          expect(rejected.checks.some((check: any) => check.item === "Playbook capacity" && check.details.path === repoPlaybookPath)).toBe(false);
+          expect(rejected.recommendedActions.some((action: any) => /archive --retired|repair --recover-limits/.test(action.command ?? ""))).toBe(false);
+          expect(await readFile(repoPlaybookPath, "utf8")).toBe(excessive);
+        });
+      }, "doctor-repository-capacity");
     });
 
     test("handles invalid JSON config gracefully", async () => {

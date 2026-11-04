@@ -19,7 +19,7 @@ import { withLock } from "../src/lock.js";
 import type { LLMIO } from "../src/llm.js";
 import { orchestrateReflection, type ReflectionOptions } from "../src/orchestrator.js";
 import { prepareOutcome } from "../src/outcome.js";
-import { loadPlaybook, repairPlaybookEmbeddings } from "../src/playbook.js";
+import { archiveRetiredPlaybook, loadPlaybook, repairPlaybookEmbeddings } from "../src/playbook.js";
 import { pendingOutcomeRegistryPath, reflectionCommitPendingPath } from "../src/reflection-commit.js";
 import { slugifyProjectDir, tagCmSubprocessPrompt } from "../src/subprocess-tag.js";
 import { getProcessedLogPath, ProcessedLog } from "../src/tracking.js";
@@ -1200,6 +1200,99 @@ describe("orchestrateReflection reflector failures (#78)", () => {
 });
 
 describe("orchestrateReflection bounded growth (#101)", () => {
+  test.each([false, true])("archiving during reflection retains retry evidence and unapplied proposals (has proposals: %s)", async hasProposals => {
+    await withIsolatedHome(async env => {
+      const retired = createBullet({
+        id: "b-retired111", content: "Verify deployment manifest signatures before promoting a release.",
+        state: "retired", helpfulCount: 1,
+        feedbackEvents: [createTestFeedbackEvent("helpful", { sessionPath: "/sessions/earlier.jsonl" })],
+      });
+      Object.assign(retired, { legacyEvidence: { retained: "historical rule and feedback" } });
+      const original = yaml.stringify(createTestPlaybook([retired]));
+      writeFileSync(env.playbookPath, original);
+      const config = createTestConfig({
+        playbookPath: env.playbookPath, diaryDir: env.diaryDir, cassPath: "/__missing__/cass",
+        validationEnabled: false, semanticSearchEnabled: false, maxReflectorIterations: 1,
+      });
+      writeFileSync(env.configPath, JSON.stringify(config));
+      const sessionPath = path.join(env.home, "sessions", "archive-overlap.jsonl");
+      writeJsonlSession(sessionPath, [
+        { role: "user", content: "Following b-retired111, investigate and fix the release manifest verification failure.", cwd: env.home },
+        { role: "assistant", content: "Applied b-retired111, fixed the manifest validation, and the whole test suite is green now.", cwd: env.home },
+      ]);
+      const proposal = {
+        type: "add" as const,
+        bullet: { content: "Check serializer field ordering against the binary protocol schema.", category: "testing" },
+      };
+      const deltas = hasProposals ? [proposal] : [];
+      let archivePath: string | null = null;
+      let afterArchive = "";
+      const ledger = new ProcessedLog(getProcessedLogPath());
+
+      await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
+        await withLlmShim({ reflector: { deltas } }, async io => {
+          const interruptedIO: LLMIO = {
+            ...io,
+            generateObject: async options => {
+              if (!archivePath) {
+                // The model call holds no owner lock. A real operator archive
+                // can complete after context capture but before queue publication.
+                const archived = await archiveRetiredPlaybook(env.playbookPath);
+                expect(archived.archivedBulletIds).toEqual([retired.id]);
+                archivePath = archived.archivePath;
+                afterArchive = readFileSync(env.playbookPath, "utf8");
+              }
+              return io.generateObject(options);
+            },
+          };
+          const rejected = await orchestrateReflection(config, { session: sessionPath, io: interruptedIO });
+          expect(rejected.sessionsProcessed).toBe(0);
+          expect(rejected.deltasGenerated).toBe(0);
+          expect(rejected.errors).toHaveLength(1);
+          expect(rejected.errors[0]).toContain("Reflection feedback targets changed before commit");
+          expect(rejected.errors[0]).toContain(retired.id);
+          expect(rejected.failedSessions).toEqual([{
+            sessionPath, error: expect.stringContaining("No playbook changes or successful session watermarks"),
+            proposedDeltas: hasProposals ? [expect.objectContaining({
+              type: proposal.type, bullet: expect.objectContaining(proposal.bullet),
+            })] : [],
+          }]);
+          expect(rejected.autoOutcome?.outcomesRecorded ?? 0).toBe(0);
+          expect(rejected.autoOutcome?.feedbackApplied ?? 0).toBe(0);
+          expect(readFileSync(env.playbookPath, "utf8")).toBe(afterArchive);
+          expect(archivePath).not.toBeNull();
+          expect(readFileSync(archivePath!, "utf8")).toBe(original);
+          expect(existsSync(reflectionCommitPendingPath(env.playbookPath))).toBe(false);
+          await ledger.load();
+          expect(ledger.has(sessionPath)).toBe(false);
+          expect(ledger.get(sessionPath)).toMatchObject({ status: "failed", failures: 1 });
+          expect(ledger.get(sessionPath)?.recordCount).toBeUndefined();
+          expect(ledger.getPendingOutcomeEntries()).toEqual([]);
+
+          // An operator can restore the verified original to retain the rule's
+          // ongoing feedback; the failed session remains eligible exactly once.
+          writeFileSync(env.playbookPath, readFileSync(archivePath!, "utf8"));
+          const retried = await orchestrateReflection(config, { session: sessionPath, io });
+          expect(retried.errors).toEqual([]);
+          expect(retried.sessionsProcessed).toBe(1);
+          expect(retried.autoOutcome?.outcomesRecorded).toBe(1);
+          expect(retried.autoOutcome?.feedbackApplied).toBe(1);
+          const saved = await loadPlaybook(env.playbookPath);
+          expect(saved.bullets.find(bullet => bullet.id === retired.id)?.feedbackEvents).toHaveLength(2);
+          expect(saved.bullets.filter(bullet => bullet.content === proposal.bullet.content)).toHaveLength(hasProposals ? 1 : 0);
+          expect(saved.metadata.totalSessionsProcessed).toBe(1);
+          await ledger.load();
+          expect(ledger.get(sessionPath)?.status).toBeUndefined();
+          expect(ledger.get(sessionPath)?.recordCount).toBe(2);
+          expect(ledger.getPendingOutcomeEntries()).toEqual([]);
+          expect((await orchestrateReflection(config, { session: sessionPath, io })).sessionsProcessed).toBe(0);
+          expect((await loadPlaybook(env.playbookPath)).bullets.find(bullet => bullet.id === retired.id)?.feedbackEvents).toHaveLength(2);
+          expect(readFileSync(archivePath!, "utf8")).toBe(original);
+        });
+      });
+    });
+  });
+
   test("retains capacity-failure proposals when the retry ledger also fails to write", async () => {
     await withIsolatedHome(async env => {
       const bullet = createBullet({ id: "b-preserved111", content: "Keep database migration history available for recovery." });
@@ -1317,6 +1410,7 @@ describe("orchestrateReflection bounded growth (#101)", () => {
           expect(result.errors).toHaveLength(1);
           expect(result.errors[0]).toContain("Reflection growth could not fit");
           expect(result.errors[0]).toContain("playbookLimits");
+          expect(result.errors[0]).toContain("cm playbook archive --retired --dry-run");
           expect(result.sessionsProcessed).toBe(0);
           expect(result.deltasGenerated).toBe(0);
           expect(result.globalResult).toBeUndefined();

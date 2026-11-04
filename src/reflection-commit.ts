@@ -50,6 +50,15 @@ export interface RecoveredReflectionCommit {
   sessionsProcessed: number;
 }
 
+/** A model-phase outcome became stale before its draft could be published. */
+export class PendingOutcomeTargetError extends Error {
+  constructor(readonly ruleId: string, readonly playbookPath: string, detail: string) {
+    super(`Pending outcome rule ${ruleId} ${detail} in ${playbookPath}; `
+      + "retry reflection against the current rules. No reflection commit was published.");
+    this.name = "PendingOutcomeTargetError";
+  }
+}
+
 function absolute(file: string): string {
   if (!file.trim()) throw new Error("Reflection commit paths must not be empty");
   return path.resolve(expandPath(file));
@@ -441,6 +450,10 @@ async function readOutcomeRegistry(owner: string): Promise<OutcomeRegistry | nul
     maxBytes: PENDING_OUTCOME_LIMITS.maxRegistryBytes });
   if (bytes === null) return null;
   const raw = parseJsonInput(new TextDecoder("utf-8", { fatal: true }).decode(bytes), PLAYBOOK_INPUT_LIMITS, file);
+  return validateOutcomeRegistry(raw, owner);
+}
+
+function validateOutcomeRegistry(raw: unknown, owner: string): OutcomeRegistry {
   const registry = OutcomeRegistrySchema.parse(raw);
   if (registry.owner !== owner || canonicalStoragePath(registry.owner) !== owner) {
     throw new Error("Pending-outcome registry belongs to a different global playbook");
@@ -448,6 +461,152 @@ async function readOutcomeRegistry(owner: string): Promise<OutcomeRegistry | nul
   for (const log of registry.logs) validateOutcomeLogPath(owner, log);
   if (new Set(registry.logs).size !== registry.logs.length) throw new Error("Pending-outcome registry contains duplicate ledgers");
   return registry;
+}
+
+/**
+ * Archiving must not remove a rule before a durable reflection or outcome can
+ * finish using it. Callers hold the playbook lock when applying an archive;
+ * previews may use this read-only check without creating locks or registries.
+ * Unlike ordinary writes, retaining a commit receipt is not enough: queued
+ * feedback for an archived rule would otherwise be acknowledged as missing.
+ */
+export async function assertPlaybookArchiveAllowed(filePath: string): Promise<void> {
+  const owner = await resolvePlaybookStoragePath(filePath);
+  const journalDirectory = path.dirname(reflectionCommitPendingPath(owner));
+  const ledgerDirectory = path.dirname(journalDirectory);
+  const logs = new Set<string>();
+  const resolvedTargets = new Map<string, Promise<boolean>>();
+  const referencesOwner = (file: string): Promise<boolean> => {
+    let pending = resolvedTargets.get(file);
+    if (pending) return pending;
+    if (resolvedTargets.size >= PENDING_OUTCOME_LIMITS.maxDiscoveryEntries) {
+      throw new InputLimitError(ledgerDirectory, "archive check exceeds the pending-outcome target path limit");
+    }
+    pending = (async () => {
+      const canonical = canonicalStoragePath(file);
+      if (canonical === owner) return true;
+      // A final-component alias is a distinct atomic write destination, but
+      // queued feedback still reads through it until that alias is replaced.
+      try { return canonicalStoragePath(await fs.realpath(canonical)) === owner; }
+      catch (error: any) {
+        if (error?.code === "ENOENT") return false;
+        throw error;
+      }
+    })();
+    resolvedTargets.set(file, pending);
+    return pending;
+  };
+  const hasPendingReference = async (entries: ProcessedEntry[], fallbackOwner?: string): Promise<boolean> => {
+    for (const entry of entries) {
+      for (const outcome of entry.pendingOutcomes ?? []) {
+        const global = outcome.globalPlaybookPath ?? fallbackOwner;
+        if (global && await referencesOwner(global)) return true;
+        for (const target of outcome.ruleTargets ?? []) {
+          if (target.playbookPath && await referencesOwner(target.playbookPath)) return true;
+        }
+      }
+    }
+    return false;
+  };
+  const addLog = (file: string): void => {
+    if (!logs.has(file) && logs.size >= PENDING_OUTCOME_LIMITS.maxLogs) {
+      throw new InputLimitError(ledgerDirectory,
+        "archive check exceeds the pending-outcome ledger count; reconcile the recovery queues before archiving");
+    }
+    logs.add(file);
+  };
+
+  let journals;
+  try {
+    journals = await fs.opendir(journalDirectory);
+  } catch (error: any) {
+    if (error?.code !== "ENOENT" || await fileExists(journalDirectory)) throw error;
+  }
+  if (journals) {
+    let examined = 0;
+    let remainingBytes = REFLECTION_COMMIT_LIMITS.maxPendingManifestBytes;
+    for await (const entry of journals) {
+      if (++examined > REFLECTION_COMMIT_LIMITS.maxCleanupEntries) {
+        throw new InputLimitError(journalDirectory, "archive check exceeds the journal directory entry limit");
+      }
+      const isManifest = /^[a-f0-9]{64}\.pending\.json$/.test(entry.name);
+      const isRegistry = /^[a-f0-9]{64}\.outcome-queues\.json$/.test(entry.name);
+      if (!isManifest && !isRegistry) continue;
+      const file = path.join(journalDirectory, entry.name);
+      if (!entry.isFile() || entry.isSymbolicLink()) {
+        throw new Error(`Expected a regular reflection recovery file: ${file}`);
+      }
+      if (remainingBytes <= 0) {
+        throw new InputLimitError(journalDirectory, "archive check exceeds the recovery metadata byte limit");
+      }
+      const bytes = (await readBytes(file, { privateFile: true, maxBytes: Math.min(remainingBytes,
+        isManifest ? REFLECTION_COMMIT_LIMITS.maxManifestBytes : PENDING_OUTCOME_LIMITS.maxRegistryBytes) }))!;
+      remainingBytes -= bytes.length;
+      const raw = parseJsonInput(new TextDecoder("utf-8", { fatal: true }).decode(bytes), PLAYBOOK_INPUT_LIMITS, file);
+      if (!raw || typeof raw !== "object" || !("owner" in raw) || typeof raw.owner !== "string") {
+        throw new Error(`Invalid reflection recovery owner: ${file}`);
+      }
+      if (isManifest) {
+        const manifest = validateManifest(raw, raw.owner);
+        if (reflectionCommitPendingPath(manifest.owner) !== file) {
+          throw new Error(`Reflection commit filename does not match its owner: ${file}`);
+        }
+        const pendingFeedback = await hasPendingReference(manifest.entries, manifest.owner);
+        if (manifest.targets.some(target => target.path === owner) || pendingFeedback) {
+          // An ACK may be visible before its flush or journal cleanup succeeds.
+          // The normal recovery operation can establish durability; a preview
+          // must not flush files or remove the only remaining recovery record.
+          throw new Error(`Cannot archive ${owner}: a pending reflection commit requires recovery or cleanup. `
+            + `Run cm reflect with global playbook ${manifest.owner}, then retry archiving. Preserved: ${file}`);
+        }
+      } else {
+        const registry = validateOutcomeRegistry(raw, raw.owner);
+        if (pendingOutcomeRegistryPath(registry.owner) !== file) {
+          throw new Error(`Pending-outcome registry filename does not match its owner: ${file}`);
+        }
+        // A foreign owner can have feedback targeting this playbook. Missing
+        // registered ledgers are lost recovery state, never empty queues.
+        for (const log of registry.logs) addLog(log);
+      }
+    }
+  }
+
+  let ledgers;
+  try {
+    ledgers = await fs.opendir(ledgerDirectory);
+  } catch (error: any) {
+    if (error?.code !== "ENOENT" || await fileExists(ledgerDirectory)) throw error;
+  }
+  if (ledgers) {
+    let examined = 0;
+    for await (const entry of ledgers) {
+      if (++examined > PENDING_OUTCOME_LIMITS.maxDiscoveryEntries) {
+        throw new InputLimitError(ledgerDirectory, "archive check exceeds the pending-outcome discovery entry limit");
+      }
+      if (!/^(global|ws-[a-f0-9]{8})\.processed\.log$/.test(entry.name)) continue;
+      const file = path.join(ledgerDirectory, entry.name);
+      if (!entry.isFile() || entry.isSymbolicLink()) {
+        throw new Error(`Expected a regular pending-outcome ledger: ${file}`);
+      }
+      // Always include legacy ledgers, even when registries were bootstrapped
+      // previously. Registry state cannot establish that an omitted queue is empty.
+      addLog(validateOutcomeLogPath(owner, file));
+    }
+  }
+
+  const budget = { remainingBytes: PENDING_OUTCOME_LIMITS.maxReadBytes };
+  for (const file of [...logs].sort()) {
+    const log = new ProcessedLog(file);
+    await log.load({ budget, requireExists: true, strictRecovery: true });
+    // This also rejects legacy records whose ownership cannot be established.
+    const owned = log.getPendingOutcomeEntries(owner);
+    const targetsOwner = !owned.length && await hasPendingReference(
+      log.getPendingOutcomeEntries(undefined, { attributeOwners: true }));
+    if (owned.length || targetsOwner) {
+      throw new Error(`Cannot archive ${owner}: pending outcome feedback requires delivery. `
+        + `Run cm reflect to drain the recorded outcome queues, then retry archiving. Preserved: ${file}`);
+    }
+  }
 }
 
 async function preflightOutcomeRegistry(manifest: Manifest): Promise<void> {
@@ -731,6 +890,27 @@ export class ReflectionCommit {
 
   async commit(): Promise<RecoveredReflectionCommit> {
     this.assertDraft();
+    // Outcome-only sessions may reference a playbook that curation never
+    // loaded. Capture those files as bounded read dependencies so archival
+    // cannot race publication of feedback for a rule it has just removed.
+    const pendingTargets = new Map<string, Set<string>>();
+    const addresses = new Map<string, Set<string>>();
+    for (const entry of this.entries) {
+      for (const outcome of entry.pendingOutcomes ?? []) {
+        for (const target of outcome.ruleTargets ?? []) {
+          if (!target.playbookPath) continue;
+          let ids = addresses.get(target.playbookPath);
+          if (!ids) addresses.set(target.playbookPath, ids = new Set());
+          ids.add(target.ruleId);
+        }
+      }
+    }
+    for (const [address, ids] of addresses) {
+      const record = await this.capture(address);
+      let pending = pendingTargets.get(record.path);
+      if (!pending) pendingTargets.set(record.path, pending = new Set());
+      for (const id of ids) pending.add(id);
+    }
     const targets: Target[] = [];
     for (const record of this.targets.values()) {
       if (!record.saved) continue;
@@ -755,7 +935,35 @@ export class ReflectionCommit {
         const limits = await resolvePlaybookInputLimits(record.path);
         const current = await readBytes(record.path, { missingOk: true, maxBytes: limits.maxBytes });
         if ((current === null ? null : sha256(current)) !== record.beforeSha256) {
+          const ruleId = pendingTargets.get(record.path)?.values().next().value;
+          if (ruleId) {
+            throw new PendingOutcomeTargetError(ruleId, record.path, "cannot be committed because its read dependency changed");
+          }
           throw new Error(`Reflection read dependency changed since preparation: ${record.path}; no commit was published`);
+        }
+      }
+      for (const [target, ids] of pendingTargets) {
+        if (!this.targets.get(target)!.saved) {
+          try {
+            if ((await fs.lstat(target)).isSymbolicLink()) {
+              throw new PendingOutcomeTargetError(ids.values().next().value!, target,
+                "depends on an unresolved final-component symlink; materialize or reconcile that playbook before retrying");
+            }
+          } catch (error: any) {
+            if (error?.code !== "ENOENT") throw error;
+          }
+        }
+        const playbook = await this.loadPlaybook(target);
+        const matches = new Map<string, number>();
+        for (const bullet of playbook.bullets) {
+          if (ids.has(bullet.id)) matches.set(bullet.id, (matches.get(bullet.id) ?? 0) + 1);
+        }
+        for (const id of ids) {
+          const count = matches.get(id) ?? 0;
+          if (count !== 1) {
+            throw new PendingOutcomeTargetError(id, target,
+              count ? "has an ambiguous identifier" : "no longer exists");
+          }
         }
       }
       await preflight(manifest);
