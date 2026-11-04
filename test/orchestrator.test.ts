@@ -8,7 +8,7 @@
  * - Pointing `config.cassPath` at a non-existent binary so `cassExport` uses fallback parsing
  */
 import { describe, expect, spyOn, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
@@ -19,7 +19,7 @@ import { withLock } from "../src/lock.js";
 import type { LLMIO } from "../src/llm.js";
 import { orchestrateReflection, type ReflectionOptions } from "../src/orchestrator.js";
 import { prepareOutcome } from "../src/outcome.js";
-import { repairPlaybookEmbeddings } from "../src/playbook.js";
+import { loadPlaybook, repairPlaybookEmbeddings } from "../src/playbook.js";
 import { pendingOutcomeRegistryPath, reflectionCommitPendingPath } from "../src/reflection-commit.js";
 import { slugifyProjectDir, tagCmSubprocessPrompt } from "../src/subprocess-tag.js";
 import { getProcessedLogPath, ProcessedLog } from "../src/tracking.js";
@@ -1194,6 +1194,231 @@ describe("orchestrateReflection reflector failures (#78)", () => {
             expect(log.get(sessionPath)).toMatchObject({ status: "failed", failures: 1 });
           },
         );
+      });
+    });
+  });
+});
+
+describe("orchestrateReflection bounded growth (#101)", () => {
+  test("retains capacity-failure proposals when the retry ledger also fails to write", async () => {
+    await withIsolatedHome(async env => {
+      const bullet = createBullet({ id: "b-preserved111", content: "Keep database migration history available for recovery." });
+      writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([bullet])));
+      const config = createTestConfig({
+        playbookPath: env.playbookPath, diaryDir: env.diaryDir, cassPath: "/__missing__/cass",
+        validationEnabled: false, semanticSearchEnabled: false, maxReflectorIterations: 1,
+      });
+      writeFileSync(env.configPath, JSON.stringify({ ...config, playbookLimits: { maxArrayLength: 1 } }));
+      const sessionPath = path.join(env.home, "sessions", "retry-ledger-fails.jsonl");
+      writeJsonlSession(sessionPath, [
+        { role: "user", content: "Inspect the previous release logs before starting the next diagnostic investigation." },
+        { role: "assistant", content: "The existing migration history remains the authoritative recovery reference." },
+      ]);
+      const logPath = getProcessedLogPath();
+      await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
+        await withLlmShim({ reflector: { deltas: [] } }, async io => {
+          expect((await orchestrateReflection(config, { session: sessionPath, io })).errors).toEqual([]);
+        });
+        const playbookBefore = readFileSync(env.playbookPath, "utf8");
+        const ledgerBefore = readFileSync(logPath, "utf8");
+        appendJsonl(sessionPath, [
+          { role: "user", content: "Now investigate whether unsigned binary artifacts reached the release channel." },
+          { role: "assistant", content: "Artifact signature verification uncovered the release integrity defect." },
+        ]);
+        const proposal = { type: "add" as const, bullet: {
+          content: "Verify artifact signatures before promoting a release build.", category: "testing",
+        } };
+        const open = fs.open;
+        const interruption = spyOn(fs, "open").mockImplementation(async (file, ...options) => {
+          const handle = await open(file, ...options);
+          if (String(file) === logPath && typeof options[0] === "number" && (options[0] & constants.O_APPEND)) {
+            handle.writeFile = async () => { throw new Error("injected retry ledger write failure"); };
+          }
+          return handle;
+        });
+        try {
+          await withLlmShim({ reflector: { deltas: [proposal] } }, async io => {
+            const result = await orchestrateReflection(config, { session: sessionPath, io });
+            expect(result.sessionsProcessed).toBe(0);
+            expect(result.deltasGenerated).toBe(0);
+            expect(result.errors).toHaveLength(2);
+            expect(result.errors[0]).toContain("Reflection growth could not fit");
+            expect(result.errors[1]).toContain("injected retry ledger write failure");
+            expect(result.failedSessions).toEqual([{
+              sessionPath, error: expect.stringContaining("maximum array length is 1"),
+              proposedDeltas: [expect.objectContaining({
+                type: proposal.type, bullet: expect.objectContaining(proposal.bullet),
+              })],
+            }]);
+          });
+        } finally {
+          interruption.mockRestore();
+        }
+        expect(readFileSync(env.playbookPath, "utf8")).toBe(playbookBefore);
+        expect(readFileSync(logPath, "utf8")).toBe(ledgerBefore);
+        const ledger = new ProcessedLog(logPath);
+        await ledger.load();
+        expect(ledger.get(sessionPath)?.recordCount).toBe(2);
+        expect(ledger.getPendingOutcomeEntries()).toEqual([]);
+      });
+    });
+  });
+
+  test("sustained additions remain readable and stop without losing rules, proposals, or retry eligibility", async () => {
+    await withIsolatedHome(async env => {
+      const original = createBullet({
+        id: "b-preserved111", content: "Preserve the database migration history before changing schema.",
+        helpfulCount: 1,
+        feedbackEvents: [createTestFeedbackEvent("helpful", { sessionPath: "/sessions/previous.jsonl" })],
+      });
+      Object.assign(original, { retainedEvidence: { reviewer: "legacy producer" } });
+      const playbook = createTestPlaybook([original]);
+      Object.assign(playbook.metadata, { producerVersion: "0.5.0" });
+      writeFileSync(env.playbookPath, yaml.stringify(playbook));
+      const config = createTestConfig({
+        playbookPath: env.playbookPath, diaryDir: env.diaryDir, cassPath: "/__missing__/cass",
+        validationEnabled: false, semanticSearchEnabled: false, maxReflectorIterations: 1,
+      });
+      writeFileSync(env.configPath, JSON.stringify({ ...config, playbookLimits: { maxArrayLength: 4 } }));
+      const contents = [
+        "Reject unsigned release artifacts during deployment verification.",
+        "Measure buffer boundaries when decoding binary transport frames.",
+        "Normalize Unicode filenames before constructing portable cache keys.",
+        "Quote shell arguments containing whitespace when launching child processes.",
+      ];
+      const sessions = contents.map((content, index) => {
+        const sessionPath = path.join(env.home, "sessions", `growth-${index}.jsonl`);
+        writeJsonlSession(sessionPath, [
+          { role: "user", content: `Investigate a newly observed production defect: ${content}` },
+          { role: "assistant", content: `The investigation identified this concrete lesson: ${content}` },
+        ]);
+        return sessionPath;
+      });
+
+      await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
+        for (let index = 0; index < contents.length - 1; index++) {
+          await withLlmShim({ reflector: { deltas: [{
+            type: "add", bullet: { content: contents[index]!, category: "testing" },
+          }] } }, async io => {
+            const result = await orchestrateReflection(config, { session: sessions[index]!, io });
+            expect(result.errors).toEqual([]);
+            expect(result.sessionsProcessed).toBe(1);
+          });
+          const saved = await loadPlaybook(env.playbookPath);
+          expect(saved.bullets).toHaveLength(index + 2);
+          expect(saved.bullets.find(bullet => bullet.id === original.id)).toEqual(original);
+          expect(saved.metadata.totalSessionsProcessed).toBe(index + 1);
+        }
+        const before = readFileSync(env.playbookPath, "utf8");
+        const sessionPath = sessions.at(-1)!;
+        const proposal = { type: "add" as const, bullet: { content: contents.at(-1)!, category: "testing" } };
+        await withLlmShim({ reflector: { deltas: [proposal] } }, async io => {
+          const result = await orchestrateReflection(config, { session: sessionPath, io });
+          expect(result.errors).toHaveLength(1);
+          expect(result.errors[0]).toContain("Reflection growth could not fit");
+          expect(result.errors[0]).toContain("playbookLimits");
+          expect(result.sessionsProcessed).toBe(0);
+          expect(result.deltasGenerated).toBe(0);
+          expect(result.globalResult).toBeUndefined();
+          expect(result.repoResult).toBeUndefined();
+          expect(result.failedSessions).toEqual([{
+            sessionPath, error: expect.stringContaining("maximum array length is 4"),
+            proposedDeltas: [expect.objectContaining({
+              type: proposal.type, bullet: expect.objectContaining(proposal.bullet),
+            })],
+          }]);
+        });
+        expect(readFileSync(env.playbookPath, "utf8")).toBe(before);
+        expect(existsSync(reflectionCommitPendingPath(env.playbookPath))).toBe(false);
+        const ledger = new ProcessedLog(getProcessedLogPath());
+        await ledger.load();
+        expect(ledger.has(sessionPath)).toBe(false);
+        expect(ledger.get(sessionPath)).toMatchObject({ status: "failed", failures: 1 });
+        expect(ledger.get(sessionPath)?.recordCount).toBeUndefined();
+        expect(ledger.getPendingOutcomeEntries()).toEqual([]);
+
+        // An explicit local policy change admits the exact failed session.
+        // Previously committed sessions and their rules are not replayed.
+        writeFileSync(env.configPath, JSON.stringify({ ...config, playbookLimits: { maxArrayLength: 5 } }));
+        await withLlmShim({ reflector: { deltas: [proposal] } }, async io => {
+          const result = await orchestrateReflection(config, { session: sessionPath, io });
+          expect(result.errors).toEqual([]);
+          expect(result.sessionsProcessed).toBe(1);
+          expect(result.failedSessions).toBeUndefined();
+        });
+        const saved = await loadPlaybook(env.playbookPath);
+        expect(saved.bullets).toHaveLength(5);
+        expect(saved.bullets.find(bullet => bullet.id === original.id)).toEqual(original);
+        expect(saved.bullets.map(bullet => bullet.content)).toEqual([original.content, ...contents]);
+        expect(saved.metadata).toMatchObject({ producerVersion: "0.5.0", totalReflections: 4, totalSessionsProcessed: 4 });
+        await ledger.load();
+        expect(ledger.get(sessionPath)?.status).toBeUndefined();
+        expect(ledger.get(sessionPath)?.recordCount).toBe(2);
+      });
+    });
+  });
+
+  test("feedback growth preserves the prior watermark and does not duplicate evidence after retry", async () => {
+    await withIsolatedHome(async env => {
+      const bullet = createBullet({
+        id: "b-growth111", content: "Inspect transport frame lengths before decoding payloads.",
+        helpfulCount: 2,
+        feedbackEvents: [
+          createTestFeedbackEvent("helpful", { sessionPath: "/sessions/previous-one.jsonl" }),
+          createTestFeedbackEvent("helpful", { sessionPath: "/sessions/previous-two.jsonl" }),
+        ],
+      });
+      writeFileSync(env.playbookPath, yaml.stringify(createTestPlaybook([bullet])));
+      const config = createTestConfig({
+        playbookPath: env.playbookPath, diaryDir: env.diaryDir, cassPath: "/__missing__/cass",
+        validationEnabled: false, semanticSearchEnabled: false, maxReflectorIterations: 1,
+      });
+      writeFileSync(env.configPath, JSON.stringify({ ...config, playbookLimits: { maxArrayLength: 2 } }));
+      const sessionPath = path.join(env.home, "sessions", "feedback-growth.jsonl");
+      writeJsonlSession(sessionPath, [
+        { role: "user", content: "Investigate the incoming transport defect before changing the decoder implementation." },
+        { role: "assistant", content: "The first stage of the investigation gathered representative payload fixtures." },
+      ]);
+      const ledger = new ProcessedLog(getProcessedLogPath());
+      await withEnv({ CASS_MEMORY_LLM: "none" }, async () => {
+        await withLlmShim({ reflector: { deltas: [] } }, async io => {
+          expect((await orchestrateReflection(config, { session: sessionPath, io })).errors).toEqual([]);
+          await ledger.load();
+          const prior = ledger.get(sessionPath)!;
+          expect(prior.recordCount).toBe(2);
+          const before = readFileSync(env.playbookPath, "utf8");
+          const priorFeedback = (await loadPlaybook(env.playbookPath)).bullets[0]!.feedbackEvents;
+          expect(priorFeedback).toHaveLength(2);
+
+          appendJsonl(sessionPath, [
+            { role: "user", content: "Compare the collected transport fixtures against the declared header lengths." },
+            { role: "assistant", content: "// [cass: helpful b-growth111] - the header check identified the boundary error" },
+          ]);
+          const failed = await orchestrateReflection(config, { session: sessionPath, io });
+          expect(failed.errors).toHaveLength(1);
+          expect(failed.sessionsProcessed).toBe(0);
+          expect(failed.autoOutcome?.inlineFeedbackDeltas).toBe(0);
+          expect(readFileSync(env.playbookPath, "utf8")).toBe(before);
+          await ledger.load();
+          expect(ledger.get(sessionPath)).toMatchObject({
+            status: "failed", recordCount: prior.recordCount, lastRecordHash: prior.lastRecordHash,
+          });
+
+          writeFileSync(env.configPath, JSON.stringify({ ...config, playbookLimits: { maxArrayLength: 3 } }));
+          const retry = await orchestrateReflection(config, { session: sessionPath, io });
+          expect(retry.errors).toEqual([]);
+          expect(retry.sessionsProcessed).toBe(1);
+          const saved = await loadPlaybook(env.playbookPath);
+          expect(saved.bullets[0]!.feedbackEvents).toHaveLength(3);
+          expect(saved.bullets[0]!.feedbackEvents.slice(0, 2)).toEqual(priorFeedback);
+          expect(saved.bullets[0]!.helpfulCount).toBe(3);
+          expect(saved.metadata.totalSessionsProcessed).toBe(2);
+          await ledger.load();
+          expect(ledger.get(sessionPath)?.recordCount).toBe(4);
+          expect(ledger.get(sessionPath)?.status).toBeUndefined();
+          expect((await orchestrateReflection(config, { session: sessionPath, io })).sessionsProcessed).toBe(0);
+          expect((await loadPlaybook(env.playbookPath)).bullets[0]!.feedbackEvents).toHaveLength(3);
+        });
       });
     });
   });

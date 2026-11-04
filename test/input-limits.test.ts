@@ -1,4 +1,5 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
+import fs from "node:fs/promises";
 import { open, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -142,6 +143,81 @@ describe("bounded untrusted input (#98)", () => {
       const file = path.join(dir, "playbook.yaml");
       await symlink("/dev/zero", file);
       await expect(readBoundedFile(file, 10)).rejects.toThrow("expected a regular file");
+    });
+  });
+
+  it.skipIf(process.platform === "win32")("requires unlinked regular files for trusted bounded reads", async () => {
+    await withTempDir("trusted-bounded-file", async (dir) => {
+      const file = path.join(dir, "input.yaml");
+      await writeFile(file, "retained: true\n");
+      expect(await readBoundedFile(file, 128, { privateFile: true })).toBe("retained: true\n");
+      const symbolic = path.join(dir, "symbolic.yaml");
+      await symlink(file, symbolic);
+      await expect(readBoundedFile(symbolic, 128, { privateFile: true })).rejects.toThrow(InputLimitError);
+      const hard = path.join(dir, "hard.yaml");
+      await fs.link(file, hard);
+      await expect(readBoundedFile(file, 128, { privateFile: true })).rejects.toThrow(InputLimitError);
+      await expect(readBoundedFile(hard, 128, { privateFile: true })).rejects.toThrow(InputLimitError);
+    });
+  });
+
+  it.skipIf(process.platform === "win32")("rejects replacement between trusted lstat and open", async () => {
+    await withTempDir("trusted-file-open-race", async (dir) => {
+      const file = path.join(dir, "input.yaml");
+      const replacement = path.join(dir, "replacement.yaml");
+      await writeFile(file, "original: true\n");
+      await writeFile(replacement, "replacement: true\n");
+      const realOpen = fs.open.bind(fs);
+      let replaced = false;
+      const openSpy = spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+        if (String(args[0]) === file && !replaced) {
+          replaced = true;
+          await fs.rename(replacement, file);
+        }
+        return realOpen(...args);
+      });
+      try {
+        await expect(readBoundedFile(file, 128, { privateFile: true })).rejects.toThrow("changed while opening");
+        expect(replaced).toBe(true);
+        expect(await fs.readFile(file, "utf8")).toBe("replacement: true\n");
+      } finally {
+        openSpy.mockRestore();
+      }
+    });
+  });
+
+  it.skipIf(process.platform === "win32")("rejects replacement while a trusted file handle is being read", async () => {
+    await withTempDir("trusted-file-read-race", async (dir) => {
+      const file = path.join(dir, "input.yaml");
+      const replacement = path.join(dir, "replacement.yaml");
+      await writeFile(file, "original: true\n");
+      await writeFile(replacement, "replacement: true\n");
+      const realOpen = fs.open.bind(fs);
+      let replaced = false;
+      let readSpy: { mockRestore(): unknown } | undefined;
+      const openSpy = spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+        const handle = await realOpen(...args);
+        if (String(args[0]) === file) {
+          const read = handle.read.bind(handle);
+          readSpy = spyOn(handle, "read").mockImplementation(async (...readArgs: any[]) => {
+            const result = await (read as any)(...readArgs);
+            if (!replaced) {
+              replaced = true;
+              await fs.rename(replacement, file);
+            }
+            return result;
+          });
+        }
+        return handle;
+      });
+      try {
+        await expect(readBoundedFile(file, 128, { privateFile: true })).rejects.toThrow("changed while reading");
+        expect(replaced).toBe(true);
+        expect(await fs.readFile(file, "utf8")).toBe("replacement: true\n");
+      } finally {
+        readSpy?.mockRestore();
+        openSpy.mockRestore();
+      }
     });
   });
 });

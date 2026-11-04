@@ -321,6 +321,40 @@ describe("doctorCommand", () => {
       });
     });
 
+    test("reports node-limit recovery for the configured global owner and never raises limits automatically", async () => {
+      await withTempCassHome(async (env) => {
+        await withCwd(env.home, async () => {
+          const alternate = path.join(env.home, "legacy-playbook.yaml");
+          const original = createValidPlaybookYaml(6);
+          const config = JSON.stringify({ playbookPath: alternate, embeddingModel: "none", playbookLimits: { maxNodes: 100 } });
+          await writeFile(alternate, original);
+          await writeFile(env.configPath, config);
+          const { output } = await captureConsoleLog(() => doctorCommand({ json: true, fix: true, dryRun: true }));
+          const data = JSON.parse(output).data;
+          const check = data.checks.find((entry: any) => entry.item === "Global playbook.yaml");
+          expect(check).toMatchObject({ status: "fail", details: { path: alternate } });
+          expect(check.message).toContain("input limit");
+          const repair = data.fixableIssues.find((issue: any) => issue.id === "recover-trusted-playbook-limits");
+          expect(repair.safety).toBe("manual");
+          expect(repair.howToFix[0]).toContain("--recover-limits");
+          expect(repair.howToFix[0]).toContain(alternate);
+          expect(data.fixPlan.wouldSkip).toContainEqual({ id: "recover-trusted-playbook-limits", reason: "manual fix required" });
+          expect(data.fixPlan.wouldApply).not.toContain("recover-trusted-playbook-limits");
+          expect(data.recommendedActions.some((action: any) => action.command?.includes("--recover-limits"))).toBe(true);
+
+          await captureConsoleLog(() => doctorCommand({ json: true, fix: true, force: true, interactive: false }));
+          expect(await readFile(alternate, "utf8")).toBe(original);
+          expect(await readFile(env.configPath, "utf8")).toBe(config);
+          expect((await readdir(env.cassMemoryDir)).some((entry) => entry.includes("backup"))).toBe(false);
+
+          await writeFile(env.configPath, JSON.stringify({ playbookPath: alternate, embeddingModel: "none", playbookLimits: { maxNodes: 1000 } }));
+          const healthy = JSON.parse((await captureConsoleLog(() => doctorCommand({ json: true }))).output).data;
+          expect(healthy.checks.find((entry: any) => entry.item === "Global playbook.yaml").status).toBe("pass");
+          expect(healthy.recommendedActions.some((action: any) => action.command?.includes("--recover-limits"))).toBe(false);
+        });
+      });
+    });
+
     test("warns near the playbook byte limit and leaves normal-sized playbooks unflagged", async () => {
       await withTempCassHome(async (env) => {
         await withCwd(env.home, async () => {

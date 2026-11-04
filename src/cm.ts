@@ -326,14 +326,17 @@ export function createProgram(argv: string[] = process.argv): Command {
 
   playbook
     .command("repair")
-    .description("Repair a trusted local playbook by removing derived inline embeddings (backs up first)")
+    .description("Recover a trusted local playbook with bounded limits or remove derived inline embeddings")
     .option("--strip-embeddings", "Remove only bullets' derived embedding fields; preserve learned state")
+    .option("--recover-limits", "Configure bounded limits for the trusted global playbook without changing its bytes")
     .option("--file <path>", "Trusted local playbook to repair (default: configured playbook)")
     .option("--repo", "Repair this repository's .cass/playbook.yaml instead of the configured playbook")
     .option("--dry-run", "Validate and preview the repair without writing a backup or changing the playbook")
     .option("-j, --json", "Output JSON result")
     .addHelpText("after", () =>
       formatCommandExamples([
+        "playbook repair --recover-limits --dry-run --json",
+        "playbook repair --recover-limits --json",
         "playbook repair --strip-embeddings --dry-run --json",
         "playbook repair --strip-embeddings --json",
         "playbook repair --strip-embeddings --file /trusted/path/playbook.yaml --dry-run",

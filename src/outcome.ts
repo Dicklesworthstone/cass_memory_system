@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { formatSessionRecords } from "./cass.js";
-import { getSanitizeConfig } from "./config.js";
+import { getSanitizeConfig, resolvePlaybookStoragePath } from "./config.js";
 import { withLock } from "./lock.js";
 import { loadPlaybook, resolveRepoPlaybookPath, savePlaybook } from "./playbook.js";
 import { sanitize } from "./sanitize.js";
@@ -313,7 +313,9 @@ async function targetLookup(workspace: string, config: Config): Promise<Map<stri
     // savePlaybook atomically replaces that address during normal curation.
     // Ownership checks canonicalize paths separately.
     const resolved = path.resolve(expandPath(candidate));
-    for (const bullet of (await loadPlaybook(resolved)).bullets) targets.set(bullet.id, resolved);
+    for (const bullet of (await loadPlaybook(resolved, { untrusted: candidate === repoPath })).bullets) {
+      targets.set(bullet.id, resolved);
+    }
   }
   return targets;
 }
@@ -571,7 +573,7 @@ export async function applyOutcomeFeedback(
 
       // Directory aliases share a lock and replacement destination. Preserve
       // the final component: atomic saves replace a final symlink itself.
-      const destination = canonicalStoragePath(targetPath);
+      const destination = await resolvePlaybookStoragePath(targetPath);
       const bucket = updates.get(destination);
       if (bucket) bucket.push(updateItem);
       else updates.set(destination, [updateItem]);

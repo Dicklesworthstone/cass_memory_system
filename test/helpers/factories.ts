@@ -31,6 +31,7 @@ export function createTestConfig(overrides: Partial<Config> = {}): Config {
       hosts: [],
     },
     playbookPath: "/tmp/playbook.yaml",
+    playbookLimits: { maxBytes: 16 * 1024 * 1024, maxNodes: 200_000, maxArrayLength: 10_000 },
     diaryDir: "/tmp/diary",
     maxReflectorIterations: 3,
     autoReflect: false,

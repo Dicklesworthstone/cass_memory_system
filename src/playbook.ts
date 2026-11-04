@@ -8,8 +8,10 @@ import { z } from "zod";
 import {
   assertInputLimits,
   assertTextSize,
+  assertYamlTokenLimits,
   formatValidationIssues,
   InputLimitError,
+  type InputLimits,
   parseYamlInput,
   PLAYBOOK_INPUT_LIMITS,
   readBoundedFile,
@@ -70,18 +72,72 @@ export type ToxicEntry = BlockedEntry;
 // write. Keep these storage-only schemas private: LLM and import contracts
 // continue to use the existing schemas. loadPlaybook bounds the entire raw
 // document before this validation, including every retained extension field.
-const StoredPlaybookBulletSchema = PlaybookBulletSchema.extend({
-  feedbackEvents: z.array(FeedbackEventSchema.passthrough())
-    .max(PLAYBOOK_INPUT_LIMITS.maxArrayLength).default([]),
-}).passthrough();
+function storedPlaybookSchema(limits: InputLimits) {
+  const feedback = FeedbackEventSchema.extend({
+    transcriptEvidenceKeys: z.array(FeedbackEventSchema.shape.transcriptEvidenceKeys.unwrap().element)
+      .min(1).max(limits.maxArrayLength).optional(),
+  }).passthrough();
+  const bullet = PlaybookBulletSchema.extend({
+    feedbackEvents: z.array(feedback).max(limits.maxArrayLength).default([]),
+    sourceSessions: z.array(z.string()).max(limits.maxArrayLength).default([]),
+    sourceAgents: z.array(z.string()).max(limits.maxArrayLength).default([]),
+    tags: z.array(z.string()).max(limits.maxArrayLength).default([]),
+    embedding: z.array(z.number()).max(limits.maxArrayLength).optional(),
+  }).passthrough();
+  return PlaybookSchema.extend({
+    metadata: PlaybookMetadataSchema.passthrough(),
+    deprecatedPatterns: z.array(DeprecatedPatternSchema.passthrough())
+      .max(limits.maxArrayLength).default([]),
+    bullets: z.array(bullet).max(limits.maxArrayLength).default([]),
+  }).passthrough();
+}
 
-const StoredPlaybookSchema = PlaybookSchema.extend({
-  metadata: PlaybookMetadataSchema.passthrough(),
-  deprecatedPatterns: z.array(DeprecatedPatternSchema.passthrough())
-    .max(PLAYBOOK_INPUT_LIMITS.maxArrayLength).default([]),
-  bullets: z.array(StoredPlaybookBulletSchema)
-    .max(PLAYBOOK_INPUT_LIMITS.maxArrayLength).default([]),
-}).passthrough();
+/** Validate bounded persisted state without stripping extension fields. */
+export function validateStoredPlaybook(raw: unknown, limits: InputLimits, source: string): Playbook {
+  assertInputLimits(raw, limits, source);
+  const result = storedPlaybookSchema(limits).safeParse(raw);
+  if (!result.success) {
+    logError(`Playbook validation failed for ${source}: ${formatValidationIssues(result.error)}`);
+    throw new PlaybookValidationError(
+      `Playbook at ${source} is invalid. Please fix it manually or remove it to reset.`,
+    );
+  }
+  // Schema defaults also consume resources when an older producer omitted them.
+  assertInputLimits(result.data, limits, source);
+  return result.data;
+}
+
+export interface PlaybookStorageOptions {
+  /** Explicit repository/import provenance always wins over local configuration. */
+  untrusted?: boolean;
+  /** Internal reflection snapshots inherit only their independently trusted destination. */
+  limitsSourcePath?: string;
+}
+
+async function storageLimits(filePath: string, options: PlaybookStorageOptions): Promise<InputLimits> {
+  if (expandPath(filePath).split(/[\\/]/).includes("..")) return PLAYBOOK_INPUT_LIMITS;
+  const { resolvePlaybookInputLimits } = await import("./config.js");
+  const source = options.limitsSourcePath ?? filePath;
+  const limits = await resolvePlaybookInputLimits(source, options);
+  if (!options.limitsSourcePath || limits === PLAYBOOK_INPUT_LIMITS
+    || path.resolve(expandPath(filePath)) === path.resolve(expandPath(source))) return limits;
+  // An internal destination hint is not a general-purpose import bypass. Only
+  // private reflection snapshots for that global owner inherit its budget.
+  const { reflectionCommitPendingPath } = await import("./reflection-commit.js");
+  const pending = reflectionCommitPendingPath(source);
+  const target = path.resolve(expandPath(filePath));
+  const directory = path.dirname(target);
+  const prefix = `${path.basename(pending, ".pending.json")}.`;
+  const name = path.basename(directory);
+  if (path.dirname(directory) !== path.dirname(pending) || !name.startsWith(prefix)
+    || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.stage$/.test(name.slice(prefix.length))
+    || !/^target-(0|[1-9]\d*)\.yaml$/.test(path.basename(target))) return PLAYBOOK_INPUT_LIMITS;
+  const stat = await fs.lstat(directory);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new Error("Trusted reflection snapshots require a private regular directory");
+  }
+  return limits;
+}
 
 // Only a confirmed syntax/schema failure may offer an empty replacement.
 // Filesystem errors mean the learned state is unavailable, not corrupt.
@@ -102,26 +158,18 @@ export function createEmptyPlaybook(name = "playbook"): Playbook {
   };
 }
 
-export async function loadPlaybook(filePath: string): Promise<Playbook> {
+export async function loadPlaybook(filePath: string, options: PlaybookStorageOptions = {}): Promise<Playbook> {
   const expanded = expandPath(filePath);
+  const limits = await storageLimits(filePath, options);
 
   try {
     // Read directly: a forgiving existence probe can turn a transient EIO or
     // permission failure into an empty playbook and erase rules on the next save.
-    const content = await readBoundedFile(expanded, PLAYBOOK_INPUT_LIMITS.maxBytes);
+    const content = await readBoundedFile(expanded, limits.maxBytes, { privateFile: limits !== PLAYBOOK_INPUT_LIMITS });
     if (!content.trim()) return createEmptyPlaybook();
 
-    const raw = parseYamlInput(content, PLAYBOOK_INPUT_LIMITS, expanded);
-    const result = StoredPlaybookSchema.safeParse(raw);
-
-    if (!result.success) {
-      logError(`Playbook validation failed for ${expanded}: ${formatValidationIssues(result.error)}`);
-      throw new PlaybookValidationError(
-        `Playbook at ${expanded} is invalid. Please fix it manually or remove it to reset.`,
-      );
-    }
-
-    return result.data;
+    const raw = parseYamlInput(content, limits, expanded);
+    return validateStoredPlaybook(raw, limits, expanded);
   } catch (err: any) {
     // Read first; a failed existence probe must never turn a valid file into
     // an empty playbook. Confirm ENOENT is not a dangling or replaced entry.
@@ -135,28 +183,32 @@ export async function loadPlaybook(filePath: string): Promise<Playbook> {
 export async function savePlaybook(
   playbook: Playbook,
   filePath: string,
-  options: { updateLastReflection?: boolean } = {},
+  options: PlaybookStorageOptions & { updateLastReflection?: boolean } = {},
 ): Promise<void> {
-  if (options.updateLastReflection) {
-    playbook.metadata.lastReflection = now();
-  }
+  const limits = await storageLimits(filePath, options);
   // Semantic search hydrates vectors in memory from the external cache. They
   // are derived data, not learned state, and must never inflate the YAML again.
-  if (playbook.bullets.length > PLAYBOOK_INPUT_LIMITS.maxArrayLength) {
-    throw new InputLimitError(filePath, `maximum array length is ${PLAYBOOK_INPUT_LIMITS.maxArrayLength}`);
+  if (playbook.bullets.length > limits.maxArrayLength) {
+    throw new InputLimitError(filePath, `maximum array length is ${limits.maxArrayLength}`);
   }
   const persisted = {
     ...playbook,
+    metadata: options.updateLastReflection
+      ? { ...playbook.metadata, lastReflection: now() } : playbook.metadata,
     bullets: playbook.bullets.map(({ embedding: _embedding, ...bullet }) => bullet),
   };
-  assertInputLimits(persisted, PLAYBOOK_INPUT_LIMITS, filePath);
+  validateStoredPlaybook(persisted, limits, filePath);
   // The expanded structure was bounded above. Do not introduce aliases that
   // could make our own saved file exceed the reader's alias-expansion limit.
   const yamlStr = yaml.stringify(persisted, { aliasDuplicateObjects: false });
-  assertTextSize(yamlStr, PLAYBOOK_INPUT_LIMITS.maxBytes, filePath);
+  assertTextSize(yamlStr, limits.maxBytes, filePath);
+  // The validated structure and alias-free encoder preserve the reader's
+  // schema/expansion bounds; also preflight its lexical allocation budget.
+  assertYamlTokenLimits(yamlStr, limits, filePath);
   const { assertPlaybookWriteAllowed } = await import("./reflection-commit.js");
   await assertPlaybookWriteAllowed(filePath, persisted);
   await atomicWrite(filePath, yamlStr);
+  if (options.updateLastReflection) playbook.metadata.lastReflection = persisted.metadata.lastReflection;
 }
 
 /**
@@ -182,6 +234,7 @@ export const PLAYBOOK_REPAIR_INPUT_LIMITS = Object.freeze({
   ...PLAYBOOK_INPUT_LIMITS,
   maxBytes: 64 * 1024 * 1024,
   maxNodes: 2_000_000,
+  maxArrayLength: 100_000,
 });
 
 export interface PlaybookEmbeddingRepairResult {
@@ -206,7 +259,10 @@ function sameRepairFile(a: Stats, b: Stats): boolean {
 }
 
 /** Read a stable regular file without following a final symlink or a FIFO. */
-async function readRepairFile(filePath: string): Promise<{ bytes: Buffer; stat: Stats }> {
+async function readRepairFile(
+  filePath: string,
+  maxBytes = PLAYBOOK_REPAIR_INPUT_LIMITS.maxBytes,
+): Promise<{ bytes: Buffer; stat: Stats }> {
   const before = await fs.lstat(filePath);
   if (!before.isFile() || before.nlink !== 1) {
     throw new Error(`Repair requires a regular local file with no symbolic or hard links: ${filePath}`);
@@ -219,8 +275,8 @@ async function readRepairFile(filePath: string): Promise<{ bytes: Buffer; stat: 
     if (!stat.isFile() || !sameRepairFile(before, stat)) {
       throw new Error("Playbook changed while opening it; stop other writers and retry repair");
     }
-    if (stat.size > PLAYBOOK_REPAIR_INPUT_LIMITS.maxBytes) {
-      throw new InputLimitError(filePath, `trusted repair maximum file size is ${PLAYBOOK_REPAIR_INPUT_LIMITS.maxBytes} bytes`);
+    if (stat.size > maxBytes) {
+      throw new InputLimitError(filePath, `trusted repair maximum file size is ${maxBytes} bytes`);
     }
     // One sentinel byte detects growth; no read can exceed the fixed ceiling.
     const bytes = Buffer.allocUnsafe(stat.size + 1);
@@ -346,6 +402,12 @@ export async function repairPlaybookEmbeddings(
   const dryRun = options.dryRun === true;
 
   const repair = async (): Promise<PlaybookEmbeddingRepairResult> => {
+    const { resolvePlaybookInputLimits } = await import("./config.js");
+    // An explicit file repair historically works with unrelated broken config.
+    // Failed authority resolution can only fall back to the strict defaults.
+    // Keep the supplied provenance even after resolving the directory for the
+    // locked replacement: a repository alias must not acquire global budgets.
+    const limits = await resolvePlaybookInputLimits(filePath).catch(() => PLAYBOOK_INPUT_LIMITS);
     const original = await readRepairFile(target);
     // Re-encoding a lossy UTF-8 decode could silently alter learned text.
     const content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(original.bytes);
@@ -368,16 +430,13 @@ export async function repairPlaybookEmbeddings(
       return surviving;
     });
     const repaired = { ...raw, bullets };
-    assertInputLimits(repaired, PLAYBOOK_INPUT_LIMITS, target);
+    assertInputLimits(repaired, limits, target);
     assertRepairStateIsLossless(repaired);
     const candidate = embeddingsRemoved > 0
       ? yaml.stringify(repaired, { aliasDuplicateObjects: false })
       : content;
-    const reparsed = parseYamlInput(candidate, PLAYBOOK_INPUT_LIMITS, target);
-    const validation = PlaybookSchema.safeParse(reparsed);
-    if (!validation.success) {
-      throw new Error(`Repaired playbook is invalid: ${formatValidationIssues(validation.error)}`);
-    }
+    const reparsed = parseYamlInput(candidate, limits, target);
+    validateStoredPlaybook(reparsed, limits, target);
     if (!isDeepStrictEqual(repaired, reparsed)) {
       throw new Error("Repair preservation check failed; no playbook data was replaced");
     }
@@ -455,6 +514,264 @@ export async function repairPlaybookEmbeddings(
   };
   // A preview must not create a lock, backup, temporary file or directory.
   return dryRun ? repair() : withLock(target, repair);
+}
+
+type RecoverablePlaybookLimits = {
+  -readonly [K in "maxBytes" | "maxNodes" | "maxArrayLength"]: import("./input-limits.js").InputLimits[K];
+};
+
+export interface PlaybookLimitRecoveryResult {
+  path: string;
+  configPath: string;
+  dryRun: boolean;
+  changed: boolean;
+  wouldChange: boolean;
+  bulletCount: number;
+  originalBytes: number;
+  usage: {
+    expandedValues: number;
+    expandedTextBytes: number;
+    maxArrayLength: number;
+    normalizedValues: number;
+    normalizedBytes: number;
+  };
+  proposedLimits: RecoverablePlaybookLimits;
+  effectiveLimits: import("./input-limits.js").InputLimits;
+  backupPath: string | null;
+  sha256Before: string;
+  sha256After: string;
+  preservationVerified: true;
+}
+
+/**
+ * Explicitly recover the trusted global owner by configuring sufficient bounded
+ * limits. The playbook is never rewritten: even formatting and legacy vectors
+ * remain byte-for-byte identical. Repository files cannot authorize this path.
+ */
+export async function recoverTrustedPlaybookLimits(
+  filePath: string,
+  options: { dryRun?: boolean } = {},
+): Promise<PlaybookLimitRecoveryResult> {
+  const { resolveTrustedPlaybookPolicy, readGlobalConfigRaw } = await import("./config.js");
+  const { CONFIG_INPUT_LIMITS, measureInputUsage, parseJsonInput } = await import("./input-limits.js");
+  const requested = path.resolve(expandPath(filePath));
+  const selected = await resolveTrustedPlaybookPolicy();
+  if (!selected.trusted || requested !== path.resolve(selected.path)) {
+    throw new Error("Limit recovery requires the independently configured trusted global playbook; repository, imported, linked, and arbitrary files cannot raise their limits");
+  }
+  if (requested === path.resolve(selected.configFile.path)) {
+    throw new Error("The playbook and its trusted configuration must be different files");
+  }
+  const dryRun = options.dryRun === true;
+
+  const recover = async (): Promise<PlaybookLimitRecoveryResult> => {
+    const policy = await resolveTrustedPlaybookPolicy();
+    if (!policy.trusted || policy.path !== selected.path ||
+        policy.configFile.path !== selected.configFile.path) {
+      throw new Error("Trusted configuration changed while starting recovery; retry with the current global playbook");
+    }
+    const original = await readRepairFile(requested);
+    const configSnapshot = policy.configFile.exists
+      ? await readRepairFile(policy.configFile.path, CONFIG_INPUT_LIMITS.maxBytes)
+      : null;
+    if (configSnapshot) {
+      const text = new TextDecoder("utf-8", { fatal: true }).decode(configSnapshot.bytes);
+      if (policy.configFile.format === "json") {
+        const parsed = parseJsonInput(text, CONFIG_INPUT_LIMITS, policy.configFile.path);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          throw new Error("Trusted configuration must be an object; recovery will not replace scalar or array configuration");
+        }
+      } else {
+        parseYamlInput(text, CONFIG_INPUT_LIMITS, policy.configFile.path);
+        const document = yaml.parseDocument(text);
+        if (document.contents !== null && !isMap(document.contents)) {
+          throw new Error("Trusted configuration must be a mapping; recovery will not replace scalar or array configuration");
+        }
+      }
+    }
+    const { file: configFile, data: configData } = await readGlobalConfigRaw();
+    if (configData === null || configFile.path !== policy.configFile.path ||
+        configFile.exists !== policy.configFile.exists) {
+      throw new Error("Trusted configuration is invalid or changed; no recovery settings were written");
+    }
+    if (configSnapshot && configFile.format === "json") {
+      // JSON.parse can round unsafe integers, accept overflow as Infinity, or
+      // discard duplicate keys. A recovery must not rewrite unrelated operator
+      // metadata after those losses. Validate before even offering a preview.
+      const configText = new TextDecoder("utf-8", { fatal: true }).decode(configSnapshot.bytes);
+      assertYamlTokenLimits(configText, CONFIG_INPUT_LIMITS, configFile.path);
+      const document = yaml.parseDocument(configText, { resolveKnownTags: false, prettyErrors: false });
+      const problem = document.errors[0] ?? document.warnings[0];
+      if (problem) throw new Error(`Cannot safely update trusted configuration: ${problem.message.slice(0, 500)}`);
+      assertRepairStateIsLossless(configData);
+      const roundTrip = parseJsonInput(JSON.stringify(configData), CONFIG_INPUT_LIMITS, configFile.path);
+      if (!isDeepStrictEqual(configData, roundTrip)) {
+        throw new Error("Cannot safely update trusted configuration without changing unrelated values");
+      }
+    }
+
+    const content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(original.bytes);
+    const raw = parseRepairPlaybook(content, requested);
+    assertRepairStateIsLossless(raw);
+    const validated = validateStoredPlaybook(raw, PLAYBOOK_REPAIR_INPUT_LIMITS, requested);
+    const rawUsage = measureInputUsage(raw, PLAYBOOK_REPAIR_INPUT_LIMITS, requested);
+    const normalizedUsage = measureInputUsage(validated, PLAYBOOK_REPAIR_INPUT_LIMITS, requested);
+    // Defaults introduced by schema validation must also fit the next write.
+    const normalizedYaml = yaml.stringify(validated, { aliasDuplicateObjects: false });
+    assertTextSize(normalizedYaml, PLAYBOOK_REPAIR_INPUT_LIMITS.maxBytes, requested);
+    let tokens = 0;
+    for (const token of new Lexer().lex(content)) {
+      if (token !== "\x02" && token !== "\x1f" && !/^[ \t\r\n]*$/.test(token)) tokens++;
+    }
+    const required: RecoverablePlaybookLimits = {
+      maxNodes: Math.max(rawUsage.nodes, normalizedUsage.nodes, Math.ceil(tokens / 4)),
+      maxBytes: Math.max(original.bytes.length, Buffer.byteLength(normalizedYaml, "utf8"),
+        rawUsage.expandedTextBytes, normalizedUsage.expandedTextBytes),
+      maxArrayLength: Math.max(rawUsage.maxArrayLength, normalizedUsage.maxArrayLength),
+    };
+    const keys = ["maxBytes", "maxNodes", "maxArrayLength"] as const;
+    const proposedLimits: RecoverablePlaybookLimits = {
+      maxBytes: policy.limits.maxBytes,
+      maxNodes: policy.limits.maxNodes,
+      maxArrayLength: policy.limits.maxArrayLength,
+    };
+    const envNames = {
+      maxBytes: "CM_PLAYBOOK_MAX_BYTES",
+      maxNodes: "CM_PLAYBOOK_MAX_NODES",
+      maxArrayLength: "CM_PLAYBOOK_MAX_ARRAY_LENGTH",
+    } as const;
+    let wouldChange = false;
+    for (const key of keys) {
+      if (required[key] <= policy.limits[key]) continue;
+      const envName = envNames[key];
+      if (process.env[envName] !== undefined) {
+        throw new Error(`${envName} overrides trusted configuration and is too small for this playbook (${required[key]} required); unset it or explicitly increase it before recovery`);
+      }
+      if (required[key] > PLAYBOOK_REPAIR_INPUT_LIMITS[key]) {
+        throw new InputLimitError(requested, `trusted recovery ${key} ceiling is ${PLAYBOOK_REPAIR_INPUT_LIMITS[key]}`);
+      }
+      // Leave modest room for subsequent feedback/reflection, bounded by the
+      // immutable ceiling. No existing choice is lowered or set to infinity.
+      proposedLimits[key] = Math.min(PLAYBOOK_REPAIR_INPUT_LIMITS[key], Math.ceil(required[key] * 1.25));
+      wouldChange = true;
+    }
+    const effectiveLimits = { ...policy.limits, ...proposedLimits };
+    parseYamlInput(content, effectiveLimits, requested);
+    validateStoredPlaybook(raw, effectiveLimits, requested);
+    assertTextSize(normalizedYaml, effectiveLimits.maxBytes, requested);
+    assertYamlTokenLimits(normalizedYaml, effectiveLimits, requested);
+
+    const digest = crypto.createHash("sha256").update(original.bytes).digest("hex");
+    const result: PlaybookLimitRecoveryResult = {
+      path: requested, configPath: policy.configFile.path, dryRun,
+      changed: false, wouldChange, bulletCount: (raw.bullets as unknown[]).length,
+      originalBytes: original.bytes.length,
+      usage: { expandedValues: rawUsage.nodes, expandedTextBytes: rawUsage.expandedTextBytes,
+        maxArrayLength: rawUsage.maxArrayLength, normalizedValues: normalizedUsage.nodes,
+        normalizedBytes: Buffer.byteLength(normalizedYaml, "utf8") },
+      proposedLimits, effectiveLimits, backupPath: null,
+      sha256Before: digest, sha256After: digest, preservationVerified: true,
+    };
+
+    const assertUnchanged = async (): Promise<void> => {
+      const currentPolicy = await resolveTrustedPlaybookPolicy();
+      if (!currentPolicy.trusted || currentPolicy.path !== policy.path ||
+          currentPolicy.configFile.path !== policy.configFile.path ||
+          currentPolicy.configFile.exists !== policy.configFile.exists ||
+          !isDeepStrictEqual(currentPolicy.limits, policy.limits)) {
+        throw new Error("Trusted configuration changed during recovery; no settings were replaced");
+      }
+      const current = await readRepairFile(requested);
+      if (!sameRepairFile(original.stat, current.stat) || !current.bytes.equals(original.bytes)) {
+        throw new Error("Playbook changed during recovery; stop other writers and retry");
+      }
+      if (configSnapshot) {
+        const currentConfig = await readRepairFile(policy.configFile.path, CONFIG_INPUT_LIMITS.maxBytes);
+        if (!sameRepairFile(configSnapshot.stat, currentConfig.stat) ||
+            !currentConfig.bytes.equals(configSnapshot.bytes)) {
+          throw new Error("Configuration changed during recovery; no settings were replaced");
+        }
+      } else if (await fileExists(policy.configFile.path)) {
+        throw new Error("Configuration was created during recovery; retry without replacing it");
+      }
+    };
+    await assertUnchanged();
+    if (!wouldChange) return result;
+
+    const previousLimits = configData.playbookLimits;
+    const patch = {
+      ...(previousLimits && typeof previousLimits === "object" && !Array.isArray(previousLimits)
+        ? previousLimits as Record<string, unknown> : {}),
+      ...proposedLimits,
+    };
+    let replacement: string;
+    if (policy.configFile.format === "json") {
+      replacement = JSON.stringify({ ...configData, playbookLimits: patch }, null, 2);
+      parseJsonInput(replacement, CONFIG_INPUT_LIMITS, policy.configFile.path);
+    } else {
+      const originalConfig = configSnapshot
+        ? new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(configSnapshot.bytes) : "";
+      const doc = yaml.parseDocument(originalConfig);
+      const problem = doc.errors[0] ?? doc.warnings[0];
+      if (problem) throw new Error(`Cannot safely update trusted configuration: ${problem.message}`);
+      if (doc.has("playbook_limits")) doc.delete("playbook_limits");
+      doc.set("playbookLimits", patch);
+      replacement = doc.toString();
+      parseYamlInput(replacement, CONFIG_INPUT_LIMITS, policy.configFile.path);
+    }
+    if (dryRun) return result;
+
+    const directory = path.dirname(policy.configFile.path);
+    const suffix = `${new Date().toISOString().replace(/[:.]/g, "-")}.${crypto.randomUUID()}`;
+    const temporaryPath = `${policy.configFile.path}.recover-limits.${suffix}.tmp`;
+    let temporaryCreated = false;
+    let replaced = false;
+    let backupVerified = false;
+    try {
+      if (configSnapshot) {
+        const backupPath = `${policy.configFile.path}.backup.recover-limits.${suffix}`;
+        const backup = await fs.open(backupPath, "wx", 0o600);
+        result.backupPath = backupPath;
+        try {
+          await backup.writeFile(configSnapshot.bytes);
+          await backup.sync();
+        } finally {
+          await backup.close();
+        }
+        const verified = await readRepairFile(backupPath, CONFIG_INPUT_LIMITS.maxBytes);
+        if (!verified.bytes.equals(configSnapshot.bytes)) throw new Error("Configuration backup verification failed");
+        await syncRepairDirectory(directory);
+        backupVerified = true;
+      }
+      const temporary = await fs.open(temporaryPath, "wx", 0o600);
+      temporaryCreated = true;
+      try {
+        await temporary.writeFile(replacement, "utf8");
+        await temporary.sync();
+      } finally {
+        await temporary.close();
+      }
+      const staged = await readRepairFile(temporaryPath, CONFIG_INPUT_LIMITS.maxBytes);
+      if (!staged.bytes.equals(Buffer.from(replacement, "utf8"))) throw new Error("Recovery settings verification failed");
+      await assertUnchanged();
+      await fs.rename(temporaryPath, policy.configFile.path);
+      replaced = true;
+      temporaryCreated = false;
+      await syncRepairDirectory(directory);
+      result.changed = true;
+      return result;
+    } catch (err) {
+      const state = replaced ? "Recovery settings installed, but final directory flush failed" : "Limit recovery aborted";
+      const backup = result.backupPath
+        ? `; ${backupVerified ? "verified configuration backup" : "configuration backup (may be incomplete)"}: ${result.backupPath}` : "";
+      throw new Error(`${state}; playbook was not modified${backup}: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      if (temporaryCreated) await fs.unlink(temporaryPath).catch(() => {});
+    }
+  };
+  if (dryRun) return recover();
+  const locks = [selected.configFile.path, requested].sort();
+  return withLock(locks[0], () => withLock(locks[1], recover));
 }
 
 export interface PlaybookRecoveryResult {
@@ -755,7 +1072,7 @@ export async function loadMergedPlaybookWithSources(
   const repoDir = repoPath ? path.dirname(repoPath) : null;
 
   if (repoPath && (await fileExists(repoPath))) {
-    repoPlaybook = await loadPlaybook(repoPath);
+    repoPlaybook = await loadPlaybook(repoPath, { untrusted: true });
   }
 
   const repoRoot = repoPlaybook && repoDir ? path.dirname(repoDir) : null;

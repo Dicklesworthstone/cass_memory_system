@@ -1,4 +1,5 @@
 import path from "node:path";
+import fs from "node:fs/promises";
 import yaml from "yaml";
 import {
   assertInputLimits,
@@ -6,14 +7,17 @@ import {
   CONFIG_INPUT_LIMITS,
   formatValidationIssues,
   InputLimitError,
+  type InputLimits,
   parseJsonInput,
   parseYamlInput,
+  PLAYBOOK_INPUT_LIMITS,
   readBoundedFile,
 } from "./input-limits.js";
 import { configureEmbeddingBackend } from "./semantic.js";
-import { type BudgetConfig, type Config, ConfigSchema, type SanitizationConfig } from "./types.js";
+import { type BudgetConfig, type Config, ConfigSchema, PlaybookLimitsSchema, type SanitizationConfig } from "./types.js";
 import {
   atomicWrite,
+  canonicalStoragePath,
   expandPath,
   fileExists,
   normalizeYamlKeys,
@@ -128,14 +132,14 @@ function migrateLlmConfig(config: Partial<any>): Partial<any> {
 
 // --- Loading ---
 
-async function loadConfigFile(filePath: string): Promise<Partial<Config>> {
+async function loadConfigFile(filePath: string, options: { privateFile?: boolean } = {}): Promise<Partial<Config>> {
   const expanded = expandPath(filePath);
   if (!(await fileExists(expanded))) return {};
 
   // A selected configuration can carry the memory path, privacy policy and
   // spending limits. A storage failure must not silently replace those with
   // defaults; only parsing below uses the existing malformed-config fallback.
-  const content = await readBoundedFile(expanded, CONFIG_INPUT_LIMITS.maxBytes);
+  const content = await readBoundedFile(expanded, CONFIG_INPUT_LIMITS.maxBytes, options);
   try {
     const ext = path.extname(expanded);
 
@@ -194,6 +198,132 @@ async function loadConfigFromDir(dir: string): Promise<{
   return { config, source: file.path };
 }
 
+/** Parse only operator settings. Neither input documents nor repo config reach this function. */
+function configuredPlaybookLimits(raw: unknown): Config["playbookLimits"] {
+  const configured = PlaybookLimitsSchema.safeParse(raw === undefined ? {} : raw);
+  if (!configured.success) {
+    throw new Error(`Invalid global playbookLimits: ${formatValidationIssues(configured.error)}`);
+  }
+  const overrides: Partial<Config["playbookLimits"]> = {};
+  for (const [key, variable] of [
+    ["maxBytes", "CM_PLAYBOOK_MAX_BYTES"],
+    ["maxNodes", "CM_PLAYBOOK_MAX_NODES"],
+    ["maxArrayLength", "CM_PLAYBOOK_MAX_ARRAY_LENGTH"],
+  ] as const) {
+    const value = process.env[variable];
+    if (value === undefined) continue;
+    // Reject rather than silently ignoring misspelled/unbounded resource budgets.
+    if (!/^\d+$/.test(value.trim()) || !Number.isSafeInteger(Number(value)) || Number(value) <= 0) {
+      throw new Error(`${variable} must be a positive safe integer`);
+    }
+    overrides[key] = Number(value);
+  }
+  const result = PlaybookLimitsSchema.safeParse({ ...configured.data, ...overrides });
+  if (!result.success) {
+    throw new Error(`Invalid trusted playbook limits: ${formatValidationIssues(result.error)}`);
+  }
+  return result.data;
+}
+
+/**
+ * A repository, symlink, or hard link cannot supply its own parsing authority.
+ * Inspect ancestors too: a .git file denotes a linked worktree, and a directory
+ * link can move an otherwise innocent-looking global path into a checkout.
+ * Missing paths are allowed for initialization; all other I/O errors propagate.
+ */
+async function isPrivateLocalPolicyPath(file: string): Promise<boolean> {
+  const absolute = path.resolve(expandPath(file));
+  try {
+    const stat = await fs.lstat(absolute);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) return false;
+  } catch (error: any) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  for (let directory = path.dirname(absolute);;) {
+    if (path.basename(directory).toLowerCase() === ".cass") return false;
+    try {
+      const stat = await fs.lstat(directory);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) return false;
+    } catch (error: any) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    try {
+      await fs.lstat(path.join(directory, ".git"));
+      return false;
+    } catch (error: any) {
+      if (error?.code !== "ENOENT" && error?.code !== "ENOTDIR") throw error;
+    }
+    const parent = path.dirname(directory);
+    if (parent === directory) return true;
+    directory = parent;
+  }
+}
+
+export interface TrustedPlaybookPolicy {
+  path: string;
+  limits: InputLimits;
+  configFile: ResolvedConfigFile;
+  trusted: boolean;
+}
+
+/**
+ * Resolve authority afresh from the bounded global config, never a merged Config
+ * or mutable process-wide trust registry. Relative paths cannot authorize larger
+ * reads because a caller-controlled cwd would change which file they designate.
+ */
+export async function resolveTrustedPlaybookPolicy(): Promise<TrustedPlaybookPolicy> {
+  const configFile = await resolveGlobalConfigFile();
+  const configTrusted = await isPrivateLocalPolicyPath(configFile.path);
+  const global = await loadConfigFile(configFile.path, { privateFile: configTrusted });
+  const selected = global?.playbookPath ?? "~/.cass-memory/playbook.yaml";
+  if (typeof selected !== "string" || !selected.trim()) {
+    throw new Error("Global playbookPath must be a non-empty string");
+  }
+  const defaultPath = selected === "~/.cass-memory/playbook.yaml";
+  const target = path.resolve(defaultPath ? path.join(resolveGlobalDir(), "playbook.yaml") : expandPath(selected));
+  const absoluteSelection = (defaultPath || path.isAbsolute(selected) || selected.startsWith("~/"))
+    && !expandPath(selected).split(/[\\/]/).includes("..");
+  const trusted = absoluteSelection
+    && configTrusted
+    && await isPrivateLocalPolicyPath(configFile.path)
+    && await isPrivateLocalPolicyPath(target);
+  // Even trusted config is parsed with CONFIG_INPUT_LIMITS before any setting
+  // is read. Untrusted global aliases cannot authorize an enlarged budget.
+  const limits = trusted
+    ? Object.freeze({ ...PLAYBOOK_INPUT_LIMITS, ...configuredPlaybookLimits(global?.playbookLimits) })
+    : PLAYBOOK_INPUT_LIMITS;
+  return { path: target, limits, configFile, trusted };
+}
+
+/** Repository/import callsites can force strict provenance even for a path alias. */
+export async function resolvePlaybookInputLimits(
+  filePath: string,
+  options: { untrusted?: boolean } = {},
+): Promise<InputLimits> {
+  if (options.untrusted) return PLAYBOOK_INPUT_LIMITS;
+  // The kernel resolves symlink/.. before opening, while path.resolve erases
+  // '..' lexically. Never grant authority to a different file by that mismatch.
+  if (expandPath(filePath).split(/[\\/]/).includes("..")) return PLAYBOOK_INPUT_LIMITS;
+  const policy = await resolveTrustedPlaybookPolicy();
+  return policy.trusted && path.resolve(expandPath(filePath)) === policy.path
+    ? policy.limits : PLAYBOOK_INPUT_LIMITS;
+}
+
+/** Canonicalization must not erase repository provenance and acquire a new budget. */
+export async function resolvePlaybookStoragePath(filePath: string): Promise<string> {
+  const target = canonicalStoragePath(filePath);
+  if (expandPath(filePath) === target) return target;
+  const originalLimits = await resolvePlaybookInputLimits(filePath);
+  const canonicalLimits = await resolvePlaybookInputLimits(target);
+  if (originalLimits === PLAYBOOK_INPUT_LIMITS
+    && (canonicalLimits.maxBytes !== PLAYBOOK_INPUT_LIMITS.maxBytes
+      || canonicalLimits.maxNodes !== PLAYBOOK_INPUT_LIMITS.maxNodes
+      || canonicalLimits.maxArrayLength !== PLAYBOOK_INPUT_LIMITS.maxArrayLength)) {
+    throw new Error("A playbook path alias cannot change input limits; use the configured trusted local playbook path");
+  }
+  return target;
+}
+
 export async function loadConfig(
   cliOverrides: Partial<Config> = {},
   options: { cwd?: string } = {},
@@ -236,6 +366,7 @@ export async function loadConfig(
     // Security: Prevent repo from overriding sensitive user-level settings
     delete repoConfig.cassPath;
     delete repoConfig.playbookPath;
+    delete repoConfig.playbookLimits;
     delete repoConfig.diaryDir;
     delete repoConfig.crossAgent;
     delete repoConfig.remoteCass;
@@ -344,6 +475,9 @@ export async function loadConfig(
     ...envOverrides,
     ...repoConfig,
     ...migratedOverrides,
+    // Only global config and the process environment can authorize local budgets.
+    // Programmatic/CLI merged objects are not evidence of source ownership.
+    playbookLimits: configuredPlaybookLimits(globalConfig.playbookLimits),
     sanitization: {
       ...defaults.sanitization,
       ...(globalConfig.sanitization || {}),

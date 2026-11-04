@@ -19,6 +19,22 @@ export const PLAYBOOK_INPUT_LIMITS: InputLimits = Object.freeze({
   maxNodes: 200_000,
 });
 
+/** Operator-selected local budgets are finite; YAML safety limits stay fixed. */
+export const TRUSTED_PLAYBOOK_INPUT_CEILING: InputLimits = Object.freeze({
+  ...PLAYBOOK_INPUT_LIMITS,
+  maxBytes: 64 * 1024 * 1024,
+  maxArrayLength: 100_000,
+  maxNodes: 2_000_000,
+});
+
+export interface InputUsage {
+  nodes: number;
+  expandedTextBytes: number;
+  maxArrayLength: number;
+  maxObjectKeys: number;
+  maxDepth: number;
+}
+
 export const CONFIG_INPUT_LIMITS: InputLimits = Object.freeze({
   maxBytes: 1024 * 1024,
   maxArrayLength: 1_000,
@@ -48,12 +64,24 @@ export function assertTextSize(content: string, maxBytes: number, source: string
  * fstat. Reject devices/FIFOs rather than allowing an unbounded or blocking read
  * through a checkout's symlink. O_NONBLOCK has no effect on regular files.
  */
-export async function readBoundedFile(filePath: string, maxBytes: number): Promise<string> {
-  const handle = await fs.open(filePath, constants.O_RDONLY | constants.O_NONBLOCK);
+export async function readBoundedFile(
+  filePath: string,
+  maxBytes: number,
+  options: { privateFile?: boolean } = {},
+): Promise<string> {
+  const before = options.privateFile ? await fs.lstat(filePath) : null;
+  if (before && (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1)) {
+    throw new InputLimitError(filePath, "trusted local input must be a regular file without symbolic or hard links");
+  }
+  const handle = await fs.open(filePath, constants.O_RDONLY | constants.O_NONBLOCK
+    | (options.privateFile ? (constants.O_NOFOLLOW ?? 0) : 0));
   try {
     const stat = await handle.stat();
     if (!stat.isFile()) {
       throw new InputLimitError(filePath, "expected a regular file");
+    }
+    if (before && (stat.dev !== before.dev || stat.ino !== before.ino || stat.nlink !== 1)) {
+      throw new Error(`Trusted local input changed while opening ${filePath}; retry the operation`);
     }
     if (stat.size > maxBytes) {
       throw new InputLimitError(filePath, `maximum file size is ${maxBytes} bytes`);
@@ -71,6 +99,14 @@ export async function readBoundedFile(filePath: string, maxBytes: number): Promi
       }
       chunks.push(chunk.subarray(0, bytesRead));
     }
+    if (before) {
+      for (const current of [await handle.stat(), await fs.lstat(filePath)]) {
+        if (current.dev !== before.dev || current.ino !== before.ino || current.nlink !== 1
+          || current.size !== before.size || current.mtimeMs !== before.mtimeMs || current.ctimeMs !== before.ctimeMs) {
+          throw new Error(`Trusted local input changed while reading ${filePath}; retry the operation`);
+        }
+      }
+    }
     return Buffer.concat(chunks, total).toString("utf8");
   } finally {
     await handle.close();
@@ -83,7 +119,7 @@ export async function readBoundedFile(filePath: string, maxBytes: number): Promi
  * Only current ancestors are tracked for cycles, not a global visited set.
  * The traversal is iterative and holds at most maxDepth frames.
  */
-export function assertInputLimits(input: unknown, limits: InputLimits, source: string): void {
+export function measureInputUsage(input: unknown, limits: InputLimits, source: string): InputUsage {
   type Frame = {
     value: object;
     keys: string[] | null;
@@ -95,6 +131,9 @@ export function assertInputLimits(input: unknown, limits: InputLimits, source: s
   const ancestors = new Set<object>();
   let nodes = 0;
   let textBytes = 0;
+  let maxArrayLength = 0;
+  let maxObjectKeys = 0;
+  let maxDepth = 0;
 
   const countText = (value: string): void => {
     textBytes += Buffer.byteLength(value, "utf8");
@@ -104,6 +143,7 @@ export function assertInputLimits(input: unknown, limits: InputLimits, source: s
   };
 
   const visit = (value: unknown, depth: number): void => {
+    maxDepth = Math.max(maxDepth, depth);
     if (++nodes > limits.maxNodes) {
       throw new InputLimitError(source, `maximum expanded value count is ${limits.maxNodes}`);
     }
@@ -122,6 +162,8 @@ export function assertInputLimits(input: unknown, limits: InputLimits, source: s
       throw new InputLimitError(source, `maximum array length is ${limits.maxArrayLength}`);
     }
     const keys = isArray ? null : Object.keys(value);
+    if (isArray) maxArrayLength = Math.max(maxArrayLength, value.length);
+    if (keys) maxObjectKeys = Math.max(maxObjectKeys, keys.length);
     if (keys && keys.length > limits.maxObjectKeys) {
       throw new InputLimitError(source, `maximum object key count is ${limits.maxObjectKeys}`);
     }
@@ -144,6 +186,11 @@ export function assertInputLimits(input: unknown, limits: InputLimits, source: s
       : (frame.value as unknown[])[index];
     visit(child, frame.depth + 1);
   }
+  return { nodes, expandedTextBytes: textBytes, maxArrayLength, maxObjectKeys, maxDepth };
+}
+
+export function assertInputLimits(input: unknown, limits: InputLimits, source: string): void {
+  measureInputUsage(input, limits, source);
 }
 
 export function parseJsonInput(content: string, limits: InputLimits, source: string): unknown {
@@ -151,6 +198,17 @@ export function parseJsonInput(content: string, limits: InputLimits, source: str
   const parsed: unknown = JSON.parse(content);
   assertInputLimits(parsed, limits, source);
   return parsed;
+}
+
+/** Bound YAML parser allocation before constructing a syntax tree. */
+export function assertYamlTokenLimits(content: string, limits: InputLimits, source: string): void {
+  let tokens = 0;
+  for (const token of new Lexer().lex(content)) {
+    if (token === "\x02" || token === "\x1f" || /^[ \t\r\n]*$/.test(token)) continue;
+    if (++tokens > limits.maxNodes * 4) {
+      throw new InputLimitError(source, `maximum YAML token count is ${limits.maxNodes * 4}`);
+    }
+  }
 }
 
 export function parseYamlInput(content: string, limits: InputLimits, source: string): unknown {
@@ -161,13 +219,7 @@ export function parseYamlInput(content: string, limits: InputLimits, source: str
     // into many parser objects even inside the byte ceiling. Ignore whitespace
     // and lexer control markers; allow four meaningful tokens per logical value
     // to accommodate mapping keys/values, separators, anchors, and tags.
-    let tokens = 0;
-    for (const token of new Lexer().lex(content)) {
-      if (token === "\x02" || token === "\x1f" || /^[ \t\r\n]*$/.test(token)) continue;
-      if (++tokens > limits.maxNodes * 4) {
-        throw new InputLimitError(source, `maximum YAML token count is ${limits.maxNodes * 4}`);
-      }
-    }
+    assertYamlTokenLimits(content, limits, source);
     // Keep the parser's alias-expansion protection explicit. Structural limits
     // below also cover cycles and repeated references that do not get expanded.
     parsed = yaml.parse(content, { maxAliasCount: 100 });

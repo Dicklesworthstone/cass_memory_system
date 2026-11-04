@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
+import { resolvePlaybookInputLimits, resolvePlaybookStoragePath } from "./config.js";
 import {
   assertInputLimits, assertTextSize, formatValidationIssues, InputLimitError,
   parseJsonInput, PLAYBOOK_INPUT_LIMITS,
@@ -172,15 +173,20 @@ async function verifyStageDirectory(manifest: Pick<Manifest, "owner" | "id">): P
 async function readPayload(manifest: Manifest, target: Target): Promise<Buffer> {
   const directory = await verifyStageDirectory(manifest);
   const file = path.join(directory, target.file);
-  const bytes = (await readBytes(file, { privateFile: true }))!;
+  // Staging does not change provenance: a repository payload retains the
+  // strict repository ceilings, while a trusted global payload uses the
+  // operator's current bounded settings for its original destination.
+  const limits = await resolvePlaybookInputLimits(target.path);
+  const bytes = (await readBytes(file, { privateFile: true, maxBytes: limits.maxBytes }))!;
   if (sha256(bytes) !== target.afterSha256) throw new Error(`Reflection commit payload checksum mismatch: ${target.path}`);
-  const playbook = await loadStoredPlaybook(file);
+  const playbook = await loadStoredPlaybook(file, { limitsSourcePath: target.path });
   if (!receiptMatches(playbook, manifest)) throw new Error(`Reflection commit payload has the wrong receipt: ${target.path}`);
   return bytes;
 }
 
 async function targetState(manifest: Manifest, target: Target): Promise<"apply" | "applied"> {
-  const bytes = await readBytes(target.path, { missingOk: true });
+  const limits = await resolvePlaybookInputLimits(target.path);
+  const bytes = await readBytes(target.path, { missingOk: true, maxBytes: limits.maxBytes });
   const hash = bytes === null ? null : sha256(bytes);
   if (hash === target.afterSha256) return "applied";
   if (bytes !== null && receiptMatches(await loadStoredPlaybook(target.path), manifest)) return "applied";
@@ -362,7 +368,8 @@ async function finishCommit(manifest: Manifest, preflighted = false): Promise<Re
       a.path === manifest.owner ? -1 : b.path === manifest.owner ? 1 : a.path.localeCompare(b.path));
     for (const target of targets) {
       if (await targetState(manifest, target) === "applied") {
-        await syncFileAndParents(target.path);
+        const limits = await resolvePlaybookInputLimits(target.path);
+        await syncFileAndParents(target.path, false, limits.maxBytes);
         continue;
       }
       const bytes = await readPayload(manifest, target);
@@ -383,7 +390,7 @@ export async function recoverReflectionCommit(
   globalPath: string,
   options: { dryRun?: boolean; skipGlobalLock?: boolean } = {},
 ): Promise<RecoveredReflectionCommit | null> {
-  const owner = canonicalStoragePath(globalPath);
+  const owner = await resolvePlaybookStoragePath(globalPath);
   if (await readManifest(owner) === null) return null;
   if (options.dryRun) {
     throw new Error(`A pending reflection commit requires recovery. Run cm reflect without --dry-run first: ${reflectionCommitPendingPath(owner)}`);
@@ -638,7 +645,7 @@ export class ReflectionCommit {
     entries: ProcessedEntry[],
     options: { sessionsProcessed?: number } = {},
   ): Promise<ReflectionCommit> {
-    const owner = canonicalStoragePath(globalPath);
+    const owner = await resolvePlaybookStoragePath(globalPath);
     if (await readManifest(owner)) throw new Error("Recover the pending reflection commit before preparing another");
     assertInputLimits(entries, PLAYBOOK_INPUT_LIMITS, "reflection commit entries");
     const normalized = entries.map(entry => ({ ...entry, sessionPath: absolute(entry.sessionPath) }));
@@ -668,7 +675,7 @@ export class ReflectionCommit {
 
   private async capture(targetPath: string): Promise<StagedTarget> {
     this.assertDraft();
-    const target = canonicalStoragePath(targetPath);
+    const target = await resolvePlaybookStoragePath(targetPath);
     const existing = this.targets.get(target);
     if (existing) return existing;
     if (this.targets.size >= REFLECTION_COMMIT_LIMITS.maxTargets) {
@@ -677,18 +684,19 @@ export class ReflectionCommit {
     const record: StagedTarget = {
       path: target, file: `target-${this.targets.size}.yaml`, beforeSha256: null, bytes: 0, saved: false,
     };
-    const original = await readBytes(target, { missingOk: true });
+    const limits = await resolvePlaybookInputLimits(target);
+    const original = await readBytes(target, { missingOk: true, maxBytes: limits.maxBytes });
     const file = path.join(stageDirectory(this.owner, this.id), record.file);
-    if (original === null) await saveStoredPlaybook(createEmptyPlaybook(), file);
+    if (original === null) await saveStoredPlaybook(createEmptyPlaybook(), file, { limitsSourcePath: target });
     else {
       record.beforeSha256 = sha256(original);
       const content = original.toString("utf8");
-      assertTextSize(content, PLAYBOOK_INPUT_LIMITS.maxBytes, target);
+      assertTextSize(content, limits.maxBytes, target);
       await atomicWrite(file, content);
     }
     // Parse the exact captured source through the normal bounded storage
     // schema; a second read of the live target could capture a different edit.
-    await loadStoredPlaybook(file);
+    await loadStoredPlaybook(file, { limitsSourcePath: target });
     record.bytes = (await fs.stat(file)).size;
     this.targets.set(target, record);
     this.checkStageBudget();
@@ -698,8 +706,10 @@ export class ReflectionCommit {
   async loadPlaybook(targetPath: string): Promise<Playbook> {
     const record = await this.capture(targetPath);
     const file = path.join(stageDirectory(this.owner, this.id), record.file);
-    await readBytes(file, { privateFile: true }); // Missing recovery files must never become empty playbooks.
-    return loadStoredPlaybook(file);
+    const limits = await resolvePlaybookInputLimits(record.path);
+    // Missing recovery files must never become empty playbooks.
+    await readBytes(file, { privateFile: true, maxBytes: limits.maxBytes });
+    return loadStoredPlaybook(file, { limitsSourcePath: record.path });
   }
 
   async savePlaybook(
@@ -713,7 +723,7 @@ export class ReflectionCommit {
       reflectionCommit: { owner: this.owner, id: this.id },
     } as Playbook["metadata"];
     const file = path.join(stageDirectory(this.owner, this.id), record.file);
-    await saveStoredPlaybook(playbook, file, options);
+    await saveStoredPlaybook(playbook, file, { ...options, limitsSourcePath: record.path });
     record.bytes = (await fs.stat(file)).size;
     record.saved = true;
     this.checkStageBudget();
@@ -724,7 +734,10 @@ export class ReflectionCommit {
     const targets: Target[] = [];
     for (const record of this.targets.values()) {
       if (!record.saved) continue;
-      const bytes = (await readBytes(path.join(stageDirectory(this.owner, this.id), record.file), { privateFile: true }))!;
+      const limits = await resolvePlaybookInputLimits(record.path);
+      const bytes = (await readBytes(path.join(stageDirectory(this.owner, this.id), record.file), {
+        privateFile: true, maxBytes: limits.maxBytes,
+      }))!;
       targets.push({ path: record.path, file: record.file, beforeSha256: record.beforeSha256, afterSha256: sha256(bytes) });
     }
     const manifest = validateManifest({
@@ -739,7 +752,8 @@ export class ReflectionCommit {
       // safely. Publish only after all originals and all payloads check out.
       for (const record of this.targets.values()) {
         if (record.saved) continue;
-        const current = await readBytes(record.path, { missingOk: true });
+        const limits = await resolvePlaybookInputLimits(record.path);
+        const current = await readBytes(record.path, { missingOk: true, maxBytes: limits.maxBytes });
         if ((current === null ? null : sha256(current)) !== record.beforeSha256) {
           throw new Error(`Reflection read dependency changed since preparation: ${record.path}; no commit was published`);
         }
@@ -764,12 +778,13 @@ export class ReflectionCommit {
     }, [...this.targets.keys()]);
   }
 
-  /** Discard private drafts only; a published recovery journal is never abandoned. */
-  async abort(): Promise<void> {
-    if (this.published || this.finished) return;
-    if ((await readManifest(this.owner))?.id === this.id) return;
+  /** Return true only when no published commit can have changed live state. */
+  async abort(): Promise<boolean> {
+    if (this.published || this.finished) return false;
+    if ((await readManifest(this.owner))?.id === this.id) return false;
     await fs.rm(stageDirectory(this.owner, this.id), { recursive: true, force: true });
     await syncDirectory(path.dirname(reflectionCommitPendingPath(this.owner)));
     this.finished = true;
+    return true;
   }
 }

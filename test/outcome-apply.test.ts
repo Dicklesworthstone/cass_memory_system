@@ -210,6 +210,34 @@ describe("durable outcome identity and ownership", () => {
     });
   }
 
+  test.skipIf(process.platform === "win32")("repository directory aliases cannot acquire a trusted global feedback budget", async () => {
+    await withTempCassHome(async env => {
+      const config = createTestConfig({ playbookPath: env.playbookPath });
+      await fs.writeFile(env.configPath, JSON.stringify({
+        playbookPath: env.playbookPath,
+        playbookLimits: { maxNodes: 500_000 },
+      }));
+      await savePlaybook(createTestPlaybook([createTestBullet({ id: "b-trusted-budget" })]), config.playbookPath);
+      const original = await fs.readFile(config.playbookPath);
+      const workspace = path.join(env.home, "repository");
+      const initialized = Bun.spawnSync(["git", "init", "--quiet", "--initial-branch=main", workspace]);
+      expect(initialized.exitCode).toBe(0);
+      const cassAlias = path.join(workspace, ".cass");
+      await fs.symlink(env.cassMemoryDir, cassAlias, "dir");
+      const record = await prepareOutcome({
+        sessionId: "trusted-budget-alias", outcome: "success", rulesUsed: ["b-trusted-budget"], workspace,
+      }, config);
+      const repositoryPath = path.join(cassAlias, "playbook.yaml");
+      expect(record.ruleTargets).toEqual([{ ruleId: "b-trusted-budget", playbookPath: repositoryPath }]);
+
+      await expect(applyOutcomeFeedback(record, config)).rejects.toThrow("path alias cannot change input limits");
+      expect(await fs.readFile(config.playbookPath)).toEqual(original);
+      expect(await fs.readFile(repositoryPath)).toEqual(original);
+      expect((await loadPlaybook(config.playbookPath)).bullets[0].feedbackEvents).toHaveLength(0);
+      expect((await fs.lstat(cassAlias)).isSymbolicLink()).toBe(true);
+    });
+  });
+
   test("different events at the same timestamp count once each across log and feedback replay", async () => {
     await withTempCassHome(async env => {
       const config = createTestConfig({ playbookPath: path.join(env.cassMemoryDir, "playbook.yaml") });

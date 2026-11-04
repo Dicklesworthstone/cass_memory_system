@@ -3,7 +3,7 @@ import path from "node:path";
 import chalk from "chalk";
 import yaml from "yaml";
 import { z } from "zod";
-import { loadConfig } from "../config.js";
+import { loadConfig, resolveTrustedPlaybookPolicy } from "../config.js";
 import {
   formatValidationIssues,
   parseJsonInput,
@@ -35,6 +35,7 @@ import {
   loadMergedPlaybook,
   loadPlaybook,
   mergeImportedBullet,
+  recoverTrustedPlaybookLimits,
   repairPlaybookEmbeddings,
   type ScrubResult,
   savePlaybook,
@@ -453,6 +454,7 @@ export async function playbookCommand(
     cmSubprocessCalls?: boolean;
     deprecateOrphans?: boolean;
     stripEmbeddings?: boolean;
+    recoverLimits?: boolean;
   },
 ) {
   const startedAtMs = Date.now();
@@ -1545,16 +1547,30 @@ async function handleScrub(
 }
 
 async function handleRepair(
-  flags: { stripEmbeddings?: boolean; file?: string; repo?: boolean; dryRun?: boolean; json?: boolean },
+  flags: { stripEmbeddings?: boolean; recoverLimits?: boolean; file?: string; repo?: boolean; dryRun?: boolean; json?: boolean },
   command: string,
   startedAtMs: number,
 ): Promise<void> {
   const errorOptions = { json: flags.json, command, startedAtMs };
-  if (!flags.stripEmbeddings) {
-    reportError("Choose the repair explicitly with --strip-embeddings", {
+  if (!flags.stripEmbeddings && !flags.recoverLimits) {
+    reportError("Choose the repair explicitly with --strip-embeddings or --recover-limits", {
       ...errorOptions,
       code: ErrorCode.MISSING_REQUIRED,
-      hint: `${getCliName()} playbook repair --strip-embeddings --dry-run --json`,
+      hint: `${getCliName()} playbook repair --recover-limits --dry-run --json`,
+    });
+    return;
+  }
+  if (flags.stripEmbeddings && flags.recoverLimits) {
+    reportError("Choose one repair operation at a time: --strip-embeddings or --recover-limits", {
+      ...errorOptions,
+      code: ErrorCode.INVALID_INPUT,
+    });
+    return;
+  }
+  if (flags.recoverLimits && flags.repo) {
+    reportError("Repository input ceilings cannot be raised; --recover-limits is only for the trusted global playbook", {
+      ...errorOptions,
+      code: ErrorCode.INVALID_INPUT,
     });
     return;
   }
@@ -1588,8 +1604,37 @@ async function handleRepair(
         return;
       }
       targetPath = path.join(repoDir, "playbook.yaml");
+    } else if (flags.recoverLimits) {
+      // Ignore repository configuration when authorizing an increased budget.
+      targetPath = (await resolveTrustedPlaybookPolicy()).path;
     } else {
       targetPath = (await loadConfig()).playbookPath;
+    }
+
+    if (flags.recoverLimits) {
+      const result = await recoverTrustedPlaybookLimits(targetPath, { dryRun: flags.dryRun });
+      if (isJsonOutput(flags) || isToonOutput(flags)) {
+        printStructuredResult(command, result, flags, {
+          startedAtMs,
+          effect: result.changed,
+          reason: result.dryRun ? "Dry run: no files changed"
+            : result.changed ? undefined : "Current trusted limits already fit this playbook",
+        });
+        return;
+      }
+      console.log(chalk.bold(result.dryRun ? "PLAYBOOK LIMIT RECOVERY (dry run - no files changed)" : "PLAYBOOK LIMIT RECOVERY"));
+      console.log(`Playbook: ${result.path}`);
+      console.log(`Verified: ${result.bulletCount} bullets; ${result.usage.expandedValues} expanded values; ${result.originalBytes} bytes.`);
+      console.log(`Trusted limits: ${result.proposedLimits.maxNodes} values, ${result.proposedLimits.maxBytes} bytes, ${result.proposedLimits.maxArrayLength} elements per array.`);
+      console.log(`Configuration: ${result.configPath}`);
+      console.log("All playbook bytes, rules, identifiers, feedback and metadata are unchanged.");
+      if (result.backupPath) console.log(`Configuration backup: ${result.backupPath}`);
+      if (result.dryRun && result.wouldChange) {
+        console.log("Re-run without --dry-run to save these bounded trusted limits with a verified configuration backup.");
+      } else if (!result.wouldChange) {
+        console.log("Current trusted limits already fit this playbook; no files changed.");
+      }
+      return;
     }
 
     const result = await repairPlaybookEmbeddings(targetPath, { dryRun: flags.dryRun });
@@ -1605,7 +1650,7 @@ async function handleRepair(
     console.log(`Playbook: ${result.path}`);
     console.log(`${result.bulletCount} bullets preserved; ${result.embeddingsRemoved} derived inline embeddings ${result.dryRun ? "would be removed" : "removed"}.`);
     console.log(`Size: ${result.originalBytes} -> ${result.repairedBytes} bytes (${result.bytesSaved} bytes saved).`);
-    console.log("Verified: all non-embedding fields preserved; repaired file passes ordinary input limits.");
+    console.log("Verified: all non-embedding fields preserved; repaired file passes its selected input limits.");
     if (result.backupPath) console.log(`Backup: ${result.backupPath}`);
     if (result.dryRun && result.wouldChange) {
       console.log("Re-run without --dry-run to apply with a verified backup and atomic replacement.");
@@ -1618,7 +1663,7 @@ async function handleRepair(
       recovery: [
         "Keep the original playbook and any reported backup; repair does not discard learned state.",
         "Check that this is a trusted local, regular playbook file and stop other writers before retrying.",
-        "Use --dry-run to preview. If the repaired data still exceeds ordinary limits, reduce or split it manually.",
+        `Use --dry-run to preview. For a trusted global playbook over ordinary limits, run ${getCliName()} playbook repair --recover-limits --dry-run.`,
       ],
     });
   }

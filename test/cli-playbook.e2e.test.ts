@@ -128,6 +128,8 @@ describe("E2E: cm playbook repair", () => {
         ["--strip-embeddings", "--file", env.playbookPath, "--repo"],
         ["--strip-embeddings", "--file", "-"],
         ["--strip-embeddings", "--file", "https://example.invalid/playbook.yaml"],
+        ["--recover-limits", "--strip-embeddings"],
+        ["--recover-limits", "--repo"],
       ]) {
         const result = await runCli(env, ["playbook", "repair", ...args, "--json"]);
         expect(result.exitCode).not.toBe(0);
@@ -181,6 +183,41 @@ describe("E2E: cm playbook repair", () => {
       expect(result.exitCode).toBe(0);
       expect(JSON.parse(result.stdout).data.path).toBe(alternate);
       expect(await readFile(env.configPath, "utf8")).toBe("{invalid config");
+    });
+  });
+
+  it("recovers trusted limits through the CLI and restores context without rewriting learned state", async () => {
+    await withTempCassHome(async (env) => {
+      const playbook = repairFixture();
+      playbook.bullets[0].extraLearnedState.observations = Array.from({ length: 160 }, (_, i) => `Preserve observation ${i}`);
+      const original = yaml.stringify(playbook, { aliasDuplicateObjects: false });
+      const config = JSON.stringify({ embeddingModel: "none", semanticSearchEnabled: false,
+        playbookLimits: { maxNodes: 100 }, minRelevanceScore: 0, minRelativeRelevance: 0 });
+      await writeFile(env.configPath, config);
+      await writeFile(env.playbookPath, original);
+      const failedStats = await runCli(env, ["stats", "--json"]);
+      expect(failedStats.exitCode).not.toBe(0);
+      expect(JSON.parse(failedStats.stdout).success).toBe(false);
+
+      const preview = await runCli(env, ["playbook", "repair", "--recover-limits", "--dry-run", "--json"]);
+      expect(preview.exitCode).toBe(0);
+      expect(JSON.parse(preview.stdout).data).toMatchObject({ changed: false, wouldChange: true,
+        preservationVerified: true, backupPath: null, bulletCount: 1 });
+      expect(await readFile(env.configPath, "utf8")).toBe(config);
+      expect(await readFile(env.playbookPath, "utf8")).toBe(original);
+      const recovered = await runCli(env, ["playbook", "repair", "--recover-limits", "--json"]);
+      expect(recovered.exitCode).toBe(0);
+      const data = JSON.parse(recovered.stdout).data;
+      expect(data).toMatchObject({ changed: true, preservationVerified: true });
+      expect(data.sha256Before).toBe(data.sha256After);
+      expect(await readFile(data.backupPath, "utf8")).toBe(config);
+      expect(await readFile(env.playbookPath, "utf8")).toBe(original);
+      const context = await runCli(env, ["context", "Preserve recovery evidence", "--history", "0", "--json"]);
+      expect(context.exitCode).toBe(0);
+      expect(JSON.parse(context.stdout).data.relevantBullets.map((bullet: any) => bullet.id)).toContain("b-repair");
+      const noOp = await runCli(env, ["playbook", "repair", "--recover-limits"]);
+      expect(noOp.exitCode).toBe(0);
+      expect(noOp.stdout).toContain("Current trusted limits already fit this playbook; no files changed.");
     });
   });
 

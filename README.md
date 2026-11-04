@@ -934,7 +934,8 @@ scan. Each global playbook's queue index holds up to 256 ledger paths within
 would exceed 64 MiB, retaining current session watermarks, commit receipts,
 owner information, and pending outcomes. New commits check both ledger and
 index capacity before publishing recovery intent or replacing playbooks.
-The ordinary 16 MiB playbook limit is unchanged.
+Repository playbooks retain the fixed 16 MiB ceiling. The global playbook uses
+its independently authorized [trusted local limits](#trusted-local-playbook-limits).
 
 Recovery preserves subsequent feedback on files already committed. Normal
 playbook writes, embedding repair, and initialization refuse to change a target
@@ -949,7 +950,7 @@ versions and refuses to overwrite the newer data. The error identifies the
 affected file; resolve that conflict before retrying. Keep the pending manifest
 and its stage directory under `~/.cass-memory/reflections/commits/` until recovery succeeds.
 `--dry-run` reports a pending commit and leaves it untouched. Each staged
-playbook keeps the ordinary 16 MiB limit; a commit is bounded to 64 target files,
+playbook is validated against its destination's input limits; a commit is bounded to 64 target files,
 256 MiB of staged data, and a 16 MiB manifest.
 
 Each session uses its source project's applicable rules and reflection policy.
@@ -1096,7 +1097,11 @@ cm playbook export > playbook-backup.yaml
 # duplicates; direct instruction conflicts are reported for review.
 cm playbook import shared-playbook.yaml
 
-# Recover a trusted legacy playbook whose inline embeddings exceed input limits
+# Restore loading of a trusted global playbook above the default resource limits
+cm playbook repair --recover-limits --dry-run --json
+cm playbook repair --recover-limits --json
+
+# Remove only derived inline embeddings from a trusted legacy playbook
 cm playbook repair --strip-embeddings --dry-run --json
 cm playbook repair --strip-embeddings --json
 
@@ -1669,7 +1674,7 @@ back to whichever file is active, in its own format.
 
 **Precedence:** CLI flags > Repo config > Global config > Defaults
 
-**Security:** Repo config cannot override sensitive paths (`cassPath`, `playbookPath`, `diaryDir`) or user-level consent settings (`crossAgent`, `remoteCass`).
+**Security:** Repo config cannot override sensitive paths (`cassPath`, `playbookPath`, `diaryDir`), trusted playbook limits (`playbookLimits`), or user-level consent settings (`crossAgent`, `remoteCass`).
 
 ### Complete Configuration Reference
 
@@ -1724,11 +1729,60 @@ back to whichever file is active, in its own format.
     "hosts": []
   },
   "playbookPath": "~/.cass-memory/playbook.yaml",
+  "playbookLimits": {
+    "maxBytes": 16777216,
+    "maxNodes": 200000,
+    "maxArrayLength": 10000
+  },
   "diaryDir": "~/.cass-memory/diary"
 }
 ```
 
 ### Configuration Options Explained
+
+#### Trusted Local Playbook Limits
+
+Large playbooks created by earlier cm versions can exceed the default parsing
+budget. Set `playbookLimits` in the **global** `~/.cass-memory/config.json` (or its
+YAML equivalent) to select a finite budget for your trusted local playbook:
+
+```json
+{
+  "playbookLimits": {
+    "maxNodes": 1000000,
+    "maxBytes": 33554432,
+    "maxArrayLength": 20000
+  }
+}
+```
+
+| Setting | Default | Maximum | Environment override |
+|---|---:|---:|---|
+| `maxNodes` | 200,000 | 2,000,000 | `CM_PLAYBOOK_MAX_NODES` |
+| `maxBytes` | 16 MiB | 64 MiB | `CM_PLAYBOOK_MAX_BYTES` |
+| `maxArrayLength` | 10,000 | 100,000 | `CM_PLAYBOOK_MAX_ARRAY_LENGTH` |
+
+Values must be positive integers within the maximum. `maxBytes` bounds both
+file size and expanded text/key bytes; `maxNodes` counts every expanded value,
+including repeated YAML aliases. Depth (32), object keys (10,000), alias expansion
+(100), cycles, and lexical allocation checks remain fixed. Larger budgets use
+more memory and parsing time; choose a budget that fits the host.
+
+Authority comes only from the bounded global configuration and the environment.
+The selected global `playbookPath` must be absolute (or start with `~/`) and refer
+to an ordinary local file outside a Git checkout and `.cass` directories. Neither
+the configuration nor the playbook may be a symbolic or hard link; linked parent
+directories also prevent elevation. The default path follows `CASS_MEMORY_HOME`
+and XDG resolution. A repository cannot raise its own limit by overriding
+`playbookPath`, supplying `playbookLimits`, using aliases, or embedding settings in
+the playbook. Imports, custom starters, and batch additions retain strict limits
+even when the destination global playbook has a larger budget.
+
+To calculate a suitable budget from an existing trusted file, use
+[`cm playbook repair --recover-limits`](#oversized-legacy-playbooks). It preserves
+the entire playbook and previews the exact configuration change. Environment
+overrides take precedence; recovery reports an override that is too small and
+requires the operator to change or unset it.
 
 #### LLM Settings
 
@@ -2408,8 +2462,9 @@ function cosineSimilarity(a: number[], b: number[]): number {
 Repository-controlled `.cass/playbook.yaml` and `.cass/config.json`, `.yaml`, or
 `.yml` files are bounded before normalization and schema validation, including
 when selected through an MCP tool's `workspace` argument. The same protections
-apply to global files, playbook imports, batch additions, custom starters, and
-doctor's independent configuration checks.
+apply by default to global files, playbook imports, batch additions, custom starters,
+and doctor's independent configuration checks. An independently trusted global
+playbook can use the bounded, operator-selected limits described above.
 
 | Limit per input | Playbooks and imports | Configuration |
 |---|---:|---:|
@@ -2429,13 +2484,14 @@ oversized arrays before evaluating their elements
 Excessive repository inputs fail the request with a bounded diagnostic. They do
 not silently fall back to defaults, trigger playbook recovery, or cause doctor
 to reset global configuration. Writes are checked before replacing existing
-files. These hard ceilings cannot be raised by repository configuration. Reduce
+files. These untrusted-input ceilings cannot be raised by any configuration. Reduce
 oversized collections or split import batches before retrying.
 
 For trusted local legacy playbooks containing derived inline embeddings, the
 explicit `cm playbook repair --strip-embeddings` operation has a separate,
-bounded migration reader. It does not change these ordinary limits or make
-oversized imports acceptable. See [legacy playbook recovery](#oversized-legacy-playbooks).
+bounded migration reader. It does not make oversized imports acceptable.
+The separate `--recover-limits` operation can configure a trusted global file
+without changing any playbook bytes. See [legacy playbook recovery](#oversized-legacy-playbooks).
 
 ### Local-First Design
 
@@ -3021,10 +3077,49 @@ cm context "test" --json  # Check degraded field
 
 #### Oversized legacy playbooks
 
-An older playbook may contain enough inline `embedding` arrays to exceed the
-16 MiB ordinary read limit or the 200,000-value structural limit. Use the
-supported repair operation on a **trusted local file**. Stop scheduled reflection
-jobs and other playbook writers while repairing it.
+An older playbook may contain more than 200,000 expanded values from legitimate
+learned rules, feedback and metadata. That was possible before v0.5.1 introduced
+the ordinary input caps. A limit failure does not mean the playbook is corrupt.
+Stop scheduled reflection jobs and other writers while performing recovery.
+
+For your **trusted global playbook**, restore loading by configuring a bounded
+budget without rewriting the playbook:
+
+```bash
+# Read-only inspection under fixed recovery ceilings, with proposed limits
+cm playbook repair --recover-limits --dry-run --json
+
+# Apply the reviewed limit change; preserve every playbook byte
+cm playbook repair --recover-limits --json
+
+# Check retrieval after recovery
+cm stats --json
+cm context "test memory retrieval" --history 0 --json
+```
+
+This operation inspects the complete file under the fixed 64 MiB, 2,000,000-value,
+100,000-element recovery ceilings. It validates both the original document and
+the schema-expanded form used by future writes, then proposes sufficient limits
+with up to 25% growth room within those ceilings. The preview reports actual
+usage, proposed/effective limits and a SHA-256 digest. Applying it changes only
+the global `playbookLimits` settings, preserves unrelated configuration and its YAML
+comments, and creates a byte-exact, verified configuration backup before atomic
+replacement. Playbook bytes, rules, IDs, feedback events (including repeated
+events), retired/candidate status and metadata are untouched. No backup or lock
+is created by a dry run. Interruption before the configuration replacement leaves
+the original configuration and playbook intact; retry the same command.
+
+`--recover-limits` accepts only the independently configured trusted global owner.
+`--file` must match that owner; `--repo` is rejected. A lower environment override
+is reported instead of silently bypassed. Invalid schemas, unsafe YAML or files
+over the fixed recovery ceilings fail without replacing either file. The JSON
+result identifies any configuration backup. `doctor --fix --dry-run` includes
+this as a manual recovery step; even `doctor --fix --force` does not automatically
+trust an unreadable document or raise a parsing limit.
+
+If the oversized file also contains derived inline `embedding` arrays, you can
+remove those separately. This existing repair is available for an explicitly
+selected **trusted local file**, including a repository file:
 
 ```bash
 # Preview the configured playbook without changing it or creating a backup
@@ -3047,7 +3142,7 @@ cm context "test memory retrieval" --json
 Repair removes only each bullet's derived `embedding` field. It preserves all
 bullets, IDs, feedback, counters, timestamps, provenance, and other non-embedding
 fields, including fields unknown to the current schema. It verifies that the
-result passes the unchanged ordinary read limits and schema before replacing
+result passes the selected file's input limits and schema before replacing
 the file. The preview reports bullet/vector counts, original and repaired sizes,
 SHA-256 hashes, and preservation status. Applying the repair requires a verified,
 exclusive backup and uses atomic replacement under the playbook lock; any
@@ -3057,11 +3152,11 @@ YAML formatting and comments may change during repair; the backup retains the
 exact original bytes.
 
 The migration reader accepts at most 64 MiB and 2,000,000 expanded values, with
-bounded arrays, keys, depth, YAML tokens, and aliases. Those migration-only bounds
+bounded arrays, keys, depth, YAML tokens, and aliases. Those maximum bounds
 cannot be raised in configuration. If removing vectors does not bring the result
-within ordinary limits, repair refuses to replace it. Stdin, URLs, symlinks, and
+within its selected limits, repair refuses to replace it. Stdin, URLs, symlinks, and
 nonregular files are not supported repair inputs. `cm doctor` reports files near
-or over the ordinary limit and recommends a preview; `doctor --fix` does not
+or over the selected byte limit and recommends a preview; `doctor --fix` does not
 silently run this migration.
 
 Existing external embeddings in `~/.cass-memory/embeddings/` remain available

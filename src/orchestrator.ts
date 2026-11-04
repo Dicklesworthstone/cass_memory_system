@@ -12,6 +12,7 @@ import { HOOK_ACTIVE_ENV } from "./commands/hook.js";
 import { getSanitizeConfig, loadConfig } from "./config.js";
 import { curatePlaybook, directivesDisagree, splitDirectiveClauses, validateMergeSources } from "./curate.js";
 import { generateDiaryFromContent } from "./diary.js";
+import { InputLimitError } from "./input-limits.js";
 import type { LLMIO } from "./llm.js";
 import { withLock } from "./lock.js";
 import {
@@ -1043,6 +1044,7 @@ export async function orchestrateReflection(
     let repoResult: CurationResult | undefined;
     const projectResults: Array<{ playbookPath: string; result: CurationResult }> = [];
     let transaction: ReflectionCommit;
+    let capacityRejected = false;
 
     const batches = new Map<ReflectionContext, PlaybookDelta[]>();
     for (const delta of allDeltas) {
@@ -1403,11 +1405,48 @@ export async function orchestrateReflection(
         } catch (error) {
           // Prepared-only staging is disposable. Once the manifest is durable,
           // abort leaves it intact so a later run can finish the exact commit.
-          await transaction.abort();
-          throw error;
+          const abandoned = await transaction.abort();
+          if (!(error instanceof InputLimitError) || !abandoned) throw error;
+
+          // Capacity is an admission failure for this entire draft. Reporting
+          // partially curated rules or advancing any successful watermark here
+          // would discard unapplied learning. Keep proposals in the failure
+          // response and preserve each session's last durable boundary so it
+          // can be retried after an operator reviews the archive/limit policy.
+          const message = `Reflection growth could not fit the selected storage limits: ${error.message} `
+            + "No playbook changes or successful session watermarks were committed. "
+            + "Run cm doctor --json, review the documented storage recovery, or adjust playbookLimits "
+            + "for the explicitly trusted local playbook, then retry the affected sessions.";
+          for (const entry of pendingProcessedEntries) {
+            recordSessionFailure(entry.sessionPath, message, completedProposals.get(entry.sessionPath) ?? []);
+          }
+          try {
+            await processedLog.appendBatch([...pendingRefreshEntries, ...pendingFailureEntries]);
+          } catch (retryError) {
+            // A failed retry-ledger write must not hide the rejected proposals
+            // behind a second exception. Nothing in this draft was published,
+            // so no successful boundary or learned state needs rolling back.
+            errors.push(`Could not persist reflection retry state: ${retryError instanceof Error ? retryError.message : String(retryError)}`);
+          }
+          capacityRejected = true;
+          sessionsProcessed = 0;
+          committedSessionCount = 0;
+          allDeltas = [];
+          globalResult = undefined;
+          repoResult = undefined;
+          projectResults.length = 0;
+          if (autoOutcome) autoOutcome.inlineFeedbackDeltas = 0;
+          return;
         }
       }
     });
+
+    if (capacityRejected) {
+      return {
+        sessionsProcessed: 0, deltasGenerated: 0, errors, autoOutcome,
+        ...(failedSessions.length > 0 ? { failedSessions } : {}),
+      };
+    }
 
     // The durable commit acknowledged the watermark and outcome queue. Reload
     // the ledger so outcome delivery sees precisely that committed state.

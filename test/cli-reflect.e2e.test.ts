@@ -532,6 +532,48 @@ else console.log("[]");
     });
   });
 
+  it("reports a growth admission failure with unapplied proposals and an unchanged readable playbook", async () => {
+    await withTempCassHome(async env => {
+      await setup(env);
+      const legacy = createTestBullet({
+        id: "b-capacity111", content: "Validate database migrations against production schema snapshots.",
+        helpfulCount: 1,
+        feedbackEvents: [{ type: "helpful", timestamp: "2026-10-27T12:00:00.000Z", sessionPath: "/sessions/legacy.jsonl" }],
+      });
+      await writeFile(env.playbookPath, yaml.stringify(createTestPlaybook([legacy])));
+      const config = JSON.parse(await readFile(env.configPath, "utf8"));
+      await writeFile(env.configPath, JSON.stringify({ ...config, playbookLimits: { maxArrayLength: 1 } }));
+      const before = await readFile(env.playbookPath, "utf8");
+      const configBefore = await readFile(env.configPath, "utf8");
+      const session = await writeSession(env, "capacity");
+      const result = runReflect(env, ["--session", session, "--json"]);
+      expect(result.error).toBeUndefined();
+      expect(result.status).not.toBe(0);
+      const payload = JSON.parse(result.stdout);
+      expect(payload.success).toBe(false);
+      expect(payload.error.code).toBe("REFLECTION_FAILED");
+      expect(payload.data.sessionsProcessed).toBe(0);
+      expect(payload.data.deltasGenerated).toBe(0);
+      expect(payload.data.global).toBeUndefined();
+      expect(payload.data.errors[0]).toContain("Reflection growth could not fit");
+      expect(payload.data.failedSessions).toEqual([{
+        sessionPath: session,
+        error: expect.stringContaining("maximum array length is 1"),
+        proposedDeltas: [expect.objectContaining({
+          type: "add", bullet: expect.objectContaining({ content: rule }),
+        })],
+      }]);
+      expect(await readFile(env.playbookPath, "utf8")).toBe(before);
+      expect(await readFile(env.configPath, "utf8")).toBe(configBefore);
+      expect((await loadPlaybook(env.playbookPath)).bullets).toEqual([legacy]);
+      const ledger = new ProcessedLog(getProcessedLogPath());
+      await ledger.load();
+      expect(ledger.has(session)).toBe(false);
+      expect(ledger.get(session)).toMatchObject({ status: "failed", failures: 1 });
+      expect(ledger.getPendingOutcomeEntries()).toEqual([]);
+    });
+  });
+
   it("successfully reflects after CLI repair without losing legacy feedback or restoring inline embeddings", async () => {
     await withTempCassHome(async env => {
       await setup(env);

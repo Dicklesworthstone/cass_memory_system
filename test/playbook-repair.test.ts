@@ -4,15 +4,16 @@ import { createHash } from "node:crypto";
 import fs, { type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
-import { InputLimitError, PLAYBOOK_INPUT_LIMITS } from "../src/input-limits.js";
+import { InputLimitError, measureInputUsage, PLAYBOOK_INPUT_LIMITS } from "../src/input-limits.js";
 import {
   createEmptyPlaybook,
   loadPlaybook,
   PLAYBOOK_REPAIR_INPUT_LIMITS,
+  recoverTrustedPlaybookLimits,
   repairPlaybookEmbeddings,
 } from "../src/playbook.js";
 import { createTestBullet } from "./helpers/factories.js";
-import { withTempDir } from "./helpers/temp.js";
+import { type TestEnv, withTempCassHome, withTempDir } from "./helpers/temp.js";
 
 const timestamp = "2026-10-28T12:00:00.000Z";
 const realOpen = fs.open.bind(fs);
@@ -28,6 +29,22 @@ function rememberSpy<T extends { mockRestore(): unknown }>(spy: T): T {
 afterEach(() => {
   while (restoreSpies.length) restoreSpies.pop()!();
 });
+
+async function withLimitRecoveryFixture(
+  fn: (env: TestEnv, original: string, originalConfig: string) => Promise<void>,
+): Promise<void> {
+  await withTempCassHome(async (env) => {
+    const original = legacyYaml();
+    const originalConfig = JSON.stringify({
+      embeddingModel: "none",
+      playbookLimits: { maxNodes: 100 },
+      keepOperatorMetadata: { note: "Do not change unrelated configuration" },
+    }, null, 2);
+    await fs.writeFile(env.playbookPath, original);
+    await fs.writeFile(env.configPath, originalConfig);
+    await fn(env, original, originalConfig);
+  }, "trusted-limit-recovery");
+}
 
 function legacyState() {
   return {
@@ -405,6 +422,278 @@ describe("trusted local playbook repair: rejected inputs", () => {
       await expect(repairPlaybookEmbeddings(fixture.file, { dryRun: true })).rejects.toBeInstanceOf(InputLimitError);
       await expectNoChanges(fixture);
     }, Buffer.from("\ufeff" + bounded));
+  });
+});
+
+describe("trusted local playbook limit recovery (#101)", () => {
+  it.serial("recovers a 6,543-rule v0.5.0 playbook above the v0.5.1 value cap without changing a byte", async () => {
+    await withTempCassHome(async (env) => {
+      const state = {
+        ...createEmptyPlaybook("v0.5.0-reflection-output"),
+        schema_version: 1,
+        metadata: { createdAt: timestamp, totalReflections: 83, totalSessionsProcessed: 209,
+          producer: "v0.5.0", provenance: { lastSession: "/sessions/preserved.jsonl" } },
+        bullets: Array.from({ length: 6543 }, (_, index) => ({
+          ...createTestBullet({
+            id: `b-legacy-${index}`, content: `Learned rule ${index}: ${"preserved evidence ".repeat(25)}`,
+            state: index < 150 ? "retired" : "active",
+            maturity: index < 150 ? "deprecated" : "candidate",
+            deprecated: index < 150,
+            pinned: index === 42,
+            createdAt: timestamp, updatedAt: timestamp,
+            feedbackEvents: index < 3138 ? [{ type: "helpful", timestamp,
+              sessionPath: `/sessions/${index}.jsonl`, context: "Keep every historical event" }] : [],
+          }),
+          derivedFrom: { observations: ["first", "second", "third", "fourth", "fifth", "sixth"] },
+          helpfulEvents: index === 0 ? [{ timestamp, sessionPath: "/sessions/repeated.jsonl" },
+            { timestamp, sessionPath: "/sessions/repeated.jsonl" }] : [],
+        })),
+      };
+      const original = yaml.stringify(state, { aliasDuplicateObjects: false });
+      expect(Buffer.byteLength(original)).toBeLessThan(PLAYBOOK_INPUT_LIMITS.maxBytes);
+      expect(measureInputUsage(state, PLAYBOOK_REPAIR_INPUT_LIMITS, "legacy fixture").nodes)
+        .toBeGreaterThan(PLAYBOOK_INPUT_LIMITS.maxNodes);
+      const originalConfig = JSON.stringify({ embeddingModel: "none", extra: { preserve: "operator choice" } });
+      await fs.writeFile(env.playbookPath, original);
+      await fs.writeFile(env.configPath, originalConfig);
+      await expect(loadPlaybook(env.playbookPath)).rejects.toBeInstanceOf(InputLimitError);
+
+      const preview = await recoverTrustedPlaybookLimits(env.playbookPath, { dryRun: true });
+      expect(preview).toMatchObject({ dryRun: true, changed: false, wouldChange: true,
+        bulletCount: 6543, backupPath: null, preservationVerified: true });
+      expect(preview.proposedLimits.maxNodes).toBeGreaterThan(200_000);
+      expect(preview.proposedLimits.maxNodes).toBeLessThanOrEqual(2_000_000);
+      expect(await fs.readFile(env.playbookPath, "utf8")).toBe(original);
+      expect(await fs.readFile(env.configPath, "utf8")).toBe(originalConfig);
+      expect((await fs.readdir(env.cassMemoryDir)).some((entry) => /backup|\.tmp$|\.lock$/.test(entry))).toBe(false);
+
+      const recovered = await recoverTrustedPlaybookLimits(env.playbookPath);
+      expect(recovered.changed).toBe(true);
+      expect(recovered.sha256After).toBe(recovered.sha256Before);
+      expect(await fs.readFile(recovered.backupPath!, "utf8")).toBe(originalConfig);
+      expect(await fs.readFile(env.playbookPath, "utf8")).toBe(original);
+      expect(JSON.parse(await fs.readFile(env.configPath, "utf8")).extra).toEqual({ preserve: "operator choice" });
+      const loaded = await loadPlaybook(env.playbookPath);
+      expect(loaded.schema_version).toBe(1);
+      expect(loaded.metadata).toEqual(state.metadata);
+      expect(loaded.bullets.map((bullet) => bullet.id)).toEqual(state.bullets.map((bullet) => bullet.id));
+      expect(loaded.bullets.filter((bullet) => bullet.state === "retired")).toHaveLength(150);
+      expect(loaded.bullets[42].pinned).toBe(true);
+      expect((loaded.bullets[0] as any).helpfulEvents).toEqual(state.bullets[0].helpfulEvents);
+      expect(loaded.bullets.reduce((sum, bullet) => sum + bullet.feedbackEvents.length, 0)).toBe(3138);
+    }, "v050-limit-upgrade");
+  }, 60_000);
+
+  it.serial("keeps YAML configuration comments and unrelated keys while changing only trusted limits", async () => {
+    await withLimitRecoveryFixture(async (env, original) => {
+      await fs.rename(env.configPath, `${env.configPath}.previous`);
+      const configPath = path.join(env.cassMemoryDir, "config.yaml");
+      const config = "# operator comment\nembedding_model: none\nplaybook_limits:\n  max_nodes: 100\nextra_setting:\n  preserve: yes # keep this annotation\n";
+      await fs.writeFile(configPath, config);
+      const recovered = await recoverTrustedPlaybookLimits(env.playbookPath);
+      expect(recovered.configPath).toBe(configPath);
+      expect(recovered.changed).toBe(true);
+      const updated = await fs.readFile(configPath, "utf8");
+      expect(updated).toContain("# operator comment");
+      expect(updated).toContain("# keep this annotation");
+      expect(yaml.parse(updated).extra_setting).toEqual({ preserve: "yes" });
+      expect(await fs.readFile(recovered.backupPath!, "utf8")).toBe(config);
+      expect(await fs.readFile(env.playbookPath, "utf8")).toBe(original);
+      expect((await loadPlaybook(env.playbookPath)).bullets).toHaveLength(3);
+    });
+  });
+
+  for (const [label, metadata] of [
+    ["an unsafe integer", '{"sequence":9007199254740993}'],
+    ["a non-finite number", '{"maximum":1e400}'],
+    ["negative zero", '{"negativeZero":-0}'],
+    ["duplicate mapping keys", '{"sequence":1,"sequence":2}'],
+  ] as const) {
+    it.serial(`refuses recovery that would alter unrelated JSON configuration containing ${label}`, async () => {
+      await withLimitRecoveryFixture(async (env, original) => {
+        const config = `{"playbookLimits":{"maxNodes":100},"operatorMetadata":${metadata}}`;
+        await fs.writeFile(env.configPath, config);
+        const entries = (await fs.readdir(env.cassMemoryDir)).sort();
+        for (const dryRun of [true, false]) {
+          await expect(recoverTrustedPlaybookLimits(env.playbookPath, { dryRun })).rejects.toThrow();
+          expect(await fs.readFile(env.playbookPath, "utf8")).toBe(original);
+          expect(await fs.readFile(env.configPath, "utf8")).toBe(config);
+          expect((await fs.readdir(env.cassMemoryDir)).sort()).toEqual(entries);
+        }
+      });
+    });
+  }
+
+  it.serial("leaves a fitting playbook and absent configuration untouched", async () => {
+    await withTempCassHome(async (env) => {
+      const original = legacyYaml();
+      await fs.writeFile(env.playbookPath, original);
+      const before = await fs.readdir(env.cassMemoryDir);
+      const result = await recoverTrustedPlaybookLimits(env.playbookPath);
+      expect(result).toMatchObject({ changed: false, wouldChange: false, backupPath: null });
+      expect(await fs.readFile(env.playbookPath, "utf8")).toBe(original);
+      expect(await fs.readdir(env.cassMemoryDir)).toEqual(before);
+    });
+  });
+
+  it.serial("does not hide a smaller environment override by writing ineffective configuration", async () => {
+    await withLimitRecoveryFixture(async (env, original, originalConfig) => {
+      const previous = process.env.CM_PLAYBOOK_MAX_NODES;
+      process.env.CM_PLAYBOOK_MAX_NODES = "100";
+      try {
+        for (const dryRun of [true, false]) {
+          await expect(recoverTrustedPlaybookLimits(env.playbookPath, { dryRun })).rejects.toThrow("CM_PLAYBOOK_MAX_NODES overrides");
+        }
+      } finally {
+        if (previous === undefined) delete process.env.CM_PLAYBOOK_MAX_NODES;
+        else process.env.CM_PLAYBOOK_MAX_NODES = previous;
+      }
+      expect(await fs.readFile(env.playbookPath, "utf8")).toBe(original);
+      expect(await fs.readFile(env.configPath, "utf8")).toBe(originalConfig);
+      expect((await fs.readdir(env.cassMemoryDir)).some((entry) => entry.includes("backup"))).toBe(false);
+    });
+  });
+
+  it.skipIf(process.platform === "win32")("embedding repair cannot acquire trusted limits through a repository directory alias", async () => {
+    await withTempCassHome(async (env) => {
+      const state = legacyState();
+      const original = yaml.stringify({
+        ...state,
+        extension: { ...state.extension, retainedHistory: Array(10_001).fill("keep") },
+      }, { aliasDuplicateObjects: false });
+      const originalConfig = JSON.stringify({ playbookLimits: { maxNodes: 500_000, maxArrayLength: 20_000 } });
+      await fs.writeFile(env.playbookPath, original);
+      await fs.writeFile(env.configPath, originalConfig);
+      const repo = path.join(env.home, "repository");
+      await fs.mkdir(path.join(repo, ".git"), { recursive: true });
+      await fs.symlink(env.cassMemoryDir, path.join(repo, ".cass"), "dir");
+      const alias = path.join(repo, ".cass", "playbook.yaml");
+      const entries = (await fs.readdir(env.cassMemoryDir)).sort();
+      expect((await repairPlaybookEmbeddings(env.playbookPath, { dryRun: true })).wouldChange).toBe(true);
+      for (const dryRun of [true, false]) {
+        await expect(repairPlaybookEmbeddings(alias, { dryRun })).rejects.toBeInstanceOf(InputLimitError);
+        expect(await fs.readFile(env.playbookPath, "utf8")).toBe(original);
+        expect(await fs.readFile(env.configPath, "utf8")).toBe(originalConfig);
+        expect((await fs.readdir(env.cassMemoryDir)).sort()).toEqual(entries);
+      }
+    }, "embedding-repair-alias");
+  });
+
+  it.serial("rejects arbitrary files and repository-controlled owners before authorizing larger reads", async () => {
+    await withLimitRecoveryFixture(async (env, original, originalConfig) => {
+      const arbitrary = path.join(env.home, "imported.yaml");
+      await fs.writeFile(arbitrary, original);
+      await expect(recoverTrustedPlaybookLimits(arbitrary)).rejects.toThrow("trusted global playbook");
+      const repo = path.join(env.home, "checkout");
+      await fs.mkdir(path.join(repo, ".cass"), { recursive: true });
+      await fs.mkdir(path.join(repo, ".git"));
+      const repoPlaybook = path.join(repo, ".cass", "playbook.yaml");
+      await fs.writeFile(repoPlaybook, original);
+      await fs.writeFile(env.configPath, JSON.stringify({ playbookPath: repoPlaybook, playbookLimits: { maxNodes: 1_000_000 } }));
+      await expect(recoverTrustedPlaybookLimits(repoPlaybook, { dryRun: true })).rejects.toThrow("trusted global playbook");
+      expect(await fs.readFile(repoPlaybook, "utf8")).toBe(original);
+      expect(await fs.readFile(env.playbookPath, "utf8")).toBe(original);
+      await fs.writeFile(env.configPath, originalConfig);
+      const link = path.join(env.home, "linked.yaml");
+      await fs.symlink(env.playbookPath, link);
+      await expect(recoverTrustedPlaybookLimits(link)).rejects.toThrow("trusted global playbook");
+    });
+  });
+
+  it.serial("retains fixed structural ceilings and refuses malformed data or configuration", async () => {
+    await withLimitRecoveryFixture(async (env, original, originalConfig) => {
+      for (const bad of [
+        original + "cycle: &cycle [*cycle]\n",
+        JSON.stringify({ ...legacyState(), extension: Array(PLAYBOOK_REPAIR_INPUT_LIMITS.maxArrayLength + 1).fill(0) }),
+        "name: invalid\nbullets: [null]\n",
+      ]) {
+        await fs.writeFile(env.playbookPath, bad);
+        await expect(recoverTrustedPlaybookLimits(env.playbookPath)).rejects.toThrow();
+        expect(await fs.readFile(env.playbookPath, "utf8")).toBe(bad);
+        expect(await fs.readFile(env.configPath, "utf8")).toBe(originalConfig);
+      }
+      await fs.writeFile(env.playbookPath, original);
+      for (const badConfig of ["null", "[1]", "{broken", '{"playbookLimits":null}']) {
+        await fs.writeFile(env.configPath, badConfig);
+        await expect(recoverTrustedPlaybookLimits(env.playbookPath)).rejects.toThrow();
+        expect(await fs.readFile(env.configPath, "utf8")).toBe(badConfig);
+        expect(await fs.readFile(env.playbookPath, "utf8")).toBe(original);
+      }
+    });
+  });
+
+  it.serial("keeps both originals and a verified config backup if replacement is interrupted, then retries", async () => {
+    await withLimitRecoveryFixture(async (env, original, originalConfig) => {
+      const interrupted = rememberSpy(spyOn(fs, "rename").mockImplementation(async (...args: Parameters<typeof fs.rename>) => {
+        if (String(args[0]).includes(".recover-limits.") && String(args[0]).endsWith(".tmp")) {
+          throw new Error("injected interrupted recovery rename");
+        }
+        return realRename(...args);
+      }));
+      await expect(recoverTrustedPlaybookLimits(env.playbookPath)).rejects.toThrow("playbook was not modified; verified configuration backup");
+      interrupted.mockRestore();
+      expect(await fs.readFile(env.playbookPath, "utf8")).toBe(original);
+      expect(await fs.readFile(env.configPath, "utf8")).toBe(originalConfig);
+      const backups = (await fs.readdir(env.cassMemoryDir)).filter((entry) => entry.includes(".backup.recover-limits."));
+      expect(backups).toHaveLength(1);
+      expect(await fs.readFile(path.join(env.cassMemoryDir, backups[0]), "utf8")).toBe(originalConfig);
+      const retry = await recoverTrustedPlaybookLimits(env.playbookPath);
+      expect(retry.changed).toBe(true);
+      expect((await loadPlaybook(env.playbookPath)).bullets).toHaveLength(3);
+      expect(await fs.readFile(env.playbookPath, "utf8")).toBe(original);
+    });
+  });
+
+  it.serial("refuses stale recovery when another writer changes either source or config after backup", async () => {
+    for (const changedFile of ["playbook", "config"] as const) {
+      await withLimitRecoveryFixture(async (env, original, originalConfig) => {
+        const changed = changedFile === "playbook" ? original + "\n# external edit\n"
+          : JSON.stringify({ ...JSON.parse(originalConfig), keepExternalEdit: true });
+        let writes = 0;
+        const interference = rememberSpy(spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+          if (args[1] === "wx" && String(args[0]).includes(".recover-limits.") && String(args[0]).endsWith(".tmp")) {
+            writes++;
+            await realWriteFile(changedFile === "playbook" ? env.playbookPath : env.configPath, changed);
+          }
+          return realOpen(...args);
+        }));
+        await expect(recoverTrustedPlaybookLimits(env.playbookPath)).rejects.toThrow("changed during recovery");
+        interference.mockRestore();
+        expect(writes).toBe(1);
+        expect(await fs.readFile(env.playbookPath, "utf8")).toBe(changedFile === "playbook" ? changed : original);
+        expect(await fs.readFile(env.configPath, "utf8")).toBe(changedFile === "config" ? changed : originalConfig);
+      });
+    }
+  });
+
+  it.serial("requires a durable configuration backup and reports a post-replacement flush failure honestly", async () => {
+    for (const failFlush of [1, 2]) {
+      await withLimitRecoveryFixture(async (env, original, originalConfig) => {
+        let flushes = 0;
+        const flushFailure = rememberSpy(spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+          const handle = await realOpen(...args);
+          if (String(args[0]) === env.cassMemoryDir) {
+            const sync = handle.sync.bind(handle);
+            rememberSpy(spyOn(handle, "sync").mockImplementation(async () => {
+              if (++flushes === failFlush) throw new Error("injected recovery directory flush failure");
+              await sync();
+            }));
+          }
+          return handle;
+        }));
+        await expect(recoverTrustedPlaybookLimits(env.playbookPath)).rejects.toThrow(failFlush === 1
+          ? "Limit recovery aborted; playbook was not modified"
+          : "Recovery settings installed, but final directory flush failed; playbook was not modified");
+        flushFailure.mockRestore();
+        expect(flushes).toBe(failFlush);
+        expect(await fs.readFile(env.playbookPath, "utf8")).toBe(original);
+        if (failFlush === 1) expect(await fs.readFile(env.configPath, "utf8")).toBe(originalConfig);
+        else expect((await loadPlaybook(env.playbookPath)).bullets).toHaveLength(3);
+        const backups = (await fs.readdir(env.cassMemoryDir)).filter((entry) => entry.includes(".backup.recover-limits."));
+        expect(backups).toHaveLength(1);
+        expect(await fs.readFile(path.join(env.cassMemoryDir, backups[0]), "utf8")).toBe(originalConfig);
+      });
+    }
   });
 });
 

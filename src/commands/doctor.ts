@@ -4,13 +4,18 @@ import readline from "node:readline";
 import chalk from "chalk";
 import yaml from "yaml";
 import { cassAvailable, cassNeedsIndex, cassSearch, cassStats, safeCassSearch } from "../cass.js";
-import { DEFAULT_CONFIG, loadConfig, patchGlobalConfig } from "../config.js";
+import {
+  DEFAULT_CONFIG,
+  loadConfig,
+  patchGlobalConfig,
+  resolvePlaybookInputLimits,
+  resolveTrustedPlaybookPolicy,
+} from "../config.js";
 import {
   CONFIG_INPUT_LIMITS,
   InputLimitError,
   parseJsonInput,
   parseYamlInput,
-  PLAYBOOK_INPUT_LIMITS,
   readBoundedFile,
 } from "../input-limits.js";
 import {
@@ -79,6 +84,8 @@ export interface FixableIssue {
   fix: () => Promise<void>;
   /** Safety level for auto-apply decisions */
   safety: "safe" | "cautious" | "manual";
+  /** Explicit operator commands for fixes that must never be auto-applied. */
+  howToFix?: string[];
 }
 
 /**
@@ -205,23 +212,48 @@ function playbookRepairPreviewCommand(filePath: string): string {
   return `${getCliName()} playbook repair --strip-embeddings --file ${quotedPath} --dry-run`;
 }
 
+async function playbookLimitRecoveryPreviewCommand(filePath: string): Promise<string | undefined> {
+  try {
+    const policy = await resolveTrustedPlaybookPolicy();
+    if (!policy.trusted || path.resolve(expandPath(filePath)) !== policy.path) return undefined;
+    const quotedPath = `'${filePath.replace(/'/g, "'\\''")}'`;
+    return `${getCliName()} playbook repair --recover-limits --file ${quotedPath} --dry-run`;
+  } catch {
+    // Broken configuration is diagnosed separately and cannot confer trust.
+    return undefined;
+  }
+}
+
+async function doctorGlobalPlaybookPath(): Promise<string> {
+  try {
+    return (await resolveTrustedPlaybookPolicy()).path;
+  } catch {
+    return path.join(resolveGlobalDir(), "playbook.yaml");
+  }
+}
+
 async function checkPlaybookSize(filePath: string): Promise<HealthCheck | null> {
   try {
+    const limits = await resolvePlaybookInputLimits(filePath);
     const stat = await fs.stat(filePath);
-    if (!stat.isFile() || stat.size < PLAYBOOK_INPUT_LIMITS.maxBytes * 0.9) return null;
-    const oversized = stat.size > PLAYBOOK_INPUT_LIMITS.maxBytes;
+    if (!stat.isFile() || stat.size < limits.maxBytes * 0.9) return null;
+    const oversized = stat.size > limits.maxBytes;
     const repairPreviewCommand = playbookRepairPreviewCommand(filePath);
+    const limitRecoveryPreviewCommand = await playbookLimitRecoveryPreviewCommand(filePath);
     return {
       category: "Playbook",
       item: "Playbook size",
       status: oversized ? "fail" : "warn",
-      message: `${stat.size} bytes ${oversized ? "exceeds" : "is near"} the ${PLAYBOOK_INPUT_LIMITS.maxBytes}-byte input limit. ` +
-        `If this is a trusted legacy playbook with inline embeddings, preview recovery: ${repairPreviewCommand}`,
+      message: `${stat.size} bytes ${oversized ? "exceeds" : "is near"} the ${limits.maxBytes}-byte input limit. ` +
+        (limitRecoveryPreviewCommand
+          ? `Preview bounded trusted-local recovery: ${limitRecoveryPreviewCommand}`
+          : `If this is a trusted legacy playbook with inline embeddings, preview recovery: ${repairPreviewCommand}`),
       details: {
         path: filePath,
         sizeBytes: stat.size,
-        maxBytes: PLAYBOOK_INPUT_LIMITS.maxBytes,
+        maxBytes: limits.maxBytes,
         repairPreviewCommand,
+        ...(limitRecoveryPreviewCommand ? { limitRecoveryPreviewCommand } : {}),
       },
     };
   } catch {
@@ -240,12 +272,12 @@ function computeOverallStatus(checks: HealthCheck[]): OverallStatus {
 
 function summarizeFixableIssue(issue: FixableIssue): FixableIssueSummary {
   const cli = getCliName();
-  const howToFix =
+  const howToFix = issue.howToFix ?? (
     issue.safety === "cautious"
       ? [`${cli} doctor --fix --force --no-interactive`]
       : issue.safety === "manual"
         ? undefined
-        : [`${cli} doctor --fix --no-interactive`];
+        : [`${cli} doctor --fix --no-interactive`]);
 
   return {
     id: issue.id,
@@ -319,7 +351,15 @@ function buildRecommendedActions(params: {
   const actions: RecommendedAction[] = [];
 
   for (const check of params.checks) {
-    const details = check.details as { repairPreviewCommand?: string } | undefined;
+    const details = check.details as { repairPreviewCommand?: string; limitRecoveryPreviewCommand?: string } | undefined;
+    if (details?.limitRecoveryPreviewCommand) {
+      actions.push({
+        label: "Preview bounded trusted-local playbook limit recovery",
+        command: details.limitRecoveryPreviewCommand,
+        reason: "Validates the entire trusted global playbook under fixed recovery ceilings and proposes local configuration limits. Applying it leaves every playbook byte unchanged. Doctor never raises parsing limits automatically.",
+        urgency: check.status === "fail" ? "high" : "medium",
+      });
+    }
     if (details?.repairPreviewCommand) {
       actions.push({
         label: "Preview removal of derived inline playbook embeddings",
@@ -514,7 +554,8 @@ async function computeDoctorChecks(
 
   // 2) Global Storage
   const globalDir = resolveGlobalDir();
-  const globalPlaybookExists = await fileExists(path.join(globalDir, "playbook.yaml"));
+  const globalPlaybookPath = await doctorGlobalPlaybookPath();
+  const globalPlaybookExists = await fileExists(globalPlaybookPath);
   // The global config may be config.json, config.yaml or config.yml (#75).
   const globalConfigFile = await resolveGlobalConfigFile();
   const globalConfigExists = globalConfigFile.exists;
@@ -582,7 +623,6 @@ async function computeDoctorChecks(
 
   // 2.6) Global playbook schema version
   if (globalPlaybookExists) {
-    const globalPlaybookPath = path.join(globalDir, "playbook.yaml");
     const schema = await getPlaybookSchemaVersion(globalPlaybookPath);
     if (typeof schema.error === "string") {
       checks.push({
@@ -595,6 +635,7 @@ async function computeDoctorChecks(
         details: {
           path: globalPlaybookPath,
           ...(schema.limitExceeded ? { repairPreviewCommand: playbookRepairPreviewCommand(globalPlaybookPath) } : {}),
+          ...(schema.limitExceeded ? { limitRecoveryPreviewCommand: await playbookLimitRecoveryPreviewCommand(globalPlaybookPath) } : {}),
         },
       });
     } else if ((schema.version ?? 2) < 2) {
@@ -863,7 +904,7 @@ async function computeDoctorChecks(
 
   // Stat only: do not relax readers or parse a legacy file during diagnostics.
   const playbookPaths = new Set([
-    path.resolve(globalDir, "playbook.yaml"),
+    path.resolve(globalPlaybookPath),
     path.resolve(expandPath(config.playbookPath)),
     ...(cassDir ? [path.resolve(cassDir, "playbook.yaml")] : []),
   ]);
@@ -1723,13 +1764,29 @@ export async function detectFixableIssues(
   }
 
   // Check global playbook
-  const globalPlaybookPath = path.join(globalDir, "playbook.yaml");
+  const globalPlaybookPath = await doctorGlobalPlaybookPath();
   const globalPlaybookExists = await fileExists(globalPlaybookPath);
   if (globalDirExists && !globalPlaybookExists) {
     issues.push(createMissingPlaybookFix(globalPlaybookPath));
   }
   if (globalDirExists && globalPlaybookExists) {
     const schema = await getPlaybookSchemaVersion(globalPlaybookPath);
+    if (schema.limitExceeded) {
+      const preview = await playbookLimitRecoveryPreviewCommand(globalPlaybookPath);
+      if (preview) {
+        issues.push({
+          id: "recover-trusted-playbook-limits",
+          description: `Restore bounded loading without changing playbook bytes. Preview: ${preview}`,
+          category: "playbook",
+          severity: "fail",
+          safety: "manual",
+          howToFix: [preview, preview.replace(/ --dry-run$/, "")],
+          fix: async () => {
+            throw new Error("Raising trusted parsing limits requires the explicit playbook repair --recover-limits command");
+          },
+        });
+      }
+    }
     if ((schema.version ?? 2) < 2) {
       issues.push(createPlaybookSchemaMigrationFix(globalPlaybookPath, "global"));
     }

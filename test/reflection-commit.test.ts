@@ -4,7 +4,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
-import { PLAYBOOK_INPUT_LIMITS } from "../src/input-limits.js";
+import { assertInputLimits, PLAYBOOK_INPUT_LIMITS } from "../src/input-limits.js";
 import { forgetCommand } from "../src/commands/forget.js";
 import { recordFeedback } from "../src/commands/mark.js";
 import { undoCommand } from "../src/commands/undo.js";
@@ -104,6 +104,98 @@ async function pendingData(globalPath: string) {
 }
 
 describe("prepared reflection commits", () => {
+  test("stages and recovers a trusted playbook beyond the ordinary node ceiling without changing history", async () => {
+    await withFixture(async f => {
+      await fs.writeFile(f.env.configPath, JSON.stringify({ playbookLimits: { maxNodes: 500_000 } }));
+      const feedback = Array.from({ length: 3 }, (_, index) => ({
+        type: "helpful" as const, timestamp: "2026-10-27T12:00:00.000Z",
+        sessionPath: `/sessions/prior-${index}.jsonl`, context: `Preserved evidence ${index}`,
+      }));
+      const legacy = createTestPlaybook(Array.from({ length: 32 }, (_, index) => createBullet({
+        id: `b-legacy-${index}`, content: `Preserve the learned instruction for subsystem ${index}.`,
+        helpfulCount: 3, feedbackEvents: feedback.map(event => ({ ...event })),
+      })));
+      const historicalValues = Array.from({ length: 20 }, () => Array.from({ length: 10_000 }, () => 0));
+      Object.assign(legacy.metadata, { producerVersion: "0.5.0", extension: { preserved: true }, historicalValues });
+      Object.assign(legacy.bullets[1]!, { reviewedBy: "original producer", priorVersions: ["kept verbatim"] });
+      expect(() => assertInputLimits(legacy, PLAYBOOK_INPUT_LIMITS, "legacy fixture")).toThrow("expanded value count");
+      // Simulate the old producer directly. The transaction itself must perform
+      // all bounded reads, writes, and recovery of this over-default document.
+      await fs.writeFile(f.env.playbookPath, yaml.stringify(legacy, { aliasDuplicateObjects: false }));
+
+      // Interrupt after the trusted global replacement but before the repo
+      // replacement. Recovery must read and flush the large already-applied
+      // target using its original provenance, and must not replay feedback.
+      await publishBeforeRepositoryWrite(f);
+      const recovery = await recoverReflectionCommit(f.env.playbookPath);
+      expect(recovery?.sessionsProcessed).toBe(1);
+      const saved = await loadPlaybook(f.env.playbookPath);
+      expect(saved.bullets).toHaveLength(32);
+      expect(saved.bullets.slice(1)).toEqual(legacy.bullets.slice(1));
+      expect(saved.bullets[0]!.feedbackEvents).toEqual(legacy.bullets[0]!.feedbackEvents);
+      expect(saved.metadata).toMatchObject({
+        producerVersion: "0.5.0", extension: { preserved: true }, totalReflections: 1, totalSessionsProcessed: 1,
+      });
+      expect((saved.metadata as any).historicalValues).toEqual(historicalValues);
+      expect((await loadPlaybook(f.repoPath)).bullets[0]!.feedbackEvents).toHaveLength(1);
+      expect(await recoverReflectionCommit(f.env.playbookPath)).toBeNull();
+    });
+  }, 30_000);
+
+  test("trusted byte overrides follow a payload through interrupted publication and recovery", async () => {
+    await withFixture(async f => {
+      await fs.writeFile(f.env.configPath, JSON.stringify({ playbookLimits: { maxBytes: 32 * 1024 * 1024 } }));
+      const original = await loadPlaybook(f.env.playbookPath);
+      original.description = "x".repeat(PLAYBOOK_INPUT_LIMITS.maxBytes + 1);
+      await savePlaybook(original, f.env.playbookPath);
+      let transaction!: ReflectionCommit;
+      await withLock(f.env.playbookPath, async () => {
+        transaction = await f.prepare();
+        await publishBeforeFirstWrite(f, transaction);
+        expect(await transaction.abort()).toBe(false);
+      });
+      expect((await recoverReflectionCommit(f.env.playbookPath))?.id).toBe(transaction.id);
+      const saved = await loadPlaybook(f.env.playbookPath);
+      expect(saved.description).toBe(original.description);
+      expect(saved.metadata.totalReflections).toBe(1);
+      expect(saved.metadata.totalSessionsProcessed).toBe(1);
+      expect(await recoverReflectionCommit(f.env.playbookPath)).toBeNull();
+    });
+  }, 30_000);
+
+  test("global overrides never enlarge repository payload ceilings, including checksum-valid recovery files", async () => {
+    await withFixture(async f => {
+      await fs.writeFile(f.env.configPath, JSON.stringify({ playbookLimits: { maxNodes: 500_000 } }));
+      // Bounded arrays whose combined expanded size exceeds the repository
+      // ceiling; extension state is subject to the same ceiling as rules.
+      const malicious = createTestPlaybook([]);
+      Object.assign(malicious.metadata, {
+        repositoryData: Array.from({ length: 21 }, () => Array.from({ length: 10_000 }, () => 0)),
+      });
+      const encoded = yaml.stringify(malicious, { aliasDuplicateObjects: false });
+      expect(() => assertInputLimits(malicious, PLAYBOOK_INPUT_LIMITS, "repository fixture")).toThrow("expanded value count");
+      await withLock(f.env.playbookPath, async () => {
+        const transaction = await ReflectionCommit.create(f.env.playbookPath, f.logPath, [f.entry]);
+        await expect(transaction.savePlaybook(malicious, f.repoPath)).rejects.toThrow("expanded value count");
+        expect(await transaction.abort()).toBe(true);
+      });
+
+      await withLock(f.env.playbookPath, async () => publishBeforeFirstWrite(f, await f.prepare()));
+      const { pending, manifest, directory } = await pendingData(f.env.playbookPath);
+      const repoTarget = manifest.targets.find((target: { path: string }) => target.path === f.repoPath);
+      await fs.writeFile(path.join(directory, repoTarget.file), encoded);
+      repoTarget.afterSha256 = crypto.createHash("sha256").update(encoded).digest("hex");
+      await fs.writeFile(pending, JSON.stringify(manifest));
+      const globalBefore = await fs.readFile(f.env.playbookPath, "utf8");
+      const repoBefore = await fs.readFile(f.repoPath, "utf8");
+      await expect(recoverReflectionCommit(f.env.playbookPath)).rejects.toThrow("expanded value count");
+      expect(await fs.readFile(f.env.playbookPath, "utf8")).toBe(globalBefore);
+      expect(await fs.readFile(f.repoPath, "utf8")).toBe(repoBefore);
+      expect(await Bun.file(pending).exists()).toBe(true);
+      expect(await Bun.file(f.logPath).exists()).toBe(false);
+    });
+  }, 30_000);
+
   test("stages accumulated changes and preserves extension state while stripping derived embeddings", async () => {
     await withFixture(async f => {
       const original = await loadPlaybook(f.env.playbookPath);
@@ -192,6 +284,37 @@ describe("prepared reflection commits", () => {
       expect((await fs.lstat(finalLink)).isSymbolicLink()).toBe(false);
       expect(await fs.readFile(f.env.playbookPath, "utf8")).toBe(original);
       expect((await loadPlaybook(finalLink)).bullets[0]!.content).toContain("logical file address");
+    });
+  });
+
+  test.skipIf(process.platform === "win32")("a repository directory alias cannot inherit the global playbook's configured parsing budget", async () => {
+    await withFixture(async f => {
+      await fs.writeFile(f.env.configPath, JSON.stringify({ playbookLimits: { maxNodes: 500_000 } }));
+      const repository = path.join(f.env.home, "untrusted-checkout");
+      await fs.mkdir(repository);
+      execFileSync("git", ["init", "--quiet", repository]);
+      await fs.symlink(f.env.cassMemoryDir, path.join(repository, ".cass"), "dir");
+      const alias = path.join(repository, ".cass", "playbook.yaml");
+      const before = await fs.readFile(f.env.playbookPath, "utf8");
+      await expect(ReflectionCommit.create(alias, f.logPath, [f.entry])).rejects.toThrow("path alias cannot change input limits");
+      await withLock(f.env.playbookPath, async () => {
+        const transaction = await ReflectionCommit.create(f.env.playbookPath, f.logPath, [f.entry]);
+        // The trusted path being captured first must not grant its later alias
+        // authority through an already-existing target record.
+        await transaction.loadPlaybook(f.env.playbookPath);
+        await expect(transaction.loadPlaybook(alias)).rejects.toThrow("path alias cannot change input limits");
+        await expect(transaction.savePlaybook(createEmptyPlaybook(), alias)).rejects.toThrow("path alias cannot change input limits");
+        expect(await transaction.abort()).toBe(true);
+      });
+      expect(await fs.readFile(f.env.playbookPath, "utf8")).toBe(before);
+
+      await withLock(f.env.playbookPath, async () => publishBeforeFirstWrite(f, await f.prepare()));
+      const pending = reflectionCommitPendingPath(f.env.playbookPath);
+      const journal = await fs.readFile(pending, "utf8");
+      await expect(recoverReflectionCommit(alias)).rejects.toThrow("path alias cannot change input limits");
+      expect(await fs.readFile(pending, "utf8")).toBe(journal);
+      expect(await fs.readFile(f.env.playbookPath, "utf8")).toBe(before);
+      expect((await recoverReflectionCommit(f.env.playbookPath))?.sessionsProcessed).toBe(1);
     });
   });
 

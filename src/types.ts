@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { CONFIG_INPUT_LIMITS, PLAYBOOK_INPUT_LIMITS } from "./input-limits.js";
+import { CONFIG_INPUT_LIMITS, PLAYBOOK_INPUT_LIMITS, TRUSTED_PLAYBOOK_INPUT_CEILING } from "./input-limits.js";
 import { DEFAULT_CLI_SUBPROCESS_CWD, isValidCliSubprocessCwd } from "./subprocess-tag.js";
 
 // ============================================================================
@@ -415,6 +415,16 @@ export type ServeConfig = z.infer<typeof ServeConfigSchema>;
  */
 export const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5";
 
+/** Only independently selected global configuration may authorize these budgets. */
+export const PlaybookLimitsSchema = z.object({
+  maxBytes: z.number().int().positive().max(TRUSTED_PLAYBOOK_INPUT_CEILING.maxBytes)
+    .default(PLAYBOOK_INPUT_LIMITS.maxBytes),
+  maxNodes: z.number().int().positive().max(TRUSTED_PLAYBOOK_INPUT_CEILING.maxNodes)
+    .default(PLAYBOOK_INPUT_LIMITS.maxNodes),
+  maxArrayLength: z.number().int().positive().max(TRUSTED_PLAYBOOK_INPUT_CEILING.maxArrayLength)
+    .default(PLAYBOOK_INPUT_LIMITS.maxArrayLength),
+}).strict();
+
 export const ConfigSchema = z.object({
   schema_version: z.number().default(1),
   llm: z
@@ -444,6 +454,7 @@ export const ConfigSchema = z.object({
   cassTimelineTimeoutSeconds: z.number().int().positive().default(120),
   remoteCass: RemoteCassConfigSchema.prefault({}),
   playbookPath: z.string().default("~/.cass-memory/playbook.yaml"),
+  playbookLimits: PlaybookLimitsSchema.prefault({}),
   diaryDir: z.string().default("~/.cass-memory/diary"),
   scoring: ScoringConfigSectionSchema.prefault({}),
   maxReflectorIterations: z.number().default(3),
