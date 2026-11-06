@@ -3391,6 +3391,19 @@ function defaultRecoveryForCode(code: string, cli: string): string[] | undefined
   }
 }
 
+// An over-limit input is not a crash. The usual case is a global playbook that
+// an older cm grew past the default budget, and cm has its own way out of that,
+// so point there rather than at a bug report.
+function inputLimitRecovery(err: unknown, cli: string): string[] | undefined {
+  if (!(err instanceof InputLimitError)) return undefined;
+  return [
+    `Run '${cli} doctor' to see which file exceeded which limit.`,
+    `If it is your global playbook, preview '${cli} playbook repair --recover-limits --dry-run'. It proposes playbookLimits for the global config and leaves the playbook unchanged.`,
+    `To move retired rules out of the global playbook, preview '${cli} playbook archive --retired --dry-run'.`,
+    "Repository, imported and shared inputs keep fixed limits; reduce or split those inputs.",
+  ];
+}
+
 export function getExitCodeForError(err: unknown, code?: string): number {
   const category = (code ? CM_ERROR_CODE_CATEGORIES[code] : undefined) ?? categorizeError(err);
   return ERROR_CATEGORY_EXIT_CODES[category] ?? 1;
@@ -3409,6 +3422,7 @@ export function buildJsonErrorPayload(
     (Array.isArray(options.recovery) && options.recovery.length > 0
       ? options.recovery
       : undefined) ??
+    inputLimitRecovery(err, cli) ??
     defaultRecoveryForCode(code, cli) ??
     defaultRecoveryForCategory(category, cli);
   const docs = options.docs ?? defaultDocsForCode(code);

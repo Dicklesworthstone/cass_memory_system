@@ -197,7 +197,15 @@ describe("E2E: cm playbook repair", () => {
       await writeFile(env.playbookPath, original);
       const failedStats = await runCli(env, ["stats", "--json"]);
       expect(failedStats.exitCode).not.toBe(0);
-      expect(JSON.parse(failedStats.stdout).success).toBe(false);
+      const failure = JSON.parse(failedStats.stdout);
+      expect(failure.success).toBe(false);
+      // The failure must lead to cm's own recovery, not to a bug report (#101).
+      const steps: string[] = failure.error.recovery;
+      expect(steps.some(step => step.includes("playbook repair --recover-limits --dry-run"))).toBe(true);
+      expect(steps.some(step => step.includes("bug report"))).toBe(false);
+      const failedContext = await runCli(env, ["context", "Preserve recovery evidence", "--history", "0"]);
+      expect(failedContext.exitCode).not.toBe(0);
+      expect(failedContext.stderr).toContain("playbook repair --recover-limits --dry-run");
 
       const preview = await runCli(env, ["playbook", "repair", "--recover-limits", "--dry-run", "--json"]);
       expect(preview.exitCode).toBe(0);
