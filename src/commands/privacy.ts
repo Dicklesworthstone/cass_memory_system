@@ -59,6 +59,8 @@ async function loadGlobalConfigEnsuringInit(): Promise<Config> {
 
   const merged: unknown = {
     ...defaultConfig,
+    // Resolve the model default after the configured provider is known (#102).
+    model: undefined,
     ...raw,
     sanitization: {
       ...defaultConfig.sanitization,

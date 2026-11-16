@@ -1805,14 +1805,38 @@ requires the operator to change or unset it.
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `provider` | `"anthropic"` | LLM provider: `anthropic`, `openai`, `google` |
-| `model` | `"claude-sonnet-5"` | Model for reflection |
+| `provider` | `"anthropic"` | LLM provider: `anthropic`, `openai`, `google`, `ollama`, `bedrock`, `cli` |
+| `model` | `"default"` for `cli`; `"claude-sonnet-5"` otherwise | Model for reflection. The CLI provider passes a selected model as `--model <model>`; `"default"` uses the CLI's own configured model. |
 | `baseUrl` | _(unset)_ | Custom base URL for OpenAI-compatible gateways (OpenRouter, Z.AI, Azure, etc.) |
 | `disableStructuredOutputs` | `false` | Opt-in escape hatch for OpenAI strict structured-outputs mode. The reflect/audit/validate Zod schemas are written to be strict-compliant, but if you hit `cm reflect` returning zero deltas with "Invalid JSON response" warnings on a particular gateway/model combination (see #47), flipping this to `true` falls back to plain JSON mode while still applying the schemas as a post-hoc validator. Leave `false` unless you've confirmed strict-mode is the failure surface. |
+| `cliCommand` | _(auto-detected)_ | CLI executable name or path. Overrides `CASS_CLI_COMMAND`; otherwise cm looks for `claude`, `codex`, then `gemini`. Keep model selection in `model`, not in this executable name. |
 | `cliSubprocessCwd` | `"~/.cass-memory/llm-subprocess-cwd"` | Working directory for cm's own LLM subprocesses on `provider: "cli"`. Agent CLIs name their per-project transcript folder after the working directory, so running cm's `claude -p` / `codex` / `gemini` calls in one cm-owned directory keeps every transcript cm generates in a single place that `cm reflect` skips — otherwise cm reads its own prompts back as work sessions and grades its own rules (#76). Must be absolute or `~`-rooted; set to `""` to inherit cm's own working directory (the prompt still carries an internal marker that `reflect` recognises). |
 | `budget.dailyLimit` | `1.00` | Daily threshold for estimated API spend (USD); nonpositive values mean unlimited |
 | `budget.monthlyLimit` | `20.00` | Monthly threshold for estimated API spend (USD); nonpositive values mean unlimited |
 | `budget.warningThreshold` | `80` | Percentage before warning |
+
+To use a separate reflection model with your existing Claude Code login, set:
+
+```json
+{
+  "provider": "cli",
+  "cliCommand": "claude",
+  "model": "haiku"
+}
+```
+
+This passes `--model haiku` on every diary, reflector, and validator call,
+including retries, without changing your interactive Claude Code model. Use
+`"sonnet"` or another model identifier supported by your CLI as needed. Absolute
+paths to Claude retain `-p --strict-mcp-config` as well as the model selection.
+
+With `provider: "cli"`, omitting `model` or setting it to `"default"` leaves model
+selection to the CLI. An explicitly configured model is always honored, even if
+it equals cm's API default; when changing an existing config to the CLI provider,
+set `model` to your intended choice or to `"default"`. Automatic fallback from an
+API provider to a CLI uses the CLI default rather than the API provider's model.
+Codex and Gemini also receive `--model`; custom wrapper scripts must accept or
+forward that option, or use `"model": "default"` to manage selection themselves.
 
 #### Scoring Settings
 

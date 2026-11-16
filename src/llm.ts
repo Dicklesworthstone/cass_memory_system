@@ -8,6 +8,7 @@ import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createOpenAI } from "@ai-sdk/openai";
 import { generateObject, type LanguageModel, zodSchema } from "ai";
 import { AsyncLocalStorage } from "node:async_hooks";
+import path from "node:path";
 import { createOllama } from "ollama-ai-provider-v2";
 import { z } from "zod";
 import { BudgetAdmissionError, recordCost, withBudgetAdmission } from "./cost.js";
@@ -365,6 +366,7 @@ function extractJsonFromOutput(output: string): string {
 /**
  * Call an LLM via a CLI tool (claude, codex, gemini, etc.).
  * Pipes the prompt via stdin and parses JSON from stdout.
+ * A selected model is passed as --model; "default" leaves selection to the CLI.
  */
 export async function cliGenerateObject<T>(
   schema: z.ZodSchema<T>,
@@ -372,6 +374,7 @@ export async function cliGenerateObject<T>(
   cliCommand?: string,
   timeoutMs?: number,
   cliSubprocessCwd?: string,
+  model?: string,
 ): Promise<{ object: T; usage: LLMUsage }> {
   const cmd = resolveCliCommand(cliCommand);
   if (!cmd) {
@@ -413,8 +416,17 @@ export async function cliGenerateObject<T>(
 
   // Resolve invocation pattern — prompt is always piped via stdin to avoid
   // hitting OS argument length limits on long reflection prompts.
-  const toolConfig = CLI_TOOL_CONFIGS[cmd] ?? { flags: [] };
+  // Recognize known tools even when cliCommand names an absolute path or a
+  // Windows launcher, so Claude retains print mode and MCP isolation (#102).
+  const toolName = path.basename(cmd).replace(/\.(exe|cmd|bat)$/i, "").toLowerCase();
+  const toolConfig = CLI_TOOL_CONFIGS[toolName] ?? { flags: [] };
   const spawnArgs = [cmd, ...toolConfig.flags];
+  const selectedModel = model?.trim();
+  if (selectedModel && selectedModel !== "default") {
+    // All supported tools accept --model. Custom wrappers must forward it.
+    // Keep the value as one argv entry; never interpret it as shell syntax.
+    spawnArgs.push("--model", selectedModel);
+  }
 
   // Per-call subprocess timeout. A full reflector generation (up to 20 detailed
   // deltas) on the CLI path can exceed the old hardcoded 120s and get killed on
@@ -1054,7 +1066,9 @@ export function resolveEffectiveLLMConfig(config: Config): Config {
   // user's explicit choice, mirroring llmWithFallback()/doctor.
   const hasApiKeyOverride = typeof config.apiKey === "string" && config.apiKey.trim() !== "";
   const usesImplicitAuth = provider === "ollama" || provider === "bedrock";
-  if (hasApiKeyOverride || usesImplicitAuth || isLLMAvailable(provider)) return config;
+  const providerAvailable =
+    provider === "cli" ? isCliAvailable(config.cliCommand) : isLLMAvailable(provider);
+  if (hasApiKeyOverride || usesImplicitAuth || providerAvailable) return config;
 
   const available = getAvailableProviders();
   for (const fallback of FALLBACK_ORDER) {
@@ -1105,6 +1119,7 @@ export async function generateObjectSafe<T>(
           config.cliCommand,
           config.llmTimeoutMs,
           config.cliSubprocessCwd,
+          config.model,
         );
         return result.object;
       } catch (err: any) {
@@ -1632,6 +1647,7 @@ export async function llmWithFallback<T>(
           config.cliCommand,
           config.llmTimeoutMs,
           config.cliSubprocessCwd,
+          model,
         );
         return result.object;
       }

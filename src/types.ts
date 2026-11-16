@@ -439,7 +439,9 @@ export const ConfigSchema = z.object({
     })
     .optional(),
   provider: LLMProviderEnum.default("anthropic"),
-  model: z.string().default(DEFAULT_ANTHROPIC_MODEL),
+  // Resolve an omitted model after the provider is known. CLI tools should use
+  // their own configured model rather than inherit an Anthropic API model.
+  model: z.string().optional(),
   // Resolved LLM timeouts (per-operation / total across retries) in ms. Optional;
   // when unset the LLM layer falls back to env vars then hardcoded defaults. These
   // are populated from `llm.timeoutMs` / `llm.totalTimeoutMs` by the config loader.
@@ -594,7 +596,10 @@ export const ConfigSchema = z.object({
         'cliSubprocessCwd must be an absolute path, a ~-rooted path, or "" to inherit cm\'s working directory',
     })
     .default(DEFAULT_CLI_SUBPROCESS_CWD),
-});
+}).transform((config) => ({
+  ...config,
+  model: config.model ?? (config.provider === "cli" ? "default" : DEFAULT_ANTHROPIC_MODEL),
+}));
 export type Config = z.infer<typeof ConfigSchema>;
 
 // ============================================================================

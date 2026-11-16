@@ -2,8 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { readFile, writeFile } from "node:fs/promises";
 import type { CassRunner } from "../src/cass.js";
 import { privacyCommand } from "../src/commands/privacy.js";
-import { getDefaultConfig } from "../src/config.js";
-import type { Config } from "../src/types.js";
+import { getDefaultConfig, loadConfig } from "../src/config.js";
+import { type Config, DEFAULT_ANTHROPIC_MODEL } from "../src/types.js";
 import { type TestEnv, withTempCassHome } from "./helpers/temp.js";
 
 function createCassRunnerForTimeline(stdout: string): CassRunner {
@@ -80,6 +80,20 @@ async function captureConsoleOutput<T>(
 }
 
 describe("privacy command (unit)", () => {
+  for (const model of [undefined, "haiku", DEFAULT_ANTHROPIC_MODEL]) {
+    test(`preserves CLI model ${JSON.stringify(model)} when saving privacy settings (#102)`, async () => {
+      await withTempCassHome(async (env) => {
+        await writeFile(env.configPath, JSON.stringify({ provider: "cli", model }));
+        await captureConsoleOutput(() => privacyCommand("disable", [], { json: true }));
+
+        const persisted = JSON.parse(await readFile(env.configPath, "utf8"));
+        expect(persisted.provider).toBe("cli");
+        expect(persisted.model).toBe(model ?? "default");
+        expect((await loadConfig()).model).toBe(model ?? "default");
+      });
+    });
+  }
+
   test("status --json reports cass unavailable without depending on cass binary", async () => {
     await withTempCassHome(async (env) => {
       await seedGlobalConfig(env, { cassPath: "/__missing__/cass" });

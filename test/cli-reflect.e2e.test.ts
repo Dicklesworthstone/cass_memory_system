@@ -308,7 +308,8 @@ describe("E2E: reflect failure status (#99)", () => {
       await withTempCassHome(async env => {
         await setup(env);
         const sessionPath = await writeSession(env, "later-pass-failure");
-        const cliPath = path.join(env.home, "fixture-llm");
+        const cliPath = path.join(env.home, "claude");
+        const cliCallsPath = path.join(env.home, "reflection-cli-calls.jsonl");
         const proposal = {
           type: "add",
           bullet: {
@@ -320,7 +321,12 @@ describe("E2E: reflect failure status (#99)", () => {
         // Use the supported CLI-provider protocol and real reflector loop;
         // an environment reflector response would bypass iterative failure.
         await writeFile(cliPath, `#!${process.execPath}
+import { appendFileSync } from "node:fs";
 const prompt = await Bun.stdin.text();
+appendFileSync(${JSON.stringify(cliCallsPath)}, JSON.stringify({
+  kind: prompt.includes("extract reusable lessons for a playbook") ? "reflector" : "diary",
+  argv: process.argv.slice(2),
+}) + "\\n");
 if (prompt.includes("extract reusable lessons for a playbook")) {
   if (prompt.includes("This is iteration 2.")) {
     if (process.env.CASS_TEST_REFLECTION_COMPLETES === "1") console.log('{"deltas":[]}');
@@ -337,7 +343,7 @@ if (prompt.includes("extract reusable lessons for a playbook")) {
 `, { mode: 0o755 });
         const config = JSON.parse(await readFile(env.configPath, "utf8"));
         await writeFile(env.configPath, JSON.stringify({
-          ...config, provider: "cli", cliCommand: cliPath, maxReflectorIterations: 3,
+          ...config, provider: "cli", model: "haiku", cliCommand: cliPath, maxReflectorIterations: 3,
         }));
         const realProvider = {
           CASS_MEMORY_LLM: undefined, CM_REFLECTOR_STUBS: undefined, CASS_CLI_COMMAND: cliPath,
@@ -384,6 +390,15 @@ if (prompt.includes("extract reusable lessons for a playbook")) {
         expect(saved.bullets.map(bullet => bullet.content)).toEqual([rule]);
         expect(saved.metadata.totalReflections).toBe(1);
         expect(saved.metadata.totalSessionsProcessed).toBe(1);
+        // The persisted model must reach every diary/reflector subprocess,
+        // including failed passes and the later successful retry (#102).
+        const cliCalls = (await readFile(cliCallsPath, "utf8")).trim().split("\n")
+          .map(line => JSON.parse(line) as { kind: string; argv: string[] });
+        expect(cliCalls.some(call => call.kind === "diary")).toBe(true);
+        expect(cliCalls.some(call => call.kind === "reflector")).toBe(true);
+        for (const call of cliCalls) {
+          expect(call.argv).toEqual(["-p", "--strict-mcp-config", "--model", "haiku"]);
+        }
       });
     });
 

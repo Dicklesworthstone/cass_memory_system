@@ -15,7 +15,7 @@ import {
 } from "../src/config.js";
 import { CONFIG_INPUT_LIMITS, InputLimitError } from "../src/input-limits.js";
 import { getEmbeddingBackend, getSemanticStatus, setEmbeddingBackend } from "../src/semantic.js";
-import { type Config, ConfigSchema } from "../src/types.js";
+import { type Config, ConfigSchema, DEFAULT_ANTHROPIC_MODEL } from "../src/types.js";
 import { ensureGlobalStructure } from "../src/utils.js";
 import {
   cleanupEnvironment,
@@ -306,6 +306,59 @@ describe("loadConfig() - CLI overrides", () => {
 // =============================================================================
 // loadConfig() - Global config file
 // =============================================================================
+describe("CLI model configuration (#102)", () => {
+  test("defaults only the CLI provider to its own model selection", () => {
+    expect(ConfigSchema.parse({ provider: "cli" }).model).toBe("default");
+    expect(ConfigSchema.parse({}).model).toBe(DEFAULT_ANTHROPIC_MODEL);
+    expect(ConfigSchema.parse({ provider: "openai" }).model).toBe(DEFAULT_ANTHROPIC_MODEL);
+  });
+
+  test("preserves every explicit model, including the Anthropic default and CLI sentinel", () => {
+    for (const model of ["sonnet", "haiku", DEFAULT_ANTHROPIC_MODEL, "default"]) {
+      expect(ConfigSchema.parse({ provider: "cli", model }).model).toBe(model);
+    }
+    expect(ConfigSchema.safeParse({ provider: "cli", model: null }).success).toBe(false);
+  });
+
+  for (const format of ["json", "yaml"] as const) {
+    test(`honors missing models, explicit models and overrides from ${format} config`, async () => {
+      await withTempCassHome(async env => {
+        const configPath = join(env.cassMemoryDir, `config.${format}`);
+        await writeFile(configPath, format === "json" ? '{"provider":"cli"}' : "provider: cli\n");
+        expect((await loadConfig()).model).toBe("default");
+        await writeFile(configPath, format === "json"
+          ? '{"provider":"cli","model":"haiku"}'
+          : "provider: cli\nmodel: haiku\n");
+        expect((await loadConfig()).model).toBe("haiku");
+        expect((await loadConfig({ model: "sonnet" })).model).toBe("sonnet");
+        expect((await loadConfig({ model: DEFAULT_ANTHROPIC_MODEL })).model).toBe(DEFAULT_ANTHROPIC_MODEL);
+      });
+    });
+  }
+
+  test("uses the CLI default for a provider override without a configured model", async () => {
+    await withTempCassHome(async () => {
+      expect((await loadConfig({ provider: "cli" })).model).toBe("default");
+    });
+  });
+
+  test("preserves repository and legacy model precedence", async () => {
+    await withTempCassHome(async env => {
+      await writeFile(env.configPath, JSON.stringify({ llm: { provider: "cli", model: "haiku" } }));
+      expect((await loadConfig()).model).toBe("haiku");
+      await withTempDir("cli-model-repo", async repoDir => {
+        execSync("git init --quiet", { cwd: repoDir, stdio: "pipe" });
+        await mkdir(join(repoDir, ".cass"));
+        await writeFile(join(repoDir, ".cass", "config.json"), JSON.stringify({ model: "sonnet" }));
+        const config = await loadConfig({}, { cwd: repoDir });
+        expect(config.provider).toBe("cli");
+        expect(config.model).toBe("sonnet");
+        expect((await loadConfig({ model: "default" }, { cwd: repoDir })).model).toBe("default");
+      });
+    });
+  });
+});
+
 describe("loadConfig() - Global config file", () => {
   test("loads config from ~/.cass-memory/config.json when present", async () => {
     await withTempCassHome(async (env) => {

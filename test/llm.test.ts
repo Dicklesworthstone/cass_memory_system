@@ -6,6 +6,7 @@ import { z } from "zod";
 import { checkBudget, getUsageStats, recordCost, withBudgetAdmission, type CostEntry } from "../src/cost.js";
 import {
   __resetAutoFallbackNoticeForTest,
+  cliGenerateObject,
   fillPrompt,
   generateObjectSafe,
   getApiKey,
@@ -1326,6 +1327,122 @@ describe("LLM integration (skipped if no API keys)", () => {
             : "gemini-1.5-flash",
     });
     expect(model).toBeDefined();
+  });
+});
+
+describe("CLI model selection (#102)", () => {
+  const schema = z.object({ value: z.string() });
+
+  beforeEach(() => {
+    saveEnv();
+    clearAllApiKeys();
+  });
+  afterEach(() => restoreEnv());
+
+  async function makeCli(dir: string, name = "claude", failFirst = false) {
+    const tool = path.join(dir, name);
+    const logPath = path.join(dir, "calls.jsonl");
+    await fs.writeFile(tool, `#!${process.execPath}
+import { appendFileSync, existsSync } from "node:fs";
+const first = !existsSync(${JSON.stringify(logPath)});
+const prompt = await Bun.stdin.text();
+appendFileSync(${JSON.stringify(logPath)}, JSON.stringify({ argv: process.argv.slice(2), prompt }) + "\\n");
+console.log(${failFirst} && first ? "invalid JSON" : '{"value":"ok"}');
+`, { mode: 0o755 });
+    return {
+      tool,
+      calls: async () => (await fs.readFile(logPath, "utf8")).trim().split("\n")
+        .map(line => JSON.parse(line) as { argv: string[]; prompt: string }),
+    };
+  }
+
+  for (const name of ["claude", "claude.exe", "codex", "gemini", "custom-cm"]) {
+    it(`passes the selected model to ${name} as a separate argument`, async () => {
+      await withTempDir("cli-model-argv", async dir => {
+        const cli = await makeCli(dir, name);
+        const model = "reflection-model";
+        const result = await cliGenerateObject(schema, "reflection prompt", cli.tool, 10_000, "", model);
+        expect(result.object).toEqual({ value: "ok" });
+        const calls = await cli.calls();
+        const expectedFlags = name.startsWith("claude") ? ["-p", "--strict-mcp-config"] : [];
+        expect(calls).toHaveLength(1);
+        expect(calls[0].argv).toEqual([...expectedFlags, "--model", model]);
+        expect(calls[0].prompt).toContain("reflection prompt");
+      });
+    });
+  }
+
+  for (const model of [undefined, "", "default"]) {
+    it(`preserves the CLI default when model is ${JSON.stringify(model)}`, async () => {
+      await withTempDir("cli-model-default", async dir => {
+        const cli = await makeCli(dir);
+        await cliGenerateObject(schema, "prompt", cli.tool, 10_000, "", model);
+        expect((await cli.calls())[0].argv).toEqual(["-p", "--strict-mcp-config"]);
+      });
+    });
+  }
+
+  it("does not interpret shell syntax in the model argument", async () => {
+    await withTempDir("cli-model-literal", async dir => {
+      const cli = await makeCli(dir);
+      const marker = path.join(dir, "model-was-executed");
+      const model = `sonnet $(touch ${marker})`;
+      await cliGenerateObject(schema, "prompt", cli.tool, 10_000, "", model);
+      expect((await cli.calls())[0].argv).toEqual(["-p", "--strict-mcp-config", "--model", model]);
+      expect(await Bun.file(marker).exists()).toBe(false);
+    });
+  });
+
+  for (const entrypoint of ["generateObjectSafe", "llmWithFallback"] as const) {
+    it(`${entrypoint} forwards the configured reflection model`, async () => {
+      await withTempDir("cli-model-primary", async dir => {
+        const cli = await makeCli(dir);
+        process.env.CASS_CLI_COMMAND = cli.tool;
+        const config = createTestConfig({
+          provider: "cli", model: "haiku", cliCommand: cli.tool, cliSubprocessCwd: "",
+        });
+        const result = entrypoint === "generateObjectSafe"
+          ? await generateObjectSafe(schema, "prompt", config, 1)
+          : await llmWithFallback(schema, "prompt", config);
+        expect(result).toEqual({ value: "ok" });
+        expect((await cli.calls())[0].argv).toEqual(["-p", "--strict-mcp-config", "--model", "haiku"]);
+      });
+    });
+
+    it(`${entrypoint} uses the CLI default on an automatic API-provider fallback`, async () => {
+      await withTempDir("cli-model-fallback", async dir => {
+        const cli = await makeCli(dir);
+        process.env.CASS_CLI_COMMAND = cli.tool;
+        const config = createTestConfig({ provider: "openai", model: "gpt-api-only", cliSubprocessCwd: "" });
+        const result = entrypoint === "generateObjectSafe"
+          ? await generateObjectSafe(schema, "prompt", config, 1)
+          : await llmWithFallback(schema, "prompt", config);
+        expect(result).toEqual({ value: "ok" });
+        expect((await cli.calls())[0].argv).toEqual(["-p", "--strict-mcp-config"]);
+      });
+    });
+  }
+
+  it("retains the selected model when retrying invalid CLI output", async () => {
+    await withTempDir("cli-model-retry", async dir => {
+      const cli = await makeCli(dir, "claude", true);
+      process.env.CASS_CLI_COMMAND = cli.tool;
+      const config = createTestConfig({ provider: "cli", model: "sonnet", cliCommand: cli.tool, cliSubprocessCwd: "" });
+      expect(await generateObjectSafe(schema, "prompt", config, 2)).toEqual({ value: "ok" });
+      const calls = await cli.calls();
+      expect(calls).toHaveLength(2);
+      for (const call of calls) expect(call.argv).toEqual(["-p", "--strict-mcp-config", "--model", "sonnet"]);
+      expect(calls[1].prompt).toContain("PREVIOUS ATTEMPT FAILED");
+    });
+  });
+
+  it("keeps an explicit CLI command and model despite another available API provider", async () => {
+    await withTempDir("cli-model-availability", async dir => {
+      const cli = await makeCli(dir);
+      process.env.OPENAI_API_KEY = "sk-test-unrelated-provider";
+      const config = createTestConfig({ provider: "cli", model: "haiku", cliCommand: cli.tool });
+      expect(resolveEffectiveLLMConfig(config)).toBe(config);
+    });
   });
 });
 

@@ -471,6 +471,9 @@ export async function loadConfig(
 
   const merged = {
     ...defaults,
+    // Let the schema choose the default for the resolved provider (#102).
+    // Only real config sources below should supply an explicit model.
+    model: undefined,
     ...globalConfig,
     ...envOverrides,
     ...repoConfig,
