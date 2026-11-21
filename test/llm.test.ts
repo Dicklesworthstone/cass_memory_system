@@ -24,7 +24,8 @@ import {
   validateApiKey,
 } from "../src/llm.js";
 import { truncateForContext } from "../src/utils.js";
-import { createTestConfig } from "./helpers/factories.js";
+import { reflectOnSession } from "../src/reflect.js";
+import { createTestConfig, createTestDiary, createTestPlaybook } from "./helpers/factories.js";
 import { withTempDir } from "./helpers/temp.js";
 
 // ============================================================================
@@ -1471,6 +1472,173 @@ describe("cliGenerateObject schema hint", () => {
     expect(prompt).toContain("JSON Schema");
     expect(prompt).toContain('"enum":["add","drop"]');
     expect(prompt).toContain('"rule"');
+  });
+});
+
+describe("CLI reflection provenance (#104)", () => {
+  let previousLlmMode: string | undefined;
+  let previousReflectorStubs: string | undefined;
+
+  beforeEach(() => {
+    saveEnv();
+    clearAllApiKeys();
+    previousLlmMode = process.env.CASS_MEMORY_LLM;
+    previousReflectorStubs = process.env.CM_REFLECTOR_STUBS;
+    delete process.env.CASS_MEMORY_LLM;
+    delete process.env.CM_REFLECTOR_STUBS;
+  });
+  afterEach(() => {
+    restoreEnv();
+    if (previousLlmMode === undefined) delete process.env.CASS_MEMORY_LLM;
+    else process.env.CASS_MEMORY_LLM = previousLlmMode;
+    if (previousReflectorStubs === undefined) delete process.env.CM_REFLECTOR_STUBS;
+    else process.env.CM_REFLECTOR_STUBS = previousReflectorStubs;
+  });
+
+  function responseDeltas(sourceSession?: string | null) {
+    const provenance = sourceSession === undefined ? {} : { sourceSession };
+    return [
+      {
+        type: "add", reason: "Observed in the session", ...provenance,
+        bullet: {
+          content: "Validate database migrations against a copy before applying them",
+          category: "database", kind: null, type: null, isNegative: null,
+          scope: null, scopeKey: null, workspace: null, searchPointer: null, tags: null,
+        },
+      },
+      { type: "helpful", bulletId: "b-helpful", context: "The check caught a defect", ...provenance },
+      { type: "harmful", bulletId: "b-harmful", reason: "wrong_context", context: null, ...provenance },
+    ];
+  }
+
+  async function makeReflectorCli(dir: string, replies: unknown[]) {
+    const tool = path.join(dir, "reflector-cli");
+    const callsFile = path.join(dir, "calls.jsonl");
+    await fs.writeFile(tool, `#!${process.execPath}
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
+const callsFile = ${JSON.stringify(callsFile)};
+const call = existsSync(callsFile) ? readFileSync(callsFile, "utf8").trim().split("\\n").length : 0;
+const prompt = await Bun.stdin.text();
+appendFileSync(callsFile, JSON.stringify({ prompt }) + "\\n");
+const replies = ${JSON.stringify(replies)};
+console.log(JSON.stringify(replies[Math.min(call, replies.length - 1)]));
+`, { mode: 0o755 });
+    return {
+      config: createTestConfig({
+        provider: "cli", model: "default", cliCommand: tool, cliSubprocessCwd: "",
+        maxReflectorIterations: 1,
+      }),
+      calls: async () => (await fs.readFile(callsFile, "utf8")).trim().split("\n")
+        .map(line => JSON.parse(line) as { prompt: string }),
+    };
+  }
+
+  for (const sourceSession of [undefined, null, "/sessions/forged.jsonl"]) {
+    it(`accepts ${sourceSession === undefined ? "omitted" : JSON.stringify(sourceSession)} sourceSession without retries and assigns trusted provenance`, async () => {
+      await withTempDir("cli-reflect-provenance", async dir => {
+        const cli = await makeReflectorCli(dir, [{ deltas: responseDeltas(sourceSession) }]);
+        const diary = createTestDiary({ sessionPath: "/sessions/actual.jsonl" });
+        const result = await reflectOnSession(diary, createTestPlaybook(), cli.config);
+
+        expect(result.failure).toBeUndefined();
+        expect(result.deltas.map(delta => delta.type)).toEqual(["add", "helpful", "harmful"]);
+        for (const delta of result.deltas) {
+          expect("sourceSession" in delta && delta.sourceSession).toBe(diary.sessionPath);
+        }
+        expect(await cli.calls()).toHaveLength(1);
+      });
+    });
+  }
+
+  it("keeps earlier proposals when a later pass omits system-owned provenance", async () => {
+    await withTempDir("cli-reflect-later-pass", async dir => {
+      const deltas = responseDeltas();
+      const cli = await makeReflectorCli(dir, [
+        { deltas: [deltas[0]] },
+        { deltas: deltas.slice(1) },
+        { deltas: [] },
+      ]);
+      const diary = createTestDiary();
+      const result = await reflectOnSession(diary, createTestPlaybook(), {
+        ...cli.config, maxReflectorIterations: 3,
+      });
+
+      expect(result.failure).toBeUndefined();
+      expect(result.deltas.map(delta => delta.type)).toEqual(["add", "helpful", "harmful"]);
+      expect(await cli.calls()).toHaveLength(3);
+      expect(result.decisionLog.some(entry => entry.action === "rejected")).toBe(false);
+    });
+  });
+
+  it("uses the CLI schema after an automatic provider fallback", async () => {
+    await withTempDir("cli-reflect-provider-fallback", async dir => {
+      const cli = await makeReflectorCli(dir, [{ deltas: responseDeltas("/sessions/forged.jsonl") }]);
+      process.env.CASS_CLI_COMMAND = cli.config.cliCommand;
+      const diary = createTestDiary();
+      const result = await reflectOnSession(diary, createTestPlaybook(), {
+        ...cli.config, provider: "anthropic", model: "api-only-model",
+      });
+
+      expect(result.failure).toBeUndefined();
+      expect(result.deltas).toHaveLength(3);
+      for (const delta of result.deltas) {
+        expect("sourceSession" in delta && delta.sourceSession).toBe(diary.sessionPath);
+      }
+      expect(await cli.calls()).toHaveLength(1);
+    });
+  });
+
+  it("also tolerates missing or echoed provenance in OpenAI prompt-only JSON mode", async () => {
+    const diary = createTestDiary();
+    for (const sourceSession of [undefined, null, "/sessions/forged.jsonl"]) {
+      let calls = 0;
+      const result = await reflectOnSession(diary, createTestPlaybook(), createTestConfig({
+        provider: "openai", disableStructuredOutputs: true, maxReflectorIterations: 1,
+      }), {
+        generateObject: async <T>(options: any) => {
+          calls++;
+          expect(options.schema).toBeUndefined();
+          expect(options.output).toBe("no-schema");
+          // monitoredGenerateObject validates this raw JSON-mode result.
+          return { object: { deltas: responseDeltas(sourceSession) } as T };
+        },
+      });
+
+      expect(result.failure).toBeUndefined();
+      expect(result.deltas).toHaveLength(3);
+      for (const delta of result.deltas) {
+        expect("sourceSession" in delta && delta.sourceSession).toBe(diary.sessionPath);
+      }
+      expect(calls).toBe(1);
+    }
+  });
+
+  it("still rejects a reply missing semantic fields instead of silently applying its valid siblings", async () => {
+    await withTempDir("cli-reflect-invalid-delta", async dir => {
+      const cli = await makeReflectorCli(dir, [{
+        deltas: [responseDeltas()[0], { type: "helpful", context: null }],
+      }]);
+      const result = await reflectOnSession(createTestDiary(), createTestPlaybook(), cli.config);
+
+      expect(result.failure).toContain("CLI output failed schema validation");
+      expect(result.failure).toContain("bulletId");
+      expect(result.deltas).toEqual([]);
+      expect(await cli.calls()).toHaveLength(3);
+    });
+  });
+
+  it("continues rejecting unexpected delta fields", async () => {
+    await withTempDir("cli-reflect-unexpected-field", async dir => {
+      const cli = await makeReflectorCli(dir, [{
+        deltas: [{ ...responseDeltas()[1], unexpectedMetadata: "must not be silently discarded" }],
+      }]);
+      const result = await reflectOnSession(createTestDiary(), createTestPlaybook(), cli.config);
+
+      expect(result.failure).toContain("CLI output failed schema validation");
+      expect(result.failure).toContain("unexpectedMetadata");
+      expect(result.deltas).toEqual([]);
+      expect(await cli.calls()).toHaveLength(3);
+    });
   });
 });
 

@@ -547,6 +547,88 @@ else console.log("[]");
     });
   });
 
+  it("persists rules and feedback when CLI reflector passes omit sourceSession (#104)", async () => {
+    await withTempCassHome(async env => {
+      await setup(env);
+      const sessionPath = await writeSession(env, "missing-reflection-provenance");
+      const helpful = createTestBullet({
+        id: "b-helpful104", content: "Check database migration constraints before committing a schema change.",
+      });
+      const harmful = createTestBullet({
+        id: "b-harmful104", content: "Reuse cached frontend snapshots after changing the stylesheet.",
+      });
+      await writeFile(env.playbookPath, yaml.stringify(createTestPlaybook([helpful, harmful])));
+      const cliPath = path.join(env.home, "claude");
+      const cliCallsPath = path.join(env.home, "reflection-cli-calls.jsonl");
+      const proposal = {
+        type: "add", reason: "The session exposed false success in a reflection job.",
+        bullet: {
+          content: rule, category: "testing", kind: null, type: null, isNegative: null,
+          scope: null, scopeKey: null, workspace: null, searchPointer: null, tags: null,
+        },
+      };
+      const feedback = [
+        { type: "helpful", bulletId: helpful.id, context: "The constraint check caught a regression." },
+        { type: "harmful", bulletId: harmful.id, reason: "wrong_context", context: null },
+      ];
+      // Exercise the actual diary and iterative reflection subprocess path,
+      // including the later pass whose omitted provenance used to drop the session.
+      await writeFile(cliPath, `#!${process.execPath}
+import { appendFileSync } from "node:fs";
+const prompt = await Bun.stdin.text();
+const reflector = prompt.includes("extract reusable lessons for a playbook");
+appendFileSync(${JSON.stringify(cliCallsPath)}, JSON.stringify({
+  kind: reflector ? "reflector" : "diary", prompt,
+}) + "\\n");
+if (reflector) {
+  if (prompt.includes("This is iteration 3.")) console.log('{"deltas":[]}');
+  else if (prompt.includes("This is iteration 2.")) console.log(${JSON.stringify(JSON.stringify({ deltas: feedback }))});
+  else console.log(${JSON.stringify(JSON.stringify({ deltas: [proposal] }))});
+} else console.log(${JSON.stringify(JSON.stringify({
+        status: "success", accomplishments: ["Investigated reflection failure reporting"],
+        decisions: [], challenges: [], preferences: [],
+        keyLearnings: ["Check the process exit status before reporting success"], tags: ["testing"],
+      }))});
+`, { mode: 0o755 });
+      const config = JSON.parse(await readFile(env.configPath, "utf8"));
+      await writeFile(env.configPath, JSON.stringify({
+        ...config, provider: "cli", model: "haiku", cliCommand: cliPath, maxReflectorIterations: 3,
+      }));
+
+      const result = runReflect(env, ["--session", sessionPath, "--json"], {
+        CASS_MEMORY_LLM: undefined, CM_REFLECTOR_STUBS: undefined, CASS_CLI_COMMAND: cliPath,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(0);
+      const payload = JSON.parse(result.stdout);
+      expect(payload.success).toBe(true);
+      expect(payload.data).toMatchObject({ sessionsProcessed: 1, deltasGenerated: 3, errors: [] });
+      expect(payload.data.global.applied).toBe(3);
+      expect(payload.data.failedSessions).toBeUndefined();
+
+      const saved = await loadPlaybook(env.playbookPath);
+      expect(saved.bullets).toHaveLength(3);
+      expect(saved.bullets.find(bullet => bullet.content === rule)?.sourceSessions).toEqual([sessionPath]);
+      expect(saved.bullets.find(bullet => bullet.id === helpful.id)).toMatchObject({
+        helpfulCount: 1,
+        feedbackEvents: [expect.objectContaining({ type: "helpful", sessionPath })],
+      });
+      expect(saved.bullets.find(bullet => bullet.id === harmful.id)).toMatchObject({
+        harmfulCount: 1,
+        feedbackEvents: [expect.objectContaining({ type: "harmful", sessionPath, reason: "wrong_context" })],
+      });
+      expect(saved.metadata).toMatchObject({ totalReflections: 1, totalSessionsProcessed: 1 });
+      const log = new ProcessedLog(getProcessedLogPath());
+      await log.load();
+      expect(log.has(sessionPath)).toBe(true);
+      expect(log.get(sessionPath)).toMatchObject({ sessionPath, deltasGenerated: 3 });
+      const calls = (await readFile(cliCallsPath, "utf8")).trim().split("\n")
+        .map(line => JSON.parse(line) as { kind: string; prompt: string });
+      expect(calls.map(call => call.kind)).toEqual(["diary", "reflector", "reflector", "reflector"]);
+      expect(calls.some(call => call.prompt.includes("PREVIOUS ATTEMPT FAILED"))).toBe(false);
+    });
+  });
+
   it("reports a growth admission failure with unapplied proposals and an unchanged readable playbook", async () => {
     await withTempCassHome(async env => {
       await setup(env);

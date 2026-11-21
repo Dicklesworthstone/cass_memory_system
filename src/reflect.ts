@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { type LLMIO, runReflector } from "./llm.js";
+import { type LLMIO, resolveEffectiveLLMConfig, runReflector, usesJsonModeFallback } from "./llm.js";
 import {
   BulletKindEnum,
   BulletScopeEnum,
@@ -218,10 +218,6 @@ const LLMAddDeltaSchema = z
     type: z.literal("add"),
     bullet: LLMNewBulletSchema,
     reason: z.string(),
-    // sourceSession is injected by reflectOnSession() after the LLM responds,
-    // but strict mode requires the property to be present in the schema's
-    // `required` list. We accept null here and overwrite post-hoc.
-    sourceSession: z.string().nullable(),
   })
   .strict();
 
@@ -229,7 +225,6 @@ const LLMHelpfulDeltaSchema = z
   .object({
     type: z.literal("helpful"),
     bulletId: z.string(),
-    sourceSession: z.string().nullable(),
     context: z.string().nullable(),
   })
   .strict();
@@ -238,7 +233,6 @@ const LLMHarmfulDeltaSchema = z
   .object({
     type: z.literal("harmful"),
     bulletId: z.string(),
-    sourceSession: z.string().nullable(),
     reason: HarmfulReasonEnum.nullable(),
     context: z.string().nullable(),
   })
@@ -284,12 +278,31 @@ const LLMPlaybookDeltaSchema = z.union([
   LLMMergeDeltaSchema,
 ]);
 
-// Schema for the LLM output - array of deltas
+// Provenance belongs to CM, not to the model. Leaving sourceSession out of
+// the native output contract also removes three nullable parameters: the
+// reflector has 14 union-typed properties, below Anthropic's limit of 16
+// (#103), while retaining OpenAI's all-properties-required contract (#44).
 const ReflectorOutputSchema = z
   .object({
     deltas: z.array(LLMPlaybookDeltaSchema),
   })
   .strict();
+
+// Prompt-only providers can still echo a sourceSession from the diary or
+// an earlier prompt. Accept that one system-owned field when supplied, but
+// never require or trust it (#104). Keep every other field and unknown-key
+// check strict; malformed rule content must still fail validation.
+const IgnoredSourceSessionSchema = z.string().nullable().optional();
+const ReflectorOutputWithProvenanceSchema = ReflectorOutputSchema.extend({
+  deltas: z.array(z.union([
+    LLMAddDeltaSchema.extend({ sourceSession: IgnoredSourceSessionSchema }),
+    LLMHelpfulDeltaSchema.extend({ sourceSession: IgnoredSourceSessionSchema }),
+    LLMHarmfulDeltaSchema.extend({ sourceSession: IgnoredSourceSessionSchema }),
+    LLMReplaceDeltaSchema,
+    LLMDeprecateDeltaSchema,
+    LLMMergeDeltaSchema,
+  ])),
+});
 
 type LLMReflectorDelta = z.infer<typeof LLMPlaybookDeltaSchema>;
 
@@ -297,8 +310,8 @@ type LLMReflectorDelta = z.infer<typeof LLMPlaybookDeltaSchema>;
  * Normalize an LLM-produced delta (strict schema with nullable fields) to a
  * domain `PlaybookDelta`. Null LLM values collapse to `undefined` so they
  * stop being serialized and match the domain's `.optional()` contract.
- * `sourceSession` on "add" is always rewritten by the caller, so we pass a
- * placeholder here and let `reflectOnSession` overwrite it.
+ * Provenance for additions and feedback always comes from the diary being
+ * reflected on, regardless of any sourceSession echoed by a CLI provider.
  */
 function normalizeLLMDelta(d: LLMReflectorDelta, sessionPath: string): PlaybookDelta {
   switch (d.type) {
@@ -320,9 +333,8 @@ function normalizeLLMDelta(d: LLMReflectorDelta, sessionPath: string): PlaybookD
         reason: d.reason,
         // Provenance is authoritative: a rule's source is ALWAYS the diary
         // being reflected on, never a value the LLM supplied. The reflector
-        // prompt instructs the model to emit `sourceSession: null`, but we do
-        // not trust that — a model that echoes or hallucinates a path must not
-        // be able to write a fabricated/unresolvable source pointer into the
+        // prompt omits sourceSession, but a CLI model can still echo or
+        // hallucinate a path. It must not write a fabricated source into the
         // rule's provenance (see issue #58). Always overwrite with sessionPath.
         sourceSession: sessionPath,
       };
@@ -449,6 +461,15 @@ export async function reflectOnSession(
     return { deltas: allDeltas, decisionLog };
   }
 
+  // Select the schema after resolving an automatic provider fallback, just
+  // as diary extraction does. A configured API provider can actually run via
+  // the CLI, and a configured CLI can fall back to a strict API provider.
+  if (!io) config = resolveEffectiveLLMConfig(config);
+  const outputSchema =
+    config.provider === "cli" || usesJsonModeFallback(config.provider, config.disableStructuredOutputs)
+      ? ReflectorOutputWithProvenanceSchema
+      : ReflectorOutputSchema;
+
   let failure: string | undefined;
   const existingBullets = formatBulletsForPrompt(playbook.bullets);
   const cassHistory = await getCassHistoryForDiary(diary, config);
@@ -460,7 +481,7 @@ export async function reflectOnSession(
 
     try {
       const output = await runReflector(
-        ReflectorOutputSchema,
+        outputSchema,
         diary,
         existingBullets,
         cassHistory,
@@ -471,9 +492,9 @@ export async function reflectOnSession(
       );
 
       // `output.deltas` are strict-mode LLM deltas (see issue #44) — null
-      // fields must be collapsed to `undefined` before curation. "add" deltas
-      // always get `sourceSession` injected from the diary, overriding any
-      // value the LLM may have supplied.
+      // fields must be collapsed to `undefined` before curation. Additions
+      // and feedback get sourceSession from the diary, overriding any
+      // provenance a prompt-only provider may have supplied.
       const validDeltas: PlaybookDelta[] = output.deltas.map((d) =>
         normalizeLLMDelta(d, diary.sessionPath),
       );

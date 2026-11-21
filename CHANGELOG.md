@@ -10,6 +10,11 @@ All notable changes to **cass-memory** (`cm`) are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Anthropic reflection no longer exceeds the native structured-output schema's union limit (#103). System-owned `sourceSession` fields are omitted from the model's output contract, reducing union-typed parameters from 17 to 14 while keeping OpenAI's strict required-field and closed-object guarantees.
+- CLI reflection accepts omitted `sourceSession` fields on `add`, `helpful`, and `harmful` deltas (#104). Supplied source paths are still overwritten with the actual session, and other missing or unexpected fields still fail validation. Schema selection follows the effective provider after automatic fallback and also supports OpenAI's plain JSON mode.
+
 ## [0.6.0] -- 2026-11-20
 
 Everything on `main` since [0.5.1](https://github.com/Dicklesworthstone/cass_memory_system/releases/tag/v0.5.1). Adds trusted-local playbook recovery and archival commands, explicit outcome replay targeting, crash-safe reflection commits, and dependency updates, so it is a minor bump.

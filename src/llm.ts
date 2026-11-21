@@ -660,15 +660,14 @@ add:
     "searchPointer": string | null,
     "tags": string[] | null
   },
-  "reason": string,
-  "sourceSession": null                  // always null; the system fills this in
+  "reason": string
 }
 
 helpful:
-{ "type": "helpful", "bulletId": string, "sourceSession": null, "context": string | null }
+{ "type": "helpful", "bulletId": string, "context": string | null }
 
 harmful:
-{ "type": "harmful", "bulletId": string, "sourceSession": null,
+{ "type": "harmful", "bulletId": string,
   "reason": "caused_bug" | "wasted_time" | "contradicted_requirements" | "wrong_context" | "outdated" | "other" | null,
   "context": string | null }
 
@@ -686,7 +685,7 @@ RULES:
 - For "add" deltas, set "kind", "type", "scope" (and harmful "reason") to null UNLESS the
   value is EXACTLY one of the literal strings listed — never invent new enum values.
 - Use the literal string "add"/"helpful"/etc. for "type" at the delta level.
-- "sourceSession" must be null; it is overwritten by the system.
+- Do not include "sourceSession"; the system records the originating session.
 - Preserve each rule's applicability. Use "scopeKey" for a language, framework, or
   task selector; use null when unknown. Never merge rules from different scopes.
 - Output ONLY the JSON object; no prose, no markdown fences.`,

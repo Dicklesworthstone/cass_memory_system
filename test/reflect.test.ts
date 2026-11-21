@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { zodSchema } from "ai";
 import { reflectCommand, __test as reflectCommandTest } from "../src/commands/reflect.js";
 import {
   deduplicateDeltas,
@@ -71,7 +72,7 @@ describe("reflectOnSession", () => {
       generateObject: async <T>(options: any) => {
         expect(options.prompt).toContain('"scopeKey": string | null');
         const response = { deltas: ["typescript", "python", null].map((scopeKey) => ({
-          type: "add", reason: "A language-specific lesson", sourceSession: null,
+          type: "add", reason: "A language-specific lesson",
           bullet: {
             content: "Run tests before publishing", category: "testing", kind: null,
             type: null, isNegative: null, scope: "language", scopeKey,
@@ -102,7 +103,7 @@ describe("reflectOnSession", () => {
       "Pin the CI bun version to the one declared in package.json",
     ];
     const addDelta = (content: string) => ({
-      type: "add", reason: "Learned from this session", sourceSession: null,
+      type: "add", reason: "Learned from this session",
       bullet: {
         content, category: "workflow", kind: null, type: null, isNegative: null, scope: null,
         scopeKey: null, workspace: null, searchPointer: null, tags: null,
@@ -230,6 +231,145 @@ describe("reflectOnSession", () => {
       },
     );
   });
+});
+
+describe("reflection provider schema compatibility (#103)", () => {
+  function schemaStats(schema: unknown) {
+    const stats = { unions: 0, unionProperties: 0, optionalProperties: 0, objects: 0, openObjects: 0 };
+    const isUnion = (node: any) =>
+      (Array.isArray(node?.anyOf) && node.anyOf.length > 1) ||
+      (Array.isArray(node?.type) && node.type.length > 1);
+    const visit = (node: any) => {
+      if (!node || typeof node !== "object") return;
+      if (isUnion(node)) stats.unions++;
+      if (node.type === "object") {
+        stats.objects++;
+        if (node.additionalProperties !== false) stats.openObjects++;
+      }
+      if (node.properties) {
+        const required = new Set(node.required ?? []);
+        for (const [name, property] of Object.entries(node.properties)) {
+          if (!required.has(name)) stats.optionalProperties++;
+          if (isUnion(property)) stats.unionProperties++;
+        }
+      }
+      for (const child of Object.values(node)) visit(child);
+    };
+    visit(schema);
+    return stats;
+  }
+
+  for (const provider of ["anthropic", "openai"] as const) {
+    test(`${provider} reflector schema fits native limits without relaxing required keys`, async () => {
+      let schema: unknown;
+      const result = await reflectOnSession(
+        createTestDiary(),
+        createTestPlaybook(),
+        createTestConfig({ provider, apiKey: "local-schema-test", maxReflectorIterations: 1 }),
+        {
+          generateObject: async <T>(options: any) => {
+            schema = zodSchema(options.schema).jsonSchema;
+            return { object: options.schema.parse({ deltas: [] }) as T };
+          },
+        },
+      );
+      expect(result.failure).toBeUndefined();
+      expect(schema).toBeDefined();
+      const stats = schemaStats(schema);
+      // Anthropic counts union-typed parameters; conservatively count the
+      // delta-array's anyOf as well so future shape changes retain headroom.
+      expect(stats.unionProperties).toBeLessThanOrEqual(16);
+      expect(stats.unions).toBeLessThanOrEqual(16);
+      expect(stats.unions).toBeGreaterThan(0);
+      // Zero optional properties satisfies both Anthropic's ten-property
+      // budget and OpenAI's stricter every-key-must-be-required contract.
+      expect(stats.optionalProperties).toBe(0);
+      expect(stats.objects).toBeGreaterThan(0);
+      expect(stats.openObjects).toBe(0);
+      expect(JSON.stringify(schema)).not.toContain("sourceSession");
+      expect(JSON.stringify(schema)).not.toContain("oneOf");
+    });
+  }
+
+  for (const model of [
+    "claude-sonnet-5",
+    "claude-opus-5-5",
+    "claude-fable-5-2",
+    "claude-sonnet-5-5",
+    "claude-haiku-5-5",
+  ]) {
+    test(`${model} reflects through the real SDK with an admissible native schema`, async () => {
+      const requests: any[] = [];
+      const response = {
+        deltas: [
+          {
+            type: "add", reason: "Observed in this session",
+            bullet: {
+              content: "Check the installed SDK's emitted JSON Schema before sending structured output requests",
+              category: "testing", kind: null, type: null, isNegative: null,
+              scope: null, scopeKey: null, workspace: null, searchPointer: null, tags: null,
+            },
+          },
+          { type: "helpful", bulletId: "b-helpful", context: null },
+          { type: "harmful", bulletId: "b-harmful", reason: "wrong_context", context: null },
+          { type: "replace", bulletId: "b-replace", newContent: "Use the current SDK contract", reason: null },
+          { type: "deprecate", bulletId: "b-deprecate", reason: "Outdated SDK contract", replacedBy: null },
+          { type: "merge", bulletIds: ["b-one", "b-two"], mergedContent: "Validate provider contracts", reason: null },
+        ],
+      };
+      const server = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        async fetch(request) {
+          const body: any = await request.json();
+          requests.push(body);
+          const schema = body.output_config?.format?.schema;
+          if (!schema || schemaStats(schema).unionProperties > 16) {
+            return Response.json({
+              type: "error",
+              error: { type: "invalid_request_error", message: "Schemas contains too many parameters with union types (limit: 16)" },
+            }, { status: 400 });
+          }
+          return Response.json({
+            id: "msg_local_reflection", type: "message", role: "assistant", model,
+            content: [{ type: "text", text: JSON.stringify(response) }],
+            stop_reason: "end_turn", stop_sequence: null,
+            usage: { input_tokens: 100, output_tokens: 100 },
+          });
+        },
+      });
+      try {
+        const diary = createTestDiary({ sessionPath: "/sessions/authoritative.jsonl" });
+        const result = await reflectOnSession(diary, createTestPlaybook(), createTestConfig({
+          provider: "anthropic", model, apiKey: "sk-ant-local-test",
+          baseUrl: `http://127.0.0.1:${server.port}/v1`,
+          maxReflectorIterations: 1,
+        }));
+        expect(result.failure).toBeUndefined();
+        expect(requests).toHaveLength(1);
+        expect(requests[0].model).toBe(model);
+        expect(requests[0].output_config.format.type).toBe("json_schema");
+        expect(requests[0].tool_choice).toBeUndefined();
+        expect(requests[0].tools).toBeUndefined();
+        expect(schemaStats(requests[0].output_config.format.schema).unions).toBeLessThanOrEqual(16);
+        expect(result.deltas.map((delta) => delta.type)).toEqual([
+          "add", "helpful", "harmful", "replace", "deprecate", "merge",
+        ]);
+        for (const delta of result.deltas) {
+          if (delta.type === "add" || delta.type === "helpful" || delta.type === "harmful") {
+            expect(delta.sourceSession).toBe(diary.sessionPath);
+          }
+        }
+        const add = result.deltas[0];
+        expect(add.type).toBe("add");
+        if (add.type === "add") {
+          expect(add.bullet).toEqual({ content: response.deltas[0].bullet!.content, category: "testing" });
+        }
+      } finally {
+        await server.stop(true);
+      }
+    });
+  }
 });
 
 describe("proposedRuleTexts", () => {
