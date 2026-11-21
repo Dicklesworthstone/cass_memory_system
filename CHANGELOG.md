@@ -10,6 +10,41 @@ All notable changes to **cass-memory** (`cm`) are documented in this file.
 
 ## [Unreleased]
 
+## [0.6.0] -- 2026-11-20
+
+Everything on `main` since [0.5.1](https://github.com/Dicklesworthstone/cass_memory_system/releases/tag/v0.5.1). Adds trusted-local playbook recovery and archival commands, explicit outcome replay targeting, crash-safe reflection commits, and dependency updates, so it is a minor bump.
+
+### Added
+
+- `cm playbook repair` for trusted local playbooks: strips legacy inline embeddings losslessly without weakening ordinary untrusted input bounds (`18e4119`, #99), and `--recover-limits` proposes `playbookLimits` updates in the global config when a pre-v0.5.1 global playbook exceeds the default budget (`df11a3d`, #101). Both support `--dry-run`, verified exclusive backups, concurrent-change checks, and atomic replacement.
+- `cm playbook archive --retired` safely moves retired rules out of the trusted global playbook with `--dry-run` previews, pinned-rule protection, byte-exact original snapshots, indefinite archive retention, and reconciliation checks against pending commits and outcome queues (`2581b46`, #101).
+- `cm doctor` warns at 90% of configured playbook node, array, and expanded-text budgets and identifies the configured global owner with manual recovery guidance (`18e4119`, `df11a3d`, `2581b46`).
+- `cm outcome-apply --playbook <path>` replays queued outcomes explicitly into a trusted former global playbook after configuration changes while keeping repository JSONL as provenance rather than write authority (`4f47fc9`).
+
+### Fixed
+
+- `cm reflect` and the multi-provider fallback path now forward the configured `model` to CLI subprocesses (`--model`), preserve native CLI defaults when omitted or `"default"`, recognize built-in CLI flags from executable basenames, and preserve provider-aware defaults when loading config or saving privacy settings (`b8e3122`, #102).
+- `InputLimitError` recovery hints now point directly to `cm doctor`, `cm playbook repair --recover-limits --dry-run`, and `cm playbook archive --retired --dry-run` instead of bug-report boilerplate (`b8a61f6`, #101).
+- Reflection commit durability and crash recovery: stage bounded playbook images and ledger acknowledgements before live writes, fsync temp files and directory ancestry, recover interrupted commits without rerunning LLM providers, keep pending outcomes discoverable across workspaces, reject stale proposals that conflict with concurrent rule edits, canonicalize session path aliases, prevent filtered search hits from starving discovery, and surface `REFLECTION_FAILED` with partial results in CLI and MCP (`940e2c8`, `8163864`, `491bea7`, `ef94407`, `d7ae2f1`, `cd9aae2`, `ba35c4a`, `5f33767`, `8fe0703`, `0e76e25`, `5b1676a`, #99).
+- Legacy playbook and storage safety: preserve bounded legacy extension fields and duplicate-ID rule occurrences across ordinary writes and reflection; reject ambiguous duplicate legacy IDs before `mark`, `outcome-apply`, or `forget` mutates state; honor linked-worktree repo playbook ownership in `forget`; propagate config, playbook, and blocked-log I/O errors instead of fabricating empty state; and require verified exclusive backups before corruption recovery (`907465f`, `646ed2f`, `71799a4`, `c8bc9ae`, `915373c`, `fa4561b`, #99).
+- Commander help, version output, and argument errors now flush synchronously to stdout/stderr so piped output is never dropped or truncated before exit (`7730ed6`, #50, #99).
+- Previously resolved issues verified and closed: auto-reflect hooks default to user settings (`5a12be2`, #90) and `install.sh` checks glibc before the musl loader and honors `--version` / checksum constraints in source builds (`8aca3bb`, `9ba2c21`, #91).
+
+### Dependencies
+
+- Updated direct dependencies to latest working stable releases: `ai` `7.0.133` -> `7.0.179`, `@ai-sdk/amazon-bedrock` `5.0.111` -> `5.0.146`, `@ai-sdk/anthropic` `4.0.76` -> `4.0.107`, `@ai-sdk/google` `4.0.92` -> `4.0.124`, `@ai-sdk/openai` `4.0.89` -> `4.0.122`, `ollama-ai-provider-v2` `4.0.1` -> `4.1.0`, `commander` `15.0.0` -> `15.1.0`, `fast-check` `4.10.2` -> `4.10.3`, `@types/bun` `1.4.2` -> `1.4.5`, `@types/node` `24.19.1` -> `26.6.6`.
+- Preserved security pins: `zod` `4.6.7`, `protobufjs` `7.6.5`, `@aws-sdk/xml-builder` `3.972.37` (with reconciled `bun.lock` and `package-lock.json`).
+- `@xenova/transformers` -> `@huggingface/transformers` v4 migration and Sharp/ONNX advisories remain tracked in [#92](https://github.com/Dicklesworthstone/cass_memory_system/issues/92).
+
+### Qualification
+
+- Built and released via DSR (no GitHub Actions).
+- `tsc --noEmit`, `bun install --frozen-lockfile`, and full CI suite (`TZ=UTC bun run test:ci` on Bun 1.4.5) pass: 3,842 passed, 3 environment-dependent skips, 0 failures across 156 files.
+
+### Artifacts
+
+`cass-memory-linux-x64`, `cass-memory-linux-arm64`, `cass-memory-macos-arm64`, `cass-memory-macos-x64`, `cass-memory-windows-x64.exe`, each with a `.sha256` sidecar, plus `install.sh.sha256`. `install.sh` is unchanged since `v0.5.1`.
+
 ## [0.5.1] -- 2026-10-27
 
 ### Security

@@ -1,6 +1,6 @@
 {
   "name": "cass-memory",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "type": "module",
   "description": "Universal memory system for AI coding agents - implements ACE framework",
   "author": "Jeffrey Emanuel",
@@ -36,15 +36,15 @@
     "postinstall": "bun run scripts/patch-standalone-deps.mjs"
   },
   "dependencies": {
-    "@ai-sdk/amazon-bedrock": "^5.0.111",
-    "@ai-sdk/anthropic": "^4.0.76",
-    "@ai-sdk/google": "^4.0.92",
-    "@ai-sdk/openai": "^4.0.89",
+    "@ai-sdk/amazon-bedrock": "^5.0.146",
+    "@ai-sdk/anthropic": "^4.0.107",
+    "@ai-sdk/google": "^4.0.124",
+    "@ai-sdk/openai": "^4.0.122",
     "@xenova/transformers": "^2.17.2",
-    "ai": "^7.0.133",
+    "ai": "^7.0.179",
     "chalk": "^6.0.1",
-    "commander": "^15.0.0",
-    "ollama-ai-provider-v2": "^4.0.1",
+    "commander": "^15.1.0",
+    "ollama-ai-provider-v2": "^4.1.0",
     "yaml": "^2.9.1",
     "zod": "^4.6.7"
   },
@@ -53,10 +53,10 @@
     "protobufjs": "7.6.5"
   },
   "devDependencies": {
-    "@types/bun": "^1.4.2",
+    "@types/bun": "^1.4.5",
     "@types/diff-match-patch": "^1.0.36",
-    "@types/node": "^24.19.1",
-    "fast-check": "^4.10.2",
+    "@types/node": "^26.6.6",
+    "fast-check": "^4.10.3",
     "typescript": "^7.0.2"
   },
   "engines": {
