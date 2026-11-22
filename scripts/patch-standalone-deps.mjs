@@ -1,163 +1,98 @@
 #!/usr/bin/env bun
 /**
- * Postinstall patch for @xenova/transformers standalone binary compatibility.
- *
- * Problem: @xenova/transformers uses static imports for `onnxruntime-node` and
- * `sharp` (native addons). In Bun standalone binaries, native .so/.node files
- * can't be bundled, so these imports crash at runtime.
- *
- * Fix: Replace static imports with dynamic imports wrapped in try/catch, so
- * missing native modules fall back to WASM (onnxruntime-web) or null (sharp).
- *
- * This script runs automatically via the `postinstall` hook in package.json.
+ * Pin the installed Transformers source to CM's text-only WASM runtime.
+ * Its stock Node bundle excludes WASM, while its browser bundle excludes
+ * filesystem caching. Use the source entry with the Node-capable web runtime.
+ * Unknown versions, changed source, and incomplete patches fail installation.
  */
-
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, "..");
-const TRANSFORMERS = join(root, "node_modules", "@xenova", "transformers");
+const transformersDir = join(root, "node_modules", "@huggingface", "transformers");
+const transformerVersion = "4.3.2";
+// This prerelease is the maintained upstream package's deliberate runtime pin.
+const ortVersion = "1.31.0-dev.20260914-8d85527a0";
+const hash = (text) => createHash("sha256").update(text).digest("hex");
 
-let patched = 0;
-let warnings = 0;
-
-function warnPatch(file, detail) {
-  console.warn(`[patch-standalone-deps] WARNING: ${file} — ${detail}`);
-  warnings++;
-}
-
-// --- Patch 1: onnx.js ---
-// Replace static `import * as ONNX_NODE from 'onnxruntime-node'` with a
-// dynamic import that falls back to null when the native addon is missing.
-const onnxPath = join(TRANSFORMERS, "src", "backends", "onnx.js");
-if (existsSync(onnxPath)) {
-  let src = readFileSync(onnxPath, "utf8");
-
-  // Only patch if not already patched
-  if (src.includes("import * as ONNX_NODE from 'onnxruntime-node'")) {
-    // Step 1: Replace the static import with a dynamic try/catch
-    const beforeStep1 = src;
-    src = src.replace(
-      "import * as ONNX_NODE from 'onnxruntime-node';",
-      [
-        "// [patched] Dynamic import with WASM fallback for standalone binary compatibility",
-        "let ONNX_NODE = null;",
-        "try { ONNX_NODE = await import('onnxruntime-node'); } catch {}",
-      ].join("\n"),
-    );
-    if (src === beforeStep1) {
-      warnPatch(
-        "onnx.js",
-        "Step 1 (import replacement) did not match — @xenova/transformers may have changed format",
-      );
-    }
-
-    // Step 2: Add ONNX_NODE null guard to the if condition
-    const ifBlockRegex =
-      /if\s*\(typeof process !== 'undefined' && process\?\.release\?\.name === 'node'\)\s*\{[\s\S]*?ONNX = ONNX_NODE\.default \?\? ONNX_NODE;/;
-    if (ifBlockRegex.test(src)) {
-      src = src.replace(
-        ifBlockRegex,
-        `if (typeof process !== 'undefined' && process?.release?.name === 'node' && ONNX_NODE) {\n    // Native onnxruntime-node available\n    ONNX = ONNX_NODE.default ?? ONNX_NODE;`,
-      );
-    } else {
-      warnPatch(
-        "onnx.js",
-        "Step 2 (if-block guard) regex did not match — runtime fallback may not work correctly",
-      );
-    }
-
-    // Step 3: Add a WASM safety net AFTER the entire if/else block.
-    if (!src.includes("// [patched] WASM safety net")) {
-      const lastBrace = src.lastIndexOf("}");
-      if (lastBrace !== -1) {
-        src =
-          src.slice(0, lastBrace + 1) +
-          "\n\n// [patched] WASM safety net — ensure ONNX is always defined\nif (!ONNX) { ONNX = ONNX_WEB.default ?? ONNX_WEB; }\n";
-      } else {
-        warnPatch("onnx.js", "Step 3 (safety net) could not find closing brace");
-      }
-    }
-
-    writeFileSync(onnxPath, src);
-    patched++;
-    console.log(
-      "[patch-standalone-deps] Patched onnx.js: onnxruntime-node → dynamic import with WASM fallback",
-    );
+function replaceOnce(source, before, after) {
+  const index = source.indexOf(before);
+  if (index < 0 || source.indexOf(before, index + before.length) !== -1) {
+    throw new Error("Expected exactly one upstream patch target; refusing an incomplete patch");
   }
-} else {
-  warnPatch(
-    "onnx.js",
-    `File not found at ${onnxPath} — @xenova/transformers may have changed structure or is not installed`,
-  );
+  return source.slice(0, index) + after + source.slice(index + before.length);
 }
 
-// --- Patch 2: image.js ---
-// Replace static `import sharp from 'sharp'` with a dynamic import that
-// returns null when sharp is unavailable (text embedding doesn't need it).
-const imagePath = join(TRANSFORMERS, "src", "utils", "image.js");
-if (existsSync(imagePath)) {
-  let src = readFileSync(imagePath, "utf8");
-
-  if (src.includes("import sharp from 'sharp'")) {
-    // Step 1: Replace the static import with a dynamic try/catch
-    src = src.replace(
-      "import sharp from 'sharp';",
-      [
-        "// [patched] Dynamic import — sharp is only needed for image pipelines, not text embeddings",
-        "let sharp = null;",
-        "try { sharp = (await import('sharp')).default; } catch {}",
-      ].join("\n"),
-    );
-
-    // Step 2: The module has an if/else chain that throws when neither browser
-    // APIs nor sharp are available. In a standalone binary without sharp, this
-    // throw crashes at module load time even for text-only embedding pipelines.
-    // Replace the hard throw with a deferred error (only throws if image
-    // processing is actually attempted, not at import time).
-    const throwTarget = "throw new Error('Unable to load image processing library.');";
-    if (src.includes(throwTarget)) {
-      src = src.replace(
-        throwTarget,
-        [
-          "// [patched] Deferred error instead of load-time crash for text-only pipelines",
-          "loadImageFunction = async () => { throw new Error('Image processing unavailable: sharp not loaded (standalone binary). Only text pipelines are supported.'); };",
-          "createCanvasFunction = () => { throw new Error('Canvas unavailable: sharp not loaded (standalone binary). Only text pipelines are supported.'); };",
-          "ImageDataClass = class ImageData { constructor() { throw new Error('ImageData unavailable: sharp not loaded'); } };",
-        ].join("\n    "),
-      );
-    } else {
-      warnPatch(
-        "image.js",
-        "Could not find 'Unable to load image processing library' throw — load-time crash may still occur in standalone binaries",
-      );
-    }
-
-    writeFileSync(imagePath, src);
-    patched++;
-    console.log(
-      "[patch-standalone-deps] Patched image.js: sharp → dynamic import + deferred image error",
-    );
+function prepareSource(relativePath, originalHash, patchedHash, transform) {
+  const file = join(transformersDir, relativePath);
+  const original = readFileSync(file, "utf8");
+  const currentHash = hash(original);
+  if (currentHash === patchedHash) return { file, original, updated: original };
+  if (currentHash !== originalHash) {
+    throw new Error(`${relativePath}: unrecognized source for Transformers ${transformerVersion}; reinstall the locked dependencies`);
   }
-} else {
-  warnPatch(
-    "image.js",
-    `File not found at ${imagePath} — @xenova/transformers may have changed structure or is not installed`,
-  );
+  const updated = transform(original);
+  if (hash(updated) !== patchedHash) throw new Error(`${relativePath}: patch verification failed`);
+  return { file, original, updated };
 }
 
-if (patched > 0) {
-  console.log(
-    `[patch-standalone-deps] Done: ${patched} file(s) patched for standalone binary compatibility`,
-  );
-} else {
-  console.log("[patch-standalone-deps] No patches needed (already patched or files not found)");
+const packagePath = join(transformersDir, "package.json");
+const originalPackage = readFileSync(packagePath, "utf8");
+const manifest = JSON.parse(originalPackage);
+const ortManifest = JSON.parse(readFileSync(join(root, "node_modules", "onnxruntime-web", "package.json"), "utf8"));
+if (manifest.version !== transformerVersion || ortManifest.version !== ortVersion) {
+  throw new Error(`Unsupported embedding dependency versions; expected Transformers ${transformerVersion} and ONNX Web ${ortVersion}`);
 }
+const nodeImport = manifest.exports?.node?.import;
+if (!nodeImport || !["./dist/transformers.node.mjs", "./src/transformers.js"].includes(nodeImport.default)) {
+  throw new Error("Unrecognized Transformers Node ESM export; refusing to select an unpatched runtime");
+}
+nodeImport.default = "./src/transformers.js";
 
-if (warnings > 0) {
-  console.warn(
-    `[patch-standalone-deps] ${warnings} warning(s) — standalone binary may have issues. Check @xenova/transformers version compatibility.`,
-  );
+// Validate every input and output before mutating any dependency file.
+const changes = [
+  prepareSource(
+    "src/backends/onnx.js",
+    "b3956d30ca190ca25379c5a1a3e878427571c66a20c8ca4de120448ec207f7e4",
+    "665ea2e5ed1d88241aacd7addbc7be24e17e2f2e81975b07e248a9c0d723e6c4",
+    (source) => {
+      source = replaceOnce(source,
+        "// NOTE: Import order matters here. We need to import `onnxruntime-node` before `onnxruntime-web`.\nimport ONNX_NODE from './onnx-node.js';\nimport * as ONNX_WEB from 'onnxruntime-web/webgpu';",
+        "// cass-memory uses text-only WASM with Node filesystem support in source and compiled builds.\nimport * as ONNX_WEB from 'onnxruntime-web';");
+      const selectionStart = source.indexOf("const supportedDevices = [];");
+      const selectionEnd = source.indexOf("/**\n * Get the list of devices supported", selectionStart);
+      if (selectionStart < 0 || selectionEnd < 0) throw new Error("Missing upstream runtime selection block");
+      source = source.slice(0, selectionStart)
+        + "const supportedDevices = ['wasm'];\n\n/** @type {ONNXExecutionProviders[]} */\nconst defaultDevices = ['wasm'];\nconst ONNX = ONNX_WEB;\n\n"
+        + source.slice(selectionEnd);
+      source = replaceOnce(source,
+        "    const session = await (apis.IS_WEB_ENV ? (webInitChain = webInitChain.then(load)) : load());",
+        "    const pending = webInitChain.then(load);\n    webInitChain = pending.catch(() => {});\n    const session = await pending;");
+      return replaceOnce(source,
+        "    return apis.IS_WEB_ENV ? (webInferenceChain = webInferenceChain.then(run)) : run();",
+        "    const pending = webInferenceChain.then(run);\n    webInferenceChain = pending.catch(() => {});\n    return pending;");
+    },
+  ),
+  prepareSource(
+    "src/utils/image.js",
+    "ad67ad4c0dcd2761679ca083a725e961a163e9146b2d3da03d97b1667b12d959",
+    "8e5e62a96b9bf0b366a610e1e38770349a69b6ddeb5ca087e45c45bde2a4d98f",
+    (source) => replaceOnce(source, "import sharp from 'sharp';",
+      "const sharp = () => {\n    throw new Error('Image processing is unavailable: cass-memory includes only text embedding pipelines.');\n};"),
+  ),
+  { file: packagePath, original: originalPackage, updated: JSON.stringify(manifest, null, 2) + "\n" },
+];
+
+let changed = 0;
+for (const { file, original, updated } of changes) {
+  if (original === updated) continue;
+  // Atomic replacement also prevents modifying Bun's hard-linked package cache.
+  const temporary = `${file}.cm-${process.pid}.tmp`;
+  writeFileSync(temporary, updated, { flag: "wx" });
+  renameSync(temporary, file);
+  changed++;
 }
+console.log(`[patch-standalone-deps] Verified Transformers ${transformerVersion} text-only WASM runtime (${changed} files updated)`);

@@ -2456,16 +2456,41 @@ async function safeCassSearch(
 
 For semantic search (when enabled):
 
+CM uses `@huggingface/transformers` 4.3.2 with quantized text inference through
+ONNX Web's Node-capable WASM runtime. The public `embeddingBackend: xenova`
+setting and `Xenova/all-MiniLM-L6-v2` model name remain unchanged; custom model
+names and local model directories are still accepted. Model files stay in
+`~/.cache/cass-memory/transformers/` for offline reuse. Derived local embedding
+caches are version 3 because batch vectors can change with the newer runtime;
+Ollama's version 2 caches remain valid. Each operation retains its own backend,
+effective model, endpoint identity and expected vector dimensions.
+
+The postinstall patch verifies exact upstream source hashes, selects the source
+entry, and excludes native ONNX and image decoding from CM's text runtime. The
+compiled executable embeds the matching WASM binary and JavaScript factory.
+Installation fails if the pinned package no longer matches the verified patch.
+The dependency graph includes Sharp 0.35.5 and native ONNX 1.30.0, but CM does not
+load them for embeddings. ONNX Web is intentionally the upstream-pinned
+`1.31.0-dev.20260914-8d85527a0` prerelease, not an all-stable runtime stack.
+
+Linux x64 source and compiled inference, cold download, offline cache reuse, and
+numerical comparisons have been exercised. Native execution on the other release
+targets still requires qualification tracked in
+[issue #92](https://github.com/Dicklesworthstone/cass_memory_system/issues/92).
+
 ```typescript
-import { pipeline } from '@xenova/transformers';
+import { pipeline } from '@huggingface/transformers';
+import { ensureOnnxWasmRuntime } from './wasm-runtime.js';
 
 let embeddingPipeline: any = null;
 
 async function getEmbedding(text: string): Promise<number[]> {
   if (!embeddingPipeline) {
+    await ensureOnnxWasmRuntime();
     embeddingPipeline = await pipeline(
       'feature-extraction',
-      config.embeddingModel || 'Xenova/all-MiniLM-L6-v2'
+      config.embeddingModel || 'Xenova/all-MiniLM-L6-v2',
+      { device: 'wasm', dtype: 'q8' }
     );
   }
 

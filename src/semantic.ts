@@ -20,7 +20,9 @@ import {
 import { ensureOnnxWasmRuntime, getTransformersCacheDir } from "./wasm-runtime.js";
 
 export const DEFAULT_EMBEDDING_MODEL = "Xenova/all-MiniLM-L6-v2";
-export const EMBEDDING_CACHE_VERSION = "2.0";
+// Transformers 4 uses a newer quantized runtime; old batch vectors must be recomputed.
+export const EMBEDDING_CACHE_VERSION = "3.0";
+const OLLAMA_EMBEDDING_CACHE_VERSION = "2.0";
 const OLLAMA_EMBED_TIMEOUT_MS = 30_000;
 
 let embedderCache: { model: string; promise: Promise<any>; ready: boolean } | null = null;
@@ -336,7 +338,7 @@ async function batchEmbedOllama(
 }
 
 export interface ModelLoadProgress {
-  status: "initiate" | "download" | "progress" | "done" | "ready";
+  status: "initiate" | "download" | "progress" | "progress_total" | "done" | "ready";
   name?: string;
   file?: string;
   progress?: number;
@@ -367,7 +369,7 @@ function createStderrProgressCallback(): ProgressCallback {
   return (progress: ModelLoadProgress) => {
     if (progress.status === "initiate") {
       process.stderr.write(`${downloadIcon}Downloading embedding model (one-time, ~23MB)...\n`);
-    } else if (progress.status === "progress" && typeof progress.progress === "number") {
+    } else if ((progress.status === "progress" || progress.status === "progress_total") && typeof progress.progress === "number") {
       const percent = Math.round(progress.progress);
       // Only update every 5% to reduce visual noise
       if (percent >= lastPercent + 5 || percent === 100) {
@@ -387,18 +389,9 @@ async function loadEmbedder(
   model: string,
   options: { showProgress?: boolean; progressCallback?: ProgressCallback } = {},
 ): Promise<any> {
-  // IMPORT ORDER IS LOAD-BEARING. @xenova/transformers/src/env.js
-  // unconditionally sets `onnx_env.wasm.wasmPaths = path.join(__dirname, "/dist/")`
-  // at module-evaluation time. In a Bun standalone binary, __dirname is
-  // `/$bunfs`, so wasmPaths becomes `/$bunfs/dist/` — a path that does
-  // not exist, causing semantic search to abort with
-  //   "Aborted(Error: ENOENT: ... open '/$bunfs/dist/ort-wasm-*.wasm')".
-  //
-  // We MUST therefore import @xenova/transformers FIRST (let env.js run
-  // and clobber wasmPaths with its bad default), then immediately call
-  // ensureOnnxWasmRuntime() to overwrite wasmPaths with the correct
-  // embedded-file map. See src/wasm-runtime.ts for the fix rationale.
-  const { pipeline } = await import("@xenova/transformers");
+  // Configure after import: Transformers initializes its own runtime URLs.
+  // Our pinned source entry keeps filesystem caching and uses embedded WASM.
+  const { pipeline } = await import("@huggingface/transformers");
   await ensureOnnxWasmRuntime();
 
   const showProgress = options.showProgress ?? shouldShowProgress();
@@ -413,6 +406,8 @@ async function loadEmbedder(
     async () => {
       try {
         const result = await pipeline("feature-extraction", model, {
+          device: "wasm",
+          dtype: "q8",
           progress_callback: progressCallback,
         });
 
@@ -435,6 +430,8 @@ async function loadEmbedder(
           try {
             warn("[semantic] Network unavailable; attempting to use cached model...");
             const result = await pipeline("feature-extraction", model, {
+              device: "wasm",
+              dtype: "q8",
               local_files_only: true,
               progress_callback: progressCallback,
             });
@@ -646,7 +643,7 @@ export function getEmbeddingCachePath(options: EmbeddingOptions = {}): string {
 
 function emptyEmbeddingCacheForRuntime(runtime: EmbeddingRuntime): EmbeddingCache {
   return {
-    version: EMBEDDING_CACHE_VERSION,
+    version: embeddingCacheVersionForRuntime(runtime),
     model: runtime.model,
     runtimeId: runtime.cacheIdentity,
     bullets: {},
@@ -658,6 +655,10 @@ export function createEmptyEmbeddingCache(
   options: Pick<EmbeddingOptions, "config"> = {},
 ): EmbeddingCache {
   return emptyEmbeddingCacheForRuntime(resolveEmbeddingRuntime({ ...options, model }));
+}
+
+function embeddingCacheVersionForRuntime(runtime: EmbeddingRuntime): string {
+  return runtime.backend === "ollama" ? OLLAMA_EMBEDDING_CACHE_VERSION : EMBEDDING_CACHE_VERSION;
 }
 
 export async function loadEmbeddingCache(
@@ -684,7 +685,7 @@ async function loadEmbeddingCacheForRuntime(
 
     const cache = result.data;
     if (cache.model !== runtime.model || cache.runtimeId !== runtime.cacheIdentity ||
-        cache.version !== EMBEDDING_CACHE_VERSION) {
+        cache.version !== embeddingCacheVersionForRuntime(runtime)) {
       return emptyEmbeddingCacheForRuntime(runtime);
     }
 
@@ -1430,11 +1431,13 @@ export async function isModelCached(model = DEFAULT_EMBEDDING_MODEL): Promise<bo
     const probe = async (): Promise<boolean> => {
       try {
         // Import first: transformers' env.js otherwise clobbers wasmPaths.
-        const { pipeline } = await import("@xenova/transformers");
+        const { pipeline } = await import("@huggingface/transformers");
         await ensureOnnxWasmRuntime();
         // This temporary pipeline belongs to the probe, not the inference
-        // cache. Transformers v2 does not dispose its ONNX sessions for us.
+        // cache, and its ONNX sessions must be disposed after the probe.
         const candidate = await pipeline("feature-extraction", model, {
+          device: "wasm",
+          dtype: "q8",
           local_files_only: true,
         });
         await candidate.dispose();

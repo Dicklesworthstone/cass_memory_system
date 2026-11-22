@@ -20,6 +20,12 @@ All notable changes to **cass-memory** (`cm`) are documented in this file.
 - Reflection cancellation stops and reaps the CLI before returning, escalates stubborn subprocesses from TERM to KILL, and stops wrapper descendants on POSIX. Normal parent shutdown also stops an active owned CLI group. Each output stream is limited to 10 MiB while it is read; timeout and output-limit failures stop retries instead of launching another generation. Windows cleanup covers the direct CLI process.
 - Explicit `llm.totalTimeoutMs` and `CM_LLM_TOTAL_TIMEOUT_MS` ceilings now cover every attempt and retry backoff without being inflated by the per-operation timeout. Parent cancellation interrupts nested waiters and backoff, and a monotonic deadline check rejects late success even when synchronous work delays timers. Larger per-operation settings still expand an unspecified default total ceiling.
 
+### Dependencies
+
+- Local text embeddings now use pinned `@huggingface/transformers` 4.3.2. Both lockfiles replace the deprecated Transformers 2 / Sharp 0.32 / ONNX 1.14 graph with the maintained package graph, including Sharp 0.35.5 and native ONNX 1.30.0. CM executes the upstream-pinned ONNX Web `1.31.0-dev.20260914-8d85527a0` WASM runtime; its native ONNX and image-processing dependencies are excluded from CM's text inference path.
+- Standalone binaries embed the matching WASM and JavaScript factory. Version- and hash-verified installation patches retain filesystem model caching, serialize initialization and inference, and recover after failed requests. Existing `xenova` configuration, model names, local directories, offline retries, and per-project runtime isolation remain supported.
+- Derived local vectors move to cache version 3 because the new runtime changes batch embeddings. Compatible Ollama version 2 caches and raw model downloads remain reusable. Linux x64 source and compiled inference have been exercised with real models; native qualification for the other release targets remains tracked in #92. The small Linux comparison observed higher resident memory with the successor runtime (roughly 335–362 MB versus 221 MB).
+
 ## [0.6.0] -- 2026-11-20
 
 Everything on `main` since [0.5.1](https://github.com/Dicklesworthstone/cass_memory_system/releases/tag/v0.5.1). Adds trusted-local playbook recovery and archival commands, explicit outcome replay targeting, crash-safe reflection commits, and dependency updates, so it is a minor bump.

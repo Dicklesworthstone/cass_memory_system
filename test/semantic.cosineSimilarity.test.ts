@@ -176,7 +176,7 @@ describe("semantic: provider output and request ownership", () => {
       // model downloads out of this provider-contract regression.
       const child = Bun.spawnSync([process.execPath, "--eval", `
         import { spyOn } from "bun:test";
-        import * as transformers from "@xenova/transformers";
+        import * as transformers from "@huggingface/transformers";
         const { embedText, batchEmbed, warmupEmbeddings } = await import("./src/semantic.ts");
         const config = { embeddingBackend: "xenova", embeddingModel: "tensor-contract-fixture" };
         let tensor = { data: new Float32Array([1, 0]), dims: [1, 2] };

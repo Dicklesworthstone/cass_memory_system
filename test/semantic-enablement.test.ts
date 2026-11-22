@@ -28,9 +28,13 @@ import {
   resolveSemanticEnabled,
   type SemanticConfigInput,
   semanticReadinessProbes,
+  createEmptyEmbeddingCache,
+  getEmbeddingBackend,
+  loadEmbeddingCache,
+  setEmbeddingBackend,
 } from "../src/semantic.js";
 import { createTestBullet, createTestConfig, createTestPlaybook } from "./helpers/factories.js";
-import { withTempCassHome } from "./helpers/temp.js";
+import { withTempCassHome, withTempDir } from "./helpers/temp.js";
 
 const realXenovaProbe = semanticReadinessProbes.xenova;
 const realOllamaProbe = semanticReadinessProbes.ollama;
@@ -188,17 +192,42 @@ describe("resolveSemanticEnabled: tri-state posture (#75)", () => {
 });
 
 describe("local embedding runtime ownership", () => {
+  test("network retry retains the caller's model path and quantized WASM settings", async () => {
+    await withTempCassHome(async () => {
+      const child = Bun.spawnSync([process.execPath, "--eval", `
+        import { spyOn } from "bun:test";
+        import * as transformers from "@huggingface/transformers";
+        const { getEmbedder } = await import("./src/semantic.ts");
+        const calls = [];
+        spyOn(transformers, "pipeline").mockImplementation(async (task, model, options) => {
+          calls.push({ task, model, device: options.device, dtype: options.dtype, local: options.local_files_only ?? false });
+          if (calls.length === 1) throw new Error("network fetch unavailable");
+          return { dispose: async () => {} };
+        });
+        await getEmbedder("/custom/local/text-model", { showProgress: false });
+        console.log(JSON.stringify(calls));
+      `], { cwd: `${import.meta.dir}/..`, stdout: "pipe", stderr: "pipe" });
+      expect(child.exitCode, child.stderr.toString()).toBe(0);
+      expect(JSON.parse(child.stdout.toString())).toEqual([
+        { task: "feature-extraction", model: "/custom/local/text-model", device: "wasm", dtype: "q8", local: false },
+        { task: "feature-extraction", model: "/custom/local/text-model", device: "wasm", dtype: "q8", local: true },
+      ]);
+    });
+  });
+
   test("concurrent local-only probes share and dispose their temporary pipeline, and retry failures", () => {
     const child = Bun.spawnSync([process.execPath, "--eval", `
       import { spyOn } from "bun:test";
-      import * as transformers from "@xenova/transformers";
+      import * as transformers from "@huggingface/transformers";
       const { isModelCached } = await import("./src/semantic.ts");
       let calls = 0, disposed = 0, downloads = 0, failures = 1;
-      const localOnly = [];
+      const localOnly = [], devices = [], dtypes = [];
       globalThis.fetch = async () => { downloads++; throw new Error("network forbidden in readiness probe"); };
       spyOn(transformers, "pipeline").mockImplementation(async (_task, model, options) => {
         calls++;
         localOnly.push(options.local_files_only);
+        devices.push(options.device);
+        dtypes.push(options.dtype);
         if (model === "retry-model" && failures-- > 0) throw new Error("cache incomplete");
         return { dispose: async () => { disposed++; } };
       });
@@ -207,7 +236,7 @@ describe("local embedding runtime ownership", () => {
       await isModelCached("probe-model");
       const firstRetry = await isModelCached("retry-model");
       const secondRetry = await isModelCached("retry-model");
-      console.log(JSON.stringify({ ready, concurrent, firstRetry, secondRetry, calls, disposed, downloads, localOnly }));
+      console.log(JSON.stringify({ ready, concurrent, firstRetry, secondRetry, calls, disposed, downloads, localOnly, devices, dtypes }));
     `], { cwd: `${import.meta.dir}/..`, stdout: "pipe", stderr: "pipe" });
     expect(child.exitCode, child.stderr.toString()).toBe(0);
     const result = JSON.parse(child.stdout.toString());
@@ -219,13 +248,15 @@ describe("local embedding runtime ownership", () => {
     expect(result.disposed).toBe(3);
     expect(result.downloads).toBe(0);
     expect(result.localOnly).toEqual([true, true, true, true]);
+    expect(result.devices).toEqual(["wasm", "wasm", "wasm", "wasm"]);
+    expect(result.dtypes).toEqual(["q8", "q8", "q8", "q8"]);
   });
 
   test("readiness reuses an active embedder and older failed loads cannot evict its cache", async () => {
     await withTempCassHome(async () => {
       const child = Bun.spawnSync([process.execPath, "--eval", `
         import { spyOn } from "bun:test";
-        import * as transformers from "@xenova/transformers";
+        import * as transformers from "@huggingface/transformers";
         const { getEmbedder, isModelCached } = await import("./src/semantic.ts");
         let calls = 0, disposed = 0, startOlder, rejectOlder;
         const olderStarted = new Promise(resolve => { startOlder = resolve; });
@@ -256,6 +287,47 @@ describe("local embedding runtime ownership", () => {
         calls: 2,
         disposed: 0,
       });
+    });
+  });
+});
+
+describe("embedding cache runtime versions", () => {
+  test("invalidates old local vectors while retaining existing Ollama cache entries", async () => {
+    await withTempDir("cm-cache-versions", async dir => {
+      const previousBackend = getEmbeddingBackend();
+      const cachePath = `${dir}/cache.json`;
+      const localConfig = { embeddingBackend: "xenova", embeddingModel: "custom-model" } as const;
+      const ollamaConfig = { embeddingBackend: "ollama", embeddingModel: "custom-model", ollamaBaseUrl: "http://127.0.0.1:11434" } as const;
+      const emptyLocal = createEmptyEmbeddingCache(undefined, { config: localConfig });
+      const legacyLocal = {
+        ...emptyLocal,
+        version: "2.0",
+        dimensions: 3,
+        bullets: { "b-version": { contentHash: "known-content", embedding: [1, 0, 0], computedAt: "2026-01-01T00:00:00.000Z" } },
+      };
+      const ollamaCache = {
+        ...createEmptyEmbeddingCache(undefined, { config: ollamaConfig }),
+        dimensions: 3,
+        bullets: legacyLocal.bullets,
+      };
+      writeFileSync(cachePath, JSON.stringify(legacyLocal));
+      try {
+        setEmbeddingBackend("ollama");
+        expect(emptyLocal.version).toBe("3.0");
+        expect(await loadEmbeddingCache({ cachePath, config: localConfig })).toEqual(emptyLocal);
+        writeFileSync(cachePath, JSON.stringify(ollamaCache));
+        setEmbeddingBackend("xenova");
+        expect(ollamaCache.version).toBe("2.0");
+        expect(await loadEmbeddingCache({ cachePath, config: ollamaConfig })).toEqual(ollamaCache);
+
+        const current = { ...legacyLocal, version: "3.0" };
+        writeFileSync(cachePath, JSON.stringify(current));
+        setEmbeddingBackend("ollama");
+        expect(await loadEmbeddingCache({ cachePath, config: localConfig })).toEqual(current);
+        expect((await loadEmbeddingCache({ cachePath, config: ollamaConfig })).bullets).toEqual({});
+      } finally {
+        setEmbeddingBackend(previousBackend);
+      }
     });
   });
 });
