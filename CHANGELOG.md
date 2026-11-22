@@ -17,6 +17,7 @@ All notable changes to **cass-memory** (`cm`) are documented in this file.
 - CLI schema-validation failures and retry prompts identify the failing delta and field (for example, `deltas[7].bulletId`) instead of truncating unrelated union errors (#104). Diagnostics select the matching delta type, retain the original validation error as the cause, and update after each failed attempt.
 - Semantic operations use the requesting project's embedding configuration throughout inference, batching, reflection deduplication, and validation. Derived caches are isolated by backend, model, and endpoint, preventing another project or provider from supplying incompatible vectors.
 - Context and similarity search reject stale, malformed, zero, and incompatible embeddings, preserve keyword retrieval when semantic inference fails, and recover when the provider becomes available. Search mode now reflects the scoring actually used, and doctor verifies a usable embedding before enabling semantic search.
+- Reflection cancellation stops and reaps the CLI before returning, escalates stubborn subprocesses from TERM to KILL, and stops wrapper descendants on POSIX. Normal parent shutdown also stops an active owned CLI group. Each output stream is limited to 10 MiB while it is read; timeout and output-limit failures stop retries instead of launching another generation. Windows cleanup covers the direct CLI process.
 
 ## [0.6.0] -- 2026-11-20
 

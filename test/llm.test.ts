@@ -1447,6 +1447,202 @@ console.log(${failFirst} && first ? "invalid JSON" : '{"value":"ok"}');
   });
 });
 
+describe("CLI subprocess lifecycle", () => {
+  const schema = z.object({ value: z.string() });
+
+  beforeEach(() => {
+    saveEnv();
+    clearAllApiKeys();
+  });
+  afterEach(() => restoreEnv());
+
+  async function makeCli(dir: string, body: string) {
+    const tool = path.join(dir, "lifecycle-cli");
+    const pidsFile = path.join(dir, "pids.txt");
+    await fs.writeFile(tool, `#!${process.execPath}
+import { appendFileSync } from "node:fs";
+appendFileSync(${JSON.stringify(pidsFile)}, process.pid + "\\n");
+await Bun.stdin.text();
+${body}
+`, { mode: 0o755 });
+    return {
+      tool,
+      pidsFile,
+      pids: async () => (await fs.readFile(pidsFile, "utf8")).trim().split("\n").map(Number),
+      cleanup: async () => {
+        // Only these fixture processes are eligible for cleanup when a
+        // regression leaves them alive; never target the test runner's group.
+        const pids = await fs.readFile(pidsFile, "utf8").catch(() => "");
+        for (const value of pids.trim().split("\n")) {
+          const pid = Number(value);
+          if (Number.isInteger(pid) && pid > 0) {
+            try { process.kill(pid, "SIGKILL"); } catch { /* already exited */ }
+          }
+        }
+        await Bun.sleep(10);
+      },
+    };
+  }
+
+  async function isRunning(pid: number): Promise<boolean> {
+    try {
+      process.kill(pid, 0);
+      // A wrapper's orphaned child may remain a zombie until the host's init
+      // reaps it; it is no longer executing or consuming provider resources.
+      if (process.platform === "linux") {
+        const stat = await fs.readFile(`/proc/${pid}/stat`, "utf8");
+        return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[0] !== "Z";
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  it("kills and reaps the owned CLI before an operation timeout returns", async () => {
+    await withTempDir("cli-operation-abort", async dir => {
+      const cli = await makeCli(dir, `process.on("SIGTERM", () => {});\nsetInterval(() => {}, 1000);`);
+      const exitListeners = process.listenerCount("exit");
+      try {
+        await expect(llmWithRetry(
+          () => cliGenerateObject(schema, "prompt", cli.tool, 5000, ""),
+          "cli-operation-abort",
+          { perOperationTimeoutMs: 500 },
+        )).rejects.toThrow("cli-operation-abort timed out after 500ms");
+        const pids = await cli.pids();
+        expect(pids).toHaveLength(1);
+        expect(await isRunning(pids[0])).toBe(false);
+        expect(process.listenerCount("exit")).toBe(exitListeners);
+      } finally {
+        await cli.cleanup();
+      }
+    });
+  });
+
+  it("does not start another schema attempt after a CLI timeout", async () => {
+    await withTempDir("cli-no-timeout-retry", async dir => {
+      const cli = await makeCli(dir, "setInterval(() => {}, 1000);");
+      try {
+        await expect(generateObjectSafe(schema, "prompt", createTestConfig({
+          provider: "cli", model: "default", cliCommand: cli.tool,
+          cliSubprocessCwd: "", llmTimeoutMs: 500,
+        }), 3)).rejects.toThrow("timed out");
+        const pids = await cli.pids();
+        expect(pids).toHaveLength(1);
+        expect(await isRunning(pids[0])).toBe(false);
+      } finally {
+        await cli.cleanup();
+      }
+    });
+  });
+
+  if (process.platform !== "win32") {
+    it("terminates a SIGTERM-ignoring child holding pipes after its wrapper exits", async () => {
+      await withTempDir("cli-wrapper-descendant", async dir => {
+        const pidsFile = path.join(dir, "pids.txt");
+        const worker = `
+import { appendFileSync } from "node:fs";
+appendFileSync(${JSON.stringify(pidsFile)}, process.pid + "\\n");
+process.on("SIGTERM", () => {});
+setInterval(() => {}, 1000);
+`;
+        const cli = await makeCli(dir, `
+Bun.spawn([process.execPath, "-e", ${JSON.stringify(worker)}], {
+  stdin: "ignore", stdout: "inherit", stderr: "inherit",
+});
+process.exit(0);
+`);
+        try {
+          await expect(cliGenerateObject(schema, "prompt", cli.tool, 500, "")).rejects.toThrow("timed out");
+          const pids = await cli.pids();
+          expect(pids).toHaveLength(2);
+          for (const pid of pids) expect(await isRunning(pid)).toBe(false);
+        } finally {
+          await cli.cleanup();
+        }
+      });
+    });
+
+    it("stops the detached CLI group when its parent exits during generation", async () => {
+      await withTempDir("cli-parent-exit", async dir => {
+        const cli = await makeCli(dir, `process.on("SIGTERM", () => {});\nsetInterval(() => {}, 1000);`);
+        const supervisor = path.join(dir, "supervisor.ts");
+        await fs.writeFile(supervisor, `
+import { cliGenerateObject } from ${JSON.stringify(path.join(import.meta.dir, "..", "src", "llm.ts"))};
+import { z } from ${JSON.stringify(path.join(import.meta.dir, "..", "node_modules", "zod", "index.js"))};
+process.on("SIGTERM", () => process.exit(143));
+await cliGenerateObject(z.object({ value: z.string() }), "prompt", ${JSON.stringify(cli.tool)}, 10000, "");
+`);
+        const parent = Bun.spawn([process.execPath, supervisor], {
+          stdin: "ignore", stdout: "ignore", stderr: "ignore",
+        });
+        try {
+          const readyDeadline = Date.now() + 3000;
+          while (!await Bun.file(cli.pidsFile).exists() && Date.now() < readyDeadline) await Bun.sleep(10);
+          const pids = await cli.pids();
+          expect(pids).toHaveLength(1);
+          parent.kill("SIGTERM");
+          await parent.exited;
+          const exitDeadline = Date.now() + 1000;
+          while (await isRunning(pids[0]) && Date.now() < exitDeadline) await Bun.sleep(10);
+          expect(await isRunning(pids[0])).toBe(false);
+        } finally {
+          if (parent.exitCode === null) parent.kill("SIGKILL");
+          await parent.exited;
+          await cli.cleanup();
+        }
+      });
+    });
+  }
+
+  for (const stream of ["stdout", "stderr"] as const) {
+    it(`bounds ${stream} bytes while a CLI is still running and does not retry`, async () => {
+      await withTempDir(`cli-bounded-${stream}`, async dir => {
+        const cli = await makeCli(dir, `
+import { writeSync } from "node:fs";
+const bytes = Buffer.from("é".repeat(6 * 1024 * 1024));
+let offset = 0;
+while (offset < bytes.length) offset += writeSync(${stream === "stdout" ? 1 : 2}, bytes, offset);
+setInterval(() => {}, 1000);
+`);
+        try {
+          await expect(generateObjectSafe(schema, "prompt", createTestConfig({
+            provider: "cli", model: "default", cliCommand: cli.tool,
+            cliSubprocessCwd: "", llmTimeoutMs: 3000,
+          }), 3)).rejects.toThrow(`${stream} exceeded the 10MiB output limit`);
+          const pids = await cli.pids();
+          expect(pids).toHaveLength(1);
+          expect(await isRunning(pids[0])).toBe(false);
+        } finally {
+          await cli.cleanup();
+        }
+      });
+    });
+  }
+
+  it("preserves UTF-8 split across reads and removes the parent exit guard after success", async () => {
+    await withTempDir("cli-stream-utf8", async dir => {
+      const cli = await makeCli(dir, `
+import { writeSync } from "node:fs";
+const bytes = Buffer.from(JSON.stringify({ value: "é 🦊" }));
+for (let index = 0; index < bytes.length; index++) {
+  writeSync(1, bytes, index, 1);
+  await Bun.sleep(1);
+}
+writeSync(2, "Ordinary diagnostic output");
+`);
+      const exitListeners = process.listenerCount("exit");
+      try {
+        expect((await cliGenerateObject(schema, "prompt", cli.tool, 3000, "")).object).toEqual({ value: "é 🦊" });
+        expect(process.listenerCount("exit")).toBe(exitListeners);
+        for (const pid of await cli.pids()) expect(await isRunning(pid)).toBe(false);
+      } finally {
+        await cli.cleanup();
+      }
+    });
+  });
+});
+
 describe("cliGenerateObject schema hint", () => {
   it("gives the CLI tool the full nested JSON Schema, not just top-level names", async () => {
     const { mkdtempSync, writeFileSync, chmodSync, readFileSync } = await import("node:fs");

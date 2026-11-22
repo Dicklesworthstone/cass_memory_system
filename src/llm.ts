@@ -9,6 +9,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { generateObject, type LanguageModel, zodSchema } from "ai";
 import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
+import type { ReadableStreamDefaultReader } from "node:stream/web";
 import { createOllama } from "ollama-ai-provider-v2";
 import { z } from "zod";
 import { BudgetAdmissionError, recordCost, withBudgetAdmission } from "./cost.js";
@@ -409,6 +410,58 @@ function summarizeValidationError(error: z.ZodError): string {
   return summary.join("; ").slice(0, 1600);
 }
 
+const MAX_CLI_OUTPUT_BYTES = 10 * 1024 * 1024;
+const CLI_TERMINATION_GRACE_MS = 250;
+const CLI_REAP_TIMEOUT_MS = 1000;
+
+// Retrying output/resource failures would start another copy of a runaway CLI.
+class CLILifecycleError extends Error {}
+
+async function readCliOutput(
+  reader: Pick<ReadableStreamDefaultReader<Uint8Array>, "read">,
+  command: string,
+  stream: "stdout" | "stderr",
+): Promise<string> {
+  let bytes = new Uint8Array(0);
+  let length = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const nextLength = length + value.byteLength;
+    if (nextLength > MAX_CLI_OUTPUT_BYTES) {
+      throw new CLILifecycleError(
+        `CLI tool '${command}' ${stream} exceeded the ${MAX_CLI_OUTPUT_BYTES / 1024 / 1024}MiB output limit`,
+      );
+    }
+    // Grow geometrically instead of retaining an unbounded number of tiny
+    // chunks. Check bytes before allocation; decode once to preserve UTF-8
+    // characters split across pipe reads.
+    if (nextLength > bytes.length) {
+      const expanded = new Uint8Array(Math.min(
+        MAX_CLI_OUTPUT_BYTES,
+        Math.max(64 * 1024, bytes.length * 2, nextLength),
+      ));
+      expanded.set(bytes.subarray(0, length));
+      bytes = expanded;
+    }
+    bytes.set(value, length);
+    length = nextLength;
+  }
+  return new TextDecoder().decode(bytes.subarray(0, length));
+}
+
+async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout>;
+  try {
+    return await Promise.race([
+      promise.then(() => true, () => true),
+      new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), timeoutMs); }),
+    ]);
+  } finally {
+    clearTimeout(timer!);
+  }
+}
+
 /**
  * Call an LLM via a CLI tool (claude, codex, gemini, etc.).
  * Pipes the prompt via stdin and parses JSON from stdout.
@@ -422,6 +475,8 @@ export async function cliGenerateObject<T>(
   cliSubprocessCwd?: string,
   model?: string,
 ): Promise<{ object: T; usage: LLMUsage }> {
+  const operationSignal = llmOperationSignal.getStore();
+  operationSignal?.throwIfAborted();
   const cmd = resolveCliCommand(cliCommand);
   if (!cmd) {
     throw new Error(
@@ -508,10 +563,19 @@ export async function cliGenerateObject<T>(
     }
   }
 
+  // Directory creation can have awaited past the operation's deadline. Do
+  // not start a provider after cancellation, even if no process existed then.
+  operationSignal?.throwIfAborted();
+  const isolatedProcessGroup = process.platform !== "win32";
   const proc = Bun.spawn(spawnArgs, {
     stdin: new Response(enhancedPrompt).body!,
     stdout: "pipe",
     stderr: "pipe",
+    // A custom wrapper often starts the actual model CLI as its child.
+    // POSIX setsid gives this invocation an owned group that can be stopped
+    // even after the wrapper exits while a child retains its stdout pipe.
+    // Windows only supports terminating the direct child through this API.
+    detached: isolatedProcessGroup,
     cwd: subprocessCwd ?? undefined,
     env: {
       ...process.env,
@@ -521,43 +585,101 @@ export async function cliGenerateObject<T>(
     },
   });
 
-  // Race the process against a timeout to prevent indefinite hangs
-  let timeoutId: ReturnType<typeof setTimeout>;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(() => {
-      proc.kill();
-      reject(new Error(`CLI tool '${cmd}' timed out after ${CLI_TIMEOUT_MS / 1000}s`));
-    }, CLI_TIMEOUT_MS);
-  });
+  const stdoutReader = proc.stdout.getReader();
+  const stderrReader = proc.stderr.getReader();
+  const readers = [stdoutReader, stderrReader];
+  const outputPromises = [readCliOutput(stdoutReader, cmd, "stdout"), readCliOutput(stderrReader, cmd, "stderr")];
+  const resultPromise = Promise.all([...outputPromises, proc.exited]);
+  const drained = Promise.allSettled([...outputPromises, proc.exited]);
+  // Both the race and allSettled observe rejections, including late pipe
+  // errors after cancellation has already won the race.
 
-  // Extract Promise.all so we can suppress orphaned rejections if the
-  // timeout wins the race but the process later errors on stream close.
-  const resultPromise = Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
-  resultPromise.catch(() => {}); // prevent unhandled rejection after timeout
+  const signalOwnedProcesses = (signal: NodeJS.Signals) => {
+    try {
+      if (isolatedProcessGroup) process.kill(-proc.pid, signal);
+      else if (proc.exitCode === null) proc.kill(signal);
+    } catch (error: any) {
+      if (error?.code !== "ESRCH") {
+        throw new CLILifecycleError(`Unable to terminate CLI tool '${cmd}'`, { cause: error });
+      }
+    }
+  };
+  // cm's signal handler exits after releasing its locks. Detached children
+  // do not receive the terminal's signal, so synchronously stop this owned
+  // invocation if the parent exits before ordinary async cleanup can finish.
+  const onParentExit = () => {
+    try { signalOwnedProcesses("SIGKILL"); } catch { /* parent is already exiting */ }
+  };
+  process.once("exit", onParentExit);
+  const groupExists = () => {
+    if (!isolatedProcessGroup) return proc.exitCode === null;
+    try {
+      process.kill(-proc.pid, 0);
+      return true;
+    } catch (error: any) {
+      if (error?.code === "ESRCH") return false;
+      throw new CLILifecycleError(`Unable to inspect CLI process group for '${cmd}'`, { cause: error });
+    }
+  };
+  const terminate = async () => {
+    signalOwnedProcesses("SIGTERM");
+    await settlesWithin(drained, CLI_TERMINATION_GRACE_MS);
+    // Do not use only proc.exitCode here: descendants can outlive the wrapper.
+    if (groupExists()) signalOwnedProcesses("SIGKILL");
+    if (!await settlesWithin(proc.exited, CLI_REAP_TIMEOUT_MS)) {
+      throw new CLILifecycleError(`CLI tool '${cmd}' did not exit after termination`);
+    }
+    // Allow inherited pipes to close after the group receives SIGKILL, but
+    // never let a descendant that escaped the group hold cleanup open.
+    await settlesWithin(drained, CLI_TERMINATION_GRACE_MS);
+  };
+
+  // A wrapper deadline must not report completion before its owned CLI has
+  // been stopped. Register only bounded subprocess cleanup, never arbitrary
+  // model promises (an API provider may ignore cancellation).
+  let cleanupFinished!: () => void;
+  const cleanup = new Promise<void>(resolve => { cleanupFinished = resolve; });
+  const cleanupScopes = llmOperationCleanups.getStore() ?? [];
+  for (const scope of cleanupScopes) scope.add(cleanup);
+  let timeoutId: ReturnType<typeof setTimeout>;
+  let onAbort: (() => void) | undefined;
+  const cancelled = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new LLMOperationTimeoutError(`CLI tool '${cmd}' timed out after ${CLI_TIMEOUT_MS / 1000}s`));
+    }, CLI_TIMEOUT_MS);
+    onAbort = () => reject(operationSignal?.reason ?? new CLILifecycleError("CLI operation cancelled"));
+    operationSignal?.addEventListener("abort", onAbort, { once: true });
+    if (operationSignal?.aborted) onAbort();
+  });
 
   let stdout: string;
   let stderr: string;
   let exitCode: number;
+  let interrupted = true;
   try {
-    [stdout, stderr, exitCode] = (await Promise.race([resultPromise, timeoutPromise])) as [
+    [stdout, stderr, exitCode] = (await Promise.race([resultPromise, cancelled])) as [
       string,
       string,
       number,
     ];
+    interrupted = false;
   } finally {
     clearTimeout(timeoutId!);
-  }
-
-  // Guard against runaway output (10MB should be far more than any LLM response)
-  const MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
-  if (stdout.length > MAX_OUTPUT_BYTES) {
-    throw new Error(
-      `CLI tool '${cmd}' produced ${(stdout.length / 1024 / 1024).toFixed(1)}MB of output (limit: ${MAX_OUTPUT_BYTES / 1024 / 1024}MB)`,
-    );
+    if (onAbort) operationSignal?.removeEventListener("abort", onAbort);
+    try {
+      if (interrupted) await terminate();
+    } finally {
+      if (interrupted) {
+        await settlesWithin(Promise.allSettled(readers.map(reader => reader.cancel())), CLI_TERMINATION_GRACE_MS);
+      }
+      for (const reader of readers) {
+        try { reader.releaseLock(); } catch { /* a cancelled read may still be settling */ }
+      }
+      process.removeListener("exit", onParentExit);
+      proc.unref();
+      cleanupFinished();
+      for (const scope of cleanupScopes) scope.delete(cleanup);
+    }
   }
 
   if (exitCode !== 0) {
@@ -874,11 +996,17 @@ export const LLM_RETRY_CONFIG = {
 // every public callback signature. A timed-out waiter must never call a model
 // later merely because another process finally released the budget guard.
 const llmOperationSignal = new AsyncLocalStorage<AbortSignal>();
+// Nested operations register subprocess cleanup with every enclosing scope.
+// A parent timeout can therefore wait for its children without waiting on an
+// unrelated API promise that does not honor AbortSignal.
+const llmOperationCleanups = new AsyncLocalStorage<Array<Set<Promise<void>>>>();
 
 class LLMOperationTimeoutError extends Error {}
 
 async function withTimeout<T>(operation: () => Promise<T>, ms: number, operationName: string): Promise<T> {
   const controller = new AbortController();
+  const pendingCleanups = new Set<Promise<void>>();
+  const cleanupScopes = [...(llmOperationCleanups.getStore() ?? []), pendingCleanups];
   const parentSignal = llmOperationSignal.getStore();
   const onAbort = () => controller.abort(parentSignal?.reason);
   parentSignal?.addEventListener("abort", onAbort, { once: true });
@@ -894,11 +1022,13 @@ async function withTimeout<T>(operation: () => Promise<T>, ms: number, operation
 
   try {
     controller.signal.throwIfAborted();
-    const promise = llmOperationSignal.run(controller.signal, operation);
+    const promise = llmOperationCleanups.run(cleanupScopes, () =>
+      llmOperationSignal.run(controller.signal, operation));
     return await Promise.race([promise, timeoutPromise]);
   } finally {
     clearTimeout(timeoutId!);
     parentSignal?.removeEventListener("abort", onAbort);
+    if (controller.signal.aborted) await Promise.allSettled([...pendingCleanups]);
   }
 }
 
@@ -983,7 +1113,7 @@ class LLMUsageAccountingError extends Error {
 
 function isTerminalLLMError(error: unknown): boolean {
   return error instanceof BudgetAdmissionError || error instanceof LLMUsageAccountingError ||
-    error instanceof LLMOperationTimeoutError;
+    error instanceof LLMOperationTimeoutError || error instanceof CLILifecycleError;
 }
 
 /** Accept only reported token counts; never infer usage from response text. */
