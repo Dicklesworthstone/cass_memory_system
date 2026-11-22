@@ -1030,6 +1030,7 @@ export async function onboardCommand(
         try {
           const matches = await findSimilarBulletsSemantic(contentSnippet, activeBullets, 5, {
             model: config.embeddingModel,
+            config,
           });
           relatedRules = matches
             .filter((m) => m.similarity >= 0.3)

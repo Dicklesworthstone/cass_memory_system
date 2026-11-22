@@ -161,6 +161,58 @@ describe("rule-validation.ts", () => {
       // Should not have similarity warning when skipped
       expect(result.warnings.some((w) => w.type === "similarity")).toBe(false);
     });
+
+    test("similarity validation uses its project configuration after another project changes the runtime", async () => {
+      const existingContent = "When applying migrations, always verify database constraints before committing schema changes.";
+      const content = "Before committing a schema migration, always verify that database constraints still hold.";
+      const pb = createEmptyPlaybook("project-specific-validation");
+      pb.bullets.push(createTestBullet({ id: "b-project-database", content: existingContent, category: "database" }));
+      const requests: Array<{ model: string; input: string | string[] }> = [];
+      let unrelatedRequests = 0;
+      const expected = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        async fetch(request) {
+          const body = await request.json() as { model: string; input: string | string[] };
+          requests.push(body);
+          const count = Array.isArray(body.input) ? body.input.length : 1;
+          return Response.json({ embeddings: Array.from({ length: count }, () => [1, 0]) });
+        },
+      });
+      const unrelated = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch() {
+          unrelatedRequests++;
+          return new Response("Wrong project embedding server", { status: 503 });
+        },
+      });
+
+      try {
+        setEmbeddingBackend("ollama");
+        configureOllamaEmbedding(`http://127.0.0.1:${unrelated.port}`, "unrelated-project");
+        const result = await validateRule(content, "database", pb, {
+          config: {
+            embeddingBackend: "ollama",
+            embeddingModel: "database-project-model",
+            ollamaBaseUrl: `http://127.0.0.1:${expected.port}`,
+          },
+        });
+
+        expect(unrelatedRequests).toBe(0);
+        expect(requests.every(request => request.model === "database-project-model")).toBe(true);
+        expect(requests.flatMap(request => Array.isArray(request.input) ? request.input : [request.input]))
+          .toEqual([content, existingContent]);
+        expect(result.warnings.find(warning => warning.type === "similarity")?.details).toEqual({
+          similarRuleId: "b-project-database",
+          similarityScore: 1,
+        });
+      } finally {
+        setEmbeddingBackend("xenova");
+        expected.stop(true);
+        unrelated.stop(true);
+      }
+    });
   });
 
   describe("formatValidationResult", () => {

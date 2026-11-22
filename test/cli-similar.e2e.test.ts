@@ -1,7 +1,7 @@
 /**
  * E2E-ish tests for `cm similar`.
  *
- * We keep these deterministic by exercising keyword-mode behavior (no model downloads).
+ * Keyword cases and local Ollama stubs keep these deterministic without model downloads.
  */
 import { describe, expect, it } from "bun:test";
 import { writeFile } from "node:fs/promises";
@@ -167,6 +167,114 @@ describe("E2E: CLI similar command", () => {
       const result = await generateSimilarResults(query, { limit: 5 });
       expect(result.mode).toBe("keyword");
       expect(result.results[0].id).toBe("b-jwt");
+    });
+  });
+
+  it("falls back when corpus embeddings fail and resumes semantic search after recovery", async () => {
+    await withTempCassHome(async (env) => {
+      const query = "handle jwt authentication errors";
+      let repaired = false;
+      let corpusRequests = 0;
+      const server = Bun.serve({
+        port: 0,
+        hostname: "127.0.0.1",
+        fetch: async (request) => {
+          if (new URL(request.url).pathname !== "/api/embed") {
+            return new Response("not found", { status: 404 });
+          }
+          const { input } = await request.json() as { input: string | string[] };
+          const texts = Array.isArray(input) ? input : [input];
+          if (texts.every((text) => text === query)) {
+            return Response.json({ embeddings: texts.map(() => [1, 0]) });
+          }
+          corpusRequests++;
+          if (!repaired) {
+            return new Response("corpus unavailable", { status: 503 });
+          }
+          return Response.json({
+            embeddings: texts.map((text) => text.includes("jwt") ? [1, 0] : [0, 1]),
+          });
+        },
+      });
+      try {
+        await writeFile(env.configPath, JSON.stringify({
+          semanticSearchEnabled: true,
+          embeddingBackend: "ollama",
+          ollamaBaseUrl: `http://127.0.0.1:${server.port}`,
+        }));
+        await writeFile(env.playbookPath, yaml.stringify(createTestPlaybook([
+          {
+            ...createBullet({ id: "b-jwt", content: "Handle jwt authentication errors gracefully" }),
+            embedding: [0, 1],
+          },
+          {
+            ...createBullet({ id: "b-other", content: "Use database connection pooling" }),
+            embedding: [1, 0],
+          },
+        ])));
+
+        const failed = await generateSimilarResults(query);
+        expect(failed.mode).toBe("keyword");
+        expect(failed.results.map((result) => result.id)).toEqual(["b-jwt"]);
+        expect(corpusRequests).toBeGreaterThan(0);
+        const failedRequests = corpusRequests;
+
+        repaired = true;
+        const recovered = await generateSimilarResults(query);
+        expect(recovered.mode).toBe("semantic");
+        expect(recovered.results.map((result) => result.id)).toEqual(["b-jwt"]);
+        expect(recovered.results[0].similarity).toBeCloseTo(1);
+        expect(corpusRequests).toBeGreaterThan(failedRequests);
+      } finally {
+        server.stop(true);
+      }
+    });
+  });
+
+  it("keeps valid semantic results below the threshold empty instead of using keyword matches", async () => {
+    await withTempCassHome(async (env) => {
+      const query = "handle jwt authentication errors";
+      let corpusRequests = 0;
+      const server = Bun.serve({
+        port: 0,
+        hostname: "127.0.0.1",
+        fetch: async (request) => {
+          if (new URL(request.url).pathname !== "/api/embed") {
+            return new Response("not found", { status: 404 });
+          }
+          const { input } = await request.json() as { input: string | string[] };
+          const texts = Array.isArray(input) ? input : [input];
+          return Response.json({
+            embeddings: texts.map((text) => {
+              if (text === query) return [1, 0];
+              corpusRequests++;
+              return [0, 1];
+            }),
+          });
+        },
+      });
+      try {
+        await writeFile(env.configPath, JSON.stringify({
+          semanticSearchEnabled: true,
+          embeddingBackend: "ollama",
+          ollamaBaseUrl: `http://127.0.0.1:${server.port}`,
+        }));
+        await writeFile(env.playbookPath, yaml.stringify(createTestPlaybook([
+          createBullet({ id: "b-jwt", content: "Handle jwt authentication errors gracefully" }),
+        ])));
+
+        const noMatch = await generateSimilarResults(query, { threshold: 0.7 });
+        expect(noMatch.mode).toBe("semantic");
+        expect(noMatch.results).toEqual([]);
+        expect(corpusRequests).toBeGreaterThan(0);
+
+        const unfiltered = await generateSimilarResults(query, { threshold: 0 });
+        expect(unfiltered.mode).toBe("semantic");
+        expect(unfiltered.results.map((result) => result.id)).toEqual(["b-jwt"]);
+        expect(unfiltered.results[0].similarity).toBe(0);
+      } finally {
+        server.stop(true);
+      }
     });
   });
 

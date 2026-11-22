@@ -1418,6 +1418,58 @@ describe("doctorCommand - semantic search posture (#75)", () => {
     });
   });
 
+  test("enable fix rejects empty embeddings and can enable the same backend after repair", async () => {
+    let repaired = false;
+    let embedCalls = 0;
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: async (request) => {
+        if (request.method !== "POST" || new URL(request.url).pathname !== "/api/embed") {
+          return new Response("not found", { status: 404 });
+        }
+        embedCalls++;
+        return Response.json({ embeddings: [repaired ? [1, 0, 0] : []] });
+      },
+    });
+    try {
+      await withEnvAsync(noKeys, async () => {
+        await withTempCassHome(async (env) => {
+          await withCwd(env.home, async () => {
+            const original = {
+              semanticSearchEnabled: false,
+              embeddingBackend: "ollama",
+              ollamaBaseUrl: `http://127.0.0.1:${server.port}`,
+              customUnknownKey: "keep-me",
+            };
+            await writeFile(env.configPath, JSON.stringify(original));
+            await writeFile(env.playbookPath, createValidPlaybookYaml());
+
+            const failed = await runDoctorJson({ fix: true, force: true, interactive: false });
+            const failure = failed.fixResults.find((result: any) => result.id === "enable-semantic-search");
+            expect(failure.success).toBe(false);
+            expect(failure.message).toContain("config left unchanged");
+            expect(JSON.parse(await readFile(env.configPath, "utf-8"))).toEqual(original);
+            expect(embedCalls).toBeGreaterThan(0);
+            const failedCalls = embedCalls;
+
+            repaired = true;
+            const recovered = await runDoctorJson({ fix: true, force: true, interactive: false });
+            const success = recovered.fixResults.find((result: any) => result.id === "enable-semantic-search");
+            expect(success.success).toBe(true);
+            expect(embedCalls).toBeGreaterThan(failedCalls);
+            expect(JSON.parse(await readFile(env.configPath, "utf-8"))).toEqual({
+              ...original,
+              semanticSearchEnabled: true,
+            });
+          });
+        });
+      });
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("enable fix verifies the backend end to end, then flips semanticSearchEnabled in place", async () => {
     // A real HTTP server standing in for an Ollama daemon: the fix must
     // actually round-trip an embedding before it touches the config.

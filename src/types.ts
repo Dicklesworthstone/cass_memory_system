@@ -251,7 +251,7 @@ export type Playbook = z.infer<typeof PlaybookSchema>;
 
 export const EmbeddingCacheEntrySchema = z.object({
   contentHash: z.string(),
-  embedding: z.array(z.number()),
+  embedding: z.array(z.number().finite()),
   computedAt: z.string(),
 });
 export type EmbeddingCacheEntry = z.infer<typeof EmbeddingCacheEntrySchema>;
@@ -259,6 +259,8 @@ export type EmbeddingCacheEntry = z.infer<typeof EmbeddingCacheEntrySchema>;
 export const EmbeddingCacheSchema = z.object({
   version: z.string(),
   model: z.string(),
+  runtimeId: z.string().regex(/^[a-f0-9]{64}$/),
+  dimensions: z.number().int().positive().optional(),
   bullets: z.record(z.string(), EmbeddingCacheEntrySchema).default({}),
 });
 export type EmbeddingCache = z.infer<typeof EmbeddingCacheSchema>;

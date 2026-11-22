@@ -7,7 +7,7 @@
 
 import { detectCategories, type RuleCategory } from "./gap-analysis.js";
 import { getActiveBullets } from "./playbook.js";
-import { findSimilarBulletsSemantic } from "./semantic.js";
+import { findSimilarBulletsSemantic, type SemanticConfigInput } from "./semantic.js";
 import type { Playbook } from "./types.js";
 
 /**
@@ -65,6 +65,8 @@ export interface ValidateRuleOptions {
   skipSimilarity?: boolean;
   /** Embedding model for semantic search */
   model?: string;
+  /** Embedding configuration for this validation, independent of other requests. */
+  config?: SemanticConfigInput;
 }
 
 /** Context words that indicate specific applicability */
@@ -259,7 +261,7 @@ export async function validateRule(
           content,
           activeBullets,
           1, // Only need top match
-          { threshold, model: options.model },
+          { threshold, model: options.model, config: options.config },
         );
 
         if (similar.length > 0 && similar[0].similarity >= threshold) {

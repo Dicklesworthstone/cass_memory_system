@@ -15,6 +15,8 @@ All notable changes to **cass-memory** (`cm`) are documented in this file.
 - Anthropic reflection no longer exceeds the native structured-output schema's union limit (#103). System-owned `sourceSession` fields are omitted from the model's output contract, reducing union-typed parameters from 17 to 14 while keeping OpenAI's strict required-field and closed-object guarantees.
 - CLI reflection accepts omitted `sourceSession` fields on `add`, `helpful`, and `harmful` deltas (#104). Supplied source paths are still overwritten with the actual session, and other missing or unexpected fields still fail validation. Schema selection follows the effective provider after automatic fallback and also supports OpenAI's plain JSON mode.
 - CLI schema-validation failures and retry prompts identify the failing delta and field (for example, `deltas[7].bulletId`) instead of truncating unrelated union errors (#104). Diagnostics select the matching delta type, retain the original validation error as the cause, and update after each failed attempt.
+- Semantic operations use the requesting project's embedding configuration throughout inference, batching, reflection deduplication, and validation. Derived caches are isolated by backend, model, and endpoint, preventing another project or provider from supplying incompatible vectors.
+- Context and similarity search reject stale, malformed, zero, and incompatible embeddings, preserve keyword retrieval when semantic inference fails, and recover when the provider becomes available. Search mode now reflects the scoring actually used, and doctor verifies a usable embedding before enabling semantic search.
 
 ## [0.6.0] -- 2026-11-20
 

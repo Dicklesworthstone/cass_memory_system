@@ -21,6 +21,7 @@ import {
   generateContextResult,
   type ScoreBulletsMeta,
   scoreBulletsEnhanced,
+  scoreBulletsKeyword,
 } from "../src/commands/context.js";
 import {
   resetSemanticResolutionCache,
@@ -421,24 +422,163 @@ describe("scoreBulletsEnhanced honours the resolved posture (#75)", () => {
     stubXenovaProbe(false);
     const meta: ScoreBulletsMeta = { semanticMode: "keyword" };
     const bullets = [createTestBullet({ id: "b-1", content: "alpha topic", tags: ["alpha"] })];
+    const requests: Array<{ model: string; input: string }> = [];
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: async (request) => {
+        if (request.method !== "POST" || new URL(request.url).pathname !== "/api/embed") {
+          return new Response("not found", { status: 404 });
+        }
+        requests.push(await request.json() as { model: string; input: string });
+        return new Response("embedding fixture unavailable", { status: 503 });
+      },
+    });
+    try {
+      // Explicit enablement bypasses readiness probes, so make the embedding
+      // request itself fail without consulting an external model registry.
+      // Leave the fallback warning visible: silent fallback once hid a
+      // release-long regression.
+      await scoreBulletsEnhanced(
+        bullets,
+        "alpha topic",
+        ["alpha"],
+        createTestConfig({
+          semanticSearchEnabled: true,
+          embeddingBackend: "ollama",
+          embeddingModel: "invalid-nonexistent-model",
+          ollamaBaseUrl: `http://127.0.0.1:${server.port}`,
+        }),
+        { meta },
+      );
 
-    // The fallback warning on stderr is part of the contract here (silent
-    // fallback once hid a release-long regression), so it is left in place.
-    await scoreBulletsEnhanced(
-      bullets,
-      "alpha topic",
-      ["alpha"],
-      createTestConfig({
-        semanticSearchEnabled: true,
-        embeddingModel: "invalid-nonexistent-model",
-      }),
-      { meta },
-    );
+      expect(meta.semanticMode).toBe("keyword");
+      expect(meta.semanticError).toBeDefined();
+      // semanticError and semanticNotice are mutually exclusive.
+      expect(meta.semanticNotice).toBeUndefined();
+      expect(requests).toEqual([{ model: "invalid-nonexistent-model", input: "alpha topic" }]);
+      expect(meta.semanticError).toContain("HTTP 503");
+      expect(meta.semanticError).toContain("embedding fixture unavailable");
+    } finally {
+      server.stop(true);
+    }
+  });
+});
 
-    expect(meta.semanticMode).toBe("keyword");
-    expect(meta.semanticError).toBeDefined();
-    // semanticError and semanticNotice are mutually exclusive.
-    expect(meta.semanticNotice).toBeUndefined();
+describe("context scoring recovers from unusable corpus embeddings", () => {
+  for (const failure of ["provider error", "wrong dimensions"] as const) {
+    test(`${failure} preserves keyword scores and retries successfully after repair`, async () => {
+      await withTempCassHome(async () => {
+        const task = "cache database connections efficiently";
+        const keywords = ["cache", "database", "connections"];
+        const bullets = [
+          createTestBullet({
+            id: "b-keyword",
+            content: "cache database connections",
+            embedding: [0, 1],
+          }),
+          createTestBullet({
+            id: "b-semantic",
+            content: "reuse a client pool",
+            embedding: [1, 0],
+          }),
+        ];
+        let repaired = false;
+        let corpusRequests = 0;
+        const server = Bun.serve({
+          port: 0,
+          hostname: "127.0.0.1",
+          fetch: async (request) => {
+            if (new URL(request.url).pathname !== "/api/embed") {
+              return new Response("not found", { status: 404 });
+            }
+            const { input } = await request.json() as { input: string | string[] };
+            const texts = Array.isArray(input) ? input : [input];
+            if (texts.every((text) => text === task)) {
+              return Response.json({ embeddings: texts.map(() => [1, 0]) });
+            }
+            corpusRequests++;
+            if (!repaired && failure === "provider error") {
+              return new Response("corpus model temporarily unavailable", { status: 503 });
+            }
+            return Response.json({
+              embeddings: texts.map((text) =>
+                !repaired ? [1, 0, 0] : text === bullets[0].content ? [0, 1] : [1, 0],
+              ),
+            });
+          },
+        });
+        try {
+          const config = createTestConfig({
+            semanticSearchEnabled: true,
+            embeddingBackend: "ollama",
+            ollamaBaseUrl: `http://127.0.0.1:${server.port}`,
+          });
+          const meta: ScoreBulletsMeta = { semanticMode: "keyword" };
+          const keywordScores = scoreBulletsKeyword(bullets, keywords, config);
+          const failed = await scoreBulletsEnhanced(bullets, task, keywords, config, { meta });
+
+          expect(meta.semanticMode).toBe("keyword");
+          expect(meta.semanticError).toBeDefined();
+          expect(meta.semanticNotice).toBeUndefined();
+          expect(failed.map(({ id, relevanceScore, finalScore }) => ({ id, relevanceScore, finalScore })))
+            .toEqual(keywordScores.map(({ id, relevanceScore, finalScore }) => ({ id, relevanceScore, finalScore })));
+          expect(failed[0].id).toBe("b-keyword");
+          expect(corpusRequests).toBeGreaterThan(0);
+          const failedRequests = corpusRequests;
+
+          repaired = true;
+          const recovered = await scoreBulletsEnhanced(bullets, task, keywords, config, { meta });
+
+          expect(meta.semanticMode).toBe("semantic");
+          expect(meta.semanticError).toBeUndefined();
+          expect(corpusRequests).toBeGreaterThan(failedRequests);
+          expect(recovered[0].id).toBe("b-semantic");
+        } finally {
+          server.stop(true);
+        }
+      });
+    });
+  }
+
+  test("partial corpus coverage keeps full keyword scores for incompatible rules", async () => {
+    await withTempCassHome(async () => {
+      const task = "database query";
+      const keywords = ["database"];
+      const bullets = [
+        createTestBullet({ id: "b-invalid", content: "database connection checks" }),
+        createTestBullet({ id: "b-valid", content: "reuse a client pool" }),
+      ];
+      const server = Bun.serve({
+        port: 0,
+        hostname: "127.0.0.1",
+        fetch: async (request) => {
+          const { input } = await request.json() as { input: string | string[] };
+          const texts = Array.isArray(input) ? input : [input];
+          return Response.json({
+            embeddings: texts.map((text) => text === bullets[0].content ? [1, 0, 0] : [1, 0]),
+          });
+        },
+      });
+      try {
+        const config = createTestConfig({
+          semanticSearchEnabled: true,
+          embeddingBackend: "ollama",
+          ollamaBaseUrl: `http://127.0.0.1:${server.port}`,
+        });
+        const meta: ScoreBulletsMeta = { semanticMode: "keyword" };
+        const keywordScores = scoreBulletsKeyword(bullets, keywords, config);
+        const scored = await scoreBulletsEnhanced(bullets, task, keywords, config, { meta });
+
+        expect(meta.semanticMode).toBe("semantic");
+        expect(scored.find((bullet) => bullet.id === "b-invalid")?.relevanceScore)
+          .toBe(keywordScores.find((bullet) => bullet.id === "b-invalid")?.relevanceScore);
+        expect(scored.find((bullet) => bullet.id === "b-valid")?.relevanceScore).toBeGreaterThan(0);
+        expect(scored.every((bullet) => Number.isFinite(bullet.finalScore))).toBe(true);
+      } finally {
+        server.stop(true);
+      }
+    });
   });
 });
 

@@ -21,6 +21,7 @@ import { getEffectiveScore, getFeedbackMultiplier } from "../scoring.js";
 import {
   cosineSimilarity,
   embedText,
+  isValidEmbedding,
   loadOrComputeEmbeddingsForBullets,
   resolveSemanticEnabled,
 } from "../semantic.js";
@@ -479,10 +480,12 @@ export async function scoreBulletsEnhanced(
     meta?: ScoreBulletsMeta;
   } = {},
 ): Promise<ScoredBullet[]> {
+  if (options.meta) {
+    options.meta.semanticMode = "keyword";
+    delete options.meta.semanticError;
+    delete options.meta.semanticNotice;
+  }
   if (bullets.length === 0) {
-    if (options.meta) {
-      options.meta.semanticMode = "keyword";
-    }
     return [];
   }
 
@@ -501,18 +504,31 @@ export async function scoreBulletsEnhanced(
 
   let queryEmbedding: number[] | null = null;
   let semanticError: string | undefined;
-  if (semanticEnabled) {
+  let comparableEmbeddings = 0;
+  const useSemantic = semanticEnabled && semanticWeight > 0;
+  if (useSemantic) {
     try {
       queryEmbedding =
-        Array.isArray(options.queryEmbedding) && options.queryEmbedding.length > 0
-          ? options.queryEmbedding
-          : await embedText(task, { model: embeddingModel });
+        options.queryEmbedding ?? await embedText(task, { model: embeddingModel, config });
+      if (!isValidEmbedding(queryEmbedding)) {
+        throw new Error("Embedding backend returned an unusable query embedding");
+      }
 
       if (!options.skipEmbeddingLoad) {
         await loadOrComputeEmbeddingsForBullets(bullets, {
           model: embeddingModel,
+          config,
+          expectedDimensions: queryEmbedding.length,
           onProgress: options.onSemanticProgress,
         });
+      }
+      comparableEmbeddings = bullets.filter((bullet) =>
+        isValidEmbedding(bullet.embedding, queryEmbedding!.length),
+      ).length;
+      if (comparableEmbeddings === 0) {
+        throw new Error(
+          `No usable rule embeddings match the query embedding (${queryEmbedding.length} dimensions)`,
+        );
       }
     } catch (err: any) {
       // Best-effort: ensure any pending progress UI is finalized to avoid stray spinners/logs.
@@ -543,11 +559,11 @@ export async function scoreBulletsEnhanced(
   // Record which mode we actually ran.
   if (options.meta) {
     const ran =
-      semanticEnabled && queryEmbedding && queryEmbedding.length > 0
+      useSemantic && queryEmbedding && comparableEmbeddings > 0
         ? ("semantic" as const)
         : ("keyword" as const);
     options.meta.semanticMode = ran;
-    if (semanticEnabled && ran === "keyword") {
+    if (useSemantic && ran === "keyword") {
       options.meta.semanticError =
         semanticError || "Semantic search requested but no query embedding produced";
     } else if (semanticStatus.posture === "auto-off") {
@@ -565,11 +581,9 @@ export async function scoreBulletsEnhanced(
     const keywordScore = keywordScores.get(b.id) ?? 0;
 
     const hasSemantic =
-      semanticEnabled &&
-      queryEmbedding &&
-      queryEmbedding.length > 0 &&
-      Array.isArray(b.embedding) &&
-      b.embedding.length > 0;
+      useSemantic &&
+      queryEmbedding !== null &&
+      isValidEmbedding(b.embedding, queryEmbedding.length);
 
     const semanticSimilarity = hasSemantic
       ? Math.max(0, cosineSimilarity(queryEmbedding!, b.embedding!))

@@ -29,7 +29,7 @@ import {
   ToxicEntry,
 } from "../src/playbook.js";
 import {
-  EMBEDDING_CACHE_VERSION,
+  createEmptyEmbeddingCache,
   findSimilarBulletsSemantic,
   loadOrComputeEmbeddingsForBullets,
 } from "../src/semantic.js";
@@ -965,8 +965,7 @@ describe("embedding-free playbook persistence (#99)", () => {
         createTestBullet({ id: "b-cache-second", content: "Keep backups before migrating learned rules." }),
       ];
       const cache = {
-        version: EMBEDDING_CACHE_VERSION,
-        model: "none",
+        ...createEmptyEmbeddingCache("none"),
         bullets: {
           "b-cache-first": {
             contentHash: hashContent(retained.bullets[0].content),

@@ -91,6 +91,7 @@ export async function statsCommand(options: {
     try {
       const dupes = await findSemanticDuplicates(activeBullets, 0.85, {
         model: config.embeddingModel,
+        config,
       });
       semanticMergeCandidates = dupes.slice(0, 5).map((d) => ({
         a: d.pair[0],

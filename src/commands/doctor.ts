@@ -1760,7 +1760,7 @@ function createEnableSemanticSearchFix(config: Config, configPath: string): Fixa
     severity: "warn",
     safety: "cautious",
     fix: async () => {
-      const warmup = await warmupEmbeddings({ model: config.embeddingModel });
+      const warmup = await warmupEmbeddings({ model: config.embeddingModel, config });
       if (!warmup.success) {
         throw new Error(
           `Embedding backend check failed (${backendLabel}); config left unchanged: ${warmup.error ?? "unknown error"}`,

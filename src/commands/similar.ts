@@ -115,11 +115,12 @@ export async function generateSimilarResults(
   // never the raw flag.
   const semanticEnabled = (await resolveSemanticEnabled(config)).enabled;
 
-  if (semanticEnabled) {
+  if (semanticEnabled && bullets.length > 0) {
     try {
       const semanticMatches = await findSimilarBulletsSemantic(cleaned, bullets, limit, {
         threshold,
         model: embeddingModel,
+        config,
       });
       matches = semanticMatches.map((m) => ({ bullet: m.bullet, similarity: m.similarity }));
       mode = "semantic";

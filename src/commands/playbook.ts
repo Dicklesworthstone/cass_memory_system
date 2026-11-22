@@ -376,6 +376,7 @@ async function handleBatchAdd(
         validation = await validateRule(rule.content, category, playbook, {
           skipSimilarity: !semanticEnabled,
           model: config.embeddingModel,
+          config,
         });
 
         // In strict mode, skip rules with issues
@@ -1140,6 +1141,7 @@ export async function playbookCommand(
           // Same posture gate as the batch path above (#75).
           skipSimilarity: !(await resolveSemanticEnabled(config)).enabled,
           model: config.embeddingModel,
+          config,
         });
 
         // In strict mode, fail on warnings

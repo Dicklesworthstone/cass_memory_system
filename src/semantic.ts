@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { withLock } from "./lock.js";
 import { getOutputStyle } from "./output.js";
 import {
@@ -19,7 +20,7 @@ import {
 import { ensureOnnxWasmRuntime, getTransformersCacheDir } from "./wasm-runtime.js";
 
 export const DEFAULT_EMBEDDING_MODEL = "Xenova/all-MiniLM-L6-v2";
-export const EMBEDDING_CACHE_VERSION = "1.0";
+export const EMBEDDING_CACHE_VERSION = "2.0";
 const OLLAMA_EMBED_TIMEOUT_MS = 30_000;
 
 let embedderCache: { model: string; promise: Promise<any>; ready: boolean } | null = null;
@@ -36,6 +37,18 @@ let embeddingBackend: EmbeddingBackend = "xenova";
 interface OllamaConfig {
   baseUrl: string;
   model: string;
+}
+
+export interface EmbeddingOptions {
+  model?: string;
+  config?: SemanticConfigInput;
+}
+
+interface EmbeddingRuntime {
+  readonly backend: EmbeddingBackend;
+  readonly model: string;
+  readonly baseUrl: string;
+  readonly cacheIdentity: string;
 }
 
 const ollamaConfig: OllamaConfig = {
@@ -71,9 +84,9 @@ export function configureOllamaEmbedding(baseUrl: string, model: string): void {
 /**
  * Apply loaded configuration to the process-wide embedding runtime.
  *
- * Every command loads config before reaching semantic operations, so keeping
- * backend selection here prevents individual callers from silently falling
- * back to Xenova when Ollama was selected.
+ * Commands pass their configuration directly to semantic operations. This
+ * default is also available for callers without an explicit configuration;
+ * every operation snapshots it before any asynchronous work.
  */
 export function configureEmbeddingBackend(config: {
   embeddingBackend?: EmbeddingBackend;
@@ -117,6 +130,52 @@ export function resolveOllamaSettings(config: {
   return { baseUrl, model };
 }
 
+/** Resolve one operation's runtime before an await can change global defaults. */
+function resolveEmbeddingRuntime(options: EmbeddingOptions = {}): EmbeddingRuntime {
+  const backend = options.config ? options.config.embeddingBackend ?? "xenova" : embeddingBackend;
+  const requestedModel = options.model ?? options.config?.embeddingModel;
+  let model = requestedModel?.trim() || DEFAULT_EMBEDDING_MODEL;
+  let baseUrl = "";
+  if (backend === "ollama") {
+    const settings = resolveOllamaSettings({
+      embeddingModel: requestedModel ?? (options.config ? undefined : ollamaConfig.model),
+      ollamaBaseUrl: options.config ? options.config.ollamaBaseUrl : ollamaConfig.baseUrl,
+    });
+    model = settings.model;
+    baseUrl = settings.baseUrl;
+  }
+  // Endpoint credentials and query tokens must never be copied into cache
+  // filenames or metadata. Hash the exact, case-sensitive runtime identity.
+  const cacheIdentity = createHash("sha256")
+    .update(JSON.stringify([backend, model, baseUrl]))
+    .digest("hex");
+  return { backend, model, baseUrl, cacheIdentity };
+}
+
+/** A usable embedding has finite coordinates, a nonzero norm and known size. */
+export function isValidEmbedding(value: unknown, expectedDimensions?: number): value is number[] {
+  if (!Array.isArray(value) || value.length === 0) return false;
+  if (expectedDimensions !== undefined && value.length !== expectedDimensions) return false;
+  let nonzero = false;
+  for (const coordinate of value) {
+    if (typeof coordinate !== "number" || !Number.isFinite(coordinate)) return false;
+    if (coordinate !== 0) nonzero = true;
+  }
+  return nonzero;
+}
+
+function requireValidEmbedding(
+  value: unknown,
+  expectedDimensions?: number,
+  source = "Embedding provider",
+): number[] {
+  if (!isValidEmbedding(value, expectedDimensions)) {
+    const dimensions = expectedDimensions === undefined ? "" : ` with ${expectedDimensions} dimensions`;
+    throw new Error(`${source} returned an invalid embedding; expected a finite, nonzero vector${dimensions}`);
+  }
+  return value;
+}
+
 /**
  * Embed a single text using Ollama's /api/embed endpoint.
  *
@@ -124,22 +183,22 @@ export function resolveOllamaSettings(config: {
  * @returns The embedding vector as a number array
  * @throws Error with descriptive message on connection failure, model not found, etc.
  */
-async function embedTextOllama(text: string): Promise<number[]> {
-  const url = `${ollamaConfig.baseUrl}/api/embed`;
+async function embedTextOllama(text: string, runtime: EmbeddingRuntime): Promise<number[]> {
+  const url = `${runtime.baseUrl}/api/embed`;
 
   let response: Response;
   try {
     response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: ollamaConfig.model, input: text }),
+      body: JSON.stringify({ model: runtime.model, input: text }),
       signal: AbortSignal.timeout(OLLAMA_EMBED_TIMEOUT_MS),
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     if (message.includes("ECONNREFUSED") || message.includes("fetch failed")) {
       throw new Error(
-        `Ollama connection refused at ${ollamaConfig.baseUrl}. ` +
+        `Ollama connection refused at ${runtime.baseUrl}. ` +
           `Is Ollama running? Start it with: ollama serve`,
       );
     }
@@ -150,24 +209,23 @@ async function embedTextOllama(text: string): Promise<number[]> {
     const body = await response.text().catch(() => "(no body)");
     if (response.status === 404 || body.includes("not found")) {
       throw new Error(
-        `Ollama model "${ollamaConfig.model}" not found. ` +
-          `Pull it with: ollama pull ${ollamaConfig.model}`,
+        `Ollama model "${runtime.model}" not found. ` +
+          `Pull it with: ollama pull ${runtime.model}`,
       );
     }
     throw new Error(`Ollama embedding failed (HTTP ${response.status}): ${body}`);
   }
 
-  const json = (await response.json()) as { embeddings?: number[][] };
+  const json = (await response.json()) as { embeddings?: unknown[] };
   if (
     !json.embeddings ||
     !Array.isArray(json.embeddings) ||
-    json.embeddings.length === 0 ||
-    !Array.isArray(json.embeddings[0])
+    json.embeddings.length !== 1
   ) {
     throw new Error("Unexpected Ollama response: missing or empty embeddings array");
   }
 
-  return json.embeddings[0];
+  return requireValidEmbedding(json.embeddings[0], undefined, "Ollama");
 }
 
 /**
@@ -182,9 +240,10 @@ async function embedTextOllama(text: string): Promise<number[]> {
  */
 async function batchEmbedOllama(
   texts: string[],
+  runtime: EmbeddingRuntime,
   onProgress?: (event: { processed: number; total: number }) => void,
 ): Promise<number[][]> {
-  const url = `${ollamaConfig.baseUrl}/api/embed`;
+  const url = `${runtime.baseUrl}/api/embed`;
 
   // Filter out empty strings but track indices
   const cleaned = texts.map((t) => (typeof t === "string" ? t.trim() : ""));
@@ -203,6 +262,7 @@ async function batchEmbedOllama(
   // Ollama supports batch embed via an array in the input field.
   // Send in chunks to avoid overwhelming the server with huge payloads.
   const BATCH_SIZE = 64;
+  let dimensions: number | undefined;
   for (let start = 0; start < nonEmpty.length; start += BATCH_SIZE) {
     const batch = nonEmpty.slice(start, start + BATCH_SIZE);
     const batchTexts = batch.map((b) => b.text);
@@ -212,14 +272,14 @@ async function batchEmbedOllama(
       response = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: ollamaConfig.model, input: batchTexts }),
+        body: JSON.stringify({ model: runtime.model, input: batchTexts }),
         signal: AbortSignal.timeout(OLLAMA_EMBED_TIMEOUT_MS),
       });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       if (message.includes("ECONNREFUSED") || message.includes("fetch failed")) {
         throw new Error(
-          `Ollama connection refused at ${ollamaConfig.baseUrl}. ` +
+          `Ollama connection refused at ${runtime.baseUrl}. ` +
             `Is Ollama running? Start it with: ollama serve`,
         );
       }
@@ -230,14 +290,14 @@ async function batchEmbedOllama(
       const body = await response.text().catch(() => "(no body)");
       if (response.status === 404 || body.includes("not found")) {
         throw new Error(
-          `Ollama model "${ollamaConfig.model}" not found. ` +
-            `Pull it with: ollama pull ${ollamaConfig.model}`,
+          `Ollama model "${runtime.model}" not found. ` +
+            `Pull it with: ollama pull ${runtime.model}`,
         );
       }
       throw new Error(`Ollama batch embedding failed (HTTP ${response.status}): ${body}`);
     }
 
-    const json = (await response.json()) as { embeddings?: number[][] };
+    const json = (await response.json()) as { embeddings?: unknown[] };
     if (
       !json.embeddings ||
       !Array.isArray(json.embeddings) ||
@@ -250,7 +310,9 @@ async function batchEmbedOllama(
     }
 
     for (let i = 0; i < batch.length; i++) {
-      output[batch[i].index] = json.embeddings[i];
+      const embedding = requireValidEmbedding(json.embeddings[i], dimensions, "Ollama");
+      dimensions ??= embedding.length;
+      output[batch[i].index] = embedding;
     }
 
     if (typeof onProgress === "function") {
@@ -421,42 +483,56 @@ export async function getEmbedder(
   return entry.promise;
 }
 
-export async function embedText(text: string, options: { model?: string } = {}): Promise<number[]> {
-  const model = options.model || DEFAULT_EMBEDDING_MODEL;
-  if (model === "none") return [];
+export async function embedText(text: string, options: EmbeddingOptions = {}): Promise<number[]> {
+  return embedTextWithRuntime(text, resolveEmbeddingRuntime(options));
+}
+
+async function embedTextWithRuntime(
+  text: string,
+  runtime: EmbeddingRuntime,
+  options: GetEmbedderOptions = {},
+): Promise<number[]> {
+  if (runtime.model === "none") return [];
   const cleaned = text?.trim();
   if (!cleaned) return [];
 
-  // Route to Ollama backend when configured
-  if (embeddingBackend === "ollama") {
-    return embedTextOllama(cleaned);
+  if (runtime.backend === "ollama") {
+    return embedTextOllama(cleaned, runtime);
   }
 
-  const embedder = await getEmbedder(model);
+  const embedder = await getEmbedder(runtime.model, options);
   const result: any = await embedder(cleaned, { pooling: "mean", normalize: true });
 
   const data: any = result?.data;
-  if (!data || typeof data.length !== "number") {
-    throw new Error("Unexpected embedder output (missing data)");
+  const dims: any = result?.dims;
+  if (!data || !Array.isArray(dims) || dims.length !== 2 || dims[0] !== 1 ||
+      !Number.isInteger(dims[1]) || dims[1] <= 0 || data.length !== dims[1]) {
+    throw new Error("Unexpected embedder output (single-vector data/dimensions mismatch)");
   }
 
-  return Array.from(data) as number[];
+  return requireValidEmbedding(Array.from(data), dims[1], "Local embedder");
 }
 
 export async function batchEmbed(
   texts: string[],
   batchSize = 32,
-  options: {
-    model?: string;
+  options: EmbeddingOptions & {
     onProgress?: (event: { processed: number; total: number }) => void;
   } = {},
 ): Promise<number[][]> {
-  const model = options.model || DEFAULT_EMBEDDING_MODEL;
-  if (model === "none") return texts.map(() => []);
+  return batchEmbedWithRuntime(texts, batchSize, resolveEmbeddingRuntime(options), options.onProgress);
+}
 
-  // Route to Ollama backend when configured
-  if (embeddingBackend === "ollama") {
-    return batchEmbedOllama(texts, options.onProgress);
+async function batchEmbedWithRuntime(
+  texts: string[],
+  batchSize: number,
+  runtime: EmbeddingRuntime,
+  onProgress?: (event: { processed: number; total: number }) => void,
+): Promise<number[][]> {
+  if (runtime.model === "none") return texts.map(() => []);
+
+  if (runtime.backend === "ollama") {
+    return batchEmbedOllama(texts, runtime, onProgress);
   }
 
   const safeBatchSize = Number.isFinite(batchSize) && batchSize > 0 ? Math.floor(batchSize) : 32;
@@ -467,8 +543,6 @@ export async function batchEmbed(
     if (!cleaned[i]) output[i] = [];
   }
 
-  const embedder = await getEmbedder(model);
-
   // Batch only the non-empty strings, but preserve indices in the output.
   const nonEmpty: Array<{ index: number; text: string }> = [];
   for (let i = 0; i < cleaned.length; i++) {
@@ -476,6 +550,9 @@ export async function batchEmbed(
     if (t) nonEmpty.push({ index: i, text: t });
   }
 
+  if (nonEmpty.length === 0) return output;
+  const embedder = await getEmbedder(runtime.model);
+  let dimensions: number | undefined;
   for (let start = 0; start < nonEmpty.length; start += safeBatchSize) {
     const batch = nonEmpty.slice(start, start + safeBatchSize);
     const batchTexts = batch.map((b) => b.text);
@@ -487,13 +564,17 @@ export async function batchEmbed(
     const batchCount = Array.isArray(dims) && typeof dims[0] === "number" ? dims[0] : null;
     const dim = Array.isArray(dims) && typeof dims[1] === "number" ? dims[1] : null;
 
-    if (!data || typeof data.length !== "number" || !batchCount || !dim) {
+    if (!data || typeof data.length !== "number" || !Array.isArray(dims) || dims.length !== 2 || !batchCount || !dim ||
+        !Number.isInteger(batchCount) || !Number.isInteger(dim) || dim <= 0) {
       throw new Error("Unexpected embedder output (missing data/dims)");
     }
     if (batchCount !== batchTexts.length) {
       throw new Error(
         `Unexpected embedder output (batch mismatch: got ${batchCount}, expected ${batchTexts.length})`,
       );
+    }
+    if (data.length !== batchCount * dim) {
+      throw new Error("Unexpected embedder output (data length does not match dimensions)");
     }
 
     for (let i = 0; i < batchCount; i++) {
@@ -502,12 +583,13 @@ export async function batchEmbed(
       const vec = Array.from(
         data.subarray ? data.subarray(startIdx, endIdx) : data.slice(startIdx, endIdx),
       ) as number[];
-      output[batch[i].index] = vec;
+      output[batch[i].index] = requireValidEmbedding(vec, dimensions ?? dim, "Local embedder");
+      dimensions ??= dim;
     }
 
-    if (typeof options.onProgress === "function") {
+    if (typeof onProgress === "function") {
       try {
-        options.onProgress({
+        onProgress({
           processed: Math.min(start + batchCount, nonEmpty.length),
           total: nonEmpty.length,
         });
@@ -526,37 +608,70 @@ export async function batchEmbed(
 }
 
 export function cosineSimilarity(a: number[], b: number[]): number {
-  if (!a?.length || !b?.length) return 0;
-  if (a.length !== b.length) return 0;
+  if (!isValidEmbedding(a) || !isValidEmbedding(b, a.length)) return 0;
+
+  // Scale first so valid finite coordinates cannot overflow/underflow when
+  // squared. Invalid or incompatible vectors retain the finite-zero contract.
+  let scaleA = 0;
+  let scaleB = 0;
+  for (let i = 0; i < a.length; i++) {
+    scaleA = Math.max(scaleA, Math.abs(a[i]));
+    scaleB = Math.max(scaleB, Math.abs(b[i]));
+  }
 
   let dot = 0;
   let normA = 0;
   let normB = 0;
 
   for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
+    const scaledA = a[i] / scaleA;
+    const scaledB = b[i] / scaleB;
+    dot += scaledA * scaledB;
+    normA += scaledA * scaledA;
+    normB += scaledB * scaledB;
   }
 
   if (normA === 0 || normB === 0) return 0;
-  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+  const similarity = dot / (Math.sqrt(normA) * Math.sqrt(normB));
+  return Number.isFinite(similarity) ? Math.max(-1, Math.min(1, similarity)) : 0;
 }
 
-export function getEmbeddingCachePath(): string {
-  return path.join(resolveGlobalDir(), "embeddings", "bullets.json");
+function embeddingCachePathForIdentity(identity: string): string {
+  return path.join(resolveGlobalDir(), "embeddings", `bullets-${identity}.json`);
 }
 
-export function createEmptyEmbeddingCache(model = DEFAULT_EMBEDDING_MODEL): EmbeddingCache {
-  return { version: EMBEDDING_CACHE_VERSION, model, bullets: {} };
+export function getEmbeddingCachePath(options: EmbeddingOptions = {}): string {
+  return embeddingCachePathForIdentity(resolveEmbeddingRuntime(options).cacheIdentity);
+}
+
+function emptyEmbeddingCacheForRuntime(runtime: EmbeddingRuntime): EmbeddingCache {
+  return {
+    version: EMBEDDING_CACHE_VERSION,
+    model: runtime.model,
+    runtimeId: runtime.cacheIdentity,
+    bullets: {},
+  };
+}
+
+export function createEmptyEmbeddingCache(
+  model?: string,
+  options: Pick<EmbeddingOptions, "config"> = {},
+): EmbeddingCache {
+  return emptyEmbeddingCacheForRuntime(resolveEmbeddingRuntime({ ...options, model }));
 }
 
 export async function loadEmbeddingCache(
-  options: { cachePath?: string; model?: string } = {},
+  options: EmbeddingOptions & { cachePath?: string } = {},
 ): Promise<EmbeddingCache> {
-  const model = options.model || DEFAULT_EMBEDDING_MODEL;
-  const cachePath = expandPath(options.cachePath || getEmbeddingCachePath());
+  const runtime = resolveEmbeddingRuntime(options);
+  const cachePath = expandPath(options.cachePath || embeddingCachePathForIdentity(runtime.cacheIdentity));
+  return loadEmbeddingCacheForRuntime(runtime, cachePath);
+}
 
+async function loadEmbeddingCacheForRuntime(
+  runtime: EmbeddingRuntime,
+  cachePath: string,
+): Promise<EmbeddingCache> {
   try {
     const raw = await fs.readFile(cachePath, "utf-8");
     const parsed = JSON.parse(raw);
@@ -564,12 +679,13 @@ export async function loadEmbeddingCache(
     const result = EmbeddingCacheSchema.safeParse(parsed);
     if (!result.success) {
       warn(`[semantic] Invalid embedding cache; ignoring (${cachePath})`);
-      return createEmptyEmbeddingCache(model);
+      return emptyEmbeddingCacheForRuntime(runtime);
     }
 
     const cache = result.data;
-    if (cache.model !== model || cache.version !== EMBEDDING_CACHE_VERSION) {
-      return createEmptyEmbeddingCache(model);
+    if (cache.model !== runtime.model || cache.runtimeId !== runtime.cacheIdentity ||
+        cache.version !== EMBEDDING_CACHE_VERSION) {
+      return emptyEmbeddingCacheForRuntime(runtime);
     }
 
     return cache;
@@ -577,7 +693,7 @@ export async function loadEmbeddingCache(
     if (err?.code && err.code !== "ENOENT") {
       warn(`[semantic] Failed to load embedding cache (${cachePath}): ${err.message}`);
     }
-    return createEmptyEmbeddingCache(model);
+    return emptyEmbeddingCacheForRuntime(runtime);
   }
 }
 
@@ -585,7 +701,7 @@ export async function saveEmbeddingCache(
   cache: EmbeddingCache,
   options: { cachePath?: string } = {},
 ): Promise<void> {
-  const cachePath = expandPath(options.cachePath || getEmbeddingCachePath());
+  const cachePath = expandPath(options.cachePath || embeddingCachePathForIdentity(cache.runtimeId));
   try {
     await atomicWrite(cachePath, JSON.stringify(cache, null, 2));
   } catch (err: any) {
@@ -599,24 +715,33 @@ export interface EmbeddingStats {
   skipped: number;
 }
 
+interface BulletEmbeddingOptions extends EmbeddingOptions {
+  cachePath?: string;
+  expectedDimensions?: number;
+  onProgress?: (event: {
+    phase: "start" | "progress" | "done";
+    current: number;
+    total: number;
+    reused: number;
+    computed: number;
+    skipped: number;
+    message: string;
+  }) => void;
+}
+
 export async function loadOrComputeEmbeddingsForBullets(
   bullets: PlaybookBullet[],
-  options: {
-    model?: string;
-    cachePath?: string;
-    onProgress?: (event: {
-      phase: "start" | "progress" | "done";
-      current: number;
-      total: number;
-      reused: number;
-      computed: number;
-      skipped: number;
-      message: string;
-    }) => void;
-  } = {},
+  options: BulletEmbeddingOptions = {},
 ): Promise<{ cache: EmbeddingCache; stats: EmbeddingStats }> {
-  const model = options.model || DEFAULT_EMBEDDING_MODEL;
-  const cachePath = expandPath(options.cachePath || getEmbeddingCachePath());
+  return loadOrComputeEmbeddingsWithRuntime(bullets, options, resolveEmbeddingRuntime(options));
+}
+
+async function loadOrComputeEmbeddingsWithRuntime(
+  bullets: PlaybookBullet[],
+  options: BulletEmbeddingOptions,
+  runtime: EmbeddingRuntime,
+): Promise<{ cache: EmbeddingCache; stats: EmbeddingStats }> {
+  const cachePath = expandPath(options.cachePath || embeddingCachePathForIdentity(runtime.cacheIdentity));
 
   // Use lock to prevent concurrent cache corruption
   return withLock(cachePath, async () => {
@@ -637,7 +762,9 @@ export async function loadOrComputeEmbeddingsForBullets(
       }
     };
 
-    const cache = await loadEmbeddingCache({ cachePath, model });
+    const cache = await loadEmbeddingCacheForRuntime(runtime, cachePath);
+    let dimensions = options.expectedDimensions ?? cache.dimensions;
+    let cacheChanged = false;
 
     let reused = 0;
     let computed = 0;
@@ -646,6 +773,10 @@ export async function loadOrComputeEmbeddingsForBullets(
     const toCompute: Array<{ bullet: PlaybookBullet; contentHash: string }> = [];
 
     for (const bullet of bullets) {
+      // Inline vectors carry no content or runtime provenance. Only the cache
+      // validated for this operation may rehydrate them; failed recomputation
+      // must never leave an old vector attached to changed content.
+      if (bullet) bullet.embedding = undefined;
       if (!bullet?.id || !bullet?.content) {
         skipped++;
         continue;
@@ -656,15 +787,26 @@ export async function loadOrComputeEmbeddingsForBullets(
 
       if (
         cached?.contentHash === contentHash &&
-        Array.isArray(cached.embedding) &&
-        cached.embedding.length > 0
+        isValidEmbedding(cached.embedding, dimensions)
       ) {
+        dimensions ??= cached.embedding.length;
         bullet.embedding = cached.embedding;
         reused++;
         continue;
       }
 
+      if (cached) {
+        delete cache.bullets[bullet.id];
+        cacheChanged = true;
+      }
       toCompute.push({ bullet, contentHash });
+    }
+
+    // A header alone is not evidence for the current provider's dimensions.
+    // Once none of this corpus can be reused, fresh output must be able to
+    // establish a new size (including after a failed recomputation).
+    if (reused === 0 && options.expectedDimensions === undefined) {
+      dimensions = undefined;
     }
 
     const totalToCompute = toCompute.length;
@@ -679,35 +821,36 @@ export async function loadOrComputeEmbeddingsForBullets(
         totalToCompute > 0 ? "Computing semantic embeddings..." : "Semantic embeddings up to date",
     });
 
-    if (model !== "none" && toCompute.length > 0) {
+    if (runtime.model !== "none" && toCompute.length > 0) {
       try {
-        const embeddings = await batchEmbed(
+        const embeddings = await batchEmbedWithRuntime(
           toCompute.map((x) => x.bullet.content),
           32,
-          {
-            model,
-            onProgress: (event) => {
-              emitProgress({
-                phase: "progress",
-                current: event.processed,
-                total: event.total,
-                reused,
-                computed,
-                skipped,
-                message: "Computing semantic embeddings...",
-              });
-            },
+          runtime,
+          (event) => {
+            emitProgress({
+              phase: "progress",
+              current: event.processed,
+              total: event.total,
+              reused,
+              computed,
+              skipped,
+              message: "Computing semantic embeddings...",
+            });
           },
         );
+
+        // Validate the whole batch before mutating bullets or counting it.
+        // Otherwise a later invalid vector would double-count an earlier one
+        // when the per-text fallback runs.
+        for (const embedding of embeddings) {
+          requireValidEmbedding(embedding, dimensions);
+          dimensions ??= embedding.length;
+        }
 
         for (let i = 0; i < toCompute.length; i++) {
           const { bullet, contentHash } = toCompute[i];
           const embedding = embeddings[i] || [];
-
-          if (!Array.isArray(embedding) || embedding.length === 0) {
-            skipped++;
-            continue;
-          }
 
           bullet.embedding = embedding;
           cache.bullets[bullet.id] = {
@@ -725,21 +868,11 @@ export async function loadOrComputeEmbeddingsForBullets(
         let processed = 0;
         for (const { bullet, contentHash } of toCompute) {
           try {
-            const embedding = await embedText(bullet.content, { model });
-            if (embedding.length === 0) {
-              skipped++;
-              processed++;
-              emitProgress({
-                phase: "progress",
-                current: processed,
-                total: totalToCompute,
-                reused,
-                computed,
-                skipped,
-                message: "Computing semantic embeddings...",
-              });
-              continue;
-            }
+            const embedding = requireValidEmbedding(
+              await embedTextWithRuntime(bullet.content, runtime),
+              dimensions,
+            );
+            dimensions ??= embedding.length;
 
             bullet.embedding = embedding;
             cache.bullets[bullet.id] = {
@@ -776,11 +909,15 @@ export async function loadOrComputeEmbeddingsForBullets(
           }
         }
       }
+    } else {
+      skipped += toCompute.length;
     }
 
-    // Only save if we computed something or if we want to ensure the cache file exists
+    cache.dimensions = dimensions;
+
+    // Persist computed vectors or invalidated entries; leave a clean cache untouched.
     if (
-      computed > 0 ||
+      computed > 0 || cacheChanged ||
       !(await fs
         .access(cachePath)
         .then(() => true)
@@ -796,7 +933,9 @@ export async function loadOrComputeEmbeddingsForBullets(
       reused,
       computed,
       skipped,
-      message: computed > 0 ? "Semantic embeddings computed" : "Semantic embeddings ready",
+      message: skipped > 0
+        ? `Semantic embeddings available for ${reused + computed} of ${bullets.length} rules`
+        : computed > 0 ? "Semantic embeddings computed" : "Semantic embeddings ready",
     });
 
     return { cache, stats: { reused, computed, skipped } };
@@ -805,7 +944,7 @@ export async function loadOrComputeEmbeddingsForBullets(
 
 export async function loadOrComputeEmbeddings(
   playbook: Playbook,
-  options: { model?: string; cachePath?: string } = {},
+  options: BulletEmbeddingOptions = {},
 ): Promise<{ cache: EmbeddingCache; stats: EmbeddingStats }> {
   return loadOrComputeEmbeddingsForBullets(playbook.bullets, options);
 }
@@ -819,51 +958,55 @@ export async function findSimilarBulletsSemantic(
   query: string,
   bullets: PlaybookBullet[],
   topK = 5,
-  options: {
+  options: EmbeddingOptions & {
     threshold?: number;
-    model?: string;
     cachePath?: string;
     queryEmbedding?: number[];
+    ensureEmbeddings?: boolean;
   } = {},
 ): Promise<SimilarBulletMatch[]> {
   const cleaned = query?.trim();
   if (!cleaned) return [];
 
   if (!Number.isFinite(topK) || topK <= 0) return [];
+  const candidates = bullets.filter((bullet) => Boolean(bullet?.id) && Boolean(bullet?.content));
+  if (candidates.length === 0) return [];
 
   const threshold =
     typeof options.threshold === "number" && Number.isFinite(options.threshold)
       ? options.threshold
       : undefined;
 
-  const model = options.model || DEFAULT_EMBEDDING_MODEL;
-
-  const queryEmbedding =
-    options.queryEmbedding &&
-    Array.isArray(options.queryEmbedding) &&
-    options.queryEmbedding.length > 0
+  const runtime = resolveEmbeddingRuntime(options);
+  const queryEmbedding = requireValidEmbedding(
+    options.queryEmbedding !== undefined
       ? options.queryEmbedding
-      : await embedText(cleaned, { model });
-
-  if (!queryEmbedding.length) return [];
-
-  const allHaveEmbeddings = bullets.every(
-    (b) => Array.isArray(b.embedding) && b.embedding.length > 0,
+      : await embedTextWithRuntime(cleaned, runtime),
+    undefined,
+    "Query embedder",
   );
-  if (!allHaveEmbeddings) {
-    await loadOrComputeEmbeddingsForBullets(bullets, { model, cachePath: options.cachePath });
+  if (options.ensureEmbeddings !== false) {
+    await loadOrComputeEmbeddingsWithRuntime(candidates, {
+      cachePath: options.cachePath,
+      expectedDimensions: queryEmbedding.length,
+    }, runtime);
   }
 
   const matches: SimilarBulletMatch[] = [];
+  let usable = 0;
 
-  for (const bullet of bullets) {
-    if (!bullet?.content) continue;
-    if (!Array.isArray(bullet.embedding) || bullet.embedding.length === 0) continue;
+  for (const bullet of candidates) {
+    if (!isValidEmbedding(bullet.embedding, queryEmbedding.length)) continue;
+    usable++;
 
     const similarity = cosineSimilarity(queryEmbedding, bullet.embedding);
     if (threshold !== undefined && similarity < threshold) continue;
 
     matches.push({ bullet, similarity });
+  }
+
+  if (usable === 0) {
+    throw new Error("Semantic search unavailable: no rule embeddings match the query dimensions");
   }
 
   matches.sort((a, b) => b.similarity - a.similarity);
@@ -878,7 +1021,7 @@ export interface SemanticDuplicatePair {
 export async function findSemanticDuplicates(
   bullets: PlaybookBullet[],
   threshold = 0.85,
-  options: { model?: string; cachePath?: string; ensureEmbeddings?: boolean } = {},
+  options: EmbeddingOptions & { cachePath?: string; ensureEmbeddings?: boolean } = {},
 ): Promise<SemanticDuplicatePair[]> {
   const cleanedThreshold =
     typeof threshold === "number" && Number.isFinite(threshold) ? threshold : 0.85;
@@ -887,31 +1030,24 @@ export async function findSemanticDuplicates(
   const candidates = bullets.filter((b) => Boolean(b?.id) && Boolean(b?.content));
   if (candidates.length < 2) return [];
 
-  const model = options.model || DEFAULT_EMBEDDING_MODEL;
+  const runtime = resolveEmbeddingRuntime(options);
 
   const ensureEmbeddings = options.ensureEmbeddings !== false;
   if (ensureEmbeddings) {
-    const allHaveEmbeddings = candidates.every(
-      (b) => Array.isArray(b.embedding) && b.embedding.length > 0,
-    );
-
-    if (!allHaveEmbeddings && model !== "none") {
-      await loadOrComputeEmbeddingsForBullets(candidates, {
-        model,
-        cachePath: options.cachePath,
-      });
-    }
+    await loadOrComputeEmbeddingsWithRuntime(candidates, {
+      cachePath: options.cachePath,
+    }, runtime);
   }
 
   const pairs: SemanticDuplicatePair[] = [];
 
   for (let i = 0; i < candidates.length; i++) {
     const a = candidates[i];
-    if (!Array.isArray(a.embedding) || a.embedding.length === 0) continue;
+    if (!isValidEmbedding(a.embedding)) continue;
 
     for (let j = i + 1; j < candidates.length; j++) {
       const b = candidates[j];
-      if (!Array.isArray(b.embedding) || b.embedding.length === 0) continue;
+      if (!isValidEmbedding(b.embedding, a.embedding.length)) continue;
 
       const similarity = cosineSimilarity(a.embedding, b.embedding);
       if (similarity >= minSimilarity) {
@@ -1255,32 +1391,17 @@ export function formatSemanticModeMessage(
  * @returns Promise resolving to warmup result with success/failure and duration
  */
 export async function warmupEmbeddings(
-  options: { model?: string; showProgress?: boolean } = {},
+  options: EmbeddingOptions & { showProgress?: boolean } = {},
 ): Promise<WarmupResult> {
-  const model = options.model || DEFAULT_EMBEDDING_MODEL;
+  const runtime = resolveEmbeddingRuntime(options);
   const startTime = Date.now();
 
-  // For Ollama backend, warm up by running a test embed through Ollama
-  if (embeddingBackend === "ollama") {
-    try {
-      await embedTextOllama("warmup test");
-      const durationMs = Date.now() - startTime;
-      return { success: true, durationMs };
-    } catch (error: unknown) {
-      const durationMs = Date.now() - startTime;
-      const message = error instanceof Error ? error.message : String(error);
-      return { success: false, durationMs, error: message };
-    }
-  }
-
   try {
-    // Load the embedder (triggers download if needed, shows progress)
-    const embedder = await getEmbedder(model, {
+    // Availability means an actual usable vector, not just a successful HTTP
+    // response or pipeline allocation. Disabled/empty outputs fail this probe.
+    requireValidEmbedding(await embedTextWithRuntime("warmup test", runtime, {
       showProgress: options.showProgress,
-    });
-
-    // Run a test embedding to fully initialize the model
-    await embedder("warmup test", { pooling: "mean", normalize: true });
+    }));
 
     const durationMs = Date.now() - startTime;
     return { success: true, durationMs };
@@ -1356,36 +1477,33 @@ export async function buildSemanticDedupIndex(
   config: SemanticConfigInput & { embeddingModel?: string; semanticDedupThreshold?: number },
 ): Promise<SemanticDedupIndex | undefined> {
   if (newContents.length === 0) return undefined;
+  const runtime = resolveEmbeddingRuntime({ config });
   const status = await resolveSemanticEnabled(config);
   if (!status.enabled) return undefined;
-  const model =
-    typeof config.embeddingModel === "string" && config.embeddingModel.trim() !== ""
-      ? config.embeddingModel.trim()
-      : undefined;
   const threshold =
     typeof config.semanticDedupThreshold === "number" ? config.semanticDedupThreshold : 0.75;
 
   try {
+    const incoming = Array.from(new Set(newContents.filter((content) => content?.trim())));
+    if (incoming.length === 0) return undefined;
+    // Like a retrieval query, fresh incoming text establishes the current
+    // runtime's dimensions before old cached rules are hydrated. Otherwise a
+    // model with a changed output size could pin dedup to lexical fallback.
+    const vectors = await batchEmbedWithRuntime(incoming, 32, runtime);
+    const dimensions = requireValidEmbedding(vectors[0]).length;
     const clones = existing
       .filter((b) => b?.id && b?.content)
       .map((b) => ({ ...b, embedding: undefined }) as PlaybookBullet);
-    await loadOrComputeEmbeddingsForBullets(clones, { model });
+    await loadOrComputeEmbeddingsWithRuntime(clones, { expectedDimensions: dimensions }, runtime);
     const embeddings = new Map<string, number[]>();
     for (const b of clones) {
-      if (Array.isArray(b.embedding) && b.embedding.length > 0) {
+      if (isValidEmbedding(b.embedding, dimensions)) {
         embeddings.set(hashContent(b.content), b.embedding);
       }
     }
-    const missing = Array.from(
-      new Set(newContents.filter((c) => c && !embeddings.has(hashContent(c)))),
-    );
-    if (missing.length > 0) {
-      const vectors = await batchEmbed(missing, 32, { model });
-      missing.forEach((c, i) => {
-        const v = vectors[i];
-        if (Array.isArray(v) && v.length > 0) embeddings.set(hashContent(c), v);
-      });
-    }
+    incoming.forEach((content, i) => {
+      embeddings.set(hashContent(content), requireValidEmbedding(vectors[i], dimensions));
+    });
     return embeddings.size > 0 ? { embeddings, threshold } : undefined;
   } catch (err: any) {
     warn(
