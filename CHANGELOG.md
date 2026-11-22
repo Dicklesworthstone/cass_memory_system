@@ -18,6 +18,7 @@ All notable changes to **cass-memory** (`cm`) are documented in this file.
 - Semantic operations use the requesting project's embedding configuration throughout inference, batching, reflection deduplication, and validation. Derived caches are isolated by backend, model, and endpoint, preventing another project or provider from supplying incompatible vectors.
 - Context and similarity search reject stale, malformed, zero, and incompatible embeddings, preserve keyword retrieval when semantic inference fails, and recover when the provider becomes available. Search mode now reflects the scoring actually used, and doctor verifies a usable embedding before enabling semantic search.
 - Reflection cancellation stops and reaps the CLI before returning, escalates stubborn subprocesses from TERM to KILL, and stops wrapper descendants on POSIX. Normal parent shutdown also stops an active owned CLI group. Each output stream is limited to 10 MiB while it is read; timeout and output-limit failures stop retries instead of launching another generation. Windows cleanup covers the direct CLI process.
+- Explicit `llm.totalTimeoutMs` and `CM_LLM_TOTAL_TIMEOUT_MS` ceilings now cover every attempt and retry backoff without being inflated by the per-operation timeout. Parent cancellation interrupts nested waiters and backoff, and a monotonic deadline check rejects late success even when synchronous work delays timers. Larger per-operation settings still expand an unspecified default total ceiling.
 
 ## [0.6.0] -- 2026-11-20
 

@@ -966,18 +966,18 @@ export function fillPrompt(template: string, values: Record<string, string>): st
 // Default per-operation timeout (ms). Overridable per-call via config
 // (`llm.timeoutMs`) or globally via the CM_LLM_TIMEOUT_MS env var. See #53.
 export const DEFAULT_PER_OP_TIMEOUT_MS = 30000;
-// Default total timeout ceiling across all retries (ms). Must be >=
-// maxRetries * perOperationTimeoutMs, otherwise a bumped per-op timeout is
-// silently masked by the total ceiling (see llmWithRetry below). With
-// maxRetries=3 and a 30s per-op default, 120000ms leaves headroom for
-// retries + backoff. Overridable via `llm.totalTimeoutMs` / CM_LLM_TOTAL_TIMEOUT_MS.
+// The default total ceiling expands for a larger per-operation timeout (#53).
+// An explicitly configured total remains a hard ceiling, including backoff.
+// Overridable via `llm.totalTimeoutMs` / CM_LLM_TOTAL_TIMEOUT_MS.
 export const DEFAULT_TOTAL_TIMEOUT_MS = 120000;
+const envTotalTimeoutMs = Number(process.env.CM_LLM_TOTAL_TIMEOUT_MS);
+const hasExplicitEnvTotalTimeout = Number.isFinite(envTotalTimeoutMs) && envTotalTimeoutMs > 0;
 
 export const LLM_RETRY_CONFIG = {
   maxRetries: 3,
   baseDelayMs: 1000,
   maxDelayMs: 30000,
-  totalTimeoutMs: Number(process.env.CM_LLM_TOTAL_TIMEOUT_MS) || DEFAULT_TOTAL_TIMEOUT_MS,
+  totalTimeoutMs: hasExplicitEnvTotalTimeout ? envTotalTimeoutMs : DEFAULT_TOTAL_TIMEOUT_MS,
   perOperationTimeoutMs: Number(process.env.CM_LLM_TIMEOUT_MS) || DEFAULT_PER_OP_TIMEOUT_MS,
   retryableErrors: [
     "rate_limit_exceeded",
@@ -1004,32 +1004,64 @@ const llmOperationCleanups = new AsyncLocalStorage<Array<Set<Promise<void>>>>();
 class LLMOperationTimeoutError extends Error {}
 
 async function withTimeout<T>(operation: () => Promise<T>, ms: number, operationName: string): Promise<T> {
+  const parentSignal = llmOperationSignal.getStore();
+  parentSignal?.throwIfAborted();
   const controller = new AbortController();
+  const deadline = performance.now() + ms;
   const pendingCleanups = new Set<Promise<void>>();
   const cleanupScopes = [...(llmOperationCleanups.getStore() ?? []), pendingCleanups];
-  const parentSignal = llmOperationSignal.getStore();
   const onAbort = () => controller.abort(parentSignal?.reason);
   parentSignal?.addEventListener("abort", onAbort, { once: true });
-  if (parentSignal?.aborted) onAbort();
+  const expire = () => {
+    const error = new LLMOperationTimeoutError(`${operationName} timed out after ${ms}ms`);
+    controller.abort(error);
+    return error;
+  };
   let timeoutId: ReturnType<typeof setTimeout>;
+  let rejectOnAbort: () => void;
   const timeoutPromise = new Promise<T>((_, reject) => {
-    timeoutId = setTimeout(() => {
-      const error = new LLMOperationTimeoutError(`${operationName} timed out after ${ms}ms`);
-      controller.abort(error);
-      reject(error);
-    }, ms);
+    rejectOnAbort = () => reject(controller.signal.reason);
+    controller.signal.addEventListener("abort", rejectOnAbort, { once: true });
+    timeoutId = setTimeout(expire, ms);
   });
 
   try {
-    controller.signal.throwIfAborted();
+    // The async callback captures early aborts and synchronous throws as a
+    // promise, so both rejection paths enter the race before either is left
+    // unobserved. Parent cancellation must also stop an uncooperative waiter.
     const promise = llmOperationCleanups.run(cleanupScopes, () =>
-      llmOperationSignal.run(controller.signal, operation));
+      llmOperationSignal.run(controller.signal, async () => {
+        controller.signal.throwIfAborted();
+        const result = await operation();
+        controller.signal.throwIfAborted();
+        // A blocked event loop can delay the timer past a completed result.
+        // Reject that late success before any caller can curate or persist it.
+        if (performance.now() >= deadline) throw expire();
+        return result;
+      }));
     return await Promise.race([promise, timeoutPromise]);
   } finally {
     clearTimeout(timeoutId!);
     parentSignal?.removeEventListener("abort", onAbort);
+    controller.signal.removeEventListener("abort", rejectOnAbort!);
     if (controller.signal.aborted) await Promise.allSettled([...pendingCleanups]);
   }
+}
+
+async function waitForRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  await new Promise<void>((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 /**
@@ -1047,61 +1079,59 @@ export async function llmWithRetry<T>(
   operationName: string,
   overrides: LLMTimeoutOverrides = {},
 ): Promise<T> {
-  const startTime = Date.now();
-  let attempt = 0;
-
   // Precedence: explicit config override > env/default (LLM_RETRY_CONFIG).
   const perOperationTimeoutMs =
-    overrides.perOperationTimeoutMs && overrides.perOperationTimeoutMs > 0
+    overrides.perOperationTimeoutMs && Number.isFinite(overrides.perOperationTimeoutMs) && overrides.perOperationTimeoutMs > 0
       ? overrides.perOperationTimeoutMs
       : LLM_RETRY_CONFIG.perOperationTimeoutMs;
-  // Ensure the total ceiling never masks an explicitly bumped per-op timeout:
-  // it must be at least maxRetries * perOp so all retries can actually run.
+  // Preserve automatic expansion only for the default. An explicit total
+  // ceiling may deliberately be shorter than a single attempt.
   const minTotal = perOperationTimeoutMs * LLM_RETRY_CONFIG.maxRetries;
-  const totalTimeoutMs = Math.max(
-    overrides.totalTimeoutMs && overrides.totalTimeoutMs > 0
+  const totalTimeoutMs =
+    overrides.totalTimeoutMs && Number.isFinite(overrides.totalTimeoutMs) && overrides.totalTimeoutMs > 0
       ? overrides.totalTimeoutMs
-      : LLM_RETRY_CONFIG.totalTimeoutMs,
-    minTotal,
-  );
+      : hasExplicitEnvTotalTimeout
+        ? LLM_RETRY_CONFIG.totalTimeoutMs
+        : Math.max(LLM_RETRY_CONFIG.totalTimeoutMs, minTotal);
 
-  while (true) {
-    try {
-      const elapsed = Date.now() - startTime;
-      if (elapsed >= totalTimeoutMs) {
-        throw new LLMOperationTimeoutError(`${operationName} exceeded total timeout ceiling of ${totalTimeoutMs}ms`);
+  return withTimeout(async () => {
+    const signal = llmOperationSignal.getStore();
+    let attempt = 0;
+    while (true) {
+      signal?.throwIfAborted();
+      try {
+        return await withTimeout(operation, perOperationTimeoutMs, operationName);
+      } catch (err: any) {
+        signal?.throwIfAborted();
+        // An in-flight call may ignore cancellation and settle later. Retrying a
+        // wrapper timeout would duplicate work; admission/accounting errors must
+        // also remain terminal even when their filesystem cause mentions 429/500.
+        if (isTerminalLLMError(err)) throw err;
+        attempt++;
+        const isRetryable = LLM_RETRY_CONFIG.retryableErrors.some((e) => {
+          const lowerE = e.toLowerCase();
+          const messageMatch = err.message?.toLowerCase().includes(lowerE);
+          const codeMatch = err.code?.toString().includes(e);
+          const statusMatch = err.statusCode?.toString().includes(e);
+          return messageMatch || codeMatch || statusMatch;
+        });
+
+        if (!isRetryable || attempt > LLM_RETRY_CONFIG.maxRetries) {
+          throw err;
+        }
+
+        const delay = Math.min(
+          LLM_RETRY_CONFIG.baseDelayMs * 2 ** attempt,
+          LLM_RETRY_CONFIG.maxDelayMs,
+        );
+
+        warn(
+          `[LLM] ${operationName} failed (attempt ${attempt}): ${err.message}. Retrying in ${delay}ms...`,
+        );
+        await waitForRetry(delay, signal);
       }
-
-      return await withTimeout(operation, Math.min(perOperationTimeoutMs, totalTimeoutMs - elapsed), operationName);
-    } catch (err: any) {
-      // An in-flight call may ignore cancellation and settle later. Retrying a
-      // wrapper timeout would duplicate work; admission/accounting errors must
-      // also remain terminal even when their filesystem cause mentions 429/500.
-      if (isTerminalLLMError(err)) throw err;
-      attempt++;
-      const isRetryable = LLM_RETRY_CONFIG.retryableErrors.some((e) => {
-        const lowerE = e.toLowerCase();
-        const messageMatch = err.message?.toLowerCase().includes(lowerE);
-        const codeMatch = err.code?.toString().includes(e);
-        const statusMatch = err.statusCode?.toString().includes(e);
-        return messageMatch || codeMatch || statusMatch;
-      });
-
-      if (!isRetryable || attempt > LLM_RETRY_CONFIG.maxRetries) {
-        throw err;
-      }
-
-      const delay = Math.min(
-        LLM_RETRY_CONFIG.baseDelayMs * 2 ** attempt,
-        LLM_RETRY_CONFIG.maxDelayMs,
-      );
-
-      warn(
-        `[LLM] ${operationName} failed (attempt ${attempt}): ${err.message}. Retrying in ${delay}ms...`,
-      );
-      await new Promise((resolve) => setTimeout(resolve, delay));
     }
-  }
+  }, totalTimeoutMs, `${operationName} total deadline`);
 }
 
 class LLMUsageAccountingError extends Error {

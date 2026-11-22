@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import { spawnSync } from "node:child_process";
+import path from "node:path";
 import { LLM_RETRY_CONFIG, llmWithRetry } from "../src/llm.js";
 
 describe("LLM_RETRY_CONFIG", () => {
@@ -361,5 +363,175 @@ describe("llmWithRetry exponential backoff", () => {
     expect(Math.min(base * 2 ** 4, max)).toBe(16000);
     expect(Math.min(base * 2 ** 5, max)).toBe(30000); // capped
     expect(Math.min(base * 2 ** 6, max)).toBe(30000); // capped
+  });
+});
+
+describe("llmWithRetry total deadlines", () => {
+  type Settlement<T> =
+    | { status: "fulfilled"; value: T }
+    | { status: "rejected"; error: unknown }
+    | { status: "watchdog" };
+
+  async function beforeWatchdog<T>(pending: Promise<T>): Promise<Settlement<T>> {
+    let timer: ReturnType<typeof setTimeout>;
+    try {
+      return await Promise.race([
+        pending.then(
+          value => ({ status: "fulfilled" as const, value }),
+          error => ({ status: "rejected" as const, error }),
+        ),
+        new Promise<Settlement<T>>(resolve => {
+          timer = setTimeout(() => resolve({ status: "watchdog" }), 250);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer!);
+    }
+  }
+
+  function expectTimeout(outcome: Settlement<unknown>, operationName: string): void {
+    expect(outcome.status).toBe("rejected");
+    if (outcome.status === "rejected") {
+      expect(String(outcome.error)).toContain(operationName);
+      expect(String(outcome.error)).toMatch(/timed out|timeout ceiling/);
+    }
+  }
+
+  it("honors an explicit total smaller than the per-operation timeout", async () => {
+    let calls = 0;
+    let finish!: (value: string) => void;
+    const work = new Promise<string>(resolve => { finish = resolve; });
+    const timer = setTimeout(() => finish("late success"), 150);
+    const run = llmWithRetry(() => {
+      calls++;
+      return work;
+    }, "explicit-total", { perOperationTimeoutMs: 1000, totalTimeoutMs: 20 });
+    try {
+      expectTimeout(await beforeWatchdog(run), "explicit-total");
+      expect(calls).toBe(1);
+    } finally {
+      clearTimeout(timer);
+      finish("released");
+      await run.catch(() => undefined);
+    }
+  });
+
+  it("expires during backoff before the watchdog without starting another attempt", async () => {
+    let calls = 0;
+    const run = llmWithRetry(async () => {
+      calls++;
+      if (calls === 1) throw new Error("rate_limit_exceeded");
+      return "unexpected retry";
+    }, "backoff-total", { perOperationTimeoutMs: 1000, totalTimeoutMs: 20 });
+    try {
+      expectTimeout(await beforeWatchdog(run), "backoff-total");
+      expect(calls).toBe(1);
+    } finally {
+      // Also drain the old implementation when running this as a regression
+      // probe, so a failed assertion cannot leave its two-second timer alive.
+      await run.catch(() => undefined);
+    }
+    expect(calls).toBe(1);
+  });
+
+  it("parent cancellation interrupts a nested retry backoff", async () => {
+    let calls = 0;
+    let nested: Promise<string> | undefined;
+    const outer = llmWithRetry(() => {
+      nested = llmWithRetry(async () => {
+        calls++;
+        if (calls === 1) throw new Error("server_error");
+        return "unexpected nested retry";
+      }, "nested-backoff", { perOperationTimeoutMs: 1000, totalTimeoutMs: 1000 });
+      return nested;
+    }, "backoff-parent", { perOperationTimeoutMs: 20, totalTimeoutMs: 1000 });
+    try {
+      expectTimeout(await beforeWatchdog(outer), "backoff-parent");
+      if (!nested) throw new Error("The nested retry operation never started");
+      expectTimeout(await beforeWatchdog(nested), "backoff-parent");
+      expect(calls).toBe(1);
+    } finally {
+      await outer.catch(() => undefined);
+      await nested?.catch(() => undefined);
+    }
+    expect(calls).toBe(1);
+  });
+
+  it("parent cancellation settles a nested wrapper even when its callback ignores cancellation", async () => {
+    let finish!: (value: string) => void;
+    const work = new Promise<string>(resolve => { finish = resolve; });
+    let calls = 0;
+    let nested: Promise<string> | undefined;
+    const outer = llmWithRetry(() => {
+      nested = llmWithRetry(() => {
+        calls++;
+        return work;
+      }, "uncancellable-work", { perOperationTimeoutMs: 1000, totalTimeoutMs: 1000 });
+      return nested;
+    }, "uncancellable-parent", { perOperationTimeoutMs: 20, totalTimeoutMs: 1000 });
+    try {
+      expectTimeout(await beforeWatchdog(outer), "uncancellable-parent");
+      if (!nested) throw new Error("The nested retry operation never started");
+      expectTimeout(await beforeWatchdog(nested), "uncancellable-parent");
+      expect(calls).toBe(1);
+    } finally {
+      finish("late result");
+      await outer.catch(() => undefined);
+      await nested?.catch(() => undefined);
+    }
+  });
+
+  it("rejects success delivered after the deadline while synchronous work delays timers", async () => {
+    let calls = 0;
+    const run = llmWithRetry(async () => {
+      calls++;
+      const until = performance.now() + 50;
+      while (performance.now() < until) { /* model-result processing blocks the event loop */ }
+      return "late synchronous success";
+    }, "late-sync", { perOperationTimeoutMs: 1000, totalTimeoutMs: 10 });
+    expectTimeout(await beforeWatchdog(run), "late-sync");
+    expect(calls).toBe(1);
+  });
+
+  function runEnvironmentProbe(overrides: { totalTimeoutMs?: number }) {
+    const script = `
+import { llmWithRetry } from ${JSON.stringify(path.join(import.meta.dir, "..", "src", "llm.ts"))};
+let timer;
+let finish;
+let calls = 0;
+const work = new Promise(resolve => { finish = resolve; });
+timer = setTimeout(() => finish("completed"), 80);
+try {
+  const value = await llmWithRetry(() => { calls++; return work; }, "env-total", ${JSON.stringify(overrides)});
+  console.log(JSON.stringify({ status: "fulfilled", calls, value }));
+} catch (error) {
+  console.log(JSON.stringify({ status: "rejected", calls, message: String(error) }));
+} finally {
+  clearTimeout(timer);
+  finish("released");
+}
+`;
+    const result = spawnSync(process.execPath, ["-e", script], {
+      cwd: path.join(import.meta.dir, ".."),
+      env: { ...process.env, CM_LLM_TIMEOUT_MS: "1000", CM_LLM_TOTAL_TIMEOUT_MS: "20" },
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
+    return JSON.parse(result.stdout) as { status: string; calls: number; value?: string; message?: string };
+  }
+
+  it("honors the environment total in a freshly initialized process", () => {
+    const outcome = runEnvironmentProbe({});
+    expect(outcome.status).toBe("rejected");
+    expect(outcome.calls).toBe(1);
+    expect(outcome.message).toMatch(/timed out|timeout ceiling/);
+  });
+
+  it("lets an explicit total override the environment ceiling", () => {
+    expect(runEnvironmentProbe({ totalTimeoutMs: 1000 })).toEqual({
+      status: "fulfilled", calls: 1, value: "completed",
+    });
   });
 });
