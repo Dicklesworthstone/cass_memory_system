@@ -1613,6 +1613,64 @@ console.log(JSON.stringify(replies[Math.min(call, replies.length - 1)]));
     }
   });
 
+  it("puts the latest failing delta path and field first in each CLI retry", async () => {
+    await withTempDir("cli-reflector-retry-path", async dir => {
+      const validDeltas = Array.from({ length: 8 }, (_, index) => ({
+        type: "helpful", bulletId: `b-${index}`, context: null,
+      }));
+      const cli = await makeReflectorCli(dir, [
+        { deltas: [...validDeltas.slice(0, 7), { type: "helpful", context: null }] },
+        { deltas: [...validDeltas.slice(0, 7), { type: "helpful", bulletId: "b-7" }] },
+        { deltas: validDeltas },
+      ]);
+      const diary = createTestDiary();
+      const result = await reflectOnSession(diary, createTestPlaybook(), cli.config);
+      expect(result.failure).toBeUndefined();
+      expect(result.deltas).toEqual(validDeltas.map(delta => ({
+        type: "helpful", bulletId: delta.bulletId, sourceSession: diary.sessionPath,
+      })));
+
+      const calls = await cli.calls();
+      expect(calls).toHaveLength(3);
+      const firstRetry = calls[1].prompt.slice(calls[1].prompt.indexOf("[PREVIOUS ATTEMPT FAILED"));
+      const secondRetry = calls[2].prompt.slice(calls[2].prompt.indexOf("[PREVIOUS ATTEMPT FAILED"));
+      expect(firstRetry.slice(0, 200)).toContain("deltas[7].bulletId:");
+      expect(secondRetry.slice(0, 200)).toContain("deltas[7].context:");
+      expect(secondRetry).not.toContain("deltas[7].bulletId:");
+      for (const retry of [firstRetry, secondRetry]) {
+        expect(retry).toContain("Correct the fields above");
+        expect(retry).not.toContain("Raw JSON:");
+        expect(retry).not.toContain("invalid_union");
+      }
+    });
+  });
+
+  it("diagnoses the matching add branch even when it has more errors than other variants", async () => {
+    await withTempDir("cli-reflector-add-errors", async dir => {
+      const cli = await makeReflectorCli(dir, [{ deltas: [{ type: "add", bullet: { content: 42 } }] }]);
+      const result = await reflectOnSession(createTestDiary(), createTestPlaybook(), cli.config);
+
+      expect(result.failure?.slice(0, 200)).toContain("deltas[0].bullet.content:");
+      expect(result.failure).not.toContain("bulletId:");
+      expect(result.deltas).toEqual([]);
+      expect(await cli.calls()).toHaveLength(3);
+    });
+  });
+
+  it("reports an unknown delta discriminator without inventing a matching variant", async () => {
+    await withTempDir("cli-reflector-unknown-type", async dir => {
+      const cli = await makeReflectorCli(dir, [{ deltas: [{ type: "invented" }] }]);
+      const result = await reflectOnSession(createTestDiary(), createTestPlaybook(), cli.config);
+
+      expect(result.failure?.slice(0, 200)).toContain("deltas[0].type: Expected one of:");
+      for (const type of ["add", "helpful", "harmful", "replace", "deprecate", "merge"]) {
+        expect(result.failure?.split("\n")[0]).toContain(type);
+      }
+      expect(result.deltas).toEqual([]);
+      expect(await cli.calls()).toHaveLength(3);
+    });
+  });
+
   it("still rejects a reply missing semantic fields instead of silently applying its valid siblings", async () => {
     await withTempDir("cli-reflect-invalid-delta", async dir => {
       const cli = await makeReflectorCli(dir, [{

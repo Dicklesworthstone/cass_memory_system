@@ -363,6 +363,52 @@ function extractJsonFromOutput(output: string): string {
   return trimmed;
 }
 
+/** Put actionable paths before the unrelated branches of a Zod union error. */
+function summarizeValidationError(error: z.ZodError): string {
+  type IssueSummary = Pick<z.ZodIssue, "path" | "message">;
+  const leaves = (issues: readonly z.ZodIssue[], prefix: PropertyKey[] = []): IssueSummary[] =>
+    issues.flatMap((issue) => {
+      const location = [...prefix, ...issue.path];
+      if (issue.code !== "invalid_union") return [{ ...issue, path: location }];
+
+      // A mismatched direct `type` literal identifies a different delta. A
+      // matching variant may have more missing fields than an unrelated one,
+      // so choose it before comparing the number of validation failures.
+      const mismatchedType = (child: z.ZodIssue) => child.code === "invalid_value" &&
+        child.values.length === 1 && child.path.length === 1 && child.path[0] === "type";
+      const candidates = issue.errors.filter((branch) =>
+        !branch.some(mismatchedType),
+      );
+      if (candidates.length === 0) {
+        const types = issue.errors.flatMap((branch) => branch.flatMap((child) =>
+          mismatchedType(child) && child.code === "invalid_value" ? child.values : [],
+        ));
+        return [{
+          path: types.length > 0 ? [...location, "type"] : location,
+          message: types.length > 0 ? `Expected one of: ${types.join(", ")}` : issue.message,
+        }];
+      }
+      // Zod 4 union branch paths are relative to the union, including nested
+      // unions. Preserve every parent segment so the retry names deltas[7].x.
+      const branches = candidates.map((branch) => leaves(branch, location));
+      return branches.reduce((closest, branch) =>
+        branch.length < closest.length ? branch : closest,
+      );
+    });
+
+  const issues = leaves(error.issues);
+  const summary = issues.slice(0, 5).map((issue) => {
+    const location = issue.path.reduce<string>((result, segment) =>
+      typeof segment === "number"
+        ? `${result}[${segment}]`
+        : `${result}${result ? "." : ""}${String(segment)}`,
+    "") || "output";
+    return `${location.slice(0, 160)}: ${issue.message.replace(/\s+/g, " ").slice(0, 160)}`;
+  });
+  if (issues.length > summary.length) summary.push(`(${issues.length - summary.length} more issues)`);
+  return summary.join("; ").slice(0, 1600);
+}
+
 /**
  * Call an LLM via a CLI tool (claude, codex, gemini, etc.).
  * Pipes the prompt via stdin and parses JSON from stdout.
@@ -535,7 +581,8 @@ export async function cliGenerateObject<T>(
   const validated = schema.safeParse(parsed);
   if (!validated.success) {
     throw new Error(
-      `CLI output failed schema validation: ${validated.error.message}\nRaw JSON: ${jsonStr.slice(0, 500)}`,
+      `CLI output failed schema validation: ${summarizeValidationError(validated.error)}\nRaw JSON: ${jsonStr.slice(0, 500)}`,
+      { cause: validated.error },
     );
   }
 
@@ -1110,7 +1157,7 @@ export async function generateObjectSafe<T>(
         // On retry, prepend the previous error so the model can self-correct
         const retryPrompt =
           attempt > 1 && lastCliError
-            ? `[PREVIOUS ATTEMPT FAILED: ${lastCliError}]\nYou MUST output valid JSON this time.\n\n${prompt}`
+            ? `[PREVIOUS ATTEMPT FAILED: ${lastCliError}]\nCorrect the fields above and output valid JSON matching the schema.\n\n${prompt}`
             : prompt;
         const result = await cliGenerateObject(
           schema,
@@ -1124,7 +1171,9 @@ export async function generateObjectSafe<T>(
       } catch (err: any) {
         llmOperationSignal.getStore()?.throwIfAborted();
         if (isTerminalLLMError(err)) throw err;
-        lastCliError = err.message?.slice(0, 200);
+        lastCliError = err.cause instanceof z.ZodError
+          ? summarizeValidationError(err.cause)
+          : err.message?.slice(0, 200);
         if (attempt >= maxAttempts) throw err;
         warn(`[CLI] Attempt ${attempt} failed: ${err.message}. Retrying...`);
       }
