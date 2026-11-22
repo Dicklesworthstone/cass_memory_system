@@ -547,7 +547,10 @@ else console.log("[]");
     });
   });
 
-  it("persists rules and feedback when CLI reflector passes omit sourceSession (#104)", async () => {
+  it.each([
+    ["", false],
+    [" with JSON logs and brace-bearing prose", true],
+  ] as const)("persists rules and feedback when CLI reflector passes omit sourceSession (#104)%s", async (_description, wrappedOutput) => {
     await withTempCassHome(async env => {
       await setup(env);
       const sessionPath = await writeSession(env, "missing-reflection-provenance");
@@ -580,15 +583,20 @@ const reflector = prompt.includes("extract reusable lessons for a playbook");
 appendFileSync(${JSON.stringify(cliCallsPath)}, JSON.stringify({
   kind: reflector ? "reflector" : "diary", prompt,
 }) + "\\n");
+const emit = (value) => {
+  if (${wrappedOutput}) console.log('{"event":"generation_completed"}');
+  console.log(JSON.stringify(value));
+  if (${wrappedOutput}) console.log('Keep the {session} placeholder in the explanation.');
+};
 if (reflector) {
-  if (prompt.includes("This is iteration 3.")) console.log('{"deltas":[]}');
-  else if (prompt.includes("This is iteration 2.")) console.log(${JSON.stringify(JSON.stringify({ deltas: feedback }))});
-  else console.log(${JSON.stringify(JSON.stringify({ deltas: [proposal] }))});
-} else console.log(${JSON.stringify(JSON.stringify({
+  if (prompt.includes("This is iteration 3.")) emit({ deltas: [] });
+  else if (prompt.includes("This is iteration 2.")) emit(${JSON.stringify({ deltas: feedback })});
+  else emit(${JSON.stringify({ deltas: [proposal] })});
+} else emit(${JSON.stringify({
         status: "success", accomplishments: ["Investigated reflection failure reporting"],
         decisions: [], challenges: [], preferences: [],
         keyLearnings: ["Check the process exit status before reporting success"], tags: ["testing"],
-      }))});
+      })});
 `, { mode: 0o755 });
       const config = JSON.parse(await readFile(env.configPath, "utf8"));
       await writeFile(env.configPath, JSON.stringify({

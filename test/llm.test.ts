@@ -1643,6 +1643,140 @@ writeSync(2, "Ordinary diagnostic output");
   });
 });
 
+describe("CLI JSON response framing", () => {
+  const schema = z.object({
+    deltas: z.array(z.object({
+      type: z.literal("helpful"),
+      bulletId: z.string(),
+      context: z.string().nullable(),
+    }).strict()),
+  }).strict();
+  const reply = {
+    deltas: [{ type: "helpful" as const, bulletId: "b-framing", context: null }],
+  };
+
+  async function parseOutput<T>(output: string, outputSchema: z.ZodSchema<T>) {
+    return withTempDir("cli-json-framing", async dir => {
+      const tool = path.join(dir, "framing-cli");
+      await fs.writeFile(tool, `#!${process.execPath}
+await Bun.stdin.text();
+process.stdout.write(${JSON.stringify(output)});
+`, { mode: 0o755 });
+      return (await cliGenerateObject(outputSchema, "Return the requested JSON", tool, 5000, "")).object;
+    });
+  }
+
+  it("preserves a reflection reply followed by prose containing closing braces", async () => {
+    const output = `Result:\n${JSON.stringify(reply)}\nFinished. The example ends with }.`;
+    expect(await parseOutput(output, schema)).toEqual(reply);
+  });
+
+  it("ignores unrelated top-level JSON log records before the matching response", async () => {
+    const output = '["wrapper ready"]\n{"value":"answer"}\nCompleted.';
+    expect(await parseOutput(output, z.object({ value: z.string() }).strict())).toEqual({ value: "answer" });
+  });
+
+  it("preserves quoted braces, brackets, escaped quotes, backslashes, and backticks in fenced JSON", async () => {
+    const response = {
+      deltas: [{
+        type: "helpful" as const,
+        bulletId: "b-quoted",
+        context: 'Keep { and [ inside "quoted \\ text"; code fences ```json and ``` are content.',
+      }],
+    };
+    const output = `[ready]\n\`\`\`json\n${JSON.stringify(response, null, 2)}\n\`\`\`\nDone } ]`;
+    expect(await parseOutput(output, schema)).toEqual(response);
+  });
+
+  it("keeps whole-output JSON authoritative even when its nested value matches the schema", async () => {
+    await expect(parseOutput(JSON.stringify({ wrapper: reply }), schema))
+      .rejects.toThrow("CLI output failed schema validation");
+  });
+
+  it("does not salvage a nested reply from a schema-invalid prose-wrapped object", async () => {
+    await expect(parseOutput(`Result:\n${JSON.stringify({ wrapper: reply })}\nDone }`, schema))
+      .rejects.toThrow("CLI output failed schema validation");
+  });
+
+  it("does not salvage a nested reply from a malformed outer JSON object", async () => {
+    await expect(parseOutput(`Result:\n{"wrapper":${JSON.stringify(reply)},}`, schema))
+      .rejects.toThrow("Failed to parse JSON");
+  });
+
+  it("does not salvage a nested reply from a truncated outer JSON object", async () => {
+    await expect(parseOutput(`Result:\n{"wrapper":${JSON.stringify(reply)}`, schema))
+      .rejects.toThrow("Failed to parse JSON");
+  });
+
+  it("rejects a truncated fenced response even after an earlier matching JSON record", async () => {
+    const output = 'Result:\n{"deltas":[]}\n```json\n{"deltas":[';
+    await expect(parseOutput(output, schema)).rejects.toThrow("Failed to parse JSON");
+  });
+
+  it("accepts complete JSON in a fence whose closing markdown marker was omitted", async () => {
+    expect(await parseOutput(`\`\`\`json\n${JSON.stringify(reply)}`, schema)).toEqual(reply);
+  });
+
+  it("rejects a malformed enclosing array rather than extracting the object inside it", async () => {
+    await expect(parseOutput(`Result:\n[${JSON.stringify(reply)}}`, schema))
+      .rejects.toThrow("Failed to parse JSON");
+  });
+
+  it("rejects multiple schema-valid top-level replies instead of selecting one and losing rules", async () => {
+    const output = `Result:\n{"deltas":[]}\n${JSON.stringify(reply)}`;
+    await expect(parseOutput(output, schema)).rejects.toThrow("multiple JSON responses match the schema");
+  });
+
+  it("rejects ambiguous replies across separate markdown fences", async () => {
+    const output = `\`\`\`json\n{"deltas":[]}\n\`\`\`\n\`\`\`json\n${JSON.stringify(reply)}\n\`\`\``;
+    await expect(parseOutput(output, schema)).rejects.toThrow("multiple JSON responses match the schema");
+  });
+
+  it.each(["before", "after"] as const)("rejects invalid deltas %s a schema-valid empty reply", async position => {
+    const invalid = JSON.stringify({ deltas: [{ type: "helpful", context: null }] });
+    const responses = position === "before" ? [invalid, '{"deltas":[]}'] : ['{"deltas":[]}', invalid];
+    await expect(parseOutput(`Result:\n${responses.join("\n")}`, schema))
+      .rejects.toThrow("deltas[0].bulletId:");
+  });
+
+  it("does not discard a response rejected only for an unknown root key", async () => {
+    const invalid = { ...reply, unexpectedMetadata: "must not be treated as a log record" };
+    await expect(parseOutput(`Result:\n{"deltas":[]}\n${JSON.stringify(invalid)}`, schema))
+      .rejects.toThrow("unexpectedMetadata");
+  });
+
+  it.each(["plain", "json fence", "untagged fence"] as const)("rejects a malformed %s reply after an empty response", async framing => {
+    const malformed = `${JSON.stringify(reply).slice(0, -1)},}`;
+    const response = framing === "plain" ? malformed :
+      `\`\`\`${framing === "json fence" ? "json" : ""}\n${malformed}\n\`\`\``;
+    await expect(parseOutput(`Result:\n{"deltas":[]}\n${response}`, schema))
+      .rejects.toThrow("Failed to parse JSON");
+  });
+
+  it("rejects a balanced malformed JSON array containing rules instead of selecting an earlier empty response", async () => {
+    const malformed = `[${JSON.stringify(reply)},]`;
+    await expect(parseOutput(`Result:\n{"deltas":[]}\n${malformed}`, schema))
+      .rejects.toThrow("Failed to parse JSON");
+  });
+
+  it("keeps the invalid delta field in diagnostics when unrelated JSON logs surround it", async () => {
+    const invalid = { deltas: [{ type: "helpful", context: null }] };
+    const output = `{"event":"start"}\n${JSON.stringify(invalid)}\n{"event":"done"}`;
+    await expect(parseOutput(output, schema)).rejects.toThrow("deltas[0].bulletId:");
+  });
+
+  it("retains fenced JSON scalar support without searching inside JSON strings", async () => {
+    expect(await parseOutput('```json\n"literal { braces } and ```"\n```', z.string()))
+      .toBe("literal { braces } and ```");
+    expect(await parseOutput("```json\n42\n```", z.number())).toBe(42);
+  });
+
+  it("bounds candidate work even when the output contains many malformed log-like containers", async () => {
+    const output = `${"[wrapper ready]\n".repeat(256)}${JSON.stringify(reply)}`;
+    await expect(parseOutput(output, schema)).rejects.toThrow("128 JSON candidate limit");
+  });
+});
+
 describe("cliGenerateObject schema hint", () => {
   it("gives the CLI tool the full nested JSON Schema, not just top-level names", async () => {
     const { mkdtempSync, writeFileSync, chmodSync, readFileSync } = await import("node:fs");

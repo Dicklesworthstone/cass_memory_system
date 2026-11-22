@@ -319,49 +319,148 @@ export function isCliAvailable(cliCommand?: string): boolean {
   return resolveCliCommand(cliCommand) !== null;
 }
 
+interface CLIJsonCandidate<T> {
+  json: string;
+  validation: ReturnType<z.ZodSchema<T>["safeParse"]>;
+  diagnosticDepth: number;
+}
+
 /**
- * Extract JSON from CLI output that may contain markdown fences or prose.
- * Tries progressively less strict strategies and validates with JSON.parse.
+ * Find one complete response amid CLI prose/logs, never a nested fragment.
+ * Whole-output JSON is authoritative, including when it fails the schema.
+ * Otherwise candidate spans are disjoint: each fence or balanced container
+ * is parsed once, keeping work bounded by stdout size and the candidate cap.
  */
-function extractJsonFromOutput(output: string): string {
-  // Strip UTF-8 BOM (U+FEFF) — some CLI tools on Windows emit it
+function extractJsonFromOutput<T>(output: string, schema: z.ZodSchema<T>): CLIJsonCandidate<T> | undefined {
+  // Strip UTF-8 BOM (U+FEFF) — some CLI tools on Windows emit it.
   const trimmed = output.trim().replace(/^\uFEFF/, "");
+  const decode = (json: string): { json: string; value: unknown } | undefined => {
+    try { return { json, value: JSON.parse(json) }; } catch { return undefined; }
+  };
+  const validate = ({ json, value }: { json: string; value: unknown }): CLIJsonCandidate<T> => {
+    const validation = schema.safeParse(value);
+    let diagnosticDepth = 0;
+    if (!validation.success) {
+      // Errors within expected fields identify attempted responses and give
+      // better diagnostics than logs missing every output field.
+      for (const issue of validation.error.issues) {
+        let current: unknown = value;
+        let depth = 0;
+        for (const segment of issue.path) {
+          if (current === null || typeof current !== "object" ||
+              !Object.prototype.hasOwnProperty.call(current, segment)) break;
+          current = (current as Record<PropertyKey, unknown>)[segment];
+          depth++;
+        }
+        diagnosticDepth = Math.max(diagnosticDepth, depth);
+      }
+    }
+    return { json, validation, diagnosticDepth };
+  };
 
-  // Strategy 1: the entire output is valid JSON
-  try {
-    JSON.parse(trimmed);
-    return trimmed;
-  } catch {}
+  const whole = decode(trimmed);
+  if (whole) return validate(whole);
 
-  // Strategy 2: extract from markdown code fences
-  const fenceMatch = trimmed.match(/```(?:json)?\s*\n([\s\S]*?)\n\s*```/);
-  if (fenceMatch) {
-    try {
-      JSON.parse(fenceMatch[1].trim());
-      return fenceMatch[1].trim();
-    } catch {}
-  }
+  const outputKeys = schema instanceof z.ZodObject ? Object.keys(schema.shape) : [];
+  let match: CLIJsonCandidate<T> | undefined;
+  let invalid: CLIJsonCandidate<T> | undefined;
+  let invalidResponse: CLIJsonCandidate<T> | undefined;
+  let malformedResponse = false;
+  let candidates = 0;
+  const consider = (json: string, explicitlyJson = false) => {
+    if (++candidates > MAX_CLI_JSON_CANDIDATES) {
+      throw new CLILifecycleError(`CLI output exceeded the ${MAX_CLI_JSON_CANDIDATES} JSON candidate limit`);
+    }
+    const decoded = decode(json);
+    if (!decoded) {
+      // Preserve prose such as {session} and [ready], but never hide a
+      // malformed JSON response behind an earlier valid empty response.
+      malformedResponse ||= explicitlyJson || /^\{\s*"/.test(json) ||
+        /^\[\s*(?:\[|\{|"|-?\d|true\b|false\b|null\b)/.test(json);
+      return false;
+    }
+    const candidate = validate(decoded);
+    if (candidate.validation.success) {
+      if (match) {
+        throw new Error("CLI output is ambiguous: multiple JSON responses match the schema. Output exactly one JSON response.");
+      }
+      match = candidate;
+    } else {
+      if (!invalid || candidate.diagnosticDepth > invalid.diagnosticDepth) invalid = candidate;
+      // An attempted response cannot be discarded like an unrelated log:
+      // accepting a nearby empty response would silently lose its deltas.
+      // Root keys also identify strict-object errors whose path is empty.
+      const hasOutputKey = decoded.value !== null && typeof decoded.value === "object" &&
+        outputKeys.some(key => Object.prototype.hasOwnProperty.call(decoded.value, key));
+      if ((candidate.diagnosticDepth > 0 || hasOutputKey) &&
+          (!invalidResponse || candidate.diagnosticDepth > invalidResponse.diagnosticDepth)) {
+        invalidResponse = candidate;
+      }
+    }
+    return true;
+  };
 
-  // Strategy 3: find the first `{...}` or `[...]` that parses as valid JSON.
-  // Scan for opening braces/brackets and try parsing from each position.
+  let start = -1;
+  const closing: string[] = [];
+  let inString = false;
+  let escaped = false;
   for (let i = 0; i < trimmed.length; i++) {
     const ch = trimmed[i];
-    if (ch !== "{" && ch !== "[") continue;
-    const closing = ch === "{" ? "}" : "]";
-    // Search backwards from end for the matching close
-    for (let j = trimmed.length - 1; j > i; j--) {
-      if (trimmed[j] !== closing) continue;
-      const candidate = trimmed.slice(i, j + 1);
-      try {
-        JSON.parse(candidate);
-        return candidate;
-      } catch {}
-      break; // only try the outermost matching close for this opening
+    if (start === -1) {
+      if (i === 0 || trimmed[i - 1] === "\n") {
+        const lineEnd = trimmed.indexOf("\n", i);
+        const line = trimmed.slice(i, lineEnd === -1 ? trimmed.length : lineEnd);
+        const fence = /^ {0,3}(`{3,}|~{3,})(?:json)?[ \t]*\r?$/i.exec(line);
+        if (fence && lineEnd !== -1) {
+          const bodyStart = lineEnd + 1;
+          let bodyEnd = trimmed.length;
+          let next = trimmed.length;
+          for (let cursor = bodyStart; cursor < trimmed.length;) {
+            const end = trimmed.indexOf("\n", cursor);
+            const fenceLine = trimmed.slice(cursor, end === -1 ? trimmed.length : end);
+            const close = /^ {0,3}(`+|~+)[ \t]*\r?$/.exec(fenceLine);
+            if (close && close[1][0] === fence[1][0] && close[1].length >= fence[1].length) {
+              bodyEnd = cursor;
+              next = end === -1 ? trimmed.length : end + 1;
+              break;
+            }
+            cursor = end === -1 ? trimmed.length : end + 1;
+          }
+          // Treat the entire fence as one candidate, including scalars.
+          // Never search a malformed/invalid fenced object for a nested one.
+          if (!consider(trimmed.slice(bodyStart, bodyEnd).trim(), true)) return undefined;
+          i = next - 1;
+          continue;
+        }
+      }
+      if (ch === "{" || ch === "[") {
+        start = i;
+        closing.push(ch === "{" ? "}" : "]");
+      }
+      continue;
+    }
+
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "{" || ch === "[") closing.push(ch === "{" ? "}" : "]");
+    else if (ch === "}" || ch === "]") {
+      // A malformed enclosing frame must not become a nested valid reply.
+      if (closing.pop() !== ch) return undefined;
+      if (closing.length === 0) {
+        consider(trimmed.slice(start, i + 1));
+        start = -1;
+      }
     }
   }
-
-  // Fallback: return as-is and let the caller's JSON.parse fail with a clear error
-  return trimmed;
+  // An unfinished outer response might contain the only actual answer.
+  // Do not accept a nested value or an earlier log record in its place.
+  if (start !== -1 || malformedResponse) return undefined;
+  return invalidResponse ?? match ?? invalid;
 }
 
 /** Put actionable paths before the unrelated branches of a Zod union error. */
@@ -411,6 +510,7 @@ function summarizeValidationError(error: z.ZodError): string {
 }
 
 const MAX_CLI_OUTPUT_BYTES = 10 * 1024 * 1024;
+const MAX_CLI_JSON_CANDIDATES = 128;
 const CLI_TERMINATION_GRACE_MS = 250;
 const CLI_REAP_TIMEOUT_MS = 1000;
 
@@ -691,16 +791,11 @@ export async function cliGenerateObject<T>(
   }
 
   // Parse JSON from output
-  const jsonStr = extractJsonFromOutput(stdout);
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(jsonStr);
-  } catch (e) {
-    throw new Error(`Failed to parse JSON from '${cmd}' output:\n${jsonStr.slice(0, 500)}`);
+  const extracted = extractJsonFromOutput(stdout, schema);
+  if (!extracted) {
+    throw new Error(`Failed to parse JSON from '${cmd}' output:\n${stdout.trim().slice(0, 500)}`);
   }
-
-  // Validate against schema
-  const validated = schema.safeParse(parsed);
+  const { json: jsonStr, validation: validated } = extracted;
   if (!validated.success) {
     throw new Error(
       `CLI output failed schema validation: ${summarizeValidationError(validated.error)}\nRaw JSON: ${jsonStr.slice(0, 500)}`,
