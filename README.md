@@ -804,9 +804,9 @@ install.sh [--version vX.Y.Z] [--dest DIR] [--system] [--easy-mode] [--verify]
            [--checksum-url URL] [--quiet]
 
 # Examples
-install.sh --version v0.6.0 --verify       # Specific version
+install.sh --version v0.6.1 --verify       # Specific version
 install.sh --system --verify             # Install to /usr/local/bin (requires sudo)
-install.sh --from-source --version v0.6.0 # Build that release from source (requires bun)
+install.sh --from-source --version v0.6.1 # Build that release from source (requires bun)
 ```
 
 | Flag | Effect |
@@ -2473,9 +2473,10 @@ The dependency graph includes Sharp 0.35.5 and native ONNX 1.30.0, but CM does n
 load them for embeddings. ONNX Web is intentionally the upstream-pinned
 `1.31.0-dev.20260914-8d85527a0` prerelease, not an all-stable runtime stack.
 
-Linux x64 source and compiled inference, cold download, offline cache reuse, and
-numerical comparisons have been exercised. Native execution on the other release
-targets still requires qualification tracked in
+Compiled standalone inference, cold MiniLM download, offline cache reuse, and
+bit-identical numerical parity have been verified on `linux-x64` (native),
+`macos-arm64` (native), `macos-x64` (Rosetta), and `linux-arm64` (emulated
+aarch64). Native `windows-x64` execution remains tracked in
 [issue #92](https://github.com/Dicklesworthstone/cass_memory_system/issues/92).
 
 ```typescript

@@ -8,7 +8,9 @@ All notable changes to **cass-memory** (`cm`) are documented in this file.
 
 ---
 
-## [Unreleased]
+## [0.6.1] -- 2026-11-23
+
+Everything on `main` since [0.6.0](https://github.com/Dicklesworthstone/cass_memory_system/releases/tag/v0.6.0). Migrates standalone local embeddings from deprecated `@xenova/transformers` 2.x (and Sharp 0.32.x advisories) to pinned `@huggingface/transformers` 4.3.2, isolates per-project semantic embedding runtimes and caches, and hardens Anthropic and CLI reflection output contracts, cancellation, and retry deadlines.
 
 ### Fixed
 
@@ -25,7 +27,12 @@ All notable changes to **cass-memory** (`cm`) are documented in this file.
 
 - Local text embeddings now use pinned `@huggingface/transformers` 4.3.2. Both lockfiles replace the deprecated Transformers 2 / Sharp 0.32 / ONNX 1.14 graph with the maintained package graph, including Sharp 0.35.5 and native ONNX 1.30.0. CM executes the upstream-pinned ONNX Web `1.31.0-dev.20260914-8d85527a0` WASM runtime; its native ONNX and image-processing dependencies are excluded from CM's text inference path.
 - Standalone binaries embed the matching WASM and JavaScript factory. Version- and hash-verified installation patches retain filesystem model caching, serialize initialization and inference, and recover after failed requests. Existing `xenova` configuration, model names, local directories, offline retries, and per-project runtime isolation remain supported.
-- Derived local vectors move to cache version 3 because the new runtime changes batch embeddings. Compatible Ollama version 2 caches and raw model downloads remain reusable. Linux x64 source and compiled inference have been exercised with real models; native qualification for the other release targets remains tracked in #92. The small Linux comparison observed higher resident memory with the successor runtime (roughly 335–362 MB versus 221 MB).
+- Derived local vectors move to cache version 3 because the new runtime changes batch embeddings. Compatible Ollama version 2 caches and raw model downloads remain reusable. Compiled standalone semantic inference (cold MiniLM download, offline cache reuse, cache v3 384-dimensional vectors, bit-identical cosine similarity, and keyword-fallback rejection when uncached offline) has been verified on `linux-x64` (native), `macos-arm64` (native), `macos-x64` (Rosetta), and `linux-arm64` (emulated aarch64); native `windows-x64` execution remains tracked in [#92](https://github.com/Dicklesworthstone/cass_memory_system/issues/92). Observed peak memory during compiled MiniLM inference is roughly 400–416 MB RSS (~346–348 MB physical footprint on `macos-arm64`) on native `linux-x64` / `macos-arm64`, and ~448–465 MB RSS (~395–408 MB footprint) under Rosetta `macos-x64`.
+- `bun audit` reports 0 vulnerabilities across 117 locked packages (`sharp` 0.35.5 resolves `GHSA-f88m-g3jw-g9cj`, `GHSA-rgj7-g3m4-5g8c`, and `GHSA-wq5f-xc86-pv6w`).
+
+### Qualification
+
+- Unchanged canonical validation gates pass with Bun 1.4.5, `TZ=UTC`, and frozen dependencies: `bun install --frozen-lockfile` clean (Transformers 4.3.2 patch verified), `tsc --noEmit` clean, `TZ=UTC bun run test:unit` passed **3,195 tests** (1 API-key skip, 0 failures, 10,689 assertions across 103 files), and `TZ=UTC bun run test:ci` passed **3,929 tests** (3 environment-dependent skips, 0 failures, 13,866 assertions across 156 files).
 
 ## [0.6.0] -- 2026-11-20
 
